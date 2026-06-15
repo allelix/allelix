@@ -1,6 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Tests for terminal report rendering."""
+"""Tests for terminal report rendering.
+
+GH #9: the terminal table is intentionally bare-min — rsID, Gene
+(conditional), Source, Significance, Mag, GT, Condition (conditional).
+Enrichment columns (Review Status, Zygosity, Freq, AM, CADD) belong
+in the HTML and JSON reports, not in a 12-column-wide table that Rich
+squashes to hairline-zero-width on typical terminals. These tests
+pin the new layout — the data is still on the Annotation model and
+still surfaces in the other reports; just not in the terminal.
+"""
 
 from __future__ import annotations
 
@@ -101,90 +110,102 @@ class TestRenderTerminal:
         assert "m" in out
         assert "BRCA1" not in out
 
-    def test_review_status_column_present(self):
+
+class TestBareMinColumns:
+    """GH #9: enrichment columns are intentionally NOT in the terminal."""
+
+    def test_review_status_not_in_terminal(self):
+        """ClinVar review status surfaces in HTML/JSON, not terminal."""
         out, _ = _render([_ann(review_status="criteria_provided,_single_submitter")])
-        assert "Review Status" in out
-        assert "criteria_provided" in out
+        assert "Review Status" not in out
+        assert "criteria_provided" not in out
 
-    def test_review_status_dash_when_empty(self):
-        out, _ = _render([_ann(review_status="")])
-        assert "Review Status" in out
+    def test_zygosity_not_in_terminal(self):
+        """Zygosity is derivable from the GT column; not duplicated here."""
+        out, _ = _render([_ann(genotype_match="A/G")])
+        assert "Zygosity" not in out
+        assert "Heterozygous" not in out
+        assert "Homozygous" not in out
 
-    def test_freq_column_present_when_frequency_set(self):
+    def test_freq_not_in_terminal_even_when_set(self):
         out, _ = _render([_ann(allele_frequency=0.35)])
-        assert "Freq" in out
-        assert "35.00%" in out
-
-    def test_freq_column_absent_when_no_frequency(self):
-        out, _ = _render([_ann()])
         assert "Freq" not in out
+        assert "35.00%" not in out
 
-    def test_freq_rare_variant_format(self):
-        out, _ = _render([_ann(allele_frequency=0.00005)])
-        assert "<0.01%" in out
-
-    def test_freq_none_shows_dash(self):
-        annotations = [
-            _ann(rsid="rs1", allele_frequency=0.35),
-            _ann(rsid="rs2", allele_frequency=None),
-        ]
-        out, _ = _render(annotations)
-        assert "Freq" in out
-        assert "35.00%" in out
-
-
-class TestZygosityColumn:
-    def test_zygosity_column_present(self):
-        out, _ = _render([_ann(genotype_match="A/G")])
-        assert "Zygosity" in out
-
-    def test_heterozygous_label(self):
-        out, _ = _render([_ann(genotype_match="A/G")])
-        assert "Heterozygous" in out
-
-    def test_homozygous_label(self):
-        out, _ = _render([_ann(genotype_match="A/A")])
-        assert "Homozygous" in out
-
-    def test_no_call_label(self):
-        out, _ = _render([_ann(genotype_match="A/-")])
-        assert "No Call" in out
-
-
-class TestAlphaMissenseColumn:
-    def test_am_column_present_when_data_exists(self):
+    def test_am_not_in_terminal_even_when_set(self):
         out, _ = _render([_ann(am_pathogenicity=0.95, am_class="likely_pathogenic")])
-        assert "AM" in out
-        assert "0.950" in out
-
-    def test_am_column_absent_when_no_data(self):
-        out, _ = _render([_ann()])
-        assert "AM" not in out
-
-    def test_am_none_shows_dash(self):
-        annotations = [
-            _ann(rsid="rs1", am_pathogenicity=0.80, am_class="likely_pathogenic"),
-            _ann(rsid="rs2"),
-        ]
-        out, _ = _render(annotations)
-        assert "AM" in out
-        assert "0.800" in out
-
-    def test_am_pharmgkb_footnote(self):
-        annotations = [
-            _ann(
-                source="pharmgkb",
-                attribution="ClinPGx",
-                am_pathogenicity=0.95,
-                am_class="likely_pathogenic",
-            ),
-        ]
-        out, _ = _render(annotations)
-        assert "protein structure impact only" in out
-
-    def test_am_no_footnote_without_pharmgkb(self):
-        out, _ = _render([_ann(am_pathogenicity=0.95, am_class="likely_pathogenic")])
+        assert "0.950" not in out
         assert "protein structure impact only" not in out
+
+    def test_cadd_not_in_terminal_even_when_set(self):
+        out, _ = _render([_ann(cadd_phred=24.3)])
+        assert "CADD" not in out
+        assert "24.3" not in out
+
+
+class TestCompactDisplay:
+    """GH #9: terminal cells use compact strings to fit narrow terminals."""
+
+    def test_significance_strips_source_prefix(self):
+        """Source column already shows ClinVar; significance shouldn't repeat it."""
+        out, _ = _render([_ann(significance="clinvar_pathogenic", source="clinvar")])
+        assert "pathogenic" in out
+        # The full prefixed form should NOT appear:
+        assert "clinvar_pathogenic" not in out
+
+    def test_gwas_source_compacted(self):
+        """``GWAS Catalog`` always truncates to ``GWAS Ca…`` in narrow
+        terminals; render as plain ``GWAS`` instead."""
+        out, _ = _render(
+            [
+                _ann(
+                    source="gwas",
+                    attribution="GWAS Catalog",
+                    significance="gwas_association",
+                )
+            ]
+        )
+        assert "GWAS" in out
+        assert "GWAS Catalog" not in out
+
+    def test_gt_column_header(self):
+        """Genotype column is labeled ``GT`` (matching the web report)."""
+        out, _ = _render([_ann(genotype_match="A/G")])
+        assert "GT" in out
+        # The cell still carries the full genotype string:
+        assert "A/G" in out
+
+
+class TestConditionalColumns:
+    """Gene and Condition are dropped when no row has them."""
+
+    def test_gene_column_dropped_when_empty(self):
+        out, _ = _render([_ann(gene="")])
+        assert "Gene" not in out
+
+    def test_gene_column_present_when_any_row_has_it(self):
+        out, _ = _render(
+            [
+                _ann(rsid="rs1", gene="MTHFR"),
+                _ann(rsid="rs2", gene=""),
+            ]
+        )
+        assert "Gene" in out
+        assert "MTHFR" in out
+
+    def test_condition_column_dropped_when_empty(self):
+        out, _ = _render([_ann(condition="")])
+        assert "Condition" not in out
+
+    def test_condition_column_present_when_any_row_has_it(self):
+        out, _ = _render(
+            [
+                _ann(rsid="rs1", condition="MTHFR deficiency"),
+                _ann(rsid="rs2", condition=""),
+            ]
+        )
+        assert "Condition" in out
+        assert "MTHFR deficiency" in out
 
 
 def _ann_dict(**overrides) -> dict:
@@ -207,7 +228,7 @@ def _ann_dict(**overrides) -> dict:
 
 class TestRenderTerminalDiff:
     def test_render_terminal_diff_new_only(self, capsys):
-        """Verifies the New Annotations table renders with all columns."""
+        """New Annotations table renders with the bare-min column set."""
         from allelix.reports.diff import DiffResult
 
         diff = DiffResult(
@@ -226,18 +247,20 @@ class TestRenderTerminalDiff:
         assert total == 1
         assert "New Annotations (1)" in out
         assert "rs1801133" in out
-        assert "Review Status" in out
-        assert "criteria_provided" in out
+        # Review Status was provided but does NOT surface in terminal (bare-min):
+        assert "Review Status" not in out
+        assert "criteria_provided" not in out
 
     def test_render_terminal_diff_changed_only(self, capsys):
-        """Old Sig / New Sig / Old Mag / New Mag / Review Status columns all present."""
+        """Changed table keeps Old Sig / New Sig / Old Mag / New Mag (those
+        are the whole point of the diff). Review Status is still axed."""
         from allelix.reports.diff import ChangedAnnotation, DiffResult
 
         diff = DiffResult(
             changed=[
                 ChangedAnnotation(
                     current=_ann(magnitude=7.0, review_status="reviewed_by_expert_panel"),
-                    previous_significance="old_sig",
+                    previous_significance="clinvar_old_sig",
                     previous_magnitude=9.0,
                 )
             ],
@@ -246,10 +269,12 @@ class TestRenderTerminalDiff:
         render_terminal_diff(diff, Console(force_terminal=True, width=200))
         out = capsys.readouterr().out
         assert "Changed Annotations (1)" in out
+        # Significance prefixes are stripped (source = clinvar):
         assert "old_sig" in out
+        assert "pathogenic" in out
         assert "9.0" in out and "7.0" in out
-        assert "Review Status" in out
-        assert "reviewed_by_expert_panel" in out
+        assert "Review Status" not in out
+        assert "reviewed_by_expert_panel" not in out
 
     def test_render_terminal_diff_removed_only(self, capsys):
         from allelix.reports.diff import DiffResult

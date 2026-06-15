@@ -174,6 +174,45 @@ class TestNormalizeBuildLabel:
         assert normalize_build_label("   ") is None
 
 
+class TestNormalizeBuildLabelTokenBoundaries:
+    """GH #16: anchored tokenization, ambiguity rejection.
+
+    The previous implementation was first-substring-wins over a bare
+    `"3X" in s` chain. A date like `2038-01-01` would match `38` and
+    silently retag a file as GRCh38; `hg19/hg38` would match `hg19`
+    first and pick GRCh37 even though hg38 was also present.
+    """
+
+    def test_date_does_not_match(self) -> None:
+        # `2038` has no word boundary before `38` (digit-to-digit), so
+        # the standalone-number token cannot fire from inside a year.
+        assert normalize_build_label("2038-01-01") is None
+        assert normalize_build_label("# downloaded 2037-12-31") is None
+        assert normalize_build_label("v37 of platform") is None
+
+    def test_ambiguous_returns_none(self) -> None:
+        # Mentioning multiple distinct builds → no safe answer; the
+        # previous first-substring-wins picked one arbitrarily.
+        assert normalize_build_label("hg19/hg38") is None
+        assert normalize_build_label("38 (37 liftover)") is None
+        assert normalize_build_label("GRCh37 lifted to GRCh38") is None
+
+    def test_unambiguous_repeated_token_still_matches(self) -> None:
+        # Repeating the SAME build is unambiguous.
+        assert normalize_build_label("GRCh37 (build 37, hg19)") == BUILD_GRCH37
+
+    def test_grch_with_patch_suffix(self) -> None:
+        # `GRCh37.p13` and `Build 37.1` — boundaries on `.` are fine.
+        assert normalize_build_label("GRCh37.p13") == BUILD_GRCH37
+        assert normalize_build_label("Build 37.1") == BUILD_GRCH37
+
+    def test_ncbi_variants(self) -> None:
+        # NCBI 36 / NCBI36 / NCBI 037 all canonicalize.
+        assert normalize_build_label("NCBI 36") == BUILD_GRCH36
+        assert normalize_build_label("NCBI36") == BUILD_GRCH36
+        assert normalize_build_label("NCBI 037") == BUILD_GRCH37
+
+
 class TestKnownSnpTable:
     """ADR-0021: the canonical SNP position table is authoritative.
 

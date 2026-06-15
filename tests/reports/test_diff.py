@@ -122,6 +122,38 @@ class TestComputeDiff:
         assert diff.changed[0].current.magnitude == 7.0
         assert diff.changed[0].previous_magnitude == 9.0
 
+    def test_magnitude_representation_noise_not_flagged(self) -> None:
+        """GH #25: exact float `!=` flagged JSON round-trip noise as
+        changed (7.5 vs 7.499999999999999). Use `math.isclose` so only
+        meaningful magnitude differences surface."""
+        current = [_ann(magnitude=7.5)]
+        previous = [_ann_dict(magnitude=7.5 - 1e-12)]
+        diff = compute_diff(current, previous, "2026-05-01T00:00:00")
+        assert diff.changed == []
+
+    def test_missing_previous_magnitude_not_flagged_against_zero(self) -> None:
+        """GH #25: a baseline entry without a magnitude key used to be
+        treated as previous_magnitude=0.0, so any current magnitude
+        looked like a change. Now an absent previous magnitude (and
+        unchanged significance) is NOT flagged."""
+        prev = _ann_dict(magnitude=5.0)
+        del prev["magnitude"]
+        current = [_ann(magnitude=5.0)]
+        diff = compute_diff(current, [prev], "2026-05-01T00:00:00")
+        assert diff.changed == []
+
+    def test_significance_changed_with_missing_previous_magnitude(self) -> None:
+        """If significance changes, the entry is still flagged as
+        changed even when previous_magnitude is absent.
+        ``ChangedAnnotation.previous_magnitude`` carries ``None``."""
+        prev = _ann_dict(magnitude=5.0, significance="clinvar_pathogenic")
+        del prev["magnitude"]
+        current = [_ann(magnitude=5.0, significance="clinvar_benign")]
+        diff = compute_diff(current, [prev], "2026-05-01T00:00:00")
+        assert len(diff.changed) == 1
+        assert diff.changed[0].previous_magnitude is None
+        assert diff.changed[0].previous_significance == "clinvar_pathogenic"
+
     def test_description_change_surfaces_as_removed_plus_added(self) -> None:
         """Description is part of the diff key — wording changes surface honestly."""
         current = [_ann()]
@@ -255,6 +287,44 @@ class TestLoadPreviousReport:
         path = tmp_path / "report.json"
         path.write_text(json.dumps(report))
         with pytest.raises(ValueError, match="annotations"):
+            load_previous_report(path)
+
+    def test_annotations_not_a_list_raises_value_error(self, tmp_path: Path) -> None:
+        """GH #25: a baseline with `annotations` as a dict (e.g. someone
+        edited the JSON by hand) used to flow through to `compute_diff`
+        and raise a less helpful TypeError on iteration. Now caught at
+        load with a ValueError."""
+        report = {"schema_version": "1", "annotations": {"oops": "dict-not-list"}}
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        with pytest.raises(ValueError, match="must be a list"):
+            load_previous_report(path)
+
+    def test_annotation_entry_missing_source_raises_value_error(self, tmp_path: Path) -> None:
+        """GH #25: previously `compute_diff` indexed `d['source']`
+        unguarded and raised KeyError. Now caught at load."""
+        ann = _ann_dict()
+        del ann["source"]
+        report = {"schema_version": "1", "annotations": [ann]}
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        with pytest.raises(ValueError, match="missing required key 'source'"):
+            load_previous_report(path)
+
+    def test_annotation_entry_missing_rsid_raises_value_error(self, tmp_path: Path) -> None:
+        ann = _ann_dict()
+        del ann["rsid"]
+        report = {"schema_version": "1", "annotations": [ann]}
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        with pytest.raises(ValueError, match="missing required key 'rsid'"):
+            load_previous_report(path)
+
+    def test_annotation_entry_not_dict_raises_value_error(self, tmp_path: Path) -> None:
+        report = {"schema_version": "1", "annotations": ["not-a-dict"]}
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        with pytest.raises(ValueError, match="must be an object"):
             load_previous_report(path)
 
     def test_v3_report_loads(self, tmp_path: Path) -> None:

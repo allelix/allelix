@@ -275,11 +275,21 @@ class TestGnomadEnrichment:
                 " (chrom, pos, ref, alt, rsid, af) VALUES (?, ?, ?, ?, ?, ?)",
                 ("1", 11796321, "G", "A", "rs1801133", 0.35),
             )
+            from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
+
             conn.execute(
                 "INSERT OR REPLACE INTO database_versions"
-                " (name, source_url, version, downloaded_at, record_count)"
-                " VALUES (?, ?, ?, ?, ?)",
-                ("gnomad", "test://mock", "4.1", "2026-01-01T00:00:00Z", 1),
+                " (name, source_url, version, downloaded_at, record_count,"
+                "  local_version_tag)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "gnomad",
+                    "test://mock",
+                    "4.1",
+                    "2026-01-01T00:00:00Z",
+                    1,
+                    f"sv:{GNOMAD_SCHEMA_VERSION}",
+                ),
             )
             conn.commit()
 
@@ -491,11 +501,21 @@ class TestCaddEnrichment:
                 " (chrom, pos, ref, alt, rsid, af) VALUES (?, ?, ?, ?, ?, ?)",
                 ("1", 11796321, "G", "A", "rs1801133", 0.35),
             )
+            from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
+
             conn.execute(
                 "INSERT OR REPLACE INTO database_versions"
-                " (name, source_url, version, downloaded_at, record_count)"
-                " VALUES (?, ?, ?, ?, ?)",
-                ("gnomad", "test://mock", "4.1", "2026-01-01T00:00:00Z", 1),
+                " (name, source_url, version, downloaded_at, record_count,"
+                "  local_version_tag)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "gnomad",
+                    "test://mock",
+                    "4.1",
+                    "2026-01-01T00:00:00Z",
+                    1,
+                    f"sv:{GNOMAD_SCHEMA_VERSION}",
+                ),
             )
             conn.commit()
 
@@ -591,16 +611,23 @@ class TestCaddMultiAllelic:
     def test_multiallelic_uses_user_allele_not_max(self) -> None:
         """At a multi-allelic site, CADD score must match the user's allele."""
         from allelix.reports._pipeline import _lookup_user_allele
-        from allelix.utils.allele import resolve_strand
 
         coords = [("1", 100, "A", "C"), ("1", 100, "A", "G")]
         scores = {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0}
 
-        result = _lookup_user_allele("C", coords, scores, resolve_strand)
+        result = _lookup_user_allele("C", coords, scores)
         assert result == pytest.approx(5.0)
 
-    def test_multiallelic_no_alt_uses_max(self) -> None:
-        """Without a known user allele, max-reduce is the correct fallback."""
+    def test_multiallelic_no_alt_skips_enrichment(self) -> None:
+        """GH #23 (suppress-half): annotations without an explicit alt
+        (raw GWAS rows; SNPedia drug-response rows in some shapes) used
+        to take a ``MAX(phred)`` fallback across all alts at the
+        position. At multi-allelic sites that stamps the highest-CADD
+        alt next to the annotation as if it described the user's
+        variant. Same wrong-allele hazard as the strand path fixed in
+        #18. Now: skip enrichment, leave ``cadd_phred=None``. The full
+        fix (carrying the user's alt onto every Annotation so GWAS rows
+        take the exact-alt path) is tracked for v2.1."""
         from allelix.models import Annotation
         from allelix.reports._pipeline import _enrich_cadd
 
@@ -608,15 +635,15 @@ class TestCaddMultiAllelic:
         scores = {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0}
 
         ann = Annotation(
-            source="clinvar",
+            source="gwas",
             rsid="rs999",
-            significance="clinvar_pathogenic",
-            category="clinical",
+            significance="gwas_association",
+            category="trait",
             magnitude=9.0,
             description="test",
-            attribution="ClinVar",
-            genotype_match="A/C",
-            alt="",
+            attribution="GWAS Catalog",
+            genotype_match="AC",
+            alt="",  # GWAS rows always have alt=""
         )
 
         class MockGnomad:
@@ -628,18 +655,39 @@ class TestCaddMultiAllelic:
                 return scores
 
         _enrich_cadd([ann], MockGnomad(), MockCadd())
-        assert ann.cadd_phred == pytest.approx(30.0)
+        # Was 30.0 (the MAX at this position). Now None — we don't know
+        # which alt the user carries, so we don't claim to.
+        assert ann.cadd_phred is None
 
-    def test_complement_fallback(self) -> None:
-        """Complement match works when no direct match exists."""
+    def test_no_direct_match_returns_none(self) -> None:
+        """GH #18: complement-fallback removed. An allele that doesn't
+        directly match any alt at this position returns None — the
+        previous behavior accepted ``complement(user_alt) == alt`` and
+        coincidentally stamped a wrong-allele CADD score at multi-allelic
+        sites."""
         from allelix.reports._pipeline import _lookup_user_allele
-        from allelix.utils.allele import resolve_strand
 
         coords = [("1", 200, "C", "A")]
         scores = {("1", 200, "C", "A"): 12.5}
 
-        result = _lookup_user_allele("T", coords, scores, resolve_strand)
-        assert result == pytest.approx(12.5)
+        # "T" does not match alt "A" directly; under the old code,
+        # complement("T") = "A" would have returned 12.5. Now: None.
+        result = _lookup_user_allele("T", coords, scores)
+        assert result is None
+
+    def test_audit_reproduction_skips_enrichment(self) -> None:
+        """GH #18 reproduction: a single-alt site (C → T) with the user
+        carrying "A". complement("A") = "T" coincidentally matches the
+        alt under the old code, stamping the C→T CADD score onto an
+        annotation describing the user's "A" carrier. The fix returns
+        None so the score is not stamped."""
+        from allelix.reports._pipeline import _lookup_user_allele
+
+        coords = [("1", 300, "C", "T")]
+        scores = {("1", 300, "C", "T"): 25.0}
+
+        result = _lookup_user_allele("A", coords, scores)
+        assert result is None
 
 
 class TestBatchedPipeline:

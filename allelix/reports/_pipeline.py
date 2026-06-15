@@ -159,6 +159,16 @@ class AnalysisResult:
         return out
 
 
+# GH #24: both _gwas_base_trait and _gwas_phecode_parent reach into the
+# formatted description string to recover structured fields. The two
+# previously used inconsistent delimiters (" (PheCode " vs "(PheCode "),
+# the spirit of "no regex on prose" violated with .split()/.find().
+# Until trait/p-value/PheCode are carried as structured fields on
+# Annotation (deferred to v2.1+, see ADR-0024 followup), at least keep
+# the delimiter consistent across both readers.
+_PHECODE_DELIM = " (PheCode "
+
+
 def _gwas_base_trait(description: str) -> str | None:
     """Extract trait text from a GWAS description, stripping MTAG suffix and PheCode label."""
     marker = "GWAS Catalog: "
@@ -168,16 +178,16 @@ def _gwas_base_trait(description: str) -> str | None:
     s = s.split(" (p=", 1)[0]
     if s.endswith(" (MTAG)"):
         s = s[: -len(" (MTAG)")]
-    s = s.split(" (PheCode ", 1)[0]
+    s = s.split(_PHECODE_DELIM, 1)[0]
     return s.strip().lower()
 
 
 def _gwas_phecode_parent(description: str) -> str | None:
     """Extract PheCode parent (numeric prefix before the dot), or None."""
-    idx = description.find("(PheCode ")
+    idx = description.find(_PHECODE_DELIM)
     if idx == -1:
         return None
-    rest = description[idx + len("(PheCode ") :]
+    rest = description[idx + len(_PHECODE_DELIM) :]
     end = rest.find(")")
     if end == -1:
         return None
@@ -254,20 +264,17 @@ def _lookup_user_allele(
     user_alt: str,
     coords: list[tuple[str, int, str, str]],
     scores: dict[tuple[str, int, str, str], float],
-    resolve_strand: Callable[[str, str, str], str | None],
 ) -> float | None:
     """Find the CADD score for a specific user allele at a multi-allelic site.
 
-    Prefers a direct allele match over a complement (minus-strand) match
-    to avoid false positives where the complement of the user's allele
-    coincidentally equals a different alt at the same position.
+    GH #18: only direct allele matches are accepted. The previous
+    minus-strand fallback (``resolve_strand`` → complement match) could
+    coincidentally hit a different alt at multi-allelic positions and
+    stamp a wrong-allele CADD score. Until strand handling is properly
+    plumbed (ADR-0010), enrichment is skipped rather than risked.
     """
     for chrom, pos, ref, alt in coords:
         if user_alt == alt:
-            return scores.get((chrom, pos, ref, alt))
-    for chrom, pos, ref, alt in coords:
-        resolved = resolve_strand(user_alt, ref, alt)
-        if resolved is not None and resolved == alt:
             return scores.get((chrom, pos, ref, alt))
     return None
 
@@ -276,41 +283,52 @@ def _enrich_cadd(
     annotations: list[Annotation],
     gnomad: GnomadAnnotator,
     cadd: CaddAnnotator,
+    resolved_coords: dict[str, tuple[str, int, str, str]] | None = None,
 ) -> None:
     """Stamp annotations with CADD PHRED scores via coordinate resolution.
 
     Resolves rsIDs to genomic coordinates through gnomAD, normalizes
     alleles to reference-forward orientation, and looks up CADD scores.
-    """
-    from allelix.utils.allele import resolve_strand
 
+    GH #23 suppress-half: annotations without an explicit ``alt`` (raw
+    GWAS rows) previously took a ``MAX(phred)`` fallback across every
+    alt at the position — at multi-allelic sites that stamped the
+    highest-CADD alt's score next to the annotation as if it described
+    the user's variant. The MAX fallback is removed.
+
+    ``resolved_coords`` (when supplied) carries the user's specific alt
+    for rsIDs that the pipeline resolved on the fly via ClinVar's
+    ``bulk_resolve_rsids`` (GH #8). That path is allele-specific —
+    safe to fire for alt-less Annotation rows — and gives back the
+    legitimate CADD enrichment that the MAX-fallback removal would
+    otherwise lose for these rows. Symmetric with the gnomAD / AM
+    position-fallback blocks in ``run_analysis``.
+    """
     rsids = {a.rsid for a in annotations}
     coord_map = gnomad.bulk_resolve_coordinates(rsids)
-    if not coord_map:
+    if not coord_map and not resolved_coords:
         return
 
     cadd_keys: set[tuple[str, int, str, str]] = set()
     for coords in coord_map.values():
         for chrom, pos, ref, alt in coords:
             cadd_keys.add((chrom, pos, ref, alt))
+    if resolved_coords:
+        cadd_keys.update(resolved_coords.values())
     scores = cadd.bulk_lookup(cadd_keys)
     if not scores:
         return
 
     for a in annotations:
-        coords = coord_map.get(a.rsid)
-        if not coords:
-            continue
         if a.alt:
-            score = _lookup_user_allele(a.alt, coords, scores, resolve_strand)
-            a.cadd_phred = score
-        else:
-            best: float | None = None
-            for chrom, pos, ref, alt in coords:
-                score = scores.get((chrom, pos, ref, alt))
-                if score is not None and (best is None or score > best):
-                    best = score
-            a.cadd_phred = best
+            coords = coord_map.get(a.rsid)
+            if coords:
+                a.cadd_phred = _lookup_user_allele(a.alt, coords, scores)
+        elif resolved_coords and a.rsid in resolved_coords:
+            # Position fallback: rsID was resolved on the fly via
+            # ClinVar; the resolved tuple carries the user's actual
+            # alt, so this is an allele-specific lookup, not a MAX.
+            a.cadd_phred = scores.get(resolved_coords[a.rsid])
 
 
 def run_analysis(
@@ -420,18 +438,31 @@ def run_analysis(
             _accept(v)
         _flush()
 
+    # GH #23: enrichment is allele-specific. Annotations that carry an
+    # explicit ``alt`` (ClinVar, ClinPGx, SNPedia, also GWAS rows whose
+    # rsID resolved via ClinVar position lookup → recorded in
+    # ``resolved_coords``) get an exact ``(rsid, alt)`` lookup. The old
+    # code ran a ``MAX() GROUP BY rsid`` fallback for the alt-less case
+    # (all original GWAS rows), which at multi-allelic sites stamps the
+    # highest-frequency / highest-pathogenicity / highest-CADD alt's
+    # value next to the user's annotation as if it described them. That
+    # is the same wrong-allele hazard #18 fixed in the strand path.
+    # Symmetric fix: skip enrichment rather than show a wrong-allele
+    # number. The full fix — carrying the user's alt onto every
+    # Annotation so GWAS rows can take the exact-alt path too — is
+    # architectural and tracked for v2.1 (Variant.ref / per-annotation
+    # allele tracking).
     if gnomad is not None and gnomad.is_ready():
         exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
-        max_rsids = {a.rsid for a in annotations if not a.alt}
         exact_freq = gnomad.bulk_lookup_by_alt(exact_keys)
-        max_freq = gnomad.bulk_lookup(max_rsids)
         for a in annotations:
             if a.alt:
                 a.allele_frequency = exact_freq.get((a.rsid, a.alt))
-            else:
-                a.allele_frequency = max_freq.get(a.rsid)
-        # Position fallback for rsIDs resolved on the fly whose gnomAD rsid
-        # index entry is missing/sparse. GH #8.
+        # Position fallback for rsIDs resolved on the fly via ClinVar
+        # bulk_resolve_rsids (GH #8). The resolved-coords map already
+        # carries the user's specific alt — this is an allele-specific
+        # lookup, NOT a MAX, so it's safe to fire for alt-less rows
+        # whose rsID was resolved this way.
         if resolved_coords:
             missing_keys = {
                 resolved_coords[a.rsid]
@@ -446,14 +477,13 @@ def run_analysis(
 
     if alphamissense is not None and alphamissense.is_ready():
         exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
-        max_rsids = {a.rsid for a in annotations if not a.alt}
         exact_am = alphamissense.bulk_lookup_by_alt(exact_keys)
-        max_am = alphamissense.bulk_lookup(max_rsids)
         for a in annotations:
-            hit = exact_am.get((a.rsid, a.alt)) if a.alt else max_am.get(a.rsid)
-            if hit is not None:
-                a.am_pathogenicity, a.am_class = hit
-        # Position fallback — see gnomAD block above. GH #8.
+            if a.alt:
+                hit = exact_am.get((a.rsid, a.alt))
+                if hit is not None:
+                    a.am_pathogenicity, a.am_class = hit
+        # Position fallback — see gnomAD block above. Safe (allele-specific).
         if resolved_coords:
             missing_keys = {
                 resolved_coords[a.rsid]
@@ -476,7 +506,7 @@ def run_analysis(
                 diag.effective_build,
             )
         else:
-            _enrich_cadd(annotations, gnomad, cadd)
+            _enrich_cadd(annotations, gnomad, cadd, resolved_coords=resolved_coords or None)
 
     annotators_used = [(a.name, a.version()) for a in annotators]
     if gnomad is not None and gnomad.is_ready():

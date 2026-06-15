@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RELEASE_URL="https://github.com/dial481/allelix/releases/download/v1.1.1/test_data.tar.gz"
+RELEASE_URL="https://github.com/allelix/allelix/releases/download/v2.0.0/test_data.tar.gz"
 GWAS_URL="https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/gwas-catalog-associations_ontology-annotated-full.zip"
 DEST="test_data"
 

@@ -18,6 +18,24 @@ from allelix.databases.pharmgkb_loader import (
     load_pharmgkb_tsv,
 )
 
+
+@pytest.fixture(autouse=True)
+def _bypass_loader_row_floors(monkeypatch):
+    """GH #19: production loaders enforce a row-count floor against truncated
+    downloads (``GWAS_MIN_ROWS``, ``PHARMGKB_MIN_ROWS``). Mock fixtures only
+    have a handful of rows, so every test that runs an annotator ``setup()``
+    or auto-reingest path against mock data would trip the floor. Patch both
+    constants to 0 across the test suite. Loader-level tests that need to
+    exercise the floor explicitly pass ``min_rows=`` themselves (see
+    ``tests/databases/test_*_loader.py::TestMinRowsFloor``).
+    """
+    from allelix.annotators import gwas as gwas_module
+    from allelix.annotators import pharmgkb as pharmgkb_module
+
+    monkeypatch.setattr(gwas_module, "GWAS_MIN_ROWS", 0)
+    monkeypatch.setattr(pharmgkb_module, "PHARMGKB_MIN_ROWS", 0)
+
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # ADR-0020: the structured per-allele function lookup the ClinPGx filter

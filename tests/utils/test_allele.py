@@ -56,26 +56,40 @@ class TestIsStrandAmbiguous:
 
 
 class TestResolveStrand:
+    """GH #18: complement-resolution is intentionally NOT performed.
+
+    At multi-allelic sites, the complement of the user's true forward
+    allele can coincidentally equal a different alt at the same
+    position, so a complement fallback can stamp a wrong-allele CADD
+    score. The function returns None for any allele that isn't directly
+    in ``{ref, alt}``; minus-strand handling is deferred (ADR-0010).
+    """
+
     def test_forward_match_ref(self):
         assert resolve_strand("A", "A", "G") == "A"
 
     def test_forward_match_alt(self):
         assert resolve_strand("G", "A", "G") == "G"
 
-    def test_minus_strand_complement(self):
-        assert resolve_strand("T", "A", "G") == "A"
+    def test_complement_no_longer_resolves(self):
+        # Was: resolve_strand("T", "A", "G") == "A" — minus-strand fallback.
+        # Now returns None; the caller skips enrichment.
+        assert resolve_strand("T", "A", "G") is None
+        assert resolve_strand("C", "A", "G") is None
 
-    def test_minus_strand_complement_alt(self):
-        assert resolve_strand("C", "A", "G") == "G"
+    def test_audit_reproduction_no_false_complement(self):
+        # GH #18 reproduction: user "A" at a C→T site.
+        # Old code returned "T" (complement) and the consumer stamped a
+        # CADD score for the C→T transition onto an annotation describing
+        # the user's "A" carrier. Now returns None and enrichment is
+        # skipped.
+        assert resolve_strand("A", "C", "T") is None
 
-    def test_palindromic_site_direct_match_returns_allele(self):
+    def test_palindromic_direct_match_returns_allele(self):
         assert resolve_strand("T", "A", "T") == "T"
         assert resolve_strand("A", "A", "T") == "A"
         assert resolve_strand("G", "C", "G") == "G"
         assert resolve_strand("C", "C", "G") == "C"
-
-    def test_palindromic_site_no_external_allele_match(self):
-        assert resolve_strand("G", "A", "T") is None
 
     def test_indel_passes_through(self):
         assert resolve_strand("AC", "A", "AC") == "AC"
@@ -85,18 +99,3 @@ class TestResolveStrand:
 
     def test_non_acgt_returns_none(self):
         assert resolve_strand("N", "A", "G") is None
-
-    def test_palindromic_complement_match_returns_none(self, monkeypatch):
-        """Palindromic guard rejects complement-resolved allele at A/T and C/G sites.
-
-        In production, palindromic sites are always caught by the direct-match
-        check (complement(ref)=alt for these pairs). This test exercises the
-        defense-in-depth guard on line 72 by injecting a synthetic complement
-        mapping that bypasses the direct-match path.
-        """
-        from allelix.utils import allele
-
-        patched = dict(allele._COMPLEMENT)
-        patched["X"] = "A"
-        monkeypatch.setattr(allele, "_COMPLEMENT", patched)
-        assert resolve_strand("X", "A", "T") is None

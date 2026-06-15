@@ -32,6 +32,7 @@ Specifics:
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
@@ -48,6 +49,12 @@ logger = logging.getLogger(__name__)
 SIGNATURE = "Living DNA"
 SNIFF_LINE_LIMIT = 50
 EXPECTED_COLUMNS = 4
+
+# GH #16: only inspect comment lines that look like a build marker.
+# Without this filter every comment line is fed to
+# ``normalize_build_label`` and a stray date / version digit can override
+# the real build line.
+_BUILD_MARKER_RE = re.compile(r"\b(build|reference|genome)\b", re.IGNORECASE)
 
 
 class LivingDNAParser(GenotypeParser):
@@ -104,16 +111,30 @@ class LivingDNAParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract build from header comments. Living DNA has no sample ID field."""
+        """Extract build from header comments. Living DNA has no sample ID field.
+
+        GH #16: previously every comment line was passed into
+        ``normalize_build_label`` and the *last* match won. A download-
+        date comment like ``# downloaded 2038-01-01`` would silently
+        retag the file as GRCh38. Only lines that look like an explicit
+        build marker (containing ``build``, ``reference``, or ``genome``)
+        are inspected, and the first match wins — matching the format
+        spec which puts the build line near the top:
+
+            # Human Genome Reference Build 37 (GRCh37.p13).
+        """
         build = DEFAULT_BUILD
         with file_path.open("r", encoding="utf-8") as fh:
             for raw in fh:
                 line = raw.rstrip("\r\n")
                 if not line.startswith("#"):
                     break
+                if not _BUILD_MARKER_RE.search(line):
+                    continue
                 normalized = normalize_build_label(line)
                 if normalized:
                     build = normalized
+                    break
         return GenotypeMetadata(
             format=self.name,
             sample_id="",

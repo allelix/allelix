@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from allelix.annotators.gnomad import _BULK_BATCH_SIZE, GnomadAnnotator
+from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
 from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
 from allelix.databases.schema import GNOMAD_SCHEMA
 from allelix.models import Annotation, Variant
@@ -42,9 +43,17 @@ def gnomad_db(tmp_path: Path) -> Path:
         )
         conn.execute(
             "INSERT INTO database_versions"
-            " (name, source_url, version, downloaded_at, record_count)"
-            " VALUES (?, ?, ?, ?, ?)",
-            ("gnomad", "test://mock", "4.1", "2026-01-01T00:00:00Z", 5),
+            " (name, source_url, version, downloaded_at, record_count,"
+            "  local_version_tag)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "gnomad",
+                "test://mock",
+                "4.1",
+                "2026-01-01T00:00:00Z",
+                5,
+                f"sv:{GNOMAD_SCHEMA_VERSION}",
+            ),
         )
         conn.commit()
     return tmp_path
@@ -61,9 +70,17 @@ def gnomad_full_db(tmp_path: Path) -> Path:
                 conn.execute(stmt)
         conn.execute(
             "INSERT INTO database_versions"
-            " (name, source_url, version, downloaded_at, record_count)"
-            " VALUES (?, ?, ?, ?, ?)",
-            ("gnomad", "test://mock-full", "4.1", "2026-01-01T00:00:00Z", 16_000_000),
+            " (name, source_url, version, downloaded_at, record_count,"
+            "  local_version_tag)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "gnomad",
+                "test://mock-full",
+                "4.1",
+                "2026-01-01T00:00:00Z",
+                16_000_000,
+                f"sv:{GNOMAD_SCHEMA_VERSION}",
+            ),
         )
         conn.commit()
     return tmp_path
@@ -73,6 +90,49 @@ class TestSetupAndStatus:
     """Annotator lifecycle: ready, version, record_count, close."""
 
     def test_unconfigured_is_not_ready(self, tmp_path: Path) -> None:
+        annotator = GnomadAnnotator(tmp_path)
+        assert not annotator.is_ready()
+
+    def test_tagless_cache_is_not_ready(self, tmp_path: Path) -> None:
+        """GH #22: a cache with no ``local_version_tag`` must not be
+        accepted as ready. Previously the ``or not tag`` escape passed
+        tagless caches, which defeated ``GNOMAD_SCHEMA_VERSION``
+        invalidation — any legacy cache would silently pass as the new
+        schema version after a bump."""
+        db_path = tmp_path / GNOMAD_DB_FILENAME
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            for stmt in GNOMAD_SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO database_versions"
+                " (name, source_url, version, downloaded_at, record_count,"
+                "  local_version_tag)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                # Explicit NULL tag — pre-schema-version cache shape.
+                ("gnomad", "test://legacy", "4.1", "2026-01-01T00:00:00Z", 5, None),
+            )
+            conn.commit()
+        annotator = GnomadAnnotator(tmp_path)
+        assert not annotator.is_ready()
+
+    def test_stale_schema_tag_is_not_ready(self, tmp_path: Path) -> None:
+        """GH #22: a cache stamped with an older schema version is rejected."""
+        db_path = tmp_path / GNOMAD_DB_FILENAME
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            for stmt in GNOMAD_SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.execute(
+                "INSERT INTO database_versions"
+                " (name, source_url, version, downloaded_at, record_count,"
+                "  local_version_tag)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("gnomad", "test://stale", "4.1", "2026-01-01T00:00:00Z", 5, "sv:0"),
+            )
+            conn.commit()
         annotator = GnomadAnnotator(tmp_path)
         assert not annotator.is_ready()
 

@@ -334,6 +334,13 @@ def _safe_float(value: str) -> float | None:
         return None
 
 
+# Truncation sanity floor for production loads. Current ClinPGx clinical
+# annotations ship ~13K rows; ~5K is a generous floor that catches gross
+# truncation while staying permissive against upstream-data drift. Set
+# to 0 from tests so synthetic fixtures of any size load cleanly. See GH #19.
+PHARMGKB_MIN_ROWS = 5_000
+
+
 def load_pharmgkb_tsv(
     zip_or_dir: Path,
     db_path: Path,
@@ -341,6 +348,7 @@ def load_pharmgkb_tsv(
     version: str = "",
     remote_signal: str | None = None,
     allele_function_lookup: dict[tuple[str, str], str] | None = None,
+    min_rows: int = 0,
 ) -> int:
     """Load a ClinPGx clinical-annotations dump into a fresh SQLite cache atomically.
 
@@ -430,6 +438,15 @@ def load_pharmgkb_tsv(
                 ),
             )
             conn.commit()
+        if count < min_rows:
+            msg = (
+                f"ClinPGx load aborted: only {count:,} rows ingested "
+                f"(floor {min_rows:,}). The download was likely truncated "
+                f"in flight (chunked transfer with no Content-Length, or "
+                f"connection drop mid-stream). Retry with "
+                f"`allelix db update --force`."
+            )
+            raise OSError(msg)
         os.replace(tmp_path, db_path)
         return count
     except Exception:

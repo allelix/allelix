@@ -457,3 +457,47 @@ class TestLoadPharmgkbTsv:
         info_after = get_database_info(db, "pharmgkb")
         assert info_after == info_before
         assert not (tmp_path / "pharmgkb.sqlite.tmp").exists()
+
+
+class TestMinRowsFloor:
+    """GH #19: post-load row-count sanity gate catches mid-stream truncation.
+
+    Production callers pass ``min_rows=PHARMGKB_MIN_ROWS``. A truncated
+    download produces a parseable-but-short cache that previously committed
+    silently. The floor check raises before ``os.replace``.
+    """
+
+    def test_below_floor_raises_and_keeps_cache_clean(self, mock_pharmgkb_dir, tmp_path) -> None:
+        from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv
+
+        db = tmp_path / "pharmgkb.sqlite"
+        with pytest.raises(OSError, match="rows ingested"):
+            load_pharmgkb_tsv(
+                mock_pharmgkb_dir,
+                db,
+                source_url="test://truncated",
+                min_rows=999_999,
+            )
+        assert not db.exists()
+        assert not (tmp_path / "pharmgkb.sqlite.tmp").exists()
+
+    def test_default_min_rows_zero_loads_small_fixtures(self, mock_pharmgkb_dir, tmp_path) -> None:
+        from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv
+
+        db = tmp_path / "pharmgkb.sqlite"
+        count = load_pharmgkb_tsv(mock_pharmgkb_dir, db, source_url="test://small")
+        assert count > 0
+        assert db.exists()
+
+    def test_at_or_above_floor_succeeds(self, mock_pharmgkb_dir, tmp_path) -> None:
+        from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv
+
+        db = tmp_path / "pharmgkb.sqlite"
+        count = load_pharmgkb_tsv(
+            mock_pharmgkb_dir,
+            db,
+            source_url="test://at-floor",
+            min_rows=1,
+        )
+        assert count >= 1
+        assert db.exists()

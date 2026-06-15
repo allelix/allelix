@@ -121,6 +121,35 @@ class TestMagnitudeScoring:
     def test_protective_moderate_adds_half(self) -> None:
         assert _magnitude(1e-10, 0.4) == 6.5
 
+    def test_exact_genome_wide_significance_boundary(self) -> None:
+        """GH #17: p == 5e-8 is the canonical genome-wide significance
+        threshold. With strict `<` previously, the exact value fell into
+        the suggestive bucket (4.0) — a full magnitude below 4.9e-8.
+        ``<=`` puts 5e-8 inside the significant bucket (6.0)."""
+        assert _magnitude(5e-8, None) == 6.0
+        # Just-above-threshold still suggestive (4.0):
+        assert _magnitude(5.1e-8, None) == 4.0
+        # Just-below-threshold still significant (6.0):
+        assert _magnitude(4.9e-8, None) == 6.0
+
+    def test_exact_5e_minus_4_boundary(self) -> None:
+        """Exact 5e-4 lands in the nominal bucket (3.0), not weak."""
+        assert _magnitude(5e-4, None) == 3.0
+        assert _magnitude(5.1e-4, None) == 2.0
+
+    def test_exact_5e_minus_6_boundary(self) -> None:
+        """Exact 5e-6 lands in the suggestive bucket (4.0), not nominal."""
+        assert _magnitude(5e-6, None) == 4.0
+        assert _magnitude(5.1e-6, None) == 3.0
+
+    def test_exact_5e_minus_20_boundary(self) -> None:
+        assert _magnitude(5e-20, None) == 7.0
+        assert _magnitude(5.1e-20, None) == 6.0
+
+    def test_exact_5e_minus_100_boundary(self) -> None:
+        assert _magnitude(5e-100, None) == 8.0
+        assert _magnitude(5.1e-100, None) == 7.0
+
 
 class TestSetupAndStatus:
     """Annotator lifecycle: ready, version, close."""

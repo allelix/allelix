@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 ALPHAMISSENSE_DB_FILENAME = "alphamissense.sqlite"
 
 ALPHAMISSENSE_CACHE_URL = (
-    "https://huggingface.co/datasets/dial481/allelix-alphamissense"
+    "https://huggingface.co/datasets/allelix/allelix-alphamissense"
     "/resolve/13a15e199536512b5e2d208d79c4f93c0a73f71f/alphamissense.sqlite.gz"
 )
 

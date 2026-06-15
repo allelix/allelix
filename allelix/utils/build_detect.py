@@ -20,6 +20,7 @@ Position data is normative; headers are not.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -177,6 +178,24 @@ def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:
     return BuildDetectionResult(build=winner, matched=votes[winner], inspected=inspected)
 
 
+_HG_TO_BUILD = {"18": BUILD_GRCH36, "19": BUILD_GRCH37, "38": BUILD_GRCH38}
+_NUM_TO_BUILD = {"36": BUILD_GRCH36, "37": BUILD_GRCH37, "38": BUILD_GRCH38}
+
+# GH #16: build-label patterns are anchored on word boundaries so a date
+# (`2038-01-01`) or version string (`v37`) doesn't false-match by bare
+# substring containment. Each pattern captures one of the canonical
+# numeric tokens; a label that surfaces *multiple distinct builds* (e.g.
+# `hg19/hg38`, `38 (37 liftover)`) is ambiguous and returns None — the
+# safer answer than picking one substring-wins.
+_BUILD_TOKEN_PATTERNS: tuple[tuple[re.Pattern[str], dict[str, str]], ...] = (
+    (re.compile(r"\bgrch(36|37|38)\b", re.IGNORECASE), _NUM_TO_BUILD),
+    (re.compile(r"\bhg(18|19|38)\b", re.IGNORECASE), _HG_TO_BUILD),
+    (re.compile(r"\bncbi\s*0*(36|37|38)\b", re.IGNORECASE), _NUM_TO_BUILD),
+    (re.compile(r"\bbuild\s*0*(36|37|38)\b", re.IGNORECASE), _NUM_TO_BUILD),
+    (re.compile(r"\b(36|37|38)\b"), _NUM_TO_BUILD),
+)
+
+
 def normalize_build_label(label: str | None) -> str | None:
     """Map a human-written build label to canonical `GRCh36`, `GRCh37`, or `GRCh38`.
 
@@ -188,16 +207,19 @@ def normalize_build_label(label: str | None) -> str | None:
     Used to compare a file's header-claimed build against the detected
     build. The label space is informal and provider-specific; this
     function only recognizes well-known aliases.
+
+    Tokens are matched on word boundaries (so `2038-01-01` does not
+    register as GRCh38, and `v37` does not register as GRCh37). If a
+    label mentions more than one build (`hg19/hg38`, `38 (37 liftover)`),
+    that is treated as ambiguous and returns None — picking either one
+    risks shipping a mislabeled-build comparison further down the chain.
     """
     if not label:
         return None
-    s = label.strip().lower()
-    if not s:
-        return None
-    if "36" in s or "hg18" in s or "ncbi36" in s or "ncbi 36" in s:
-        return BUILD_GRCH36
-    if "37" in s or "hg19" in s or "ncbi37" in s or "ncbi 37" in s:
-        return BUILD_GRCH37
-    if "38" in s or "hg38" in s or "ncbi38" in s or "ncbi 38" in s:
-        return BUILD_GRCH38
+    found: set[str] = set()
+    for regex, mapping in _BUILD_TOKEN_PATTERNS:
+        for m in regex.finditer(label):
+            found.add(mapping[m.group(1)])
+    if len(found) == 1:
+        return next(iter(found))
     return None

@@ -363,6 +363,30 @@ def _emit_build_diagnostics(result: object) -> None:
             f"coordinates differ between builds and silently using the wrong "
             f"one will miss every hit.[/yellow]"
         )
+    elif (
+        not diag.override
+        and diag.detected_build is None
+        and diag.header_build is not None
+        and diag.inspected_count > 0
+    ):
+        # Position-detection inspected known-rsID rows but couldn't pick a
+        # build — either votes tied across builds or no row matched any
+        # build's reference position. Without this warning, the pipeline
+        # silently falls through to header_build, and a GRCh36 file with a
+        # GRCh37-mislabeled header gets the GRCh37 ClinVar cache (the
+        # silent-coords trap #15). The dim "header (no position
+        # confirmation)" status line shows the same facts but reads as
+        # routine — yellow is what the situation deserves.
+        console.print(
+            f"[yellow]Build detection inconclusive: "
+            f"{diag.inspected_count} known-rsID position checks ran but "
+            f"did not converge on a build. Using the file's header-claimed "
+            f"build ({diag.header_build}), which has not been confirmed "
+            f"against your position data. If the file is actually a "
+            f"different build, pass --build grch37 or --build grch38 to "
+            f"force — wrong coordinates will silently mis-annotate every "
+            f"variant.[/yellow]"
+        )
     if diag.effective_build == "GRCh36":
         console.print(
             "[yellow]Warning: GRCh36 (hg18) detected. rsID-based annotations "

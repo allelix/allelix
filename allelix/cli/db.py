@@ -18,27 +18,10 @@ from allelix.databases import resolve_data_dir
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from allelix.annotators.base import Annotator
-
 
 @main.group()
 def db() -> None:
     """Manage local reference database cache."""
-
-
-def _stamp_remote_signal(annotator: Annotator, signal: str) -> None:
-    """Write a remote signal to an existing cache without re-downloading."""
-    import contextlib
-    import sqlite3
-
-    from allelix.databases.manager import stamp_remote_signal
-
-    db_path = getattr(annotator, "_db_path", None)
-    if db_path is None:
-        return
-    with contextlib.closing(sqlite3.connect(db_path)) as conn:
-        stamp_remote_signal(conn, annotator.name, signal)
-        conn.commit()
 
 
 def _confirm_cadd_license(*, license_held: bool = False) -> bool:
@@ -207,14 +190,20 @@ def db_update(
                 continue
 
             if cached is None:
-                _stamp_remote_signal(annotator, remote)
+                # GH #20: a cache with no stored freshness signal almost
+                # always predates the signal mechanism — i.e., it is old.
+                # The previous behavior was to stamp the live remote signal
+                # onto the cache and call it current, which permanently
+                # marked stale data as fresh (only `--force` would escape).
+                # Treat tagless caches as needing a refresh.
                 console.print(
-                    f"  [dim]{annotator.name}: stamped remote signal "
-                    f"(version {annotator.version() or '(unknown)'})[/dim]"
+                    f"  [bold]{annotator.name}[/bold]: cache predates the "
+                    "freshness signal; re-downloading…"
                 )
-                continue
-
-            console.print(f"  [bold]{annotator.name}[/bold]: remote signal changed; refreshing…")
+            else:
+                console.print(
+                    f"  [bold]{annotator.name}[/bold]: remote signal changed; refreshing…"
+                )
             if _helpers._run_setup(annotator):
                 console.print(
                     f"  [green]✓ {annotator.name} refreshed[/green] "

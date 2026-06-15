@@ -1,6 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Terminal report rendering for `allelix analyze`."""
+"""Terminal report rendering for `allelix analyze`.
+
+GH #9: the terminal output is a quick-eyeball view (custom panels,
+sanity checks, extracts). Deep-dive enrichment data (allele frequency,
+AlphaMissense, CADD, ClinVar review status, derived zygosity) belongs
+in the HTML/JSON report — not in a 12-column-wide terminal table that
+Rich squeezes to hairline-zero-width on typical 100-120 col terminals.
+
+The bare-minimum column set kept here is:
+
+    rsID | Gene? | Source | Significance | Mag | GT | Condition?
+
+Gene and Condition are conditional on at least one filtered row having
+a value. Source uses a short attribution (``GWAS Catalog`` → ``GWAS``)
+and Significance drops the redundant ``source_`` prefix that the
+Source column already conveys.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +67,10 @@ def render_terminal_diff(
     diff: DiffResult,
     console: Console,
 ) -> int:
-    """Render a diff summary and tables for new/changed/removed annotations."""
+    """Render a diff summary and tables for new/changed/removed annotations.
+
+    Uses the same bare-min column set as the main annotation table.
+    """
     from allelix.reports.diff import summarize_diff
 
     summary = summarize_diff(diff)
@@ -63,87 +82,126 @@ def render_terminal_diff(
     total = 0
 
     if diff.new:
+        has_gene = any(a.gene for a in diff.new)
+        has_condition = any(a.condition for a in diff.new)
         table = Table(title=f"New Annotations ({len(diff.new)})")
-        table.add_column("rsID", style="cyan", no_wrap=True)
-        table.add_column("Gene", style="magenta", no_wrap=True)
+        table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+        if has_gene:
+            table.add_column("Gene", style="magenta", no_wrap=True)
         table.add_column("Source", style="blue", no_wrap=True)
         table.add_column("Significance", style="yellow")
-        table.add_column("Review Status", style="dim")
-        table.add_column("Magnitude", justify="right")
-        table.add_column("Genotype", no_wrap=True)
-        table.add_column("Condition", overflow="fold")
+        table.add_column("Mag", justify="right", min_width=4)
+        table.add_column("GT", no_wrap=True)
+        if has_condition:
+            table.add_column("Condition", overflow="fold")
         for a in diff.new:
-            table.add_row(
-                a.rsid,
-                a.gene or "—",
-                a.attribution,
-                a.significance,
-                a.review_status or "—",
-                f"{a.magnitude:.1f}",
-                a.genotype_match,
-                a.condition or "—",
+            row = [a.rsid]
+            if has_gene:
+                row.append(a.gene or "—")
+            row.extend(
+                [
+                    _compact_source(a.attribution),
+                    _compact_significance(a.significance, a.source),
+                    f"{a.magnitude:.1f}",
+                    a.genotype_match,
+                ]
             )
+            if has_condition:
+                row.append(a.condition or "—")
+            table.add_row(*row)
         console.print(table)
         total += len(diff.new)
 
     if diff.changed:
+        has_gene = any(c.current.gene for c in diff.changed)
+        has_condition = any(c.current.condition for c in diff.changed)
         table = Table(title=f"Changed Annotations ({len(diff.changed)})")
-        table.add_column("rsID", style="cyan", no_wrap=True)
-        table.add_column("Gene", style="magenta", no_wrap=True)
+        table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+        if has_gene:
+            table.add_column("Gene", style="magenta", no_wrap=True)
         table.add_column("Source", style="blue", no_wrap=True)
         table.add_column("Old Sig", style="dim")
         table.add_column("New Sig", style="yellow")
-        table.add_column("Review Status", style="dim")
-        table.add_column("Old Mag", justify="right", style="dim")
-        table.add_column("New Mag", justify="right")
-        table.add_column("Condition", overflow="fold")
+        table.add_column("Old Mag", justify="right", style="dim", min_width=4)
+        table.add_column("New Mag", justify="right", min_width=4)
+        if has_condition:
+            table.add_column("Condition", overflow="fold")
         for c in diff.changed:
-            table.add_row(
-                c.current.rsid,
-                c.current.gene or "—",
-                c.current.attribution,
-                c.previous_significance,
-                c.current.significance,
-                c.current.review_status or "—",
-                f"{c.previous_magnitude:.1f}",
-                f"{c.current.magnitude:.1f}",
-                c.current.condition or "—",
+            prev_mag_str = "—" if c.previous_magnitude is None else f"{c.previous_magnitude:.1f}"
+            row = [c.current.rsid]
+            if has_gene:
+                row.append(c.current.gene or "—")
+            row.extend(
+                [
+                    _compact_source(c.current.attribution),
+                    _compact_significance(c.previous_significance, c.current.source),
+                    _compact_significance(c.current.significance, c.current.source),
+                    prev_mag_str,
+                    f"{c.current.magnitude:.1f}",
+                ]
             )
+            if has_condition:
+                row.append(c.current.condition or "—")
+            table.add_row(*row)
         console.print(table)
         total += len(diff.changed)
 
     if diff.removed:
+        has_gene = any(d.get("gene") for d in diff.removed)
+        has_condition = any(d.get("condition") for d in diff.removed)
         table = Table(title=f"Removed Annotations ({len(diff.removed)})")
-        table.add_column("rsID", style="dim cyan", no_wrap=True)
-        table.add_column("Gene", style="dim magenta", no_wrap=True)
+        table.add_column("rsID", style="dim cyan", no_wrap=True, min_width=11)
+        if has_gene:
+            table.add_column("Gene", style="dim magenta", no_wrap=True)
         table.add_column("Source", style="dim blue", no_wrap=True)
         table.add_column("Significance", style="dim")
-        table.add_column("Review Status", style="dim")
-        table.add_column("Magnitude", justify="right", style="dim")
-        table.add_column("Condition", overflow="fold", style="dim")
+        table.add_column("Mag", justify="right", style="dim", min_width=4)
+        if has_condition:
+            table.add_column("Condition", overflow="fold", style="dim")
         for d in diff.removed:
-            table.add_row(
-                d.get("rsid", ""),
-                d.get("gene", "") or "—",
-                d.get("attribution", ""),
-                d.get("significance", ""),
-                d.get("review_status", "") or "—",
-                f"{d.get('magnitude', 0.0):.1f}",
-                d.get("condition", "") or "—",
+            source = d.get("source", "")
+            row = [d.get("rsid", "")]
+            if has_gene:
+                row.append(d.get("gene", "") or "—")
+            row.extend(
+                [
+                    _compact_source(d.get("attribution", "")),
+                    _compact_significance(d.get("significance", ""), source),
+                    f"{d.get('magnitude', 0.0):.1f}",
+                ]
             )
+            if has_condition:
+                row.append(d.get("condition", "") or "—")
+            table.add_row(*row)
         console.print(table)
         total += len(diff.removed)
 
     return total
 
 
-def _format_freq(af: float | None) -> str:
-    if af is None:
-        return "—"
-    pct = af * 100
-    if pct < 0.01:
-        return "<0.01%"
-    return f"{pct:.2f}%"
+def _compact_significance(significance: str, source: str) -> str:
+    """Strip the redundant ``source_`` prefix from significance.
+
+    The Source column already shows the database, so
+    ``clinvar_pathogenic`` shown next to ``ClinVar`` is wasteful — show
+    just ``pathogenic``. Falls back to the raw value if the prefix
+    doesn't match.
+    """
+    prefix = f"{source}_"
+    if source and significance.startswith(prefix):
+        return significance[len(prefix) :]
+    return significance
+
+
+def _compact_source(attribution: str) -> str:
+    """Shorten multi-word source names that reliably get truncated.
+
+    ``GWAS Catalog`` renders as ``GWAS Ca…`` in narrow terminals; show
+    ``GWAS`` instead. Other attributions pass through unchanged.
+    """
+    if attribution == "GWAS Catalog":
+        return "GWAS"
+    return attribution
 
 
 def _print_table(filtered: list[Annotation], console: Console) -> None:
@@ -151,55 +209,33 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
         console.print("[yellow]No annotations matched the current filters.[/yellow]")
         return
 
-    has_freq = any(a.allele_frequency is not None for a in filtered)
-    has_am = any(a.am_pathogenicity is not None for a in filtered)
-    has_am_caveat = any(
-        a.am_pathogenicity is not None and a.source == "pharmgkb" for a in filtered
-    )
-    has_cadd = any(a.cadd_phred is not None for a in filtered)
+    has_gene = any(a.gene for a in filtered)
+    has_condition = any(a.condition for a in filtered)
 
     table = Table(title=f"Annotations ({len(filtered)})")
-    table.add_column("rsID", style="cyan", no_wrap=True)
-    table.add_column("Gene", style="magenta", no_wrap=True)
+    table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+    if has_gene:
+        table.add_column("Gene", style="magenta", no_wrap=True)
     table.add_column("Source", style="blue", no_wrap=True)
     table.add_column("Significance", style="yellow")
-    table.add_column("Review Status", style="dim")
-    table.add_column("Magnitude", justify="right")
-    table.add_column("Genotype", no_wrap=True)
-    table.add_column("Zygosity", no_wrap=True)
-    if has_freq:
-        table.add_column("Freq", justify="right", no_wrap=True)
-    if has_am:
-        table.add_column("AM", justify="right", no_wrap=True)
-    if has_cadd:
-        table.add_column("CADD", justify="right", no_wrap=True)
-    table.add_column("Condition", overflow="fold")
+    table.add_column("Mag", justify="right", min_width=4)
+    table.add_column("GT", no_wrap=True)
+    if has_condition:
+        table.add_column("Condition", overflow="fold")
 
     for a in filtered:
-        row = [
-            a.rsid,
-            a.gene or "—",
-            a.attribution,
-            a.significance,
-            a.review_status or "—",
-            f"{a.magnitude:.1f}",
-            a.genotype_match,
-            a.zygosity,
-        ]
-        if has_freq:
-            row.append(_format_freq(a.allele_frequency))
-        if has_am:
-            if a.am_pathogenicity is not None:
-                am_str = f"{a.am_pathogenicity:.3f}"
-                if a.source == "pharmgkb":
-                    am_str = f"[dim]{am_str}*[/dim]"
-                row.append(am_str)
-            else:
-                row.append("—")
-        if has_cadd:
-            row.append(f"{a.cadd_phred:.1f}" if a.cadd_phred is not None else "—")
-        row.append(a.condition or "—")
+        row = [a.rsid]
+        if has_gene:
+            row.append(a.gene or "—")
+        row.extend(
+            [
+                _compact_source(a.attribution),
+                _compact_significance(a.significance, a.source),
+                f"{a.magnitude:.1f}",
+                a.genotype_match,
+            ]
+        )
+        if has_condition:
+            row.append(a.condition or "—")
         table.add_row(*row)
     console.print(table)
-    if has_am_caveat:
-        console.print("[dim]* AM score on drug-response row — protein structure impact only[/dim]")

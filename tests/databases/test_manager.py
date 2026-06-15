@@ -131,7 +131,15 @@ class TestIterClinvarRecords:
         assert [r["rsid"] for r in records] == ["rs42"]
 
     def test_multi_allelic_split(self, tmp_path: Path):
-        """C-2: One multi-allelic ALT row yields one record per ALT, paired by index."""
+        """One multi-allelic ALT row yields one record per ALT.
+
+        GH #42: ``CLNSIG`` and ``ALLELEID`` are still index-paired with
+        ALTs (that's the documented VCF convention for per-allele
+        metadata). ``CLNDN`` is NOT — its ``|``-separated entries are the
+        per-SCV union of conditions on the variant, with no positional
+        mapping to CLNSIG. The condition string is now joined once per
+        record rather than picked by ALT index.
+        """
         f = tmp_path / "multi.vcf"
         f.write_text(
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
@@ -143,12 +151,66 @@ class TestIterClinvarRecords:
         assert len(records) == 2
         assert records[0]["alt"] == "A"
         assert records[0]["clinical_significance"] == "Pathogenic"
-        assert records[0]["condition"] == "Cancer"
         assert records[0]["allele_id"] == 900
         assert records[1]["alt"] == "T"
         assert records[1]["clinical_significance"] == "Benign"
-        assert records[1]["condition"] == "Healthy"
         assert records[1]["allele_id"] == 901
+        # Both records carry the full joined condition list:
+        assert records[0]["condition"] == "Cancer; Healthy"
+        assert records[1]["condition"] == "Cancer; Healthy"
+
+    def test_multi_classification_joins_clndns(self, tmp_path: Path):
+        """GH #42: a single-ALT, multi-SCV variant (CLNSIG has one entry
+        because the variant-level aggregate is one classification, but
+        CLNDN has multiple because submitters annotated for different
+        conditions). Real-world example: rs1800896 publishes one
+        Pathogenic classification and lists both Leprosy and Hepatitis-C
+        as associated conditions.
+        """
+        f = tmp_path / "multi_sig.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "1\t100\t1\tT\tC\t.\t.\tRS=1800896;CLNSIG=Pathogenic;"
+            "CLNDN=Leprosy,_susceptibility_to,_1|Hepatitis_C_virus,_susceptibility_to;"
+            "ALLELEID=900;GENEINFO=IL10:3586\n",
+            encoding="utf-8",
+        )
+        records = list(iter_clinvar_records(f))
+        assert len(records) == 1
+        assert records[0]["clinical_significance"] == "Pathogenic"
+        # Both CLNDN entries joined — no Frankenstein pairing of one SCV's
+        # classification with the other SCV's condition:
+        assert (
+            records[0]["condition"]
+            == "Leprosy, susceptibility to, 1; Hepatitis C virus, susceptibility to"
+        )
+
+    def test_multi_sig_multi_cond_no_frankenstein(self, tmp_path: Path):
+        """GH #42 reproduction shape: real rs1063192 has
+        CLNSIG=Likely_pathogenic|protective and
+        CLNDN=Three_Vessel_Coronary_Disease|Malignant_tumor_of_breast,
+        with SCVs that don't index-align (Likely_pathogenic is for
+        Breast cancer; protective is for Three Vessel CD). The old
+        index-pick stored (Likely_pathogenic, Three_Vessel_Coronary_Disease)
+        — a Frankenstein pairing. The fix stores the primary classification
+        and the full condition list."""
+        f = tmp_path / "frankenstein.vcf"
+        f.write_text(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "9\t22003368\t1\tG\tA\t.\t.\tRS=1063192;"
+            "CLNSIG=Likely_pathogenic|protective;"
+            "CLNDN=Three_Vessel_Coronary_Disease|Malignant_tumor_of_breast;"
+            "ALLELEID=800881;GENEINFO=CDKN2B:1030\n",
+            encoding="utf-8",
+        )
+        records = list(iter_clinvar_records(f))
+        assert len(records) == 1
+        # Primary classification preserved:
+        assert records[0]["clinical_significance"] == "Likely_pathogenic"
+        # Condition is now the full list (no individual pairing claim):
+        assert (
+            records[0]["condition"] == "Three Vessel Coronary Disease; Malignant tumor of breast"
+        )
 
     def test_multi_allelic_pads_when_clnsig_short(self, tmp_path: Path):
         """If CLNSIG has fewer tokens than ALTs, extras inherit the last value."""

@@ -16,6 +16,7 @@ from allelix.databases.gwas_loader import (
     _REQUIRED_GWAS_COLUMNS,
     GWAS_CATALOG_URL,
     GWAS_DB_FILENAME,
+    GWAS_MIN_ROWS,
     load_gwas_tsv,
     schema_is_current,
 )
@@ -57,18 +58,25 @@ _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
 
 def _magnitude(p_value: float | None, or_beta: float | None) -> float:
-    """Derive magnitude from p-value and optional effect size."""
+    """Derive magnitude from p-value and optional effect size.
+
+    GH #17: boundary comparisons are inclusive (``<=``) so the canonical
+    genome-wide-significance threshold ``p = 5e-8`` lands inside the
+    significant bucket rather than the suggestive bucket below it.
+    Strict ``<`` made the exact threshold value fall a full magnitude
+    below a barely-significant hit.
+    """
     if p_value is None:
         base = 2.0
-    elif p_value < 5e-100:
+    elif p_value <= 5e-100:
         base = 8.0
-    elif p_value < 5e-20:
+    elif p_value <= 5e-20:
         base = 7.0
-    elif p_value < 5e-8:
+    elif p_value <= 5e-8:
         base = 6.0
-    elif p_value < 5e-6:
+    elif p_value <= 5e-6:
         base = 4.0
-    elif p_value < 5e-4:
+    elif p_value <= 5e-4:
         base = 3.0
     else:
         base = 2.0
@@ -143,7 +151,13 @@ class GWASCatalogAnnotator(Annotator):
                 extracted = self.data_dir / tsv_names[0]
                 if extracted != tsv_path:
                     extracted.rename(tsv_path)
-            load_gwas_tsv(tsv_path, self._db_path, source_url=url, remote_signal=signal)
+            load_gwas_tsv(
+                tsv_path,
+                self._db_path,
+                source_url=url,
+                remote_signal=signal,
+                min_rows=GWAS_MIN_ROWS,
+            )
         finally:
             try:
                 zip_path.unlink()
@@ -183,6 +197,7 @@ class GWASCatalogAnnotator(Annotator):
                     self._db_path,
                     source_url=GWAS_CATALOG_URL,
                     remote_signal=self.cached_remote_signal(),
+                    min_rows=GWAS_MIN_ROWS,
                 )
             except Exception:
                 logger.warning("Auto-reingest from cached TSV failed", exc_info=True)

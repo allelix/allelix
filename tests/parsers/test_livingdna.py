@@ -253,6 +253,38 @@ class TestMetadata:
         meta = parser.get_metadata(f)
         assert meta["build"] == "GRCh37"
 
+    def test_date_comment_does_not_override_build(
+        self, parser: LivingDNAParser, tmp_path: Path
+    ) -> None:
+        """GH #16: a `2038-…` download-date comment must not silently
+        retag the file as GRCh38. Only build-marker lines (containing
+        ``build``, ``reference``, or ``genome``) are inspected, and the
+        normalizer rejects digits inside year strings via word
+        boundaries."""
+        f = _write(
+            tmp_path,
+            "# Living DNA\n"
+            "# downloaded 2038-01-01\n"
+            "# Human Genome Reference Build 37 (GRCh37.p13).\n"
+            "rs1\t1\t100\tAG\n",
+        )
+        meta = parser.get_metadata(f)
+        assert meta["build"] == "GRCh37"
+
+    def test_first_build_marker_line_wins(self, parser: LivingDNAParser, tmp_path: Path) -> None:
+        """GH #16: previously the LAST normalize-match won (no break),
+        so a stray later comment could overwrite the real header. Now
+        the first valid build-marker line wins."""
+        f = _write(
+            tmp_path,
+            "# Living DNA\n"
+            "# Human Genome Reference Build 37 (GRCh37.p13).\n"
+            "# Bogus trailer: build 38\n"  # would have overwritten before
+            "rs1\t1\t100\tAG\n",
+        )
+        meta = parser.get_metadata(f)
+        assert meta["build"] == "GRCh37"
+
     def test_metadata_has_no_snp_count_field(
         self, parser: LivingDNAParser, mock_livingdna_path: Path
     ) -> None:

@@ -153,7 +153,10 @@ class TestAnalyzeCommand:
         assert "rs1801133" in result.output
         assert "MTHFR" in result.output
         assert "ClinVar" in result.output
-        assert "clinvar_pathogenic" in result.output
+        # GH #9: terminal table strips the source prefix from significance
+        # since the Source column already shows ClinVar; expect plain
+        # ``pathogenic`` instead of ``clinvar_pathogenic``.
+        assert "pathogenic" in result.output
 
     def test_analyze_does_not_flag_homozygous_reference(
         self, mock_mhg_path, clinvar_data_dir: Path
@@ -275,10 +278,11 @@ class TestAnalyzeCommand:
             ["analyze", str(mock_mhg_path), "--data-dir", str(all_annotators_data_dir)],
         )
         assert result.exit_code == 0, result.output
-        # ClinVar pathogenic
-        assert "clinvar_pathogenic" in result.output
-        # ClinPGx pharmacogenomic (rs1801133 + AG triggers ClinPGx LoE 2A)
-        assert "pharmgkb_loe_2a" in result.output
+        # GH #9: terminal strips source_prefix from significance display.
+        # ``clinvar_pathogenic`` -> ``pathogenic``,
+        # ``pharmgkb_loe_2a``   -> ``loe_2a`` next to the ClinPGx source col.
+        assert "pathogenic" in result.output
+        assert "loe_2a" in result.output
         # Both attribution labels present
         assert "ClinVar" in result.output
         assert "ClinPGx" in result.output
@@ -794,10 +798,13 @@ class TestDbCommands:
         assert result.exit_code == 0, result.output
         assert "can't be verified" in result.output
 
-    def test_db_update_legacy_cache_stamps_signal(
+    def test_db_update_legacy_cache_redownloads(
         self, tmp_path: Path, mock_clinvar_vcf: Path, mock_gnomad_gz: Path, monkeypatch
     ):
-        """Legacy caches (no stored signal) get signal stamped without re-download."""
+        """GH #20: a cache with no stored signal predates the signal mechanism
+        (i.e., is old). It must be re-downloaded, NOT silently stamped as
+        current — the previous behavior permanently marked stale caches as
+        fresh."""
         import sqlite3
 
         from allelix.annotators import clinvar as clinvar_module
@@ -876,8 +883,8 @@ class TestDbCommands:
             main, ["db", "update", "--data-dir", str(tmp_path), "--build", "grch37"]
         )
         assert result.exit_code == 0, result.output
-        assert "stamped remote signal" in result.output
-        assert not called  # setup() should NOT run — just stamp the signal
+        assert "cache predates the freshness signal" in result.output
+        assert called  # setup() MUST run — tagless cache is treated as stale
 
     def test_db_update_force_refreshes(
         self, clinvar_data_dir: Path, mock_gnomad_gz: Path, monkeypatch
@@ -1155,8 +1162,13 @@ class TestPharmacogenomicsCommand:
         )
         assert result.exit_code == 0, result.output
         # ClinPGx rows have category=pharma; ClinVar rows don't.
+        # GH #9: terminal strips the source_ prefix; check the stripped form.
         assert "ClinPGx" in result.output
-        assert "pharmgkb_loe_" in result.output
+        assert "loe_" in result.output
+        # No ClinVar row should surface. ``ClinVar`` itself appears in the
+        # database-status header banner regardless of filter, so check the
+        # raw significance string instead — it would only appear in a
+        # rendered table cell, which the pharma filter excludes.
         assert "clinvar_pathogenic" not in result.output
 
     def test_gwas_excluded_by_default(self, mock_mhg_path, all_annotators_data_dir: Path):
@@ -2465,3 +2477,80 @@ class TestBuildDiagnosticsFallback:
             _helpers.console = original
 
         assert "Could not auto-detect" not in buf.getvalue()
+
+    def test_tied_position_data_with_header_fires_inconclusive_warning(self) -> None:
+        """GH #15: tie or no-winner in position detection with a header set
+        must fire a yellow warning, not silently route through header_build.
+
+        Trigger: position detection inspected rsIDs (`inspected_count > 0`)
+        but couldn't pick a build (`detected_build is None`), header is set.
+        Pre-fix, this was the silent-coords trap — a GRCh36 file with a
+        GRCh37-mislabeled header would silently get the GRCh37 ClinVar cache.
+        """
+        from io import StringIO
+
+        from rich.console import Console
+
+        from allelix.cli import _helpers
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        diag = BuildDiagnostics(
+            header_build="GRCh37",
+            detected_build=None,
+            effective_build="GRCh37",
+            override=False,
+            matched_count=0,
+            inspected_count=4,  # we DID see rsIDs; they just didn't agree
+        )
+
+        class _R:
+            build_diagnostics = diag
+
+        buf = StringIO()
+        original = _helpers.console
+        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        try:
+            _helpers._emit_build_diagnostics(_R())
+        finally:
+            _helpers.console = original
+
+        output = buf.getvalue()
+        assert "Build detection inconclusive" in output
+        assert "4 known-rsID position checks" in output
+        assert "--build grch37" in output and "--build grch38" in output
+        # Must not also fire the "no rsIDs in input" warning
+        assert "Could not auto-detect" not in output
+
+    def test_header_set_zero_inspected_does_not_fire_inconclusive(self) -> None:
+        """When the header is set and zero rsIDs were inspected (no rsIDs
+        in input), the new "inconclusive" warning must NOT fire — that case
+        is a legitimate header-only build determination, not a tied vote.
+        """
+        from io import StringIO
+
+        from rich.console import Console
+
+        from allelix.cli import _helpers
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        diag = BuildDiagnostics(
+            header_build="GRCh38",
+            detected_build=None,
+            effective_build="GRCh38",
+            override=False,
+            matched_count=0,
+            inspected_count=0,  # no rsIDs seen
+        )
+
+        class _R:
+            build_diagnostics = diag
+
+        buf = StringIO()
+        original = _helpers.console
+        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        try:
+            _helpers._emit_build_diagnostics(_R())
+        finally:
+            _helpers.console = original
+
+        assert "Build detection inconclusive" not in buf.getvalue()

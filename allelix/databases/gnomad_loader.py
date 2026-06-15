@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 GNOMAD_DB_FILENAME = "gnomad.sqlite"
 
 GNOMAD_CACHE_URL = (
-    "https://huggingface.co/datasets/dial481/allelix-gnomad"
+    "https://huggingface.co/datasets/allelix/allelix-gnomad"
     "/resolve/f0aadfb7940290c44930dc0d1b9b093bc089173f/gnomad.sqlite.gz"
 )
 

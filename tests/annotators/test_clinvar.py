@@ -290,14 +290,15 @@ class TestRemoteSignal:
         """ADR-0021: signal is composite across managed builds."""
         from allelix.annotators import clinvar as clinvar_module
 
+        valid_md5 = "abcdef0123456789abcdef0123456789"  # 32 hex digits
         monkeypatch.setattr(
             clinvar_module,
             "fetch_remote_text",
-            lambda url: "abcdef0123456789  clinvar.vcf.gz\n",
+            lambda url: f"{valid_md5}  clinvar.vcf.gz\n",
         )
         # Default annotator manages both builds → composite signal.
         assert annotator.fetch_remote_signal() == (
-            "GRCh37:md5:abcdef0123456789|GRCh38:md5:abcdef0123456789"
+            f"GRCh37:md5:{valid_md5}|GRCh38:md5:{valid_md5}"
         )
 
     def test_fetch_returns_none_on_network_error(self, annotator: ClinVarAnnotator, monkeypatch):
@@ -310,6 +311,45 @@ class TestRemoteSignal:
         from allelix.annotators import clinvar as clinvar_module
 
         monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url: "   \n")
+        assert annotator.fetch_remote_signal() is None
+
+    def test_fetch_returns_none_on_html_error_page(self, annotator: ClinVarAnnotator, monkeypatch):
+        """GH #21: a CDN 503 returning HTML must not be accepted as a hash.
+
+        Before the fix the first whitespace-separated token of the body
+        was treated as the md5, so ``<!DOCTYPE`` would become the
+        "signal" and propagate to ``verify_file_hash``, which would then
+        delete the freshly downloaded VCF on the resulting mismatch.
+        """
+        from allelix.annotators import clinvar as clinvar_module
+
+        html = (
+            "<!DOCTYPE html>\n<html><head><title>503 Service "
+            "Unavailable</title></head><body>...</body></html>\n"
+        )
+        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url: html)
+        assert annotator.fetch_remote_signal() is None
+
+    def test_fetch_returns_none_on_short_hex(self, annotator: ClinVarAnnotator, monkeypatch):
+        """GH #21: tokens that are hex but the wrong length are rejected."""
+        from allelix.annotators import clinvar as clinvar_module
+
+        monkeypatch.setattr(
+            clinvar_module,
+            "fetch_remote_text",
+            lambda url: "abcdef01  clinvar.vcf.gz\n",  # only 8 hex chars
+        )
+        assert annotator.fetch_remote_signal() is None
+
+    def test_fetch_returns_none_on_non_hex_token(self, annotator: ClinVarAnnotator, monkeypatch):
+        """GH #21: 32-char-long but non-hex tokens are rejected."""
+        from allelix.annotators import clinvar as clinvar_module
+
+        monkeypatch.setattr(
+            clinvar_module,
+            "fetch_remote_text",
+            lambda url: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  clinvar.vcf.gz\n",
+        )
         assert annotator.fetch_remote_signal() is None
 
     def test_cached_returns_none_for_unconfigured(self, tmp_path: Path):

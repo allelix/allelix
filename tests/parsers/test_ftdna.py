@@ -64,6 +64,28 @@ class TestCanParse:
     def test_rejects_23andme_file(self, parser: FTDNAParser, mock_23andme_path: Path) -> None:
         assert parser.can_parse(mock_23andme_path) is False
 
+    def test_rejects_myheritage_file(
+        self, parser: FTDNAParser, mock_myheritage_path: Path
+    ) -> None:
+        """GH #26: FTDNA and MyHeritage share the same data shape and
+        header. Without an explicit exclusion both `can_parse`s claim
+        the file and routing depends on registry order. FTDNA must
+        reject files carrying the MyHeritage signature comment so
+        detection is mutually exclusive."""
+        assert parser.can_parse(mock_myheritage_path) is False
+
+    def test_rejects_synthetic_myheritage_header(
+        self, parser: FTDNAParser, tmp_path: Path
+    ) -> None:
+        """Even a hand-built MyHeritage file must be rejected."""
+        f = _write(
+            tmp_path,
+            "# MyHeritage, https://www.myheritage.com\n"
+            "RSID,CHROMOSOME,POSITION,RESULT\n"
+            '"rs1","1","100","AG"\n',
+        )
+        assert parser.can_parse(f) is False
+
     def test_rejects_ancestrydna_file(
         self, parser: FTDNAParser, mock_ancestrydna_path: Path
     ) -> None:

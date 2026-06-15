@@ -16,6 +16,7 @@ diff workflow reruns the same genotype file against updated databases.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING
@@ -27,14 +28,26 @@ if TYPE_CHECKING:
 
 _SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4"}
 
+# GH #25: magnitude comparison tolerance. Magnitudes are scored on a
+# 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
+# vs 7.499999999999999) is well below 1e-9. Using exact `!=` previously
+# flagged such noise as "changed", filling diffs with non-events.
+_MAGNITUDE_TOLERANCE = 1e-9
+
 
 @dataclass
 class ChangedAnnotation:
-    """An annotation whose significance or magnitude changed between runs."""
+    """An annotation whose significance or magnitude changed between runs.
+
+    ``previous_magnitude`` is ``None`` when the baseline entry had no
+    magnitude recorded (legacy or partial baseline). Treating absence as
+    ``0.0`` would flag every such entry as "changed" against any nonzero
+    current magnitude — see GH #25.
+    """
 
     current: Annotation
     previous_significance: str
-    previous_magnitude: float
+    previous_magnitude: float | None
 
 
 @dataclass
@@ -85,6 +98,24 @@ def load_previous_report(path: Path) -> dict:
         msg = f"{path.name} has no 'annotations' key."
         raise ValueError(msg)
 
+    # GH #25: validate per-annotation entries. `compute_diff` indexes
+    # `d["source"]` / `d["rsid"]` unguarded; a baseline with the right
+    # top-level shape but malformed entries (annotations as a dict,
+    # entries missing required keys) would raise KeyError or TypeError
+    # rather than the documented ValueError. Catch that here.
+    annotations = data["annotations"]
+    if not isinstance(annotations, list):
+        msg = f"{path.name}: 'annotations' must be a list, got {type(annotations).__name__}."
+        raise ValueError(msg)
+    for i, entry in enumerate(annotations):
+        if not isinstance(entry, dict):
+            msg = f"{path.name}: annotation #{i} must be an object, got {type(entry).__name__}."
+            raise ValueError(msg)
+        for required in ("source", "rsid"):
+            if required not in entry:
+                msg = f"{path.name}: annotation #{i} is missing required key {required!r}."
+                raise ValueError(msg)
+
     return data
 
 
@@ -111,12 +142,20 @@ def compute_diff(
     for key, c in curr_by_key.items():
         if key in prev_by_key:
             p = prev_by_key[key]
-            if c.significance != p.get("significance") or c.magnitude != p.get("magnitude"):
+            prev_mag = p.get("magnitude")
+            significance_changed = c.significance != p.get("significance")
+            # GH #25: tolerance comparison against representation noise;
+            # treat a missing previous magnitude as "no value to compare"
+            # rather than the implicit 0.0 the old code substituted.
+            magnitude_changed = prev_mag is not None and not math.isclose(
+                c.magnitude, prev_mag, abs_tol=_MAGNITUDE_TOLERANCE
+            )
+            if significance_changed or magnitude_changed:
                 changed.append(
                     ChangedAnnotation(
                         current=c,
                         previous_significance=p.get("significance", ""),
-                        previous_magnitude=p.get("magnitude", 0.0),
+                        previous_magnitude=prev_mag,
                     )
                 )
 

@@ -465,16 +465,32 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
     yield from best.values()
 
 
+# Truncation sanity floor for production loads. This guards the count
+# returned by iter_gwas_records — i.e. rows AFTER haplotype/no-trait
+# filtering and (rsid, trait) dedup, not the raw catalog. EBI curates
+# ~625K lead associations (GWAS Catalog, 2025); the loaded count is lower
+# than that but still far above this floor. 100K only catches gross
+# truncation (a mid-stream download committed as "complete") while staying
+# permissive against legitimate upstream drift. Set to 0 from tests so
+# synthetic fixtures of any size load cleanly. See GH #19.
+GWAS_MIN_ROWS = 100_000
+
+
 def load_gwas_tsv(
     tsv_path: Path,
     db_path: Path,
     source_url: str = "",
     remote_signal: str | None = None,
+    min_rows: int = 0,
 ) -> int:
     """Parse a GWAS Catalog TSV into a fresh SQLite cache atomically.
 
     Writes to a `.tmp` sibling and `os.replace`s onto `db_path` only after a
     successful commit. Returns the number of records loaded.
+
+    ``min_rows`` is a sanity floor checked before the final ``os.replace``.
+    Set by production callers (see ``GwasAnnotator.setup``) to
+    ``GWAS_MIN_ROWS``; defaults to 0 so test fixtures of any size load.
     """
     tmp_path = db_path.parent / f"{db_path.name}.tmp"
     if tmp_path.exists():
@@ -535,6 +551,15 @@ def load_gwas_tsv(
                 ),
             )
             conn.commit()
+        if count < min_rows:
+            msg = (
+                f"GWAS Catalog load aborted: only {count:,} rows ingested "
+                f"(floor {min_rows:,}). The download was likely truncated "
+                f"in flight (chunked transfer with no Content-Length, or "
+                f"connection drop mid-stream). Retry with "
+                f"`allelix db update --force`."
+            )
+            raise OSError(msg)
         os.replace(tmp_path, db_path)
         return count
     except Exception:

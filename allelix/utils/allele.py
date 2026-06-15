@@ -44,17 +44,26 @@ def flip_genotype(allele1: str, allele2: str) -> tuple[str, str]:
     return complement(allele1), complement(allele2)
 
 
-_PALINDROMIC = frozenset({("A", "T"), ("T", "A"), ("C", "G"), ("G", "C")})
-
-
 def resolve_strand(user_allele: str, gnomad_ref: str, gnomad_alt: str) -> str | None:
-    """Return reference-forward allele, or None if ambiguous.
+    """Return reference-forward allele, or None if not directly present.
 
     Maps an array-reported allele to its reference-forward equivalent
     using gnomAD's ref/alt as the ground truth. If the user allele
-    matches ref or alt directly, it's already forward. If the
-    complement matches, the array was minus-strand. Palindromic SNPs
-    (A/T, C/G ref/alt pairs) cannot be resolved and return None.
+    matches ref or alt directly, it's already forward and is returned.
+
+    GH #18: previously, when the user allele did NOT directly match
+    ref or alt, this function fell back to a complement check
+    (``complement(user_allele) ∈ {ref, alt}`` → return the complement)
+    on the assumption that the array was read on the minus strand. At
+    multi-allelic sites that fallback is unsound — the complement of
+    the user's true forward allele can coincidentally equal a different
+    alt at the same position, returning an allele the user does not
+    carry. The downstream CADD enrichment path then stamps a wrong-
+    allele score onto the annotation. The complement fallback is
+    removed: if the user allele is not in ``{ref, alt}``, return None
+    and let the caller skip enrichment rather than risk a coincidental
+    match. (ADR-0010 already defers proper strand handling; this makes
+    the deferral explicit at the resolution layer.)
 
     Only operates on single-base alleles. Multi-base alleles (indels)
     pass through as-is — array indels are rare and not minus-strand
@@ -64,13 +73,6 @@ def resolve_strand(user_allele: str, gnomad_ref: str, gnomad_alt: str) -> str | 
         return user_allele
     if user_allele in (gnomad_ref, gnomad_alt):
         return user_allele
-    comp = _COMPLEMENT.get(user_allele)
-    if comp is None:
-        return None
-    if comp in (gnomad_ref, gnomad_alt):
-        if (gnomad_ref, gnomad_alt) in _PALINDROMIC:
-            return None
-        return comp
     return None
 
 

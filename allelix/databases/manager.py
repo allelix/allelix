@@ -197,9 +197,20 @@ def parse_clinvar_version(vcf_path: Path) -> str | None:
 def iter_clinvar_records(vcf_path: Path) -> Iterator[dict[str, object]]:
     """Stream parse a ClinVar VCF (.vcf or .vcf.gz). Skip entries without an RS id.
 
-    Multi-allelic rows (ALT="A,T") are split into one record per ALT. Parallel
-    INFO fields (CLNSIG, CLNDN, ALLELEID) are separated by `|` per ClinVar's
-    convention and index-paired with the ALTs.
+    Multi-allelic rows (ALT="A,T") are split into one record per ALT.
+    Parallel INFO fields ``CLNSIG`` and ``ALLELEID`` are separated by
+    ``|`` and index-paired with the ALTs.
+
+    GH #42: ``CLNDN`` is NOT index-paired with ALTs — its ``|`` separator
+    enumerates the union of conditions across all SCV submissions on the
+    variant, with no positional mapping to CLNSIG. Joining the full list
+    into a single ``condition`` string per record avoids the Frankenstein
+    pairing (one SCV's classification next to another SCV's condition)
+    that index-picking introduced. The primary classification
+    (``CLNSIG[0]``) is kept as-is — that value is correct as a
+    variant-level claim; only the condition-pairing was misleading.
+    Full per-(classification, condition) pairing via
+    ``submission_summary.txt.gz`` is tracked for v2.1.
     """
     opener = gzip.open if vcf_path.suffix == ".gz" else open
     with opener(vcf_path, "rt", encoding="utf-8") as fh:
@@ -231,6 +242,12 @@ def iter_clinvar_records(vcf_path: Path) -> Iterator[dict[str, object]]:
             review_status = info_dict.get("CLNREVSTAT", "")
             gene = _extract_gene(info_dict.get("GENEINFO", ""))
 
+            # GH #42: CLNDN's `|`-separator is per-SCV, not per-ALT.
+            # Join the full list once per row (same string emitted for
+            # every ALT split-out of this record). Empty/`.`/blank
+            # tokens are filtered out so callers don't see leading/trailing
+            # separators.
+            joined_condition = "; ".join(c.replace("_", " ") for c in clndns if c and c != ".")
             for i, alt in enumerate(alts):
                 yield {
                     "rsid": f"rs{rs}",
@@ -239,7 +256,7 @@ def iter_clinvar_records(vcf_path: Path) -> Iterator[dict[str, object]]:
                     "ref": ref,
                     "alt": alt,
                     "clinical_significance": _pick(clnsigs, i),
-                    "condition": _pick(clndns, i).replace("_", " "),
+                    "condition": joined_condition,
                     "gene": gene,
                     "review_status": review_status,
                     "allele_id": _safe_int(_pick(allele_ids, i)),

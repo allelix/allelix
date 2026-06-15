@@ -8,6 +8,8 @@ import contextlib
 import sqlite3
 from typing import TYPE_CHECKING
 
+import pytest
+
 from allelix.databases import gwas_loader
 from allelix.databases.gwas_loader import (
     _CATEGORIZER_VERSION,
@@ -19,8 +21,6 @@ from allelix.databases.schema import GWAS_SCHEMA
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 class TestBatchedInsert:
@@ -192,3 +192,44 @@ class TestCategorizerVersion:
         assert row is not None
         assert row[0] == "etag:xyz"
         assert row[1] == f"cv:{_CATEGORIZER_VERSION}"
+
+
+class TestMinRowsFloor:
+    """GH #19: post-load row-count sanity gate catches mid-stream truncation.
+
+    Production callers pass ``min_rows=GWAS_MIN_ROWS``. A truncated download
+    (chunked transfer without Content-Length, connection drop mid-stream)
+    produces a parseable-but-short TSV that previously committed silently
+    to the cache. The floor check raises before ``os.replace`` so the cache
+    isn't overwritten with the short file.
+    """
+
+    def test_below_floor_raises_and_keeps_cache_clean(self, mock_gwas_tsv, tmp_path) -> None:
+        from allelix.databases.gwas_loader import load_gwas_tsv
+
+        db = tmp_path / "gwas.sqlite"
+        # Mock fixture has a handful of rows; set min_rows above that.
+        with pytest.raises(OSError, match="rows ingested"):
+            load_gwas_tsv(mock_gwas_tsv, db, source_url="test://truncated", min_rows=999_999)
+        # tmp_path cleaned, real db not created
+        assert not db.exists()
+        assert not (tmp_path / "gwas.sqlite.tmp").exists()
+
+    def test_default_min_rows_zero_loads_small_fixtures(self, mock_gwas_tsv, tmp_path) -> None:
+        """Default ``min_rows=0`` lets test fixtures load regardless of size."""
+        from allelix.databases.gwas_loader import load_gwas_tsv
+
+        db = tmp_path / "gwas.sqlite"
+        count = load_gwas_tsv(mock_gwas_tsv, db, source_url="test://small")
+        assert count > 0
+        assert db.exists()
+
+    def test_at_or_above_floor_succeeds(self, mock_gwas_tsv, tmp_path) -> None:
+        """``min_rows`` ≤ actual count → load completes."""
+        from allelix.databases.gwas_loader import load_gwas_tsv
+
+        db = tmp_path / "gwas.sqlite"
+        # Pick a floor at 1 — the mock fixture has more than that.
+        count = load_gwas_tsv(mock_gwas_tsv, db, source_url="test://at-floor", min_rows=1)
+        assert count >= 1
+        assert db.exists()

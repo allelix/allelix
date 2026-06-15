@@ -40,6 +40,25 @@ class Variant:
     allele2: str
     build: str = DEFAULT_BUILD
 
+    def __post_init__(self) -> None:
+        """Normalize allele case at construction (GH #14).
+
+        Reference databases (ClinVar, gnomAD, ClinPGx, etc.) all ship
+        uppercase alleles, and carrier matching is raw set membership
+        against ``{allele1, allele2}`` — a lowercase user allele would
+        silently fail to match and zero annotations would be produced
+        for a real carrier. Production parsers all emit uppercase
+        today, but a user-supplied filter file (custom panel) or a
+        future format variant could leak lowercase through. Normalize
+        at the model boundary so the invariant is impossible to
+        violate downstream. The no-call marker is left as-is;
+        multi-base alleles (indels) are uppercased in place.
+        """
+        if self.allele1 and self.allele1 != NO_CALL_MARKER:
+            self.allele1 = self.allele1.upper()
+        if self.allele2 and self.allele2 != NO_CALL_MARKER:
+            self.allele2 = self.allele2.upper()
+
     @property
     def is_heterozygous(self) -> bool:
         """True if the two alleles differ (and neither is a no-call)."""

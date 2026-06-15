@@ -9,7 +9,7 @@ column of ``database_versions`` (e.g. ``iv:1``) so ``is_ready()`` can
 reject stale caches without forcing a full re-download.
 """
 
-CLINVAR_INTERPRETER_VERSION = 1
+CLINVAR_INTERPRETER_VERSION = 2  # v2.0.1: GH #42 CLNDN-join in iter_clinvar_records
 PHARMGKB_INTERPRETER_VERSION = 1
 GNOMAD_SCHEMA_VERSION = 1
 ALPHAMISSENSE_SCHEMA_VERSION = 1

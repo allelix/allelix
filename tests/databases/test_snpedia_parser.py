@@ -7,6 +7,8 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 
+import pytest
+
 from allelix.databases.snpedia_parser import (
     _PARSER_VERSION,
     _dedupe_existing,
@@ -114,6 +116,20 @@ class TestParseRawPages:
         with contextlib.closing(sqlite3.connect(db)) as conn:
             conn.execute("CREATE TABLE other (id INTEGER)")
         assert parse_raw_pages(str(db)) == 0
+
+    def test_unexpected_raw_table_name_raises(self, tmp_path, monkeypatch):
+        """GH #12: identifier-allowlist guard rejects any name outside
+        the documented set, so a future drift in ``detect_raw_table``
+        can't silently flow into the f-string-interpolated SQL queries.
+        """
+        from allelix.databases import snpedia_parser
+
+        db = tmp_path / "snpedia.sqlite"
+        with contextlib.closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE other (id INTEGER)")
+        monkeypatch.setattr(snpedia_parser, "detect_raw_table", lambda _conn: "not_in_allowlist")
+        with pytest.raises(ValueError, match="unexpected raw table name"):
+            parse_raw_pages(str(db))
 
     def test_parse_basic_genotype(self, tmp_path):
         snp_pages = [("Rs1801133", "{{rsnum\n|Gene=MTHFR\n}}")]

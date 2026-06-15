@@ -14,6 +14,7 @@ and dispatches per-variant by `variant.build`.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
@@ -41,6 +42,14 @@ logger = logging.getLogger(__name__)
 CLINVAR_SUPPORTED_BUILDS: tuple[str, ...] = ("GRCh37", "GRCh38")
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
+
+# GH #21: a remote .md5 endpoint can return an HTML error page on a
+# transient blip. The first whitespace-separated token of the body is
+# what we treat as the hash, so without this gate `<!DOCTYPE` would be
+# accepted as the "signal" and later passed to `verify_file_hash`, which
+# would then delete the freshly downloaded VCF. MD5 is exactly 32 hex
+# digits; reject anything else.
+_MD5_HEX_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 def clinvar_db_filename(build: str) -> str:
@@ -323,7 +332,18 @@ class ClinVarAnnotator(Annotator):
         if not body:
             return None
         first_token = body.strip().split(None, 1)[0] if body.strip() else ""
-        if not first_token:
+        if not _MD5_HEX_RE.fullmatch(first_token):
+            # CDN error page, redirect interstitial, or empty body. Treat
+            # as a transient signal failure rather than poisoning the
+            # cache: callers handle `None` as "freshness unknown, skip"
+            # in `db update`, and `setup()` raises rather than passing
+            # garbage to `verify_file_hash` (which would delete the VCF).
+            logger.warning(
+                "clinvar(%s): .md5 endpoint returned a body whose first token "
+                "is not a 32-char hex digest (got %r); treating as no signal",
+                build,
+                first_token[:32],
+            )
             return None
         return f"md5:{first_token}"
 

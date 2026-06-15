@@ -276,12 +276,17 @@ class TestAutoDetection:
         parser = detect_parser(mock_ftdna_path)
         assert parser.name == "ftdna"
 
-    def test_myheritage_detected_before_ftdna(self, mock_myheritage_path: Path) -> None:
-        """MyHeritage shares FTDNA's header; registry order must prefer MyHeritage."""
+    def test_myheritage_detected_and_ftdna_rejects(self, mock_myheritage_path: Path) -> None:
+        """GH #26: FTDNA and MyHeritage share the same column header, so
+        the registry used to depend on its own ordering to route
+        correctly. FTDNA now rejects files carrying the MyHeritage
+        signature comment, making detection mutually exclusive —
+        `detect_parser` returns MyHeritage regardless of registry order.
+        """
         from allelix.parsers.ftdna import FTDNAParser
 
         ftdna = FTDNAParser()
-        assert ftdna.can_parse(mock_myheritage_path) is True
+        assert ftdna.can_parse(mock_myheritage_path) is False
 
         from allelix.parsers import detect_parser
 

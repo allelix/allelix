@@ -24,6 +24,7 @@ from allelix.databases.manager import (
 from allelix.databases.pharmgkb_loader import (
     PHARMGKB_CLINICAL_URL,
     PHARMGKB_DB_FILENAME,
+    PHARMGKB_MIN_ROWS,
     _normalize_genotype,
     load_pharmgkb_tsv,
     schema_is_current,
@@ -146,6 +147,7 @@ class PharmGKBAnnotator(Annotator):
             source_url=url,
             remote_signal=signal,
             allele_function_lookup=cpic_lookup,
+            min_rows=PHARMGKB_MIN_ROWS,
         )
 
     def is_ready(self) -> bool:
@@ -489,6 +491,7 @@ def _reingest_pharmgkb_from_cached_zip(db_path: Path, data_dir: Path) -> bool:
             version=old_version,
             remote_signal=old_signal,
             allele_function_lookup=cpic_lookup,
+            min_rows=PHARMGKB_MIN_ROWS,
         )
     except Exception:
         logger.warning("Auto-reingest from cached ZIP failed", exc_info=True)

@@ -2,6 +2,260 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-06-15
+
+### Known limitations
+
+- **ClinVar per-(classification, condition) pairing (#42, tracked for
+  v2.1).** ClinVar variants with multiple SCV submissions display the
+  primary aggregate classification and the union of all associated
+  conditions (semicolon-joined). The exact 1:1 pairing between a
+  specific classification and the specific condition it was submitted
+  for is not preserved — the VCF source doesn't carry that mapping.
+  Full per-(classification, condition) rows via ClinVar's
+  `submission_summary.txt.gz` structured export are planned for v2.1.
+  Affects ~0.01% of cached ClinVar records — exclusively
+  multi-submission variants.
+
+### Changed
+
+- **HuggingFace asset URLs moved to `allelix/` org (#37).** The gnomAD
+  and AlphaMissense prebuilt-cache download URLs were previously
+  hardcoded to `huggingface.co/datasets/dial481/...`; both datasets now
+  live under the `allelix/` HF org to match the GitHub migration. HF
+  serves redirects from the old paths, so existing pinned client
+  installs continue to work, but new installs pull from the canonical
+  org URL. Commit SHAs in the resolve paths are unchanged — the
+  underlying asset bytes are identical and the SHA256 integrity checks
+  pass without modification.
+- **Terminal report: bare-min column set (#9).** The terminal analyze
+  table previously had 9–12 columns (rsID, Gene, Source, Significance,
+  Review Status, Magnitude, Genotype, Zygosity, Freq, AM, CADD,
+  Condition), which Rich auto-squeezed to hairline-zero widths on a
+  typical 100–120 col terminal — rsIDs got cut off mid-string, the
+  middle columns (Significance/Review Status/Magnitude) rendered as
+  empty hairline bands, and the "all `—`" columns (Freq in a
+  GWAS-only filter, etc.) wasted space. The terminal is the
+  quick-extract view; deep enrichment belongs in HTML/JSON. New
+  layout: `rsID | Gene? | Source | Significance | Mag | GT |
+  Condition?` (Gene and Condition dropped when no row has data).
+  Source uses a compact display (`GWAS Catalog` → `GWAS`),
+  significance drops the redundant `source_` prefix (`clinvar_pathogenic`
+  → `pathogenic`), Genotype renamed to `GT`. **Terminal output only**
+  — every dropped field still surfaces in HTML and JSON reports
+  unchanged.
+
+### Fixed
+
+- **`Variant`: alleles normalized to uppercase at construction (#14,
+  case half).** Reference databases (ClinVar, gnomAD, ClinPGx, ...)
+  all ship uppercase alleles, and carrier matching is raw set
+  membership against `{variant.allele1, variant.allele2}` — a
+  lowercase user allele would silently miss every clinical annotator
+  and a real carrier would get zero annotations with no warning.
+  Production parsers all emit uppercase today, but a user-supplied
+  filter file (custom panel) or future format variant could leak
+  lowercase through. Normalization now happens in
+  `Variant.__post_init__` so every emission point (parsers, filters,
+  synthetic variants in tests, and any future code) is covered at the
+  single chokepoint. No-call marker preserved as-is; multi-base
+  indels uppercased in place. Strand-naive half of #14 (using
+  `resolve_strand` at carrier-match time) is deferred to v2.1+ per
+  ADR-0010.
+- **SNPedia parser: allowlist guard on `raw_table` interpolation (#12).**
+  The `raw_table` name from `detect_raw_table` flows into three SQL
+  queries via f-string interpolation (SQLite doesn't accept parameter
+  binding for identifiers). Today the function only ever returns one
+  of two literals or None — safe — but the signature is `str | None`
+  with no constraint, so any future drift (config-driven name,
+  scraped metadata) could open an injection path. Added a
+  `_VALID_RAW_TABLES = frozenset({"_raw_pages", "pages"})` guard at
+  the top of `_parse_raw_pages_inner`; an unexpected name raises
+  `ValueError`. No behavior change on current paths.
+- **GWAS rollup: consistent PheCode delimiter (#24, partial).**
+  `_gwas_base_trait` was splitting on `" (PheCode "` (leading space)
+  while `_gwas_phecode_parent` was searching for `"(PheCode "` (no
+  leading space) — the two readers reaching into the same formatted
+  description string with different delimiters. Promoted the delimiter
+  to a module-level `_PHECODE_DELIM` constant used by both. The deeper
+  structural fix (carrying trait / p-value / PheCode as structured
+  fields on `Annotation` instead of re-parsing the formatted
+  description, per ADR-0024 followup) is deferred to v2.1+.
+- **`split_csv_line` docstring corrected (#27).** The previous docstring
+  claimed it handles single, double, and double-double-quoted fields
+  per real CSV quoting rules. The implementation is
+  ``line.split(",")`` + ``strip('"')``, which mishandles any quoted
+  field containing a literal comma (silently dropped by callers'
+  column-count guard). Docstring now states the limitation and the
+  intended consumer set (FTDNA / MyHeritage / Living DNA, none of
+  which embed commas in fields). No behavior change.
+- **FTDNA `can_parse` rejects MyHeritage files (#26).** FTDNA and
+  MyHeritage exports share the same `RSID,CHROMOSOME,POSITION,RESULT`
+  header and a byte-identical data section. Both `can_parse`
+  implementations were accepting MyHeritage files, with routing masked
+  only by the registry's listing order (MyHeritage first). A reorder
+  or `--format ftdna` on a MyHeritage file would silently mislabel the
+  source format and display name. FTDNA now scans the first 50 lines
+  for a `MyHeritage` substring and returns `False` if found; detection
+  is mutually exclusive regardless of registry order.
+- **GWAS `_magnitude`: `<=` at p-value boundaries (#17).** Strict `<`
+  on the magnitude thresholds meant the canonical genome-wide-
+  significance value `p = 5e-8` (which appears verbatim in the GWAS
+  Catalog) landed in the suggestive bucket (4.0) rather than the
+  significant bucket (6.0) — one full magnitude below a barely-
+  significant 4.9e-8 hit. All boundary comparisons now use `<=`
+  (`5e-100`, `5e-20`, `5e-8`, `5e-6`, `5e-4`). Practical surface
+  area is small given the default `--gwas-min-magnitude 9.0`, but
+  the scoring was simply wrong at the most meaningful threshold.
+- **`diff`: validate baseline entries, magnitude tolerance, no implicit
+  zero (#25).** Two bugs in the report-diff path. (1)
+  `load_previous_report` only validated the top-level shape; a baseline
+  with `"annotations": {}` or entries missing `source`/`rsid` would
+  flow into `compute_diff` and raise `KeyError`/`TypeError` rather than
+  the documented `ValueError`. Per-entry validation is now done at load
+  with a precise error message naming the missing key. (2) "Changed"
+  detection used exact float `!=` (so JSON round-trip representation
+  noise — `7.5` vs `7.499999999999999` — flagged as changed) and
+  substituted `0.0` for a missing previous magnitude (so a baseline
+  entry with no magnitude key looked like a change against any nonzero
+  current value). Now uses `math.isclose(abs_tol=1e-9)` and carries
+  `previous_magnitude: float | None`; absent baseline magnitude is
+  passed through as `None` and rendered as `—` in the terminal table.
+- **ClinVar `condition` joins all CLNDN entries (#42, suppress-half).**
+  The loader was treating `|` in `CLNSIG` and `CLNDN` as parallel arrays
+  index-paired with the VCF's ALT, then picking `[0]` from each. That's
+  wrong: the `|` separator is per-SCV (per submission), not per-ALT, and
+  the two lists are not guaranteed to be in matching order. The
+  symptomatic case was a "Frankenstein pairing": one SCV's classification
+  shown next to another SCV's condition (real-world example: rs1063192
+  surfaced as `Likely_pathogenic + Three_Vessel_Coronary_Disease` when the
+  Likely_pathogenic submission was actually for Breast cancer; the
+  Three_Vessel_CD submission was Protective). The minimal v2.0.1 fix
+  joins the full `CLNDN` list into a single `condition` string per
+  record. `clinical_significance` keeps the primary aggregate
+  (`CLNSIG[0]`) — that value is correct as a variant-level claim, only
+  the condition-pairing was misleading. Honest framing: "this variant
+  has classification X; here are all the conditions it has been
+  submitted for." Per-(classification, condition) pairing requires the
+  `submission_summary.txt.gz` source and is tracked for v2.1.
+- **Enrichment: drop MAX-fallback for alt-less annotations (#23, suppress-half).**
+  GWAS rows set `alt=""` because the catalog is rsID-keyed. The previous
+  enrichment path took a `MAX(af) / MAX(am_pathogenicity) / MAX(phred)
+  GROUP BY rsid` fallback for those rows, which at a multi-allelic site
+  stamped the highest-frequency / highest-pathogenicity / highest-CADD
+  alt's value next to the annotation as if it described the user's
+  variant. Same wrong-allele hazard as the strand path fixed in #18.
+  Symmetric fix: skip the enrichment number rather than show one that
+  may belong to a different allele. The position-fallback path
+  (used for rsIDs resolved via ClinVar `bulk_resolve_rsids` from GH #8)
+  is allele-specific and stays — it pairs the alt-less annotation's
+  rsID with the user's actual carried alt. CADD enrichment grew the
+  same position-fallback path (it previously only had the MAX-fallback,
+  which the suppress-half removed); for symmetry, alt-less rows whose
+  rsID resolved on the fly now get a correct allele-specific CADD score
+  rather than nothing. The full fix — carrying the user's alt onto
+  every Annotation so GWAS rows can take the exact-alt path even when
+  the input VCF already had rsIDs — is architectural and tracked for
+  v2.1.
+- **`resolve_strand`: drop complement-fallback (#18).** At multi-allelic
+  sites, the complement of the user's true forward allele can
+  coincidentally equal a different alt at the same position. The
+  previous fallback (when the user allele didn't match `{ref, alt}`
+  directly, try `complement(user_allele) ∈ {ref, alt}`) would return
+  that coincidental complement, and the CADD enrichment path then
+  stamped a wrong-allele score onto an annotation that read as
+  describing the user's variant. Audit reproduction:
+  `resolve_strand('A', 'C', 'T') -> 'T'` (the user's `A` is neither
+  REF nor ALT but `complement('A') = 'T' = ALT`). The function now
+  returns `None` whenever the user allele isn't directly in
+  `{ref, alt}`. ADR-0010 already deferred proper strand handling; this
+  makes the deferral explicit at the resolution layer. The CADD
+  enrichment helper `_lookup_user_allele` is simplified — the
+  complement loop is removed. Bounded blast radius (enrichment-only,
+  not the carrier decision), but the previous behavior could read as
+  describing the user's variant when it didn't.
+- **`normalize_build_label`: anchored tokens, ambiguity rejection (#16).**
+  The previous implementation was first-substring-wins over a bare
+  `"3X" in s` chain. Bugs caught by the audit: `2038-01-01` registered
+  as GRCh38, `hg19/hg38` picked GRCh37 (the first substring hit),
+  `38 (37 liftover)` picked GRCh37. The normalizer is now driven by
+  anchored regex tokens (`\bgrch3[678]\b`, `\bhg(18|19|38)\b`,
+  `\b(36|37|38)\b`, etc.) and collects all distinct builds mentioned:
+  exactly one → that build, zero or multiple → `None`. Word boundaries
+  reject digits embedded in dates/versions; ambiguity rejection is the
+  safer answer when a label genuinely names two builds. Direct callers
+  of `normalize_build_label` (compare, export plink, the header-vs-
+  detected mismatch warning) now receive `None` instead of a
+  silently-wrong build label.
+- **LivingDNA parser: only inspect build-marker comment lines (#16).**
+  `get_metadata` previously fed every comment line into
+  `normalize_build_label` and let the *last* match win, so a download-
+  date comment could retag the file. It now skips comment lines that
+  don't mention ``build`` / ``reference`` / ``genome``, and breaks on
+  the first valid build-marker line — matching the format spec which
+  puts ``# Human Genome Reference Build 37 (GRCh37.p13).`` near the
+  top of the header.
+- **gnomAD `is_ready()`: tagless caches fail (#22).** The previous check
+  was `tag == f"sv:{GNOMAD_SCHEMA_VERSION}" or not tag`, so any cache
+  written before the schema-version mechanism existed was accepted as
+  ready. That defeats invalidation: if `GNOMAD_SCHEMA_VERSION` is ever
+  bumped, every legacy cache silently passes as the new version. The
+  escape is dropped — `is_ready()` now requires the exact current tag.
+  Production caches built via `install_prebuilt_cache` already stamp
+  the current tag, so the only caches affected are pre-tag legacy ones,
+  which now correctly require `db update`.
+- **ClinVar `.md5` body validated as 32 hex chars (#21).** When the
+  ClinVar CDN returns a transient HTML error page, the previous parser
+  treated the first whitespace-separated token (`<!DOCTYPE`) as the
+  expected hash. That token then flowed into `verify_file_hash`, which
+  on mismatch deletes the just-downloaded ~400 MB VCF and raises. So a
+  five-second 503 upstream wiped the freshly fetched cache. The
+  signal parser now requires the token to match `^[0-9a-fA-F]{32}$`
+  before treating it as an md5 — non-hex, short hex, or HTML is logged
+  and returns `None`, which `db update` handles as "freshness unknown,
+  skip" rather than nuking the VCF.
+- **`db update`: tagless caches re-download instead of being stamped (#20).**
+  A cache with no stored freshness signal almost always predates the signal
+  mechanism, i.e. is old. The previous behavior was to stamp the live
+  remote signal onto it on the next `db update` and call it current, which
+  permanently marked stale data as fresh — every subsequent run saw
+  `cached == remote` and skipped, so only `--force` could escape.
+  `cached is None` now triggers `setup()` like a remote-signal mismatch
+  does, with a distinct message (`cache predates the freshness signal;
+  re-downloading…`) so the user knows why. The dead helper
+  `_stamp_remote_signal` is removed.
+- **GWAS / ClinPGx loaders: post-load row-count floor (#19).** Closes the
+  silent-truncation trap. Both upstream sources stream over chunked
+  transfer with no `Content-Length`; a connection drop mid-stream produces
+  a parseable-but-short TSV that previously committed to the cache and
+  shipped fewer associations / clinical annotations than the user
+  expected. Loaders now accept a `min_rows=` kwarg and raise `OSError`
+  before `os.replace` if the ingested count falls under it. Production
+  call sites pass `GWAS_MIN_ROWS=100_000` and `PHARMGKB_MIN_ROWS=5_000`;
+  on failure the on-disk cache stays untouched and the user is told to
+  `allelix db update --force` to retry. Test fixtures bypass the floor
+  via an autouse conftest patch; loader-level `TestMinRowsFloor` covers
+  the gate by passing explicit `min_rows=`.
+- **Build detection: warn when inconclusive despite rsIDs (#15).** Closes
+  the silent-coords trap. When position-detection inspected known-rsID
+  positions but couldn't pick a build (votes tied across builds or no row
+  matched any), the pipeline silently routed through `header_build` — so a
+  GRCh36 file with a GRCh37-mislabeled header used to silently get the
+  GRCh37 ClinVar cache. Now fires a yellow warning naming the
+  rsID-checks-attempted count, what the header claims, and how to force
+  `--build`. The CLI-layer warning leaves `BuildDetectionResult`
+  unchanged.
+
+### Changed
+
+- `scripts/fetch_testdata.sh` now downloads from
+  `allelix/allelix/releases/download/v2.0.0/test_data.tar.gz` (the new
+  ~1.27 GB asset that includes the v2.0.0 VCF/gVCF additions: real
+  GIAB HG002 GRCh38 + GRCh37 benchmarks, a real GATK-HC gVCF, a 1000
+  Genomes chr22 multi-sample, plus the synthetic mocks). Previous URL
+  pointed at `dial481/allelix/releases/download/v1.1.1/test_data.tar.gz`,
+  which lacked all the VCF samples.
+
 ## [2.0.0] - 2026-06-15
 
 Major version bump. New architectural anchor: VCF + gVCF support with a

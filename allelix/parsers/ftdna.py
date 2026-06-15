@@ -42,6 +42,14 @@ SNIFF_LINE_LIMIT = 50
 EXPECTED_COLUMNS = 4
 HEADER_CANONICAL = "RSID,CHROMOSOME,POSITION,RESULT"
 
+# GH #26: FTDNA and MyHeritage files share the same data shape and
+# header line. Without an explicit exclusion, both `can_parse`
+# implementations accept MyHeritage files and the routing was masked
+# only by registry order (MyHeritage listed first in parsers/__init__.py).
+# Reorder the registry and FTDNA silently mislabels source format. The
+# discriminator is the MyHeritage signature comment in the first line.
+_MYHERITAGE_SIGNATURE = "MyHeritage"
+
 
 def _is_header_line(line: str) -> bool:
     """True if *line* is the FTDNA column header (quoted or unquoted)."""
@@ -58,7 +66,14 @@ class FTDNAParser(GenotypeParser):
     url: ClassVar[str] = "https://www.familytreedna.com"
 
     def can_parse(self, file_path: Path) -> bool:
-        """Recognize the file by its ``RSID,CHROMOSOME,POSITION,RESULT`` header."""
+        """Recognize the file by its ``RSID,CHROMOSOME,POSITION,RESULT`` header.
+
+        GH #26: rejects files carrying the MyHeritage signature comment.
+        Both formats are byte-identical past the first comment line, so
+        the discriminator must be checked explicitly — otherwise FTDNA
+        also claims MyHeritage files and routing depends on registry
+        order (which has silently mislabeled formats in past audits).
+        """
         try:
             with file_path.open("r", encoding="utf-8") as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
@@ -66,6 +81,8 @@ class FTDNAParser(GenotypeParser):
                     if not line:
                         return False
                     line = line.rstrip("\r\n")
+                    if _MYHERITAGE_SIGNATURE in line:
+                        return False
                     if not line or line.startswith("#"):
                         continue
                     return _is_header_line(line)

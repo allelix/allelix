@@ -17,10 +17,24 @@ logger = logging.getLogger(__name__)
 
 
 def split_csv_line(line: str) -> list[str]:
-    """Split a comma-delimited line and strip double-quotes from each field.
+    """Split a comma-delimited line and strip surrounding quotes from each field.
 
-    Handles single-quoted, double-quoted, and double-double-quoted fields
-    (the MyHeritage "extra quotes" variant).
+    Implementation is ``line.split(",")`` followed by a per-field
+    ``strip().strip('"')``. This is NOT a real CSV parser: a quoted field
+    containing a literal comma yields the wrong column count and is
+    silently dropped by callers' ``len(parts) != EXPECTED_COLUMNS``
+    guard.
+
+    Adequate for FTDNA / MyHeritage / Living DNA because every value in
+    those exports is either an rsID, chromosome identifier, integer
+    position, or concatenated genotype string — none of which contain
+    commas. If a future format ever ships embedded commas in quoted
+    fields, swap to ``csv.reader`` rather than relying on this helper.
+
+    Strips both surrounding double quotes (``"rs1"``) and the
+    double-double-quote variant some MyHeritage exports produce
+    (``""rs1""``) — the latter via two iterations of the trailing
+    ``strip('"')``.
     """
     return [field.strip().strip('"') for field in line.split(",")]
 

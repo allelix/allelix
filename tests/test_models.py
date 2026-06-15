@@ -43,6 +43,39 @@ class TestVariant:
         assert v.is_heterozygous
         assert v.genotype == "CTT/C"
 
+    def test_lowercase_alleles_normalized_to_uppercase(self):
+        """GH #14 (case half): a lowercase user allele used to silently
+        fail the raw-set-membership carrier match in clinical annotators
+        (which check `alt in {variant.allele1, variant.allele2}` against
+        uppercase REF/ALT from the source databases). Normalize at the
+        ``Variant`` model boundary so the invariant is impossible to
+        violate downstream — even if a custom panel / filter file leaks
+        lowercase through.
+        """
+        v = Variant("rs1801133", "1", 11796321, "a", "g")
+        assert v.allele1 == "A"
+        assert v.allele2 == "G"
+
+    def test_mixed_case_alleles_normalized(self):
+        v = Variant("rs1", "1", 100, "Aa", "gT")  # synthetic mixed-case indel
+        assert v.allele1 == "AA"
+        assert v.allele2 == "GT"
+
+    def test_no_call_marker_preserved(self):
+        """``-`` must not be uppercased (it would still equal itself,
+        but be explicit about the carve-out)."""
+        v = Variant("rs1", "1", 100, "-", "-")
+        assert v.allele1 == "-"
+        assert v.allele2 == "-"
+        assert v.is_no_call
+
+    def test_empty_allele_preserved(self):
+        """Empty string passes through unchanged (defensive — should not
+        happen, but ``"".upper()`` would still be ``""``)."""
+        v = Variant("rs1", "1", 100, "", "A")
+        assert v.allele1 == ""
+        assert v.allele2 == "A"
+
 
 class TestAnnotation:
     def _minimal(self, **overrides):

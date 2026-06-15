@@ -94,12 +94,20 @@ class GnomadAnnotator(Annotator):
             logger.warning("Could not remove staged file at %s", gz_path)
 
     def is_ready(self) -> bool:
-        """True when the gnomAD SQLite cache exists with current schema version."""
+        """True when the gnomAD SQLite cache exists with current schema version.
+
+        GH #22: a cache with no ``local_version_tag`` used to be accepted
+        as ready (the previous ``or not tag`` escape). That defeated the
+        whole point of ``GNOMAD_SCHEMA_VERSION``: if it ever gets bumped,
+        every tagless legacy cache would silently pass as the new
+        version. Reject tagless caches so the user is told to re-run
+        ``db update``.
+        """
         info = get_database_info(self._db_path, "gnomad")
         if info is None:
             return False
         tag = info.get("local_version_tag") or ""
-        return tag == f"sv:{GNOMAD_SCHEMA_VERSION}" or not tag
+        return tag == f"sv:{GNOMAD_SCHEMA_VERSION}"
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""
