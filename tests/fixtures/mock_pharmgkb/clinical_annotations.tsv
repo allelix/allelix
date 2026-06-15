@@ -1,0 +1,11 @@
+Clinical Annotation ID	Variant/Haplotypes	Gene	Level of Evidence	Score	Phenotype Category	Drug(s)	Phenotype(s)
+PA-001	rs1801133	MTHFR	2A	0.85	Toxicity	methotrexate	Increased toxicity risk
+PA-002	rs4680	COMT	3	0.50	Efficacy	tramadol	Reduced response
+PA-003	rs1799853	CYP2C9	1A	0.95	Dosage	warfarin	Lower dose required
+PA-004	rs4149056	SLCO1B1	1A	0.95	Toxicity	simvastatin	Increased myopathy risk
+PA-005	CYP2D6*1/*2	CYP2D6	2A	0.80	Efficacy	codeine	Normal metabolism
+PA-006	rs1065852, rs16947	CYP2D6	3	0.70	Efficacy	tramadol	Composite
+PA-007	rs99999999	TESTGENE	4	0.10	Efficacy	testdrug	Synthetic — for inner-skip coverage
+PA-008	rs900000010	CFTR	1A	0.95	Efficacy	ivacaftor	Synthetic non-finding — for ADR-0020 coverage
+PA-009	rs1801265	DPYD	1A	0.95	Toxicity	fluorouracil	Regression pin — CPIC Normal on both alleles
+PA-010	rs900000020	FAKEGENE	2B	0.60	Efficacy	testdrug	Synthetic — non-CPIC gene for ClinVar REF regression

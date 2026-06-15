@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##ALT=<ID=NON_REF,Description="Represents any possible alternative allele at this location">
+##contig=<ID=1,length=249250621,assembly=GRCh38>
+##contig=<ID=22,length=50818468,assembly=GRCh38>
+##INFO=<ID=END,Number=1,Type=Integer,Description="Stop position of the interval">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA12878
+1	10001	.	A	<NON_REF>	.	.	END=11796320	GT:DP	0/0:25
+1	11796321	rs1801133	G	A,<NON_REF>	100	PASS	DP=30	GT:DP	0/1:30
+1	11796322	.	G	<NON_REF>	.	.	END=11854475	GT:DP	0/0:23
+1	11854476	rs1801131	T	G,<NON_REF>	100	PASS	DP=28	GT:DP	1/1:28
+1	11854477	.	T	<NON_REF>	.	.	END=200000000	GT:DP	0/0:20
+22	19963748	rs4680	G	A,<NON_REF>	100	PASS	DP=32	GT:DP	1/1:32

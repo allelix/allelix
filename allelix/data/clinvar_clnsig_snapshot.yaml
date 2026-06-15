@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Allelix
+#
+# ClinVar CLNSIG vocabulary snapshot — R-4 drift detection.
+#
+# Source: ClinVar's published CLNSIG vocabulary as documented in the
+# ClinVar VCF release notes
+# (https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/).
+#
+# The drift test compares this snapshot against:
+#   (a) the keys of `allelix.annotators.clinvar._CLNSIG_MAGNITUDE` plus
+#       the `_BENIGN_CLNSIGS` set — fast sanity check that the code
+#       only references vocabulary we have on file (default CI).
+#   (b) the unique `clinical_significance` values present in a real
+#       ClinVar SQLite cache — slow test, fires on `pytest -m slow`,
+#       catches drift introduced by a fresh ClinVar release.
+#
+# When a fresh download surfaces a CLNSIG that isn't in this list,
+# the slow test fails. The remediation is to:
+#   1. Confirm the new term is a real ClinVar vocabulary change
+#      (not a malformed row).
+#   2. Decide whether it should land in `_CLNSIG_MAGNITUDE` (if it
+#      affects magnitude scoring) or just `_BENIGN_CLNSIGS` (if it's
+#      a benign-tier category) or neither (informational only).
+#   3. Add the new term to this snapshot and update the
+#      `snapshot_date` + `clinvar_version` fields.
+#
+# Values are case-preserved as ClinVar publishes them. Comparison is
+# done after `_normalize_clnsig` is applied to both sides (lowercase,
+# spaces → underscores).
+
+snapshot_date: "2026-06-14"
+clinvar_version: "20260614"
+
+# Canonical CLNSIG values published by ClinVar. The loader splits the
+# raw INFO field on '|' (ADR-0011, multi-ALT case), so each entry here
+# is a standalone term — pipe-combined values like
+# 'Pathogenic|drug_response' are not pinned directly (they're products
+# of these).
+#
+# Slash-joined aggregates ('Pathogenic/Likely_pathogenic') ARE standalone
+# CLNSIG values — they represent an aggregate clinical interpretation
+# from ClinVar's review process, not a multi-allele case. The full
+# aggregate set is enumerated below.
+values:
+  # ── Clinical significance — primary tier ──
+  - Pathogenic
+  - Likely_pathogenic
+  - Pathogenic/Likely_pathogenic
+  - Uncertain_significance
+  - Likely_benign
+  - Benign
+  - Benign/Likely_benign
+
+  # ── Penetrance modifiers (introduced in 2024+ ClinVar vocabulary) ──
+  - "Pathogenic,_low_penetrance"
+  - "Likely_pathogenic,_low_penetrance"
+
+  # ── Risk allele subdivisions ──
+  - established_risk_allele
+  - likely_risk_allele
+  - uncertain_risk_allele
+
+  # ── VUS subdivisions (vus-low/mid/high, recent ClinVar addition) ──
+  - vus-low
+  - vus-mid
+  - vus-high
+
+  # ── Conflicting interpretations ──
+  # Vocabulary changed in 2023; both variants appear in current and
+  # historical ClinVar exports.
+  - Conflicting_interpretations_of_pathogenicity
+  - Conflicting_classifications_of_pathogenicity
+
+  # ── Non-clinical-significance categories ──
+  - drug_response
+  - risk_factor
+  - protective
+  - Affects
+  - association
+  - association_not_found
+  - confers_sensitivity
+  - other
+
+  # ── Curatorial categories (no clinical assertion attached) ──
+  - not_provided
+  - no_classification_for_the_single_variant
+  - no_classification_provided
+  - no_classifications_from_unflagged_records
+
+  # ── Aggregate interpretations (slash-combined compounds) ──
+  # ClinVar emits these when the review process produces a single
+  # aggregate label drawn from multiple component classifications.
+  # Listed exhaustively because the drift test compares against the
+  # exact set; new combinations surface as drift and must be added.
+  - "Pathogenic/Likely_pathogenic,_low_penetrance"
+  - Pathogenic/Likely_pathogenic/established_risk_allele
+  - "Pathogenic/Likely_pathogenic/Likely_pathogenic,_low_penetrance"
+  - Pathogenic/Likely_pathogenic/likely_risk_allele
+  - "Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance"
+  - "Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance/established_risk_allele"
+  - Pathogenic/likely_risk_allele
+  - "Pathogenic/Pathogenic,_low_penetrance"
+  - "Likely_pathogenic/Likely_pathogenic,_low_penetrance"
+  - Likely_pathogenic/likely_risk_allele
+  - "Likely_pathogenic/Pathogenic,_low_penetrance"
+  - Uncertain_significance/uncertain_risk_allele
+  - Uncertain_significance/vus-high
+  - Uncertain_significance/vus-low
+  - Uncertain_significance/vus-mid
+
+  # Empty string — ClinVar exports rows with empty CLNSIG when a
+  # variant has structured submissions but no aggregate classification.
+  # Allelix surfaces these as "unknown".
+  - ""

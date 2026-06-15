@@ -1,0 +1,64 @@
+# High-value SNPs: clinically important variants where a no-call
+# should be explicitly flagged rather than silently omitted.
+#
+# Schema:
+#   rsid:     dbSNP identifier
+#   gene:     gene symbol
+#   cluster:  optional grouping (e.g., "APOE" for the two-SNP APOE haplotype)
+#   note:     human-readable warning text for no-call reports
+#
+# To add a SNP: append an entry following this format. Entries with the
+# same cluster are grouped in warnings (e.g., "APOE genotype cannot be
+# determined" when either rs429358 or rs7412 is a no-call).
+
+- rsid: rs429358
+  gene: APOE
+  cluster: APOE
+  note: Required (with rs7412) to determine APOE genotype
+
+- rsid: rs7412
+  gene: APOE
+  cluster: APOE
+  note: Required (with rs429358) to determine APOE genotype
+
+- rsid: rs5742904
+  gene: APOB
+  note: Familial hypercholesterolemia marker (FH)
+
+- rsid: rs80357906
+  gene: BRCA1
+  note: Hereditary breast/ovarian cancer marker
+
+- rsid: rs1801133
+  gene: MTHFR
+  cluster: MTHFR
+  note: Methylation pathway (C677T)
+
+- rsid: rs1801131
+  gene: MTHFR
+  cluster: MTHFR
+  note: Methylation pathway (A1298C)
+
+- rsid: rs4680
+  gene: COMT
+  note: Catechol-O-methyltransferase activity
+
+- rsid: rs1065852
+  gene: CYP2D6
+  note: Opioid / SSRI metabolism
+
+- rsid: rs4244285
+  gene: CYP2C19
+  note: Clopidogrel, PPIs metabolism
+
+- rsid: rs1799853
+  gene: CYP2C9
+  note: Warfarin metabolism
+
+- rsid: rs4149056
+  gene: SLCO1B1
+  note: Statin myopathy risk
+
+- rsid: rs3918290
+  gene: DPYD
+  note: Fluoropyrimidine toxicity

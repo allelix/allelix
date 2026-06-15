@@ -1,0 +1,16 @@
+# MyHeritage, https://www.myheritage.com
+# This file is adapted from https://github.com/apriha/snps
+# Original: BSD 3-Clause License, Copyright (c) 2019, Andrew Riha
+# MyHeritage raw data format reference
+RSID,CHROMOSOME,POSITION,RESULT
+"rs1801133","1","11856378","AG"
+"rs1801131","1","11854476","TG"
+"rs4680","22","19951271","AG"
+"rs1065852","22","42526694","CC"
+"rs429358","19","45411941","TT"
+"rs7412","19","45412079","CT"
+"rs5742904","2","21229160","CC"
+"rs9001001","1","100000","--"
+"rs9001002","MT","7028","A"
+"rs9001003","X","2699520","AG"
+"rs9001004","Y","2787654","A"

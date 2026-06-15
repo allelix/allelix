@@ -1,0 +1,20 @@
+# Living DNA customer genotype data download file version: 1.0.1
+# This file is adapted from https://github.com/apriha/snps
+# Original: BSD 3-Clause License, Copyright (c) 2019, Andrew Riha
+# Format details from H600 Project wiki (h600.org/wiki/Microarray+File+Formats)
+# Human Genome Reference Build 37 (GRCh37.p13).
+# Genotypes are presented on the forward strand.
+#
+# rsid	chromosome	position	genotype
+rs1801133	1	11856378	AG
+rs1801131	1	11854476	TG
+rs4680	22	19951271	AG
+rs1065852	22	42526694	CC
+rs429358	19	45411941	TT
+rs7412	19	45412079	CT
+rs5742904	2	21229160	CC
+rs9001001	1	100000	--
+rs9001003	X	2699520	AG
+AX-12345678	3	15000000	GG
+AFFX-SP-000001	7	20000000	CT
+1:726912	1	726912	AA

@@ -1,0 +1,30 @@
+# Allelix pre-commit hooks
+#
+# Install once after cloning:
+#   pip install -e ".[dev]"
+#   pre-commit install --hook-type pre-commit
+#
+# Version-tag guard is a raw .git/hooks/pre-push script installed by
+# scripts/tag-release.sh flow — not managed by pre-commit.
+#
+# `language: system` means hooks run via PATH — works as long as your
+# venv (which contains ruff and pytest) is activated.
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: ruff-format
+        name: ruff format --check
+        entry: ruff format --check
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]

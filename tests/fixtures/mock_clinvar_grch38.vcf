@@ -1,0 +1,23 @@
+##fileformat=VCFv4.1
+##fileDate=20260101
+##source=ClinVarSyntheticForTests
+##reference=GRCh38
+##INFO=<ID=ALLELEID,Number=1,Type=Integer,Description="ClinVar allele id">
+##INFO=<ID=CLNDN,Number=.,Type=String,Description="ClinVar disease name">
+##INFO=<ID=CLNSIG,Number=.,Type=String,Description="Clinical significance">
+##INFO=<ID=CLNREVSTAT,Number=.,Type=String,Description="ClinVar review status">
+##INFO=<ID=GENEINFO,Number=1,Type=String,Description="Gene symbol:gene id">
+##INFO=<ID=RS,Number=1,Type=String,Description="dbSNP ID">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	11796321	100001	G	A	.	.	ALLELEID=100001;CLNDN=MTHFR_deficiency;CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=MTHFR:100001;RS=1801133
+1	11794419	100002	T	G	.	.	ALLELEID=100002;CLNDN=Hyperhomocysteinemia;CLNSIG=Likely_pathogenic;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=MTHFR:100002;RS=1801131
+5	7870973	100003	A	G	.	.	ALLELEID=100003;CLNDN=Folate_metabolism_disorder;CLNSIG=Likely_benign;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=MTRR:100003;RS=1801394
+22	19963748	100004	G	A	.	.	ALLELEID=100004;CLNDN=Methylphenidate_response;CLNSIG=Drug_response;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=COMT:100004;RS=4680
+10	94942290	100005	C	T	.	.	ALLELEID=100005;CLNDN=Warfarin_response;CLNSIG=Drug_response;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=CYP2C9:100005;RS=1799853
+12	21178615	100006	T	C	.	.	ALLELEID=100006;CLNDN=Statin-induced_myopathy;CLNSIG=Drug_response;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=SLCO1B1:100006;RS=4149056
+17	43057063	100007	G	A	.	.	ALLELEID=100007;CLNDN=Hereditary_breast_and_ovarian_cancer_syndrome;CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_multiple_submitters,_no_conflicts;GENEINFO=BRCA1:100007;RS=80357906
+17	7674222	100008	G	T	.	.	ALLELEID=100008;CLNDN=Li-Fraumeni_syndrome;CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=TP53:100008;RS=121918506
+1	100	100009	A	T	.	.	ALLELEID=100009;CLNDN=Synthetic_test_only;CLNSIG=Benign;CLNREVSTAT=no_assertion_provided;GENEINFO=TESTGENE:100009;RS=999999999
+7	117559590	100010	CTT	C	.	.	ALLELEID=100010;CLNDN=Cystic_fibrosis;CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_multiple_submitters,_no_conflicts;GENEINFO=CFTR:100010;RS=113993960
+15	22812251	100011	G	A	.	.	ALLELEID=100011;CLNDN=Hereditary_spastic_paraplegia_6;CLNSIG=Pathogenic;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=NIPA1:100011;RS=104894490
+22	42130692	1065852	G	A,C	.	.	ALLELEID=100020|100021;CLNDN=Codeine_response|Synthetic_benign_pair;CLNSIG=Drug_response|Benign;CLNREVSTAT=criteria_provided,_single_submitter;GENEINFO=CYP2D6:1065852;RS=1065852

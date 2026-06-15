@@ -1,0 +1,21 @@
+Clinical Annotation ID	Genotype/Allele	Annotation Text	Allele Function
+PA-001	AG	Heterozygous carriers may have elevated toxicity risk	
+PA-001	AA	Homozygous variant carriers have high toxicity risk	
+PA-001	GG	Normal toxicity profile	
+PA-002	AA	Reduced opioid response possible	
+PA-002	GG	Normal opioid response	
+PA-003	CT	Consider lower warfarin starting dose	
+PA-003	TT	Significantly lower starting dose recommended	
+PA-004	CT	Increased myopathy risk on simvastatin	
+PA-004	CC	Normal statin tolerance	
+PA-005	*1/*2	Normal metabolizer	Normal function
+PA-006	AG	Composite haplotype	
+PA-007	*1/*1	Wild type haplotype	Normal function
+PA-007	ins	Insertion variant	
+PA-008	GG	Reference homozygote row (non-finding via CPIC lookup)	
+PA-008	AG	Heterozygous carrier row (finding via CPIC lookup)	
+PA-008	AA	Homozygous variant row (finding via CPIC lookup)	
+PA-009	GG	Both alleles Normal per CPIC - must be suppressed	
+PA-009	AG	Heterozygous - A is Normal, G is Normal	
+PA-010	GG	Non-CPIC gene, reference homozygote	
+PA-010	AG	Non-CPIC gene, heterozygous carrier	

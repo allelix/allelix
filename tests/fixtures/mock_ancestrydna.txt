@@ -1,0 +1,18 @@
+#AncestryDNA raw data download
+#This file is adapted from https://github.com/apriha/snps
+#Original: BSD 3-Clause License, Copyright (c) 2019, Andrew Riha
+#AncestryDNA format reference
+#
+rsid	chromosome	position	allele1	allele2
+rs1801133	1	11856378	A	G
+rs1801131	1	11854476	T	G
+rs4680	22	19951271	A	G
+rs1065852	22	42526694	C	C
+rs429358	19	45411941	T	T
+rs7412	19	45412079	C	T
+rs5742904	2	21229160	C	C
+rs9001001	1	100000	0	0
+rs9001002	26	7028	A	A
+rs9001003	23	2699520	A	G
+rs9001004	24	2787654	A	A
+rs9001005	25	2699520	G	G

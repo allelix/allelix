@@ -1,0 +1,108 @@
+# Claude / AI tooling
+CLAUDE.md
+GITHUB_WORKFLOW.md
+.claude/
+
+# Local work-tracking notes (not committed)
+TODO.md
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Linting / type checking
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Local database cache (downloaded at runtime, project root only)
+/data/
+!/data/.gitkeep
+
+# Private genotype files — NEVER commit
+# CC0 openSNP test fixtures are hosted as release assets (see scripts/fetch_testdata.sh)
+MHG.txt
+# Genotype data — NEVER commit private genetic data
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+/*.txt
+/*.csv
+!README.txt
+!CHANGELOG.txt
+# Synthetic test fixtures are committed
+!tests/fixtures/*.vcf
+!tests/fixtures/*.vcf.gz
+!tests/fixtures/*.txt
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Test data library (committed fixtures; downloads stay gitignored)
+test_data/databases/
+test_data/baselines_local/
+test_data/gwas_catalog*
+test_data/gwas-catalog*
+test_data/data/
+test_data.tar.gz
+

@@ -1,0 +1,19 @@
+#!/bin/bash
+# Block tag pushes where version doesn't match pyproject.toml.
+# CI version-tag-guard is the backup; this is the actual gate.
+
+while read local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_ref" =~ ^refs/tags/v ]]; then
+        TAG="${local_ref#refs/tags/}"
+        VERSION=$(python3 -c "
+import tomllib, pathlib
+d = tomllib.loads(pathlib.Path('pyproject.toml').read_text())
+print('v' + d['project']['version'])
+")
+        if [ "$TAG" != "$VERSION" ]; then
+            echo "BLOCKED: tag $TAG does not match pyproject.toml ($VERSION)"
+            echo "Bump pyproject.toml before tagging."
+            exit 1
+        fi
+    fi
+done

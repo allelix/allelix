@@ -1,0 +1,5856 @@
+{
+  "schema_version": "1",
+  "allelix_version": "1.1.0",
+  "generated_at": "2026-06-06T11:27:23.741988+00:00",
+  "regulatory_notice": "This report is informational research output. It surfaces classifications made by external databases (ClinVar, PharmGKB, \u2026) for variants present in the input genotype file. It is not medical advice and not a diagnosis. Every classification is attributed to its source database; Allelix does not independently classify variants.",
+  "input": {
+    "file": "user1190.csv",
+    "format": "livingdna",
+    "sample_id": "",
+    "build": "GRCh37",
+    "total_variants": 960613,
+    "skipped_lines": 0
+  },
+  "annotators": [
+    {
+      "name": "clinvar",
+      "version": "GRCh37:2026-05-30; GRCh38:2026-05-30"
+    },
+    {
+      "name": "pharmgkb",
+      "version": "2026-06-05"
+    },
+    {
+      "name": "gwas",
+      "version": "2026-06-05"
+    }
+  ],
+  "filters": {
+    "min_magnitude": 5.0,
+    "category": null,
+    "genes": null
+  },
+  "annotations": [
+    {
+      "source": "gwas",
+      "rsid": "rs10037493",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Chronic obstructive pulmonary disease liability (machine learning-based score) (p=1.0e-117, gene: HTR4)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:37069358",
+        "gwas:GCST90244098"
+      ],
+      "condition": "Chronic obstructive pulmonary disease liability (machine learning-based score)",
+      "gene": "HTR4",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10168266",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Systemic lupus erythematosus (MTAG) (p=1.0e-160, gene: STAT4)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:36750564",
+        "gwas:GCST90270940"
+      ],
+      "condition": "Systemic lupus erythematosus (MTAG)",
+      "gene": "STAT4",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10455872",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Aortic stenosis (p=4.0e-130, gene: LPA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:41419685",
+        "gwas:GCST90651074"
+      ],
+      "condition": "Aortic stenosis",
+      "gene": "LPA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10455872",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Coronary artery / coronary heart disease (including heart attack, angina) (p=2.0e-148, gene: LPA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475198"
+      ],
+      "condition": "Coronary artery / coronary heart disease (including heart attack, angina)",
+      "gene": "LPA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10455872",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Takes medication for coronary artery/ coronary heart disease? (p=3.0e-121, gene: LPA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475199"
+      ],
+      "condition": "Takes medication for coronary artery/ coronary heart disease?",
+      "gene": "LPA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10455872",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hyperlipidemia (PheCode 272.1) (p=2.0e-100, gene: LPA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475718"
+      ],
+      "condition": "Hyperlipidemia (PheCode 272.1)",
+      "gene": "LPA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10455872",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Coronary atherosclerosis (PheCode 411.4) (p=1.0e-234, gene: LPA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475936"
+      ],
+      "condition": "Coronary atherosclerosis (PheCode 411.4)",
+      "gene": "LPA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10484554",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Cutaneous psoriasis (p=4.0e-207, gene: LINC02571 - HLA-B)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:26626624",
+        "gwas:GCST003269"
+      ],
+      "condition": "Cutaneous psoriasis",
+      "gene": "LINC02571 - HLA-B",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10490924",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Age-related macular degeneration (choroidal neovascularisation) (p=2.0e-138, gene: HTRA1-AS1, ARMS2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:22705344",
+        "gwas:GCST001579"
+      ],
+      "condition": "Age-related macular degeneration (choroidal neovascularisation)",
+      "gene": "HTRA1-AS1, ARMS2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10490924",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Other retinal disorders (PheCode 362) (p=9.0e-208, gene: HTRA1-AS1, ARMS2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475847"
+      ],
+      "condition": "Other retinal disorders (PheCode 362)",
+      "gene": "HTRA1-AS1, ARMS2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10805346",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Gout and other crystal arthrop (PheCode 274) (p=9.9e-324, gene: SLC2A9)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475731"
+      ],
+      "condition": "Gout and other crystal arthrop (PheCode 274)",
+      "gene": "SLC2A9",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10811661",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (PheCode 250.2) (p=4.0e-118, gene: CDKN2B-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475667"
+      ],
+      "condition": "Type 2 diabetes (PheCode 250.2)",
+      "gene": "CDKN2B-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10830963",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Fasting glucose (p=1.0e-321, gene: MTNR1B)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CG",
+      "references": [
+        "pubmed:34059833",
+        "gwas:GCST90002232"
+      ],
+      "condition": "Fasting glucose",
+      "gene": "MTNR1B",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11066320",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (p=9.0e-188, gene: PTPN11)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:41238958",
+        "gwas:GCST90572791"
+      ],
+      "condition": "Hypothyroidism",
+      "gene": "PTPN11",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1111875",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (p=1.0e-128, gene: HHEX - Y_RNA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:32541925",
+        "gwas:GCST010557"
+      ],
+      "condition": "Type 2 diabetes",
+      "gene": "HHEX - Y_RNA",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1152591",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Atrial fibrillation (p=2.0e-124, gene: ESR2, SYNE2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:40645996",
+        "gwas:GCST90624411"
+      ],
+      "condition": "Atrial fibrillation",
+      "gene": "ESR2, SYNE2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11675342",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (PheCode 244) (p=6.0e-158, gene: TPO)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475647"
+      ],
+      "condition": "Hypothyroidism (PheCode 244)",
+      "gene": "TPO",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12193446",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Refractive error (p=1.0e-300, gene: LAMA2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:42009823",
+        "gwas:GCST90841193"
+      ],
+      "condition": "Refractive error",
+      "gene": "LAMA2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12203592",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Neoplasm of uncertain behavior of skin (PheCode 173) (p=3.0e-236, gene: IRF4)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475585"
+      ],
+      "condition": "Neoplasm of uncertain behavior of skin (PheCode 173)",
+      "gene": "IRF4",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12203592",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Degenerative skin conditions and other dermatoses (PheCode 702) (p=9.9e-324, gene: IRF4)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90476202"
+      ],
+      "condition": "Degenerative skin conditions and other dermatoses (PheCode 702)",
+      "gene": "IRF4",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12461206",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Benign nodular goiter (p=1.0e-117, gene: INSR)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:41644669",
+        "gwas:GCST90627741"
+      ],
+      "condition": "Benign nodular goiter",
+      "gene": "INSR",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1260326",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Gout (PheCode 274.1) (p=4.0e-137, gene: GCKR)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475735"
+      ],
+      "condition": "Gout (PheCode 274.1)",
+      "gene": "GCKR",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12740374",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Familial combined hyperlipidemia defined by Consensus criteria (p=7.0e-175, gene: CELSR2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:34906840",
+        "gwas:GCST90104006"
+      ],
+      "condition": "Familial combined hyperlipidemia defined by Consensus criteria",
+      "gene": "CELSR2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12740374",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Disorders of lipid metabolism (PheCode 272) (p=7.0e-262, gene: CELSR2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479929"
+      ],
+      "condition": "Disorders of lipid metabolism (PheCode 272)",
+      "gene": "CELSR2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs12794714",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Vitamin deficiency (PheCode 261) (p=4.0e-111, gene: CYP2R1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479913"
+      ],
+      "condition": "Vitamin deficiency (PheCode 261)",
+      "gene": "CYP2R1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs13089920",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Craniofacial microsomia (p=2.0e-120, gene: RN7SKP61 - MRPS17P3)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:26853712",
+        "gwas:GCST004412"
+      ],
+      "condition": "Craniofacial microsomia",
+      "gene": "RN7SKP61 - MRPS17P3",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1329424",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Degeneration of macula and posterior pole of retina (PheCode 362.2) (p=9.9e-324, gene: CFH)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90480049"
+      ],
+      "condition": "Degeneration of macula and posterior pole of retina (PheCode 362.2)",
+      "gene": "CFH",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1333042",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Coronary artery / coronary heart disease (including heart attack, angina) (p=8.0e-129, gene: CDKN2B-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479543"
+      ],
+      "condition": "Coronary artery / coronary heart disease (including heart attack, angina)",
+      "gene": "CDKN2B-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1333042",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Takes medication for coronary artery/ coronary heart disease? (p=9.0e-109, gene: CDKN2B-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479542"
+      ],
+      "condition": "Takes medication for coronary artery/ coronary heart disease?",
+      "gene": "CDKN2B-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1421085",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (PheCode 250.2) (p=4.0e-211, gene: FTO)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475667"
+      ],
+      "condition": "Type 2 diabetes (PheCode 250.2)",
+      "gene": "FTO",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1421085",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Obesity (PheCode 278.1) (p=6.0e-291, gene: FTO)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475762"
+      ],
+      "condition": "Obesity (PheCode 278.1)",
+      "gene": "FTO",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs143384",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Physical function (baseline) (p=4.0e-185, gene: GDF5)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:40374629",
+        "gwas:GCST90565837"
+      ],
+      "condition": "Physical function (baseline)",
+      "gene": "GDF5",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1558902",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Morbid obesity (PheCode 278.11) (p=7.0e-122, gene: FTO)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479951"
+      ],
+      "condition": "Morbid obesity (PheCode 278.11)",
+      "gene": "FTO",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs157580",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Alzheimer's disease or family history of Alzheimer's disease (p=8.0e-220, gene: TOMM40)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:30617256",
+        "gwas:GCST007320"
+      ],
+      "condition": "Alzheimer's disease or family history of Alzheimer's disease",
+      "gene": "TOMM40",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs157580",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Alzheimer's disease (MTAG) (p=9.0e-186, gene: TOMM40)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39537608",
+        "gwas:GCST90449058"
+      ],
+      "condition": "Alzheimer's disease (MTAG)",
+      "gene": "TOMM40",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1799941",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypogonadism (p=1.0e-136, gene: SHBG)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:40316537",
+        "gwas:GCST90570530"
+      ],
+      "condition": "Hypogonadism",
+      "gene": "SHBG",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1805007",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Neoplasm of uncertain behavior of skin (PheCode 173) (p=7.0e-188, gene: MC1R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475585"
+      ],
+      "condition": "Neoplasm of uncertain behavior of skin (PheCode 173)",
+      "gene": "MC1R",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs1805007",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Degenerative skin conditions and other dermatoses (PheCode 702) (p=1.0e-224, gene: MC1R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90476202"
+      ],
+      "condition": "Degenerative skin conditions and other dermatoses (PheCode 702)",
+      "gene": "MC1R",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs2108622",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs2108622 CT genotype may have increased warfarin dosage requirements as compared to patients with the CC genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also affect warfarin dosage requirements.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/655385400"
+      ],
+      "condition": "",
+      "gene": "CYP4F2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs2286963",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Urinary metabolite modules (eigenmetabolites) in chronic kidney disease (p=7.0e-132, gene: ACADL)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:31959995",
+        "gwas:GCST009735"
+      ],
+      "condition": "Urinary metabolite modules (eigenmetabolites) in chronic kidney disease",
+      "gene": "ACADL",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs2289252",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Other venous embolism and thrombosis (PheCode 452) (p=2.0e-111, gene: F11, F11-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90480221"
+      ],
+      "condition": "Other venous embolism and thrombosis (PheCode 452)",
+      "gene": "F11, F11-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs2853672",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Seborrheic keratosis (PheCode 702.2) (p=1.0e-185, gene: TERT)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90476206"
+      ],
+      "condition": "Seborrheic keratosis (PheCode 702.2)",
+      "gene": "TERT",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs2871960",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Physical function (baseline) (p=2.0e-153, gene: ZBTB38)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:40374629",
+        "gwas:GCST90565837"
+      ],
+      "condition": "Physical function (baseline)",
+      "gene": "ZBTB38",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs3087243",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism NOS (PheCode 244.4) (p=3.0e-107, gene: CTLA4 - ICOS)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475653"
+      ],
+      "condition": "Hypothyroidism NOS (PheCode 244.4)",
+      "gene": "CTLA4 - ICOS",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs3134996",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism NOS (PheCode 244.4) (p=5.0e-139, gene: HLA-DQB1 - MTCO3P1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475653"
+      ],
+      "condition": "Hypothyroidism NOS (PheCode 244.4)",
+      "gene": "HLA-DQB1 - MTCO3P1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs3184504",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (p=3.0e-268, gene: ATXN2, SH2B3)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:41238958",
+        "gwas:GCST90572791"
+      ],
+      "condition": "Hypothyroidism",
+      "gene": "ATXN2, SH2B3",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs3184504",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (PheCode 244) (p=3.0e-121, gene: ATXN2, SH2B3)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475647"
+      ],
+      "condition": "Hypothyroidism (PheCode 244)",
+      "gene": "ATXN2, SH2B3",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs356203",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Parkinson's disease or first degree relation to individual with Parkinson's disease (p=5.0e-149, gene: SNCA)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:31701892",
+        "gwas:GCST009325"
+      ],
+      "condition": "Parkinson's disease or first degree relation to individual with Parkinson's disease",
+      "gene": "SNCA",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs3745274",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: efavirenz \u2014 HIV infectious disease \u2014 Patients with the rs3745274 GT genotype may have an increased risk of efavirenz-induced side effects, including sleep- and central nervous system-related side effects, as compared to patients with the GG genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence risk of efavirenz toxicity.",
+      "attribution": "PharmGKB",
+      "genotype_match": "GT",
+      "references": [
+        "pharmgkb:annotation/827923042"
+      ],
+      "condition": "HIV infectious disease",
+      "gene": "CYP2B6",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs3745274",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: efavirenz \u2014 HIV infectious disease \u2014 Patients with the rs3745274 GT genotype and HIV infection may have increased plasma concentrations and decreased clearance of efavirenz as compared to patients with the GG genotype. Other genetic and clinical factors may also influence the metabolism of efavirenz. This annotation only covers the pharmacokinetic relationship between rs3745274 and efavirenz and does not include evidence about clinical outcomes.",
+      "attribution": "PharmGKB",
+      "genotype_match": "GT",
+      "references": [
+        "pharmgkb:annotation/827923032"
+      ],
+      "condition": "HIV infectious disease",
+      "gene": "CYP2B6",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs3807989",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Atrial fibrillation (p=1.0e-187, gene: CAV1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:40645996",
+        "gwas:GCST90624411"
+      ],
+      "condition": "Atrial fibrillation",
+      "gene": "CAV1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs429358",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Alzheimer's disease (p=1.0e-320, gene: APOE)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:40676597",
+        "gwas:GCST90654655"
+      ],
+      "condition": "Alzheimer's disease",
+      "gene": "APOE",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs429358",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Familial combined hyperlipidemia defined by Consensus criteria (p=3.0e-226, gene: APOE)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:34906840",
+        "gwas:GCST90104006"
+      ],
+      "condition": "Familial combined hyperlipidemia defined by Consensus criteria",
+      "gene": "APOE",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs429358",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Neurological disorders (PheCode 292) (p=8.0e-166, gene: APOE)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90476506"
+      ],
+      "condition": "Neurological disorders (PheCode 292)",
+      "gene": "APOE",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs4588",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Vitamin deficiency (PheCode 261) (p=2.0e-166, gene: GC)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479913"
+      ],
+      "condition": "Vitamin deficiency (PheCode 261)",
+      "gene": "GC",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs4680",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Plasma 2-O-methylascorbic acid levels in chronic kidney disease (p=5.0e-174, gene: COMT)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:37277652",
+        "gwas:GCST90264401"
+      ],
+      "condition": "Plasma 2-O-methylascorbic acid levels in chronic kidney disease",
+      "gene": "COMT",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs4680",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Urine 2-O-methylascorbic acid levels in chronic kidney disease (p=4.0e-161, gene: COMT)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:37277652",
+        "gwas:GCST90264402"
+      ],
+      "condition": "Urine 2-O-methylascorbic acid levels in chronic kidney disease",
+      "gene": "COMT",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs4917",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Serum calciprotein particle maturation time (T50) (p=2.0e-101, gene: AHSG, HRG-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:35097025",
+        "gwas:GCST90102513"
+      ],
+      "condition": "Serum calciprotein particle maturation time (T50)",
+      "gene": "AHSG, HRG-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs4977574",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Coronary artery disease (p=9.0e-223, gene: CDKN2B-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:29212778",
+        "gwas:GCST005195"
+      ],
+      "condition": "Coronary artery disease",
+      "gene": "CDKN2B-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs505802",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Gout (PheCode 274.1) (p=4.0e-101, gene: SLC22A11 - SLC22A12)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479931"
+      ],
+      "condition": "Gout (PheCode 274.1)",
+      "gene": "SLC22A11 - SLC22A12",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs505922",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Venous thromboembolism (p=0.0e+00, gene: ABO)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:36154123",
+        "gwas:GCST90797305"
+      ],
+      "condition": "Venous thromboembolism",
+      "gene": "ABO",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs553668",
+      "significance": "clinvar_pathogenic",
+      "category": "clinical",
+      "magnitude": 9.0,
+      "description": "ClinVar classifies this allele as Pathogenic",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/33200"
+      ],
+      "condition": "Lipodystrophy, familial partial, type 8",
+      "gene": "ADRA2A",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs560887",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Glycated hemoglobin levels (p=6.0e-122, gene: SPC25, G6PC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:34059833",
+        "gwas:GCST90002244"
+      ],
+      "condition": "Glycated hemoglobin levels",
+      "gene": "SPC25, G6PC2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs6511720",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Familial combined hyperlipidemia defined by Consensus criteria (p=1.0e-110, gene: LDLR)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:34906840",
+        "gwas:GCST90104006"
+      ],
+      "condition": "Familial combined hyperlipidemia defined by Consensus criteria",
+      "gene": "LDLR",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs662799",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Metabolic syndrome (p=7.0e-164, gene: APOA5)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:38201907",
+        "gwas:GCST90454454"
+      ],
+      "condition": "Metabolic syndrome",
+      "gene": "APOA5",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs6679677",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (PheCode 244) (p=1.0e-121, gene: PHTF1 - RSBN1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475647"
+      ],
+      "condition": "Hypothyroidism (PheCode 244)",
+      "gene": "PHTF1 - RSBN1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs6838973",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Atrial fibrillation (MTAG) (p=7.0e-109, gene: LINC01438 - MIR297)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:39537608",
+        "gwas:GCST90449054"
+      ],
+      "condition": "Atrial fibrillation (MTAG)",
+      "gene": "LINC01438 - MIR297",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs6983267",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Colorectal cancer (p=2.0e-122, gene: PCAT1, CASC8, POU5F1B, CCAT2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:36539618",
+        "gwas:GCST90129505"
+      ],
+      "condition": "Colorectal cancer",
+      "gene": "PCAT1, CASC8, POU5F1B, CCAT2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7013278",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Colorectal cancer (p=1.0e-102, gene: POU5F1B, PCAT1, CASC8)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:36539618",
+        "gwas:GCST90129505"
+      ],
+      "condition": "Colorectal cancer",
+      "gene": "POU5F1B, PCAT1, CASC8",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7130881",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Cancer of prostate (PheCode 185) (p=4.0e-156, gene: SMIM38 - MYEOV)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479803"
+      ],
+      "condition": "Cancer of prostate (PheCode 185)",
+      "gene": "SMIM38 - MYEOV",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7132327",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Spatial QRS-T angle (p=2.0e-109, gene: TBX3-AS1 - UBA52P7)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:36918541",
+        "gwas:GCST90246320"
+      ],
+      "condition": "Spatial QRS-T angle",
+      "gene": "TBX3-AS1 - UBA52P7",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs730497",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Glycated hemoglobin levels (p=2.0e-273, gene: GCK)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:33462484",
+        "gwas:GCST90019509"
+      ],
+      "condition": "Glycated hemoglobin levels",
+      "gene": "GCK",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7528419",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hyperlipidemia (PheCode 272.1) (p=8.0e-300, gene: CELSR2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475718"
+      ],
+      "condition": "Hyperlipidemia (PheCode 272.1)",
+      "gene": "CELSR2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7753012",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Chronic obstructive pulmonary disease liability (machine learning-based score) (p=3.0e-110, gene: ADGRG6)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:37069358",
+        "gwas:GCST90244098"
+      ],
+      "condition": "Chronic obstructive pulmonary disease liability (machine learning-based score)",
+      "gene": "ADGRG6",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7756992",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (p=6.0e-128, gene: CDKAL1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:32541925",
+        "gwas:GCST010555"
+      ],
+      "condition": "Type 2 diabetes",
+      "gene": "CDKAL1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7759938",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Menarche (age at onset) (p=8.0e-110, gene: LIN28B-AS1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:25231870",
+        "gwas:GCST002541"
+      ],
+      "condition": "Menarche (age at onset)",
+      "gene": "LIN28B-AS1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7850258",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (p=2.0e-136, gene: PTCSC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:36093044",
+        "gwas:GCST90204167"
+      ],
+      "condition": "Hypothyroidism",
+      "gene": "PTCSC2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7850258",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Takes medication for Thyroid problems? (p=2.0e-119, gene: PTCSC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479596"
+      ],
+      "condition": "Takes medication for Thyroid problems?",
+      "gene": "PTCSC2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7903146",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (p=0.0e+00, gene: TCF7L2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:32541925",
+        "gwas:GCST010555"
+      ],
+      "condition": "Type 2 diabetes",
+      "gene": "TCF7L2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7903146",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Takes medication for Diabetes/sugar? (p=1.0e-302, gene: TCF7L2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479588"
+      ],
+      "condition": "Takes medication for Diabetes/sugar?",
+      "gene": "TCF7L2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7903146",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Diabetic retinopathy (PheCode 250.7) (p=3.0e-271, gene: TCF7L2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CC",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90479891"
+      ],
+      "condition": "Diabetic retinopathy (PheCode 250.7)",
+      "gene": "TCF7L2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs7968682",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Physical function (baseline) (p=8.0e-142, gene: HMGA2 - MIR6074)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GT",
+      "references": [
+        "pubmed:40374629",
+        "gwas:GCST90565837"
+      ],
+      "condition": "Physical function (baseline)",
+      "gene": "HMGA2 - MIR6074",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs881858",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (p=9.0e-117, gene: VEGFA - LINC02537)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AA",
+      "references": [
+        "pubmed:41644669",
+        "gwas:GCST90627749"
+      ],
+      "condition": "Hypothyroidism",
+      "gene": "VEGFA - LINC02537",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs925489",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Hypothyroidism (p=0.0e+00, gene: PTCSC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "CT",
+      "references": [
+        "pubmed:41644669",
+        "gwas:GCST90627750"
+      ],
+      "condition": "Hypothyroidism",
+      "gene": "PTCSC2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs9327807",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Atrial fibrillation (p=8.0e-135, gene: FAM13B)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "TT",
+      "references": [
+        "pubmed:40645996",
+        "gwas:GCST90624412"
+      ],
+      "condition": "Atrial fibrillation",
+      "gene": "FAM13B",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs9368222",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Type 2 diabetes (p=2.0e-189, gene: CDKAL1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:38685053",
+        "gwas:GCST90693212"
+      ],
+      "condition": "Type 2 diabetes",
+      "gene": "CDKAL1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs965513",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Thyroid problems (p=9.0e-148, gene: PTCSC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475276"
+      ],
+      "condition": "Thyroid problems",
+      "gene": "PTCSC2",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs965513",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 9.0,
+      "description": "GWAS Catalog: Takes medication for Thyroid problems? (p=3.0e-133, gene: PTCSC2)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:39024449",
+        "gwas:GCST90475277"
+      ],
+      "condition": "Takes medication for Thyroid problems?",
+      "gene": "PTCSC2",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs9923231 CT genotype may require a decreased dose of warfarin as compared to patients with the CC genotype or an increased dose as compared to patients with the TT genotype. Other genetic and clinical factors may also influence warfarin dose requirement.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/655385012"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: acenocoumarol \u2014 Patients with the rs9923231 CT genotype may require a decreased dose of acenocoumarol as compared to patients with the CC genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence acenocoumarol dose requirements.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/981204044"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_1a",
+      "category": "pharma",
+      "magnitude": 9.0,
+      "description": "PharmGKB: phenprocoumon \u2014 Patients with the rs9923231 CT genotype may require a lower dose when treated with phenprocoumon as compared to patients with the CC genotype. Other genetic and clinical factors may also influence phenprocoumon dose.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1451237940"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10737680",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 8.5,
+      "description": "GWAS Catalog: Age-related macular degeneration (p=0.0e+00, gene: CFH)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:23455636",
+        "gwas:GCST001884"
+      ],
+      "condition": "Age-related macular degeneration",
+      "gene": "CFH",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11209026",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 8.5,
+      "description": "GWAS Catalog: Inflammatory bowel disease (p=8.0e-161, gene: IL23R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:23128233",
+        "gwas:GCST001725"
+      ],
+      "condition": "Inflammatory bowel disease",
+      "gene": "IL23R",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs9271366",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 8.5,
+      "description": "GWAS Catalog: Multiple sclerosis (p=7.0e-184, gene: HLA-DRB1 - HLA-DQA1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:19525955",
+        "gwas:GCST000425"
+      ],
+      "condition": "Multiple sclerosis",
+      "gene": "HLA-DRB1 - HLA-DQA1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs2359612",
+      "significance": "pharmgkb_loe_1b",
+      "category": "pharma",
+      "magnitude": 8.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs2359612 AG genotype may require a decreased dose of warfarin as compared to patients with the GG genotype. Other genetic and clinical factors may also influence dose of warfarin.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/655385024"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs8050894",
+      "significance": "pharmgkb_loe_1b",
+      "category": "pharma",
+      "magnitude": 8.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs8050894 CG genotype may require a lower dose of warfarin as compared to patients with the CC genotype. Other genetic and clinical factors may also influence warfarin dosage requirements.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CG",
+      "references": [
+        "pharmgkb:annotation/655385028"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_1b",
+      "category": "pharma",
+      "magnitude": 8.0,
+      "description": "PharmGKB: warfarin \u2014 over-anticoagulation \u2014 Patients with the rs9923231 CT genotype may have increased risk of over-anticoagulation when treated with warfarin as compared with patients with genotype CC. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence the toxicity to warfarin.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1447673005"
+      ],
+      "condition": "over-anticoagulation",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9934438",
+      "significance": "pharmgkb_loe_1b",
+      "category": "pharma",
+      "magnitude": 8.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs9934438 AG genotype may require a lower dose of warfarin as compared to patients with the GG genotype, and a higher dose as compared to patients with the AA genotype. However, conflicting evidence has been reported. Other clinical and genetic factors may also influence warfarin dose requirements.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/655385392"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11209026",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 7.5,
+      "description": "GWAS Catalog: Crohn's disease (p=1.0e-64, gene: IL23R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:21102463",
+        "gwas:GCST000879"
+      ],
+      "condition": "Crohn's disease",
+      "gene": "IL23R",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs1042713",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: salmeterol \u2014 Asthma \u2014 Patients with the rs1042713 AG genotype and asthma may have an increased response to salmeterol as compared to patients with the AA genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence a response to salmeterol.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/655385102"
+      ],
+      "condition": "Asthma",
+      "gene": "ADRB2",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs1051266",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: methotrexate \u2014 Rheumatoid arthritis \u2014 Patients with the rs1051266 CT genotype and rheumatoid arthritis may have decreased response when treated with methotrexate as compared to patients with the TT genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence methotrexate response.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1451245360"
+      ],
+      "condition": "Rheumatoid arthritis",
+      "gene": "SLC19A1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1063192",
+      "significance": "clinvar_likely_pathogenic",
+      "category": "clinical",
+      "magnitude": 7.0,
+      "description": "ClinVar classifies this allele as Likely pathogenic",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/800881"
+      ],
+      "condition": "Three Vessel Coronary Disease",
+      "gene": "CDKN2B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11209026",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 7.0,
+      "description": "GWAS Catalog: Ulcerative colitis (p=5.0e-28, gene: IL23R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:21297633",
+        "gwas:GCST000964"
+      ],
+      "condition": "Ulcerative colitis",
+      "gene": "IL23R",
+      "review_status": ""
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs11209026",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 7.0,
+      "description": "GWAS Catalog: Ankylosing spondylitis (p=6.0e-28, gene: IL23R)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "GG",
+      "references": [
+        "pubmed:23749187",
+        "gwas:GCST005529"
+      ],
+      "condition": "Ankylosing spondylitis",
+      "gene": "IL23R",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs2108622",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: acenocoumarol \u2014 Atrial Fibrillation \u2014 Patients with the rs2108622 CT genotype who are treated with acenocoumarol may require a lower dose as compared to patients with the TT genotype or may require a higher dose as compared to patients with the CC genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence required acenocoumarol dose.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1184661194"
+      ],
+      "condition": "Atrial Fibrillation",
+      "gene": "CYP4F2",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs2884737",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: warfarin \u2014 Patients with the rs2884737 AC genotype may require higher dose of warfarin as compared to patients with the CC genotype. Other clinical and genetic factors may also influence warfarin dosage requirements.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AC",
+      "references": [
+        "pharmgkb:annotation/982035703"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs3745274",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: nevirapine \u2014 HIV infectious disease \u2014 Patients with the rs3745274 GT genotype and HIV infection may have decreased clearance of and increased exposure to nevirapine as compared to patients with the GG genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence clearance of nevirapine and exposure to drug. This annotation only covers the pharmacokinetic relationship between rs3745274 and nevirapine and does not include evidence about clinical outcomes.",
+      "attribution": "PharmGKB",
+      "genotype_match": "GT",
+      "references": [
+        "pharmgkb:annotation/981202294"
+      ],
+      "condition": "HIV infectious disease",
+      "gene": "CYP2B6",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs5030814",
+      "significance": "clinvar_likely_pathogenic",
+      "category": "clinical",
+      "magnitude": 7.0,
+      "description": "ClinVar classifies this allele as Likely pathogenic",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/52771"
+      ],
+      "condition": "Von Hippel-Lindau syndrome",
+      "gene": "VHL",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: warfarin \u2014 Hemorrhage \u2014 Patients with the rs9923231 CT genotype may have an increased risk of bleeding when treated with warfarin as compared to patients with the CC genotypes. However, conflicting evidence has been reported. Other clinical and genetic factors may also influence risk of warfarin-induced bleeding.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1449269910"
+      ],
+      "condition": "Hemorrhage",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: warfarin \u2014 time to therapeutic inr \u2014 Patients with the rs9923231 CT genotype may require shorter time to therapeutic INR when treated with warfarin as compared with patients with genotype CC. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence the response to warfarin.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1447672998"
+      ],
+      "condition": "time to therapeutic inr",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: warfarin \u2014 time in therapeutic range \u2014 Patients with the rs9923231 CT genotype may spent less time in INR therapeutic range (TTR) when treated with warfarin as compared with patients with genotype CC. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence the response to warfarin.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1447673015"
+      ],
+      "condition": "time in therapeutic range",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9923231",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: phenprocoumon \u2014 Hemorrhage;over-anticoagulation;time above therapeutic range \u2014 Patients with the CT genotype may have an increased risk of adverse events (bleeding, over-anticoagulation or increased time above therapeutic range) when treated with phenprocoumon as compared to patients with the CC genotype. Other clinical and genetic factors may also influence risk of adverse events to phenprocoumon.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CT",
+      "references": [
+        "pharmgkb:annotation/1451243676"
+      ],
+      "condition": "Hemorrhage;over-anticoagulation;time above therapeutic range",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9934438",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: acenocoumarol \u2014 Patients with the rs9934438 AG genotype may require decreased dose of acenocoumarol as compared to patients with genotype GG. Other genetic and clinical factors may also influence the dose of acenocoumarol.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/1183704228"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs9934438",
+      "significance": "pharmgkb_loe_2a",
+      "category": "pharma",
+      "magnitude": 7.0,
+      "description": "PharmGKB: phenprocoumon \u2014 Patients with the rs9934438 AG genotype may require a decreased dose of phenprocoumon as compared to patients with the GG genotype, but an increased dose as compared to patients with the AA genotype. Other genetic and clinical factors may also influence dose of phenprocoumon.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/1451244040"
+      ],
+      "condition": "",
+      "gene": "VKORC1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10276036",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/817401"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1042713",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/227753"
+      ],
+      "condition": "salmeterol response - Efficacy",
+      "gene": "ADRB2",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1051266",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/167450"
+      ],
+      "condition": "Lung cancer",
+      "gene": "SLC19A1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1080989",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/818103"
+      ],
+      "condition": "Tramadol response",
+      "gene": "CYP2D6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1211152",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/817578"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs13237132",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/817455"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs165599",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/817841"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ARVCF",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs165728",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/817857"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ARVCF",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs16969968",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/32536"
+      ],
+      "condition": "Susceptibility to severe coronavirus disease (COVID-19) due to high levels of fibrinogen and C-reactive protein",
+      "gene": "CHRNA5",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1922240",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/817418"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs20455",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/227759"
+      ],
+      "condition": "pravastatin response - Efficacy",
+      "gene": "KIF6",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2108622",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/227800"
+      ],
+      "condition": "CYP4F2-related disorder",
+      "gene": "CYP4F2",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2214102",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/817659"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2235013",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/817326"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2235033",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/817348"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2235035",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/817343"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2235046",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/817296"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2235544",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/2738276"
+      ],
+      "condition": "Levothyroxine response",
+      "gene": "DIO1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2359612",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/227784"
+      ],
+      "condition": "not provided",
+      "gene": "VKORC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs25487",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/227806"
+      ],
+      "condition": "Spinocerebellar ataxia, autosomal recessive 26",
+      "gene": "XRCC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs28371703",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/818029"
+      ],
+      "condition": "Tramadol response",
+      "gene": "CYP2D6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2884737",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/227787"
+      ],
+      "condition": "warfarin response - Dosage",
+      "gene": "VKORC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3745274",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/38626"
+      ],
+      "condition": "CYP2B6-related disorder",
+      "gene": "CYP2B6",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3812718",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/27936"
+      ],
+      "condition": "Early-infantile DEE",
+      "gene": "SCN1A",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs405509",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/611348"
+      ],
+      "condition": "Warfarin response",
+      "gene": "APOE",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs439401",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/611350"
+      ],
+      "condition": "Warfarin response",
+      "gene": "APOE",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs650245",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/816958"
+      ],
+      "condition": "Tramadol response",
+      "gene": "OPRM1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs650825",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/816951"
+      ],
+      "condition": "Tramadol response",
+      "gene": "OPRM1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7270101",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/29786"
+      ],
+      "condition": "Developmental and epileptic encephalopathy, 35",
+      "gene": "ITPA",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs727479",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/2748663"
+      ],
+      "condition": "Letrozole response",
+      "gene": "CYP19A1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs769450",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/611349"
+      ],
+      "condition": "Warfarin response",
+      "gene": "APOE",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7759388",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/817114"
+      ],
+      "condition": "Tramadol response",
+      "gene": "OPRM1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs8050894",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/227785"
+      ],
+      "condition": "not specified",
+      "gene": "VKORC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs868755",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/817441"
+      ],
+      "condition": "Tramadol response",
+      "gene": "ABCB1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs9271366",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 6.5,
+      "description": "GWAS Catalog: Ulcerative colitis (p=1.0e-18, gene: HLA-DRB1 - HLA-DQA1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:23511034",
+        "gwas:GCST001938"
+      ],
+      "condition": "Ulcerative colitis",
+      "gene": "HLA-DRB1 - HLA-DQA1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs9923231",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/17250"
+      ],
+      "condition": "Venous thromboembolism",
+      "gene": "VKORC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs9934438",
+      "significance": "clinvar_drug_response",
+      "category": "clinical",
+      "magnitude": 6.5,
+      "description": "ClinVar classifies this allele as drug response",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/38302"
+      ],
+      "condition": "not specified",
+      "gene": "VKORC1",
+      "review_status": "reviewed_by_expert_panel"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10954213",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/18436"
+      ],
+      "condition": "Systemic lupus erythematosus, susceptibility to, 10",
+      "gene": "IRF5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11196205",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/22454"
+      ],
+      "condition": "Diabetes mellitus type 2, susceptibility to",
+      "gene": "TCF7L2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1143627",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/29710"
+      ],
+      "condition": "Gastric cancer susceptibility after h. pylori infection",
+      "gene": "IL1B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1368408",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/19292"
+      ],
+      "condition": "Inherited susceptibility to asthma",
+      "gene": "SCGB3A2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1617640",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/31641"
+      ],
+      "condition": "Microvascular complications of diabetes, susceptibility to, 2",
+      "gene": "EPO",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs16969968",
+      "significance": "pharmgkb_loe_2b",
+      "category": "pharma",
+      "magnitude": 6.0,
+      "description": "PharmGKB: nicotine \u2014 Tobacco Use Disorder \u2014 Patients with rs16969968 AG genotype may have an increased risk for nicotine dependence when exposed to nicotine as compared to patients with the GG genotype, but a decreased risk as compared to patients with the AA genotype. However, conflicting evidence has been reported. Some findings are based on haplotype studies with either rs680244 or rs680244, rs569207 rs578776, and rs1051730. Other genetic and clinical factors may influence risk of nicotine dependency.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AG",
+      "references": [
+        "pharmgkb:annotation/981204902"
+      ],
+      "condition": "Tobacco Use Disorder",
+      "gene": "CHRNA5",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2073658",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/27334"
+      ],
+      "condition": "Hyperlipidemia, familial combined, susceptibility to",
+      "gene": "USF1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2165241",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/29401"
+      ],
+      "condition": "Exfoliation syndrome, susceptibility to",
+      "gene": "LOXL1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2234693",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/31633"
+      ],
+      "condition": "Myocardial infarction, susceptibility to",
+      "gene": "ESR1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2269577",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/27234"
+      ],
+      "condition": ".",
+      "gene": "XBP1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2276631",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/24271"
+      ],
+      "condition": "Mycobacterium tuberculosis, susceptibility to infection by",
+      "gene": "SLC11A1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs25487",
+      "significance": "pharmgkb_loe_2b",
+      "category": "pharma",
+      "magnitude": 6.0,
+      "description": "PharmGKB: Platinum compounds \u2014 Neoplasms \u2014 Patients with cancer and the rs25487 CC genotype may have increased response when treated with platinum-based therapies as compared to patients with the CT or TT genotype. However, conflicting evidence has been reported. Other genetic and clinical factors may also influence response to platinum-based regimens.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CC",
+      "references": [
+        "pharmgkb:annotation/655386657"
+      ],
+      "condition": "Neoplasms",
+      "gene": "XRCC1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs279836",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/31259"
+      ],
+      "condition": "Alcoholism, susceptibility to",
+      "gene": "GABRA2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs279845",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/31258"
+      ],
+      "condition": "Alcoholism, susceptibility to",
+      "gene": "GABRA2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs279871",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/31257"
+      ],
+      "condition": "Alcoholism, susceptibility to",
+      "gene": "GABRA2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2919408",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/1334482"
+      ],
+      "condition": "Colorectal cancer",
+      "gene": "KCNB2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3737787",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/27333"
+      ],
+      "condition": "Hyperlipidemia, familial combined, susceptibility to",
+      "gene": "USF1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3766379",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/19934"
+      ],
+      "condition": "Rheumatoid arthritis",
+      "gene": "CD244",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs3812718",
+      "significance": "pharmgkb_loe_2b",
+      "category": "pharma",
+      "magnitude": 6.0,
+      "description": "PharmGKB: carbamazepine \u2014 Epilepsy \u2014 Patients with the rs3812718 TT genotype who are treated with carbamazepine may require a higher dose as compared to patients with the CT or CC genotype. Other genetic and clinical factors may also influence dose of carbamazepine.",
+      "attribution": "PharmGKB",
+      "genotype_match": "TT",
+      "references": [
+        "pharmgkb:annotation/613978931"
+      ],
+      "condition": "Epilepsy",
+      "gene": "SCN1A",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs41303970",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/23405"
+      ],
+      "condition": "Myocardial infarction, susceptibility to",
+      "gene": "GCLM",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4402960",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/17474"
+      ],
+      "condition": "Diabetes mellitus type 2, susceptibility to",
+      "gene": "IGF2BP2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4950928",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/23151"
+      ],
+      "condition": "Asthma-related traits, susceptibility to, 7",
+      "gene": "CHI3L1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs5030952",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/20134"
+      ],
+      "condition": "Type 2 diabetes mellitus 1, susceptibility to",
+      "gene": "CAPN10",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs5174",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/22035"
+      ],
+      "condition": "Myocardial infarction, susceptibility to, 1",
+      "gene": "LRP8",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs6025",
+      "significance": "pharmgkb_loe_2b",
+      "category": "pharma",
+      "magnitude": 6.0,
+      "description": "PharmGKB: hormonal contraceptives for systemic use \u2014 Thrombotic disease \u2014 Patients with the rs6025 CC genotype (normal Factor V) may have a decreased risk of experiencing thrombosis when receiving oral contraceptives as compared to patients with the CT or TT genotype (carriers of Factor V Leiden). However, conflicting evidence has been reported. Both Factor V Leiden and oral contraceptives have been found to independently increase the risk for thrombosis, but together they may have a cumulative effect on thrombosis risk. Other genetic and clinical factors may also influence risk of thrombosis.",
+      "attribution": "PharmGKB",
+      "genotype_match": "CC",
+      "references": [
+        "pharmgkb:annotation/1183689558"
+      ],
+      "condition": "Thrombotic disease",
+      "gene": "F5",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6548238",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/800415"
+      ],
+      "condition": "Obesity",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs659366",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/22904"
+      ],
+      "condition": "BODY MASS INDEX QUANTITATIVE TRAIT LOCUS 4",
+      "gene": "UCP2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs708494",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/28399"
+      ],
+      "condition": "Asthma, aspirin-induced, susceptibility to",
+      "gene": "PTGER2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7138803",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/800416"
+      ],
+      "condition": "Obesity",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "pharmgkb",
+      "rsid": "rs7270101",
+      "significance": "pharmgkb_loe_2b",
+      "category": "pharma",
+      "magnitude": 6.0,
+      "description": "PharmGKB: peginterferon alfa-2b;ribavirin \u2014 Anemia;Chronic hepatitis C virus infection \u2014 Patients with the rs7270101 AC genotype and chronic hepatitis C may have a decreased risk of anemia when treated with peg interferon alfa-2b and ribavirin as compared to patients with the AA genotype. However, conflicting evidence has been reported. Other clinical and genetic factors may influence the risk of anemia.",
+      "attribution": "PharmGKB",
+      "genotype_match": "AC",
+      "references": [
+        "pharmgkb:annotation/1446905703"
+      ],
+      "condition": "Anemia;Chronic hepatitis C virus infection",
+      "gene": "ITPA",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7291467",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/29511"
+      ],
+      "condition": "Myocardial infarction, susceptibility to",
+      "gene": "LGALS2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs735239",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/20448"
+      ],
+      "condition": "Mycobacterium tuberculosis, susceptibility to",
+      "gene": "CD209",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7754840",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/800417"
+      ],
+      "condition": "Obesity",
+      "gene": "CDKAL1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs9264942",
+      "significance": "clinvar_risk_factor",
+      "category": "clinical",
+      "magnitude": 6.0,
+      "description": "ClinVar classifies this allele as risk factor",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/29946"
+      ],
+      "condition": "HIV-1 VIREMIA, SUSCEPTIBILITY TO",
+      "gene": "HLA-C",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs9271366",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 6.0,
+      "description": "GWAS Catalog: Crohn's disease (p=5.0e-12, gene: HLA-DRB1 - HLA-DQA1)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AG",
+      "references": [
+        "pubmed:23850713",
+        "gwas:GCST002094"
+      ],
+      "condition": "Crohn's disease",
+      "gene": "HLA-DRB1 - HLA-DQA1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1005753",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/961213"
+      ],
+      "condition": "Rheumatoid arthritis",
+      "gene": "PADI2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1006737",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/1780024"
+      ],
+      "condition": "Post-traumatic stress disorder",
+      "gene": "CACNA1C",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10071425",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93657"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10114470",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1708937"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "TNFSF15",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10167431",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1108812"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "IL1RL2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1043618",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/682503"
+      ],
+      "condition": "Chronic obstructive pulmonary disease",
+      "gene": "HSPA1A",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "gwas",
+      "rsid": "rs10737680",
+      "significance": "gwas_association",
+      "category": "trait",
+      "magnitude": 5.0,
+      "description": "GWAS Catalog: Post bronchodilator FEV1/FVC ratio in COPD (p=6.0e-07, gene: CFH)",
+      "attribution": "GWAS Catalog",
+      "genotype_match": "AC",
+      "references": [
+        "pubmed:26634245",
+        "gwas:GCST003265"
+      ],
+      "condition": "Post bronchodilator FEV1/FVC ratio in COPD",
+      "gene": "CFH",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs10835638",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/143150"
+      ],
+      "condition": "Hypogonadotropic hypogonadism 24 without anosmia",
+      "gene": "FSHB",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11206510",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1336199"
+      ],
+      "condition": "Familial hypercholesterolemia",
+      "gene": "PCSK9",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11241183",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93700"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11241184",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93734"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11241185",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93778"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs11692304",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1108823"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "SLC9A4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12102171",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/983867"
+      ],
+      "condition": "Lung cancer",
+      "gene": "SMAD3",
+      "review_status": "criteria_provided,_single_submitter"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12203592",
+      "significance": "clinvar_affects",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Affects",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/170189"
+      ],
+      "condition": "Skin/hair/eye pigmentation, variation in, 8",
+      "gene": "IRF4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12460842",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/178887"
+      ],
+      "condition": "Cataplexy and narcolepsy",
+      "gene": "P2RY11",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12518091",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/93690"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12658",
+      "significance": "clinvar_unknown",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as unknown significance",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/324781"
+      ],
+      "condition": "",
+      "gene": "PRICKLE1",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12659119",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93759"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12712135",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1108813"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "IL1RL1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12740374",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/22120"
+      ],
+      "condition": "LOW DENSITY LIPOPROTEIN CHOLESTEROL LEVEL QUANTITATIVE TRAIT LOCUS 6",
+      "gene": "CELSR2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12896399",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/16459"
+      ],
+      "condition": "SKIN/HAIR/EYE PIGMENTATION 6, BLOND/BROWN HAIR",
+      "gene": "SLC24A4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12899055",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1683577"
+      ],
+      "condition": "Vascular endothelial growth factor (VEGF) inhibitor response",
+      "gene": "SLCO3A1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs12913832",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/19784"
+      ],
+      "condition": "SKIN/HAIR/EYE PIGMENTATION 1, BLUE/NONBLUE EYES",
+      "gene": "HERC2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs13118928",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/858303"
+      ],
+      "condition": "Chronic obstructive pulmonary disease, biomass related",
+      "gene": "HHIP",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs13147758",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/858301"
+      ],
+      "condition": "Chronic obstructive pulmonary disease, biomass related",
+      "gene": "HHIP",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1360780",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1720822"
+      ],
+      "condition": "Post-traumatic stress disorder",
+      "gene": "FKBP5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1407995",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/2794536"
+      ],
+      "condition": "Age related macular degeneration 7",
+      "gene": "DCT",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1435218",
+      "significance": "clinvar_association_not_found",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association not found",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/610691"
+      ],
+      "condition": "Lip and oral cavity carcinoma",
+      "gene": "LNX1",
+      "review_status": "criteria_provided,_single_submitter"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1468788",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/1108822"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "SLC9A4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1551570",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/178886"
+      ],
+      "condition": "Cataplexy and narcolepsy",
+      "gene": "PPAN",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs155370",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1683580"
+      ],
+      "condition": "Vascular endothelial growth factor (VEGF) inhibitor response",
+      "gene": "TMEM132D",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1667394",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/19782"
+      ],
+      "condition": "SKIN/HAIR/EYE PIGMENTATION 1, BLUE/NONBLUE EYES",
+      "gene": "HERC2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1670533",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/15775"
+      ],
+      "condition": "RECOMBINATION RATE QUANTITATIVE TRAIT LOCUS 1",
+      "gene": "RNF212",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs16944",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/857374"
+      ],
+      "condition": "Antisynthetase syndrome",
+      "gene": "IL1B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs17070145",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/16252"
+      ],
+      "condition": "Memory quantitative trait locus",
+      "gene": "WWC1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1734243",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/93903"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs17497857",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1686026"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "BMAL2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1800795",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/29757"
+      ],
+      "condition": "Diabetes mellitus, type 1, susceptibility to",
+      "gene": "IL6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1801708",
+      "significance": "clinvar_protective",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as protective",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/31681"
+      ],
+      "condition": "Migraine, resistance to",
+      "gene": "EDNRA",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs182549",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/22725"
+      ],
+      "condition": "LACTASE PERSISTENCE",
+      "gene": "MCM6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1828591",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/858302"
+      ],
+      "condition": "Chronic obstructive pulmonary disease, biomass related",
+      "gene": "HHIP",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1856908",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/1686050"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "CYP2C9",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1913263",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/1686036"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "MGST1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1914",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/93962"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1921622",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/1108815"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "IL1RL1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1934953",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/1686032"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "CYP2C8",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1966476",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/94120"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1966477",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/94119"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs1974786",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/93639"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2057094",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/961211"
+      ],
+      "condition": "Rheumatoid arthritis",
+      "gene": "PADI2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2070635",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/132379"
+      ],
+      "condition": "Nephrolithiasis, calcium oxalate",
+      "gene": "AHSG",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2071676",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/4930505"
+      ],
+      "condition": "Gastric cancer",
+      "gene": "CA9",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2111234",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1708941"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "NOD2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2112210",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93680"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2124437",
+      "significance": "clinvar_unknown",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as unknown significance",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/237595"
+      ],
+      "condition": "",
+      "gene": "RASGRP3",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2240340",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/581729"
+      ],
+      "condition": "Rheumatoid arthritis",
+      "gene": "PADI4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2241116",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/1108819"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "IL18R1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2251913",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93927"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2282983",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1311498"
+      ],
+      "condition": "Behcet disease",
+      "gene": "CDK6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2305795",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/178888"
+      ],
+      "condition": "Cataplexy and narcolepsy",
+      "gene": "P2RY11",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs235756",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/983868"
+      ],
+      "condition": "Lung cancer",
+      "gene": "BMP2",
+      "review_status": "criteria_provided,_single_submitter"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2431238",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93871"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2431241",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93961"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2431242",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93839"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2431512",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93841"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2431514",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93909"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs243865",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/420985"
+      ],
+      "condition": "Lip and oral cavity carcinoma",
+      "gene": "MMP2",
+      "review_status": "criteria_provided,_single_submitter"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2439589",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93780"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2439591",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93702"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2439595",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93840"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2464803",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93910"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2464806",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/93760"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2464807",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/93754"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2491132",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/27795"
+      ],
+      "condition": "Obesity, association with",
+      "gene": "SDC3",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545158",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93940"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545159",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94033"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545160",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/94030"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545163",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/94018"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545164",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/94004"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545165",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/94001"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2545169",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93980"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2546106",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/93966"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2546107",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94031"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2546108",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/94043"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2546110",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94048"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2546111",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/94087"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2707763",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93787"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2763979",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/682506"
+      ],
+      "condition": "Chronic obstructive pulmonary disease",
+      "gene": "HSPA1B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs28373740",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93686"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs28578275",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93731"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2909786",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94077"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2909787",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/94078"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2909958",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/94076"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs2952615",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/93938"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3134940",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/2750409"
+      ],
+      "condition": "COPD, severe early onset",
+      "gene": "AGER",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs35130225",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93826"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs35414976",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93771"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs35628",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/132371"
+      ],
+      "condition": "Familial cancer of breast",
+      "gene": "ABCC1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs369952",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/94223"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3741240",
+      "significance": "clinvar_established_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Established risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1015405"
+      ],
+      "condition": "Chronic obstructive pulmonary disease",
+      "gene": "SCGB1A1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3749977",
+      "significance": "clinvar_affects",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Affects",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/48525"
+      ],
+      "condition": "C3HEX, ability to smell",
+      "gene": "OR2J3",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3796619",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/15774"
+      ],
+      "condition": "RECOMBINATION RATE QUANTITATIVE TRAIT LOCUS 1",
+      "gene": "RNF212",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3829241",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/15767"
+      ],
+      "condition": "SKIN/HAIR/EYE PIGMENTATION, VARIATION IN, 10",
+      "gene": "TPCN2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs386830",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94163"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3888565",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/132375"
+      ],
+      "condition": "Familial cancer of breast",
+      "gene": "ABCC1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs390092",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93972"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs3901896",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1686029"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "ARNT2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs392907",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94003"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs395266",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93964"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs396321",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93816"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs401908",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93817"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs40457",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1708947"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "RIPK2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4073",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/2736347"
+      ],
+      "condition": "Cholangiocarcinoma",
+      "gene": "CXCL8",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4099181",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/93714"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs411356",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94117"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs414098",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93818"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4147611",
+      "significance": "clinvar_protective",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as protective",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/1686025"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "MGST3",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4149197",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1686040"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "MGST1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs42460",
+      "significance": "clinvar_unknown",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as unknown significance",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/341888"
+      ],
+      "condition": "",
+      "gene": "SLC6A2",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs42490",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1708948"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "RIPK2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs433429",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/94159"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs444527",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/4930508"
+      ],
+      "condition": "Gastric cancer",
+      "gene": "CDC20B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs448162",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94166"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4574921",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/1708949"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "TNFSF15",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs458906",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/93806"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs464002",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93661"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs464708",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/94012"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs467033",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/93815"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4705486",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93715"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4705609",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93651"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4705610",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/93652"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4705617",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/93698"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4705624",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AT",
+      "references": [
+        "clinvar:allele/93727"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4713902",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1695339"
+      ],
+      "condition": "Susceptibility to severe depressive disorder",
+      "gene": "FKBP5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4713916",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "GG",
+      "references": [
+        "clinvar:allele/227758"
+      ],
+      "condition": "Susceptibility to severe depressive disorder",
+      "gene": "FKBP5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4722804",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/1683576"
+      ],
+      "condition": "Vascular endothelial growth factor (VEGF) inhibitor response",
+      "gene": "CREB5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4748011",
+      "significance": "clinvar_association_not_found",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association not found",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/610692"
+      ],
+      "condition": "Lip and oral cavity carcinoma",
+      "gene": "CCDC3",
+      "review_status": "criteria_provided,_single_submitter"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4851608",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1108824"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "SLC9A4",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs485186",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/984438"
+      ],
+      "condition": "Familial Otitis Media",
+      "gene": "FUT2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4964059",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AC",
+      "references": [
+        "clinvar:allele/1686027"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "BMAL2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs497844",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/94188"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4988235",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/22724"
+      ],
+      "condition": "LACTASE PERSISTENCE",
+      "gene": "MCM6",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs4988958",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/1108817"
+      ],
+      "condition": "Ascending aortic dissection",
+      "gene": "IL1RL1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs511906",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93928"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs517947",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/93921"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs518013",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93922"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs529076",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93937"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs544243",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/94073"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs548710",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/94074"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs563556",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CG",
+      "references": [
+        "clinvar:allele/94009"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs569940",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/94075"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs5905607",
+      "significance": "clinvar_unknown",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as unknown significance",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/352264"
+      ],
+      "condition": "",
+      "gene": "ZNF41",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs602662",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/984437"
+      ],
+      "condition": "Familial Otitis Media",
+      "gene": "FUT2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6118004",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/132397"
+      ],
+      "condition": "Nephrolithiasis, calcium oxalate",
+      "gene": "HAO1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs62364016",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "GT",
+      "references": [
+        "clinvar:allele/93304"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs62364017",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/93825"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6449213",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/19633"
+      ],
+      "condition": "Uric acid concentration, serum, quantitative trait locus 2",
+      "gene": "SLC2A9",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6457452",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/682507"
+      ],
+      "condition": "Chronic obstructive pulmonary disease",
+      "gene": "HSPA1B",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs650616",
+      "significance": "clinvar_uncertain_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Uncertain risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1708944"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "PINK1",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6594646",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93670"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs66964065",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93900"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6802739",
+      "significance": "clinvar_unknown",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as unknown significance",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/294388"
+      ],
+      "condition": "",
+      "gene": "GPD1L",
+      "review_status": ""
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs681343",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "CT",
+      "references": [
+        "clinvar:allele/984433"
+      ],
+      "condition": "Familial Otitis Media",
+      "gene": "FUT2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6867243",
+      "significance": "clinvar_other",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as other",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/93750"
+      ],
+      "condition": "Familial colorectal cancer",
+      "gene": "APC",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs6926133",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/1695335"
+      ],
+      "condition": "Susceptibility to severe depressive disorder",
+      "gene": "FKBP5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs7213707",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1683584"
+      ],
+      "condition": "Vascular endothelial growth factor (VEGF) inhibitor response",
+      "gene": "SPNS2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs737054",
+      "significance": "clinvar_likely_risk_allele",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Likely risk allele",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1695337"
+      ],
+      "condition": "Susceptibility to severe depressive disorder",
+      "gene": "FKBP5",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs759330",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AA",
+      "references": [
+        "clinvar:allele/132377"
+      ],
+      "condition": "Nephrolithiasis, calcium oxalate",
+      "gene": "BGLAP",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs8057341",
+      "significance": "clinvar_confers_sensitivity",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as confers sensitivity",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1708943"
+      ],
+      "condition": "Leprosy, susceptibility to, 1",
+      "gene": "NOD2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs916977",
+      "significance": "clinvar_affects",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as Affects",
+      "attribution": "ClinVar",
+      "genotype_match": "CC",
+      "references": [
+        "clinvar:allele/19783"
+      ],
+      "condition": "SKIN/HAIR/EYE PIGMENTATION 1, BLUE/NONBLUE EYES",
+      "gene": "HERC2",
+      "review_status": "no_assertion_criteria_provided"
+    },
+    {
+      "source": "clinvar",
+      "rsid": "rs9333378",
+      "significance": "clinvar_association",
+      "category": "clinical",
+      "magnitude": 5.0,
+      "description": "ClinVar classifies this allele as association",
+      "attribution": "ClinVar",
+      "genotype_match": "AG",
+      "references": [
+        "clinvar:allele/1686045"
+      ],
+      "condition": "Pulmonary disease, chronic obstructive, susceptibility to",
+      "gene": "MGST3",
+      "review_status": "no_assertion_criteria_provided"
+    }
+  ]
+}

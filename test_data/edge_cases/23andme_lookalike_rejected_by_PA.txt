@@ -1,0 +1,4 @@
+# results of my Tipsy Test (courtesy of BGI)
+rs1229984	4	99318162	CC
+rs671	12	111803962	GG
+rs279845	4	46327706	AT
