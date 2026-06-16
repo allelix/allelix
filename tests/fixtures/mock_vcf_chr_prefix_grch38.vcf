@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##source=DeepVariant_v1.10.0
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chr10,length=133797422>
+##contig=<ID=chr12,length=133275309>
+##contig=<ID=chr17,length=83257441>
+##contig=<ID=chr22,length=50818468>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG002
+chr1	11796321	.	G	A	100	PASS	.	GT	0/1
+chr22	19963748	.	G	A	100	PASS	.	GT	0/1
+chr10	94942290	.	C	T	100	PASS	.	GT	1/1
+chr12	21178615	.	T	C	100	PASS	.	GT	0/1
+chr17	43093517	.	A	G	100	PASS	.	GT	0/1

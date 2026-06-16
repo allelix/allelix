@@ -62,3 +62,75 @@
 - rsid: rs3918290
   gene: DPYD
   note: Fluoropyrimidine toxicity
+
+# v2.0.2 additions (GH #7): clinically actionable single-SNP variants
+# verified to be on consumer arrays. Two new clusters: HFE (hereditary
+# hemochromatosis compound-het) and TPMT (thiopurine *3 haplotype).
+
+- rsid: rs6025
+  gene: F5
+  note: Factor V Leiden — hereditary thrombophilia (FDA-cleared GHR variant)
+
+- rsid: rs1799963
+  gene: F2
+  note: Prothrombin G20210A — hereditary thrombophilia
+
+- rsid: rs1800562
+  gene: HFE
+  cluster: HFE
+  note: C282Y — hereditary hemochromatosis (compound het with H63D is the clinical form)
+
+- rsid: rs1799945
+  gene: HFE
+  cluster: HFE
+  note: H63D — hereditary hemochromatosis (compound het with C282Y is the clinical form)
+
+- rsid: rs113993960
+  gene: CFTR
+  note: F508del — most common CF allele; carrier status for reproductive planning
+
+- rsid: rs334
+  gene: HBB
+  note: Sickle cell (HbS) — most-screened-for variant worldwide; carrier status
+
+- rsid: rs80359550
+  gene: BRCA2
+  note: BRCA2 6174delT — most common Ashkenazi founder mutation (BRCA1 covered by rs80357906)
+
+- rsid: rs9923231
+  gene: VKORC1
+  note: Warfarin dosing (CPIC Level A, pairs with CYP2C9 rs1799853)
+
+- rsid: rs1057910
+  gene: CYP2C9
+  note: CYP2C9*3 — completes warfarin metabolizer profile alongside *2 (rs1799853)
+
+- rsid: rs12248560
+  gene: CYP2C19
+  note: CYP2C19*17 ultrarapid metabolizer — completes clopidogrel profile alongside *2 (rs4244285)
+
+- rsid: rs3892097
+  gene: CYP2D6
+  note: CYP2D6*4 — most common LOF in Europeans (complements rs1065852 *10)
+
+- rsid: rs776746
+  gene: CYP3A5
+  note: CYP3A5*3 — tacrolimus dosing (CPIC Level A)
+
+- rsid: rs1142345
+  gene: TPMT
+  cluster: TPMT
+  note: TPMT*3C — thiopurine dosing (CPIC Level A; with rs1800460 resolves *3A/*3B/*3C)
+
+- rsid: rs1800460
+  gene: TPMT
+  cluster: TPMT
+  note: TPMT*3B — thiopurine dosing (CPIC Level A; with rs1142345 resolves *3A/*3B/*3C)
+
+- rsid: rs116855232
+  gene: NUDT15
+  note: Thiopurine toxicity (CPIC Level A; critical in East Asian populations, complements TPMT cluster)
+
+- rsid: rs34637584
+  gene: LRRK2
+  note: G2019S — most common monogenic Parkinson's variant

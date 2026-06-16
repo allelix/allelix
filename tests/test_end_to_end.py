@@ -428,23 +428,45 @@ class TestMethylationSanity:
 
 
 _REAL_GWAS_ZIP = Path(__file__).resolve().parent.parent / "test_data" / "gwas_catalog.zip"
+_REAL_GWAS_URL = (
+    "https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/"
+    "gwas-catalog-associations_ontology-annotated-full.zip"
+)
 
 
 @pytest.mark.slow
 class TestRealDataGwasSanity:
     """Sanity checks against the real GWAS Catalog (test_data/, gitignored).
 
-    Skipped when the real data hasn't been downloaded. To populate:
-        curl -L -o test_data/gwas_catalog.zip \\
-          "https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/\\
-          gwas-catalog-associations_ontology-annotated-full.zip"
+    GH #45: the fixture is auto-fetched on first use and cached locally so
+    the tests run on every machine. The previous ``pytest.skip`` on missing
+    fixture silently let a ship gate pass without exercising these
+    real-data invariants.
     """
 
     @pytest.fixture(scope="class")
-    def real_gwas_data_dir(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    @staticmethod
+    def real_gwas_data_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         """Build the real GWAS Catalog once, in temp, and delete it when done."""
         if not _REAL_GWAS_ZIP.exists():
-            pytest.skip("Real GWAS Catalog not downloaded (test_data/gwas_catalog.zip)")
+            # Auto-fetch the EBI GWAS Catalog zip on first run. ~65 MB,
+            # cached under test_data/ (gitignored) so subsequent runs
+            # are offline-fast.
+            import urllib.request
+
+            _REAL_GWAS_ZIP.parent.mkdir(parents=True, exist_ok=True)
+            tmp_download = _REAL_GWAS_ZIP.with_suffix(".zip.part")
+            try:
+                urllib.request.urlretrieve(_REAL_GWAS_URL, tmp_download)
+                tmp_download.replace(_REAL_GWAS_ZIP)
+            except OSError as exc:
+                tmp_download.unlink(missing_ok=True)
+                msg = (
+                    f"Failed to fetch real GWAS Catalog from {_REAL_GWAS_URL!r}: {exc}. "
+                    "Network unavailable? Manually populate "
+                    f"{_REAL_GWAS_ZIP} from the URL above and re-run."
+                )
+                raise OSError(msg) from exc
 
         import zipfile
 

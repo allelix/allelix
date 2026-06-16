@@ -131,6 +131,61 @@ class TestGetMetadata:
         )
         assert VcfParser().get_metadata(f)["build"] == "GRCh37"
 
+    def test_chr_prefix_observed_chr1(self, tmp_path: Path) -> None:
+        """GH #38: chr1 contig signals GRCh38 convention."""
+        f = tmp_path / "chr1.vcf"
+        f.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=chr1,length=248956422>\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+        )
+        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is True
+
+    def test_chr_prefix_observed_chr_only_after_chr1(self, tmp_path: Path) -> None:
+        """GH #38 widening: per-chromosome VCFs that omit chr1 still get
+        detected (the previous regex only matched chr1 / chrX)."""
+        for cid in ("chr2", "chr22", "chr10", "chrY", "chrM", "chrMT"):
+            f = tmp_path / f"{cid}.vcf"
+            f.write_text(
+                f"##fileformat=VCFv4.2\n"
+                f"##contig=<ID={cid},length=200000000>\n"
+                f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+            )
+            assert VcfParser().get_metadata(f)["chr_prefix_observed"] is True, (
+                f"chr-prefix not detected for {cid}"
+            )
+
+    def test_chr_prefix_not_observed_for_alt_contigs(self, tmp_path: Path) -> None:
+        """GH #38: alt contigs and decoys must NOT flip the signal — they
+        don't disambiguate the build the same way as standard
+        chromosomes do."""
+        f = tmp_path / "decoys.vcf"
+        f.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=hs37d5,length=35477943>\n"
+            "##contig=<ID=GL000207.1,length=4262>\n"
+            "##contig=<ID=NC_007605,length=171823>\n"
+            "##contig=<ID=chr1_KI270706v1_random,length=175055>\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+        )
+        # chr1_KI270706v1_random has an `ID=chr1_...` prefix but is NOT
+        # a standard chromosome — the terminator `[,>]` in the regex
+        # prevents the match.
+        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is False
+
+    def test_chr_prefix_not_observed_bare_chromosomes(self, tmp_path: Path) -> None:
+        """GH #38: bare numeric / X / MT chromosomes do NOT signal chr-prefix."""
+        f = tmp_path / "bare.vcf"
+        f.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=1,length=249250621>\n"
+            "##contig=<ID=22,length=51304566>\n"
+            "##contig=<ID=X,length=155270560>\n"
+            "##contig=<ID=MT,length=16569>\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+        )
+        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is False
+
 
 # ── parse: single-sample plain VCF ─────────────────────────────
 

@@ -336,6 +336,12 @@ def _emit_build_diagnostics(result: object) -> None:
         source = "detected"
     elif diag.header_build:
         source = "header (no position confirmation)"
+    elif diag.chr_prefix_inferred:
+        # GH #38: chr-prefixed contig names ("chr1", "chrX", ...) reliably
+        # indicate GRCh38 in modern caller output. We DID detect a build;
+        # the banner and the warning should say so instead of reading as
+        # a blind default.
+        source = "inferred from chr-prefixed contig names"
     else:
         source = "fallback (no known SNPs matched)"
     console.print(
@@ -349,15 +355,26 @@ def _emit_build_diagnostics(result: object) -> None:
             f"This is a real-world data-quality issue — your provider may have "
             f"mislabeled the build (see ADR-0021).[/yellow]"
         )
+    elif diag.chr_prefix_inferred:
+        # GH #38: positive, accurate message — the inference path
+        # actually fired. Still recommend `--build` for users who
+        # want to lock in the answer; chr-prefix is a strong signal
+        # but UCSC hg19 also uses `chr` prefixes, so the heuristic
+        # isn't guaranteed against a hg19-converted file.
+        console.print(
+            f"[dim]Inferred {diag.effective_build} from chr-prefixed contig "
+            f"names (GRCh38 convention). Pass --build grch37 if this file is "
+            f"UCSC hg19 with chr-prefixed contigs instead.[/dim]"
+        )
     elif not diag.override and diag.detected_build is None and diag.header_build is None:
         # Common shape: VCF from a variant caller where the ID column is `.`
-        # and the header has no ##contig assembly tag. The detector had no
-        # rsID signal AND no header signal — both auto-detect paths failed.
+        # and the header has no ##contig assembly tag, AND no chr-prefix
+        # signal was observed. All three auto-detect paths failed.
         # Loudly recommend an explicit --build because picking the wrong one
         # silently means every annotation lookup uses wrong coordinates.
         console.print(
             f"[yellow]Could not auto-detect genome build (no rsIDs in input, "
-            f"no ##contig assembly tag in header). Defaulted to "
+            f"no ##contig assembly tag, no chr-prefixed contigs). Defaulted to "
             f"{diag.effective_build}. If the file is the other build, pass "
             f"--build grch37 or --build grch38 explicitly — annotation "
             f"coordinates differ between builds and silently using the wrong "

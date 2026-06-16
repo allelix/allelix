@@ -2,6 +2,78 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-06-16
+
+### Added
+
+- **High-value SNP no-call list: 16 additions (#7).** The list grows
+  from 12 to 28 entries, adding thrombophilia (Factor V Leiden,
+  Prothrombin G20210A), hereditary hemochromatosis (HFE cluster:
+  C282Y + H63D), cystic fibrosis carrier (CFTR F508del), sickle cell
+  (HBB), BRCA2 Ashkenazi founder, completed warfarin / clopidogrel
+  PGx profiles (CYP2C9*3, CYP2C19*17, VKORC1), CYP2D6*4 (the European
+  LOF allele complementing the existing CYP2D6*10), CYP3A5*3
+  (tacrolimus, CPIC Level A), TPMT cluster (\*3B / \*3C for
+  thiopurines), NUDT15 (thiopurine toxicity, East-Asian-enriched),
+  and LRRK2 G2019S (monogenic Parkinson's). All 16 verified on at
+  least one consumer-array platform per SNPedia chip listings; all
+  CPIC Level A pharmacogenomic entries are paired with their
+  companion SNPs where the clinical action requires haplotype
+  resolution. Two new clusters surface compound-het patterns the
+  way APOE / MTHFR already do. Data-only change — no code
+  modification; existing `Annotator.no_call_warnings` machinery
+  consumes the expanded list automatically.
+- **`__version__` reads `pyproject.toml` from a bare source checkout
+  (#34).** Previously, running Allelix from a `git clone` without
+  `pip install -e .` made `__version__ == "0.0.0+local"`, which then
+  flowed into the outbound HTTP `User-Agent` for downloads from NCBI /
+  EBI / HuggingFace and the `allelix --version` output. The sentinel
+  was never visible to users on a normal install but consistently leaked
+  in dev runs. Now: the importlib-metadata read remains primary; on
+  `PackageNotFoundError`, fall back to reading the version from
+  `pyproject.toml` next to the package. Sentinel `0.0.0+local` remains
+  only when both paths fail (genuinely broken state).
+- **Build detection: infer GRCh38 from `chr`-prefixed contigs (#38).**
+  When rsID-based detection doesn't converge and the header carries no
+  `##contig assembly=` tag, the VCF parser now records whether the
+  contigs declared `chr1` / `chrX` style names and surfaces that as a
+  tertiary build-detection signal. Modern variant callers (DeepVariant,
+  DRAGEN, GATK HaplotypeCaller) overwhelmingly use `chr`-prefixed
+  contigs on GRCh38; GRCh37 uses bare `1` / `X` / `MT`. Falls in
+  priority after override → rsID detection → `##assembly` header,
+  ahead of the previous bare-GRCh37 fallback. UX win for the
+  increasingly common case of rsID-less WGS VCFs. The CLI build banner
+  reports `Build: GRCh38 (inferred from chr-prefixed contig names; ...)`
+  and replaces the blind-default warning with a positive informational
+  message that still recommends `--build` for UCSC-hg19 edge cases.
+  Detection covers every standard chromosome (1–22, X, Y, M, MT) via
+  the contig regex — not just `chr1` / `chrX` as in the initial cut.
+
+### Changed
+
+- **Pipeline: enrichment annotators are stack-managed (#36, partial).**
+  `run_analysis` previously context-managed only the `annotators=`
+  list. The optional keyword params `gnomad=`, `alphamissense=`, and
+  `cadd=` were used internally but never explicitly closed; their
+  SQLite connections leaked at GC time and the leak was silenced by
+  `Annotator.__del__`. All three are now entered into the same
+  `ExitStack` as the primary annotators, so cleanup is deterministic.
+  `__del__` is retained for now as a documented safety net — removing
+  it surfaces residual leaks in code paths outside `run_analysis` that
+  still need auditing. Full `__del__` removal tracked for v2.1.
+- **Test suite: no more silent skips on missing fixtures (#45).** The
+  v2.0.1 ship-gate ran with "1525 passed, 2 skipped" — the 2 skips were
+  `TestRealDataGwasSanity` silently bypassing when
+  `test_data/gwas_catalog.zip` (~65 MB, gitignored) wasn't downloaded
+  locally. That's a false-clean signal on a release. The fixture now
+  auto-fetches from EBI on first use and caches under `test_data/`;
+  subsequent runs are offline-fast. Two defensive `pytest.skip` guards
+  in `test_pipeline.py` (a committed mock fixture that should always
+  exist, and an `is_ready()` check immediately after a successful load)
+  are converted to `assert` — silent skips would have hidden a real
+  regression there. `CONTRIBUTING.md` documents the new "no silent
+  skips on ship gates" policy.
+
 ## [2.0.1] - 2026-06-15
 
 ### Known limitations
@@ -44,6 +116,13 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
   → `pathogenic`), Genotype renamed to `GT`. **Terminal output only**
   — every dropped field still surfaces in HTML and JSON reports
   unchanged.
+- `scripts/fetch_testdata.sh` now downloads from
+  `allelix/allelix/releases/download/v2.0.0/test_data.tar.gz` (the new
+  ~1.27 GB asset that includes the v2.0.0 VCF/gVCF additions: real
+  GIAB HG002 GRCh38 + GRCh37 benchmarks, a real GATK-HC gVCF, a 1000
+  Genomes chr22 multi-sample, plus the synthetic mocks). Previous URL
+  pointed at `dial481/allelix/releases/download/v1.1.1/test_data.tar.gz`,
+  which lacked all the VCF samples.
 
 ### Fixed
 
@@ -245,16 +324,6 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
   rsID-checks-attempted count, what the header claims, and how to force
   `--build`. The CLI-layer warning leaves `BuildDetectionResult`
   unchanged.
-
-### Changed
-
-- `scripts/fetch_testdata.sh` now downloads from
-  `allelix/allelix/releases/download/v2.0.0/test_data.tar.gz` (the new
-  ~1.27 GB asset that includes the v2.0.0 VCF/gVCF additions: real
-  GIAB HG002 GRCh38 + GRCh37 benchmarks, a real GATK-HC gVCF, a 1000
-  Genomes chr22 multi-sample, plus the synthetic mocks). Previous URL
-  pointed at `dial481/allelix/releases/download/v1.1.1/test_data.tar.gz`,
-  which lacked all the VCF samples.
 
 ## [2.0.0] - 2026-06-15
 

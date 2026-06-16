@@ -124,6 +124,18 @@ This is not a disclaimer afterthought. It is a design constraint that affects mo
 - Reference databases are downloaded via `allelix db update` and cached locally.
 - Analysis runs offline against local database caches. A brief freshness check runs before analysis by default (skipped with `--no-update`).
 
+### Output files contain real annotations of your genome
+
+The JSON / HTML / terminal output of `allelix analyze` and its
+focused subcommands contains real annotations against your specific
+variants — drug-response calls, carrier-status flags, hereditary-
+disease findings. Wherever you write them via `--output <path>`,
+that's where they sit until you delete them. Allelix doesn't
+auto-clean and won't warn you when you write to `/tmp/` or any
+other shared location. Treat the files as personal data: read them,
+move them somewhere you control, or delete when you're done. A
+data-lifecycle subcommand is planned for v2.1.
+
 ## Configuration
 
 Allelix stores persistent configuration in `config.toml` (in the data directory, default `~/.local/share/allelix/`). A default config is created on first run.

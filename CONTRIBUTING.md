@@ -21,26 +21,47 @@ Run the test suite:
 pytest
 ```
 
-Tests marked `@slow` require `test_data/gwas_catalog.zip` (~150 MB
-compressed, ~400 MB unzipped). Fetch it with:
+Tests marked `@slow` exercise real-data invariants against fixtures
+that are gitignored due to size. As of v2.0.2 (GH #45), these fixtures
+are **auto-fetched on first use** and cached locally — no manual
+download step is required for the GWAS catalog.
 
-    scripts/fetch_testdata.sh
+Two fixture sources, cached under `test_data/`:
 
-Slow tests are skipped automatically when the fixture is absent. CI does
-not fetch this fixture and skips slow tests — the CI suite uses small
-synthetic fixtures only.
+- **GWAS Catalog** (`test_data/gwas_catalog.zip`, ~65 MB) — auto-fetched
+  by the `TestRealDataGwasSanity` fixture in
+  `tests/test_end_to_end.py` on first run. Cached forever after.
+- **Real genotype files** (`test_data/real/`, `test_data/transcoded/`) —
+  used by cross-parser identity checks. Fetched via:
+
+      scripts/fetch_testdata.sh
+
+  One-time; subsequent runs detect the existing data dir.
+
+### Silent skips are forbidden on ship gates
+
+A test must not `pytest.skip()` because an optional fixture is missing.
+Either:
+
+1. **Auto-fetch the fixture** when absent (preferred — see
+   `TestRealDataGwasSanity` for the pattern).
+2. **Mark `@pytest.mark.integration`** and document the external
+   precondition (e.g., `plink2` binary, live `~/.local/share/allelix/`
+   ClinVar cache). The marker makes the dependency explicit; the
+   ship-gate procedure must ensure those preconditions are met before
+   tagging.
+
+`pytest.skip` for a committed mock fixture that "should always be
+present" is also forbidden — convert to `assert` so a real regression
+is caught instead of hidden.
 
 ### Run the full suite locally
 
-Before pushing, run the complete test suite with slow tests included:
-
-    scripts/fetch_testdata.sh   # one-time download
     pytest                      # runs everything: fast + slow
+                                # (auto-fetches the GWAS zip if missing)
 
-This is the only place slow tests run. CI uses small synthetic fixtures
-and skips slow tests to keep runs fast and disk-friendly. If you add or
-change anything that touches real-data parsing paths, verify it locally
-with the full suite before pushing.
+CI runs the same `pytest` invocation. The auto-fetch handles fixture
+availability so CI and local runs are identical.
 
 Lint and format:
 

@@ -73,6 +73,13 @@ class BuildDiagnostics:
 
     `mismatch` is True when header_build and detected_build disagree
     AND no override was supplied. The CLI surfaces this as a warning.
+
+    `chr_prefix_inferred` (GH #38): True when the effective build was
+    picked using the ``chr``-prefixed contig heuristic (GRCh38
+    convention). False whenever rsID detection or an explicit header
+    build chose the answer, or when no chr-prefix signal was seen.
+    Lets the CLI surface "inferred from chr-prefix" instead of the
+    blind-default warning text.
     """
 
     header_build: str | None
@@ -81,6 +88,7 @@ class BuildDiagnostics:
     override: bool
     matched_count: int
     inspected_count: int
+    chr_prefix_inferred: bool = False
 
     @property
     def mismatch(self) -> bool:
@@ -378,12 +386,24 @@ def run_analysis(
     """
     metadata = parser.get_metadata(file_path)
     header_build = normalize_build_label(metadata.get("build"))
+    # GH #38: chr-prefix on contigs is the strongest remaining heuristic
+    # for the increasingly common case of rsID-less VCFs from modern
+    # callers (DeepVariant / DRAGEN / GATK HC) that also lack
+    # ``##contig assembly=`` tags. GRCh38 conventionally uses
+    # ``chr1, chrX, chrM``; GRCh37 uses bare ``1, X, MT``. Only VCF
+    # parsers populate this signal — consumer arrays always use bare
+    # names regardless of build.
+    chr_prefix_observed = bool(metadata.get("chr_prefix_observed", False))
 
     annotations: list[Annotation] = []
     hv_variants: list[Variant] = []
     hv_set: set[str] = high_value_rsids or set()
     total = 0
-    diag = _BuildDetectionState(override=build_override, header_build=header_build)
+    diag = _BuildDetectionState(
+        override=build_override,
+        header_build=header_build,
+        chr_prefix_observed=chr_prefix_observed,
+    )
     # Coords for rsIDs the pipeline resolved on the fly (real-world VCFs from
     # variant callers emit ID=. — see GH #8). Lets the enrichment phase fall
     # back to position-keyed gnomAD / AlphaMissense lookups for resolved
@@ -392,6 +412,14 @@ def run_analysis(
 
     with contextlib.ExitStack() as stack:
         bound = [stack.enter_context(a) for a in annotators]
+        # GH #36: the optional enrichment annotators were previously
+        # constructed by callers and passed in by keyword without
+        # context-management; their SQLite connections leaked at GC
+        # time. Wire them into the same stack so cleanup is
+        # deterministic alongside the primary annotators.
+        for enrich in (gnomad, alphamissense, cadd):
+            if enrich is not None:
+                stack.enter_context(enrich)
         clinvar_resolver = next((a for a in bound if a.name == "clinvar"), None)
 
         batch_buf: list[Variant] = []
@@ -543,9 +571,20 @@ class _BuildDetectionState:
     buffered (which only happens when detection never converged).
     """
 
-    def __init__(self, *, override: str | None, header_build: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        override: str | None,
+        header_build: str | None,
+        chr_prefix_observed: bool = False,
+    ) -> None:
         self.header_build = header_build
         self.override = override
+        # GH #38: ``chr``-prefixed contig names indicate GRCh38 in modern
+        # variant callers. Tertiary signal — falls in priority after
+        # override > rsID detection > header_build, ahead of the bare
+        # GRCh37 fallback.
+        self.chr_prefix_observed = chr_prefix_observed
         # Effective build: starts as override (if given), else None until detection runs.
         self.effective: str | None = override
         self.detected: str | None = None
@@ -555,8 +594,22 @@ class _BuildDetectionState:
 
     @property
     def effective_build(self) -> str:
-        """Best-effort effective build at flush time."""
-        return self.effective or self.header_build or BUILD_GRCH37
+        """Best-effort effective build at flush time.
+
+        Priority order:
+        1. ``override`` (--build flag) — already applied to ``self.effective`` at init.
+        2. Position-based ``detected`` (set by ``feed()`` / ``flush()``).
+        3. ``header_build`` (``##contig assembly=...`` tag normalized).
+        4. ``chr_prefix_observed`` → GRCh38 (GH #38).
+        5. ``BUILD_GRCH37`` fallback.
+        """
+        if self.effective:
+            return self.effective
+        if self.header_build:
+            return self.header_build
+        if self.chr_prefix_observed:
+            return BUILD_GRCH38
+        return BUILD_GRCH37
 
     def feed(self, variant: Variant) -> tuple[bool, list[Variant]]:
         if self.effective is not None:
@@ -584,7 +637,11 @@ class _BuildDetectionState:
             if result.build == BUILD_GRCH36:
                 self.effective = BUILD_GRCH36
             else:
-                self.effective = self.header_build or BUILD_GRCH37
+                # Fallback priority matches `effective_build` property:
+                # header_build > chr_prefix_observed (GRCh38) > GRCh37.
+                self.effective = self.header_build or (
+                    BUILD_GRCH38 if self.chr_prefix_observed else BUILD_GRCH37
+                )
             batch = [replace(v, build=self.effective) for v in self._buffer]
             self._buffer.clear()
             return True, batch
@@ -608,7 +665,11 @@ class _BuildDetectionState:
             if result.build == BUILD_GRCH36:
                 self.effective = BUILD_GRCH36
             else:
-                self.effective = self.header_build or BUILD_GRCH37
+                # Fallback priority matches `effective_build` property:
+                # header_build > chr_prefix_observed (GRCh38) > GRCh37.
+                self.effective = self.header_build or (
+                    BUILD_GRCH38 if self.chr_prefix_observed else BUILD_GRCH37
+                )
         self.matched_count = result.matched
         self.inspected_count = result.inspected
         out = [replace(v, build=self.effective) for v in self._buffer]
@@ -616,6 +677,19 @@ class _BuildDetectionState:
         return out
 
     def diagnostics(self) -> BuildDiagnostics:
+        # GH #38: chr_prefix_inferred is True only when the
+        # chr-prefix signal is what actually picked the effective
+        # build — i.e., no override, no rsID detection, no header
+        # build, and the chr-prefix signal flipped the fallback from
+        # GRCh37 to GRCh38. Matches the priority order in the
+        # ``effective_build`` property.
+        chr_prefix_inferred = (
+            self.override is None
+            and self.detected is None
+            and self.header_build is None
+            and self.chr_prefix_observed
+            and self.effective_build == BUILD_GRCH38
+        )
         return BuildDiagnostics(
             header_build=self.header_build,
             detected_build=self.detected,
@@ -623,6 +697,7 @@ class _BuildDetectionState:
             override=self.override is not None,
             matched_count=self.matched_count,
             inspected_count=self.inspected_count,
+            chr_prefix_inferred=chr_prefix_inferred,
         )
 
 

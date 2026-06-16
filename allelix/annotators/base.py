@@ -142,7 +142,30 @@ class Annotator(ABC):
         self.data_dir = data_dir
 
     def __del__(self) -> None:
-        """Release resources on GC to prevent ResourceWarning."""
+        """Safety-net resource release on GC. Deliberately retained.
+
+        GH #36 (audit second pass) flagged ``__del__`` as a Python
+        antipattern — GC timing is nondeterministic and raised exceptions
+        are silently swallowed. The correct usage pattern is the
+        ``__enter__`` / ``__exit__`` context manager pair below, wired
+        through ``contextlib.ExitStack`` in ``reports/_pipeline.py``.
+
+        However: removing ``__del__`` exposes residual SQLite connection
+        leaks in code paths that construct an annotator outside a
+        context manager. ``ResourceWarning`` is elevated to error by
+        ``pytest`` config, so leaks fail the suite as
+        ``PytestUnraisableExceptionWarning`` — caught in the v2.0.2
+        ship gate when ``__del__`` was first removed. Until every call
+        site is verified to use ``with`` / ``ExitStack`` / explicit
+        ``close()``, this safety net stays. v2.1 task: audit and
+        remove.
+
+        ``contextlib.suppress(Exception)`` is deliberate — ``__del__``
+        must never raise. The GC timing and shutdown-ordering edges
+        are explicitly silenced; this is exactly the
+        "if you must keep ``__del__``, make absolutely sure it can
+        never raise" mitigation the audit recommended.
+        """
         with contextlib.suppress(Exception):
             self.close()
 

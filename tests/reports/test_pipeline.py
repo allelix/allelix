@@ -248,6 +248,126 @@ class TestGRCh36FlushFailSafe:
         assert diag.detected_build == BUILD_GRCH36
 
 
+class TestChrPrefixBuildDetection:
+    """GH #38: chr-prefix on contigs as a tertiary build-detection signal.
+
+    GRCh38 callers (DeepVariant, DRAGEN, GATK HC) use ``chr1`` /
+    ``chrX``; GRCh37 uses bare ``1`` / ``X``. When rsID matching and
+    ``##assembly`` both fail, chr-prefix is the strongest remaining
+    heuristic.
+    """
+
+    def test_chr_prefix_alone_infers_grch38(self) -> None:
+        """No override, no header_build, no rsID matches — chr-prefix → GRCh38."""
+        state = _BuildDetectionState(
+            override=None,
+            header_build=None,
+            chr_prefix_observed=True,
+        )
+        state.flush()
+        assert state.effective_build == "GRCh38"
+
+    def test_no_chr_prefix_falls_back_to_grch37(self) -> None:
+        """No chr-prefix signal — preserves the existing GRCh37 fallback."""
+        state = _BuildDetectionState(
+            override=None,
+            header_build=None,
+            chr_prefix_observed=False,
+        )
+        state.flush()
+        assert state.effective_build == "GRCh37"
+
+    def test_override_wins_over_chr_prefix(self) -> None:
+        """``--build grch37`` (override) beats chr-prefix-says-GRCh38."""
+        state = _BuildDetectionState(
+            override="GRCh37",
+            header_build=None,
+            chr_prefix_observed=True,
+        )
+        assert state.effective_build == "GRCh37"
+
+    def test_header_build_wins_over_chr_prefix(self) -> None:
+        """Explicit header build beats chr-prefix heuristic."""
+        state = _BuildDetectionState(
+            override=None,
+            header_build="GRCh37",
+            chr_prefix_observed=True,
+        )
+        state.flush()
+        assert state.effective_build == "GRCh37"
+
+    def test_grch36_detected_still_wins(self) -> None:
+        """GH #38 doesn't break the GRCh36 safety guard. Detected GRCh36
+        from position data takes priority over the chr-prefix tertiary
+        signal — wrong build assignment from chr-prefix bypassing the
+        guard would silently mis-annotate."""
+        variants = []
+        grch36_rsids = [
+            rsid for rsid, builds in KNOWN_SNP_POSITIONS.items() if BUILD_GRCH36 in builds
+        ]
+        for rsid in grch36_rsids[:3]:
+            chrom, pos = KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH36]
+            variants.append(
+                Variant(rsid=rsid, chromosome=chrom, position=pos, allele1="A", allele2="A")
+            )
+        state = _BuildDetectionState(
+            override=None,
+            header_build=None,
+            chr_prefix_observed=True,
+        )
+        for v in variants:
+            state.feed(v)
+        state.flush()
+        assert state.effective_build == BUILD_GRCH36
+
+    def test_diagnostics_flag_set_when_chr_prefix_picked_build(self) -> None:
+        """GH #38: chr_prefix_inferred is True exactly when the chr-prefix
+        signal is what picked the effective build — no override, no rsID
+        detection, no header build, and the signal flipped the fallback
+        from GRCh37 to GRCh38. The CLI uses this to print "Inferred
+        GRCh38 from chr-prefixed contig names" instead of the
+        blind-default warning."""
+        state = _BuildDetectionState(
+            override=None,
+            header_build=None,
+            chr_prefix_observed=True,
+        )
+        state.flush()
+        assert state.effective_build == "GRCh38"
+        assert state.diagnostics().chr_prefix_inferred is True
+
+    def test_diagnostics_flag_clear_when_other_signal_picked_build(self) -> None:
+        """chr_prefix_observed but a higher-priority signal won — flag
+        stays False so the CLI doesn't surface a "inferred from chr-prefix"
+        message when the build came from rsID detection or header."""
+        # Header build wins.
+        state = _BuildDetectionState(
+            override=None,
+            header_build="GRCh38",
+            chr_prefix_observed=True,
+        )
+        state.flush()
+        assert state.diagnostics().chr_prefix_inferred is False
+        # Override wins.
+        state = _BuildDetectionState(
+            override="GRCh38",
+            header_build=None,
+            chr_prefix_observed=True,
+        )
+        assert state.diagnostics().chr_prefix_inferred is False
+
+    def test_diagnostics_flag_clear_when_no_chr_prefix(self) -> None:
+        """No chr-prefix signal → bare GRCh37 fallback → flag False."""
+        state = _BuildDetectionState(
+            override=None,
+            header_build=None,
+            chr_prefix_observed=False,
+        )
+        state.flush()
+        assert state.effective_build == "GRCh37"
+        assert state.diagnostics().chr_prefix_inferred is False
+
+
 class TestGnomadEnrichment:
     """gnomAD frequency enrichment stamps allele_frequency on annotations."""
 
@@ -443,9 +563,16 @@ class TestEnrichmentExactVsFallback:
         from allelix.databases.gwas_loader import load_gwas_tsv
         from allelix.databases.schema import GWAS_SCHEMA
 
+        # GH #45: these were previously `pytest.skip(...)` guards. The
+        # mock fixture is committed (so the path-exists check should
+        # never fail); is_ready() is exercised immediately after a
+        # successful load (so it should never report not-ready). Silent
+        # skips here would hide a real regression — fail loudly instead.
         db_path = _Path(__file__).parent.parent / "fixtures" / "mock_gwas_catalog.tsv"
-        if not db_path.exists():
-            pytest.skip("mock GWAS fixture not available")
+        assert db_path.exists(), (
+            f"committed mock fixture missing at {db_path} — "
+            "did a git-clean / merge accidentally drop it?"
+        )
 
         with tempfile.TemporaryDirectory() as td:
             tmp = _Path(td)
@@ -458,8 +585,10 @@ class TestEnrichmentExactVsFallback:
                 conn.commit()
             load_gwas_tsv(db_path, gwas_db)
             ann = GWASCatalogAnnotator(tmp)
-            if not ann.is_ready():
-                pytest.skip("GWAS db not ready")
+            assert ann.is_ready(), (
+                "GWAS annotator reported not-ready immediately after a "
+                "successful load_gwas_tsv — loader or is_ready() has regressed"
+            )
             v = Variant(
                 rsid="rs1801133",
                 chromosome="1",

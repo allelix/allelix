@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, TypedDict
+from typing import TYPE_CHECKING, ClassVar, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -26,11 +26,18 @@ class GenotypeMetadata(TypedDict):
         format: Parser name (matches `GenotypeParser.name`).
         sample_id: Vendor sample identifier, or "" if not present in the file.
         build: Reference genome build (e.g., "GRCh37").
+        chr_prefix_observed: True when the file uses ``chr``-prefixed contig
+            names (``chr1`` / ``chrX``). Optional — only VCF / gVCF parsers
+            populate it; consumer-array exports always use bare names and
+            don't set it. GH #38: used as a tertiary build-detection signal
+            after rsID matching and ``##assembly`` tag checks both fail.
+            ``chr``-prefixed contigs overwhelmingly indicate GRCh38.
     """
 
     format: str
     sample_id: str
     build: str
+    chr_prefix_observed: NotRequired[bool]
 
 
 class GenotypeParser(ABC):

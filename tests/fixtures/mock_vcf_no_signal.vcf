@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##source=GATK_HaplotypeCaller_v4.5.0
+##contig=<ID=1,length=249250621>
+##contig=<ID=22,length=51304566>
+##contig=<ID=10,length=135534747>
+##contig=<ID=12,length=133275309>
+##contig=<ID=17,length=81195210>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+1	11856378	.	G	A	100	PASS	.	GT	0/1
+22	19951271	.	G	A	100	PASS	.	GT	0/1
+10	96702047	.	C	T	100	PASS	.	GT	1/1
+12	21331549	.	T	C	100	PASS	.	GT	0/1
+17	41209080	.	G	A	100	PASS	.	GT	0/1
