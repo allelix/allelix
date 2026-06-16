@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Tests for GWAS MTAG + PheCode rollup (ADR-0024)."""
+"""Tests for GWAS MTAG + PheCode rollup (ADR-0024).
+
+ADR-0035 PR 3: rollup now reads ``trait`` / ``phecode`` / ``p_value`` from
+structured Annotation fields. Tests construct GWAS rows with the structured
+fields populated and let the helper render a matching ``description`` so
+MTAG-via-description detection still works.
+"""
 
 from __future__ import annotations
 
@@ -8,27 +14,43 @@ from allelix.models import Annotation
 from allelix.reports._pipeline import rollup_gwas_duplicates
 
 
-def _mk(rsid: str, desc: str, mag: float = 9.0, must: bool = False) -> Annotation:
+def _mk(
+    rsid: str,
+    trait: str,
+    p_value: float,
+    *,
+    phecode: str = "",
+    mtag: bool = False,
+    gene: str = "LPA",
+    mag: float = 9.0,
+    must: bool = False,
+) -> Annotation:
+    """Build a GWAS Annotation with structured fields + matching description."""
+    phecode_suffix = f" (PheCode {phecode})" if phecode else ""
+    mtag_suffix = " (MTAG)" if mtag else ""
+    description = (
+        f"GWAS Catalog: {trait}{mtag_suffix}{phecode_suffix} (p={p_value:.1e}, gene: {gene})"
+    )
     return Annotation(
         source="gwas",
         rsid=rsid,
         magnitude=mag,
         significance="gwas_association",
         category="trait",
-        description=desc,
+        description=description,
         attribution="GWAS Catalog",
         genotype_match="AC",
         is_must_include=must,
+        trait=trait,
+        p_value=p_value,
+        phecode=phecode,
     )
 
 
 def test_mtag_twin_collapsed():
     rows = [
-        _mk("rs10455872", "GWAS Catalog: Aortic stenosis (p=4.0e-130, gene: LPA)"),
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Aortic stenosis (MTAG) (p=4.0e-140, gene: LPA)",
-        ),
+        _mk("rs10455872", "Aortic stenosis", 4.0e-130),
+        _mk("rs10455872", "Aortic stenosis", 4.0e-140, mtag=True),
     ]
     out = rollup_gwas_duplicates(rows)
     assert len(out) == 1
@@ -36,24 +58,15 @@ def test_mtag_twin_collapsed():
 
 
 def test_mtag_solo_kept_when_no_plain_twin():
-    rows = [_mk("rs99999", "GWAS Catalog: Some trait (MTAG) (p=1.0e-50, gene: X)")]
+    rows = [_mk("rs99999", "Some trait", 1.0e-50, mtag=True, gene="X")]
     assert len(rollup_gwas_duplicates(rows)) == 1
 
 
 def test_phecode_parent_child_collapsed_strongest_p_wins():
     rows = [
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Ischemic heart disease (PheCode 411) (p=2.0e-204, gene: LPA)",
-        ),
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Coronary atherosclerosis (PheCode 411.4) (p=1.0e-234, gene: LPA)",
-        ),
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Other chronic IHD (PheCode 411.8) (p=3.0e-160, gene: LPA)",
-        ),
+        _mk("rs10455872", "Ischemic heart disease", 2.0e-204, phecode="411"),
+        _mk("rs10455872", "Coronary atherosclerosis", 1.0e-234, phecode="411.4"),
+        _mk("rs10455872", "Other chronic IHD", 3.0e-160, phecode="411.8"),
     ]
     out = rollup_gwas_duplicates(rows)
     assert len(out) == 1
@@ -62,14 +75,8 @@ def test_phecode_parent_child_collapsed_strongest_p_wins():
 
 def test_phecode_distinct_parents_kept_separate():
     rows = [
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Hyperlipidemia (PheCode 272.1) (p=2.0e-100, gene: LPA)",
-        ),
-        _mk(
-            "rs10455872",
-            "GWAS Catalog: Ischemic heart disease (PheCode 411) (p=2.0e-204, gene: LPA)",
-        ),
+        _mk("rs10455872", "Hyperlipidemia", 2.0e-100, phecode="272.1"),
+        _mk("rs10455872", "Ischemic heart disease", 2.0e-204, phecode="411"),
     ]
     assert len(rollup_gwas_duplicates(rows)) == 2
 
@@ -78,13 +85,13 @@ def test_must_include_never_collapsed():
     rows = [
         _mk(
             "rs9271366",
-            "GWAS Catalog: MS (PheCode 335) (p=7.0e-184, gene: HLA-DRB1)",
+            "MS",
+            7.0e-184,
+            phecode="335",
+            gene="HLA-DRB1",
             must=True,
         ),
-        _mk(
-            "rs9271366",
-            "GWAS Catalog: MS (PheCode 335.1) (p=1.0e-50, gene: HLA-DRB1)",
-        ),
+        _mk("rs9271366", "MS", 1.0e-50, phecode="335.1", gene="HLA-DRB1"),
     ]
     out = rollup_gwas_duplicates(rows)
     must_rsids = [a.rsid for a in out if a.is_must_include]
@@ -119,17 +126,16 @@ def test_non_gwas_pass_through_untouched():
 
 def test_real_data_rs10455872_collapses_8_to_5():
     """Reviewer-flagged case: 8 LPA rows collapse to 5 distinct findings."""
-    descriptions = [
-        "GWAS Catalog: Aortic stenosis (p=4.0e-130, gene: LPA)",
-        "GWAS Catalog: Aortic stenosis (MTAG) (p=4.0e-140, gene: LPA)",
-        "GWAS Catalog: Hyperlipidemia (PheCode 272.1) (p=2.0e-100, gene: LPA)",
-        "GWAS Catalog: Takes medication for coronary artery disease (p=3.0e-121, gene: LPA)",
-        "GWAS Catalog: Coronary artery / coronary heart disease (p=5.0e-200, gene: LPA)",
-        "GWAS Catalog: Ischemic heart disease (PheCode 411) (p=2.0e-204, gene: LPA)",
-        "GWAS Catalog: Other chronic IHD (PheCode 411.8) (p=3.0e-160, gene: LPA)",
-        "GWAS Catalog: Coronary atherosclerosis (PheCode 411.4) (p=1.0e-234, gene: LPA)",
+    rows = [
+        _mk("rs10455872", "Aortic stenosis", 4.0e-130),
+        _mk("rs10455872", "Aortic stenosis", 4.0e-140, mtag=True),
+        _mk("rs10455872", "Hyperlipidemia", 2.0e-100, phecode="272.1"),
+        _mk("rs10455872", "Takes medication for coronary artery disease", 3.0e-121),
+        _mk("rs10455872", "Coronary artery / coronary heart disease", 5.0e-200),
+        _mk("rs10455872", "Ischemic heart disease", 2.0e-204, phecode="411"),
+        _mk("rs10455872", "Other chronic IHD", 3.0e-160, phecode="411.8"),
+        _mk("rs10455872", "Coronary atherosclerosis", 1.0e-234, phecode="411.4"),
     ]
-    rows = [_mk("rs10455872", d) for d in descriptions]
     assert len(rollup_gwas_duplicates(rows)) == 5
 
 
@@ -140,8 +146,8 @@ def test_empty_list_returns_empty():
 def test_sort_order_preserved():
     """Output maintains magnitude DESC, rsid ASC sort."""
     rows = [
-        _mk("rs222", "GWAS Catalog: Trait A (p=1.0e-50, gene: X)", mag=7.0),
-        _mk("rs111", "GWAS Catalog: Trait B (p=1.0e-100, gene: Y)", mag=9.0),
+        _mk("rs222", "Trait A", 1.0e-50, gene="X", mag=7.0),
+        _mk("rs111", "Trait B", 1.0e-100, gene="Y", mag=9.0),
     ]
     out = rollup_gwas_duplicates(rows)
     assert out[0].rsid == "rs111"

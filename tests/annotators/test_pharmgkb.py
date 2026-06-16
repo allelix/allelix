@@ -176,6 +176,20 @@ class TestGenotypeMatching:
         v = Variant("rs113993960", "7", 117199644, "CTT", "C")
         assert annotator.annotate(v) == []
 
+    def test_alt_threading_with_ref_heterozygous(self, annotator: PharmGKBAnnotator):
+        """ADR-0035 PR 2: REF=A, user is A/G → annotation.alt = "G"."""
+        v = Variant("rs1801133", "1", 11796321, "G", "A", ref="A")
+        results = annotator.annotate(v)
+        assert results
+        assert results[0].alt == "G"
+
+    def test_alt_threading_without_ref_stays_empty(self, annotator: PharmGKBAnnotator):
+        """Array data without Variant.ref leaves alt empty (no guess)."""
+        v = Variant("rs1801133", "1", 11796321, "G", "A")
+        results = annotator.annotate(v)
+        assert results
+        assert results[0].alt == ""
+
 
 class TestAttribution:
     """ADR-0003: significance source-prefixed; attribution always present."""

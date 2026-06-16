@@ -413,6 +413,7 @@ def _parse_data_line(line: str, sample_idx: int) -> Variant | None:
         allele1=a1,
         allele2=a2,
         # build is overridden by the pipeline (ADR-0021); leave default.
+        ref=ref,
     )
 
 

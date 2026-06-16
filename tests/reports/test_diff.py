@@ -275,6 +275,18 @@ class TestLoadPreviousReport:
         with pytest.raises(ValueError, match="schema version"):
             load_previous_report(path)
 
+    def test_accepts_v5_baseline(self, tmp_path: Path) -> None:
+        """ADR-0035 cluster bump: v5 baselines load without error."""
+        report = {
+            "schema_version": "5",
+            "generated_at": "2026-06-16T00:00:00",
+            "annotations": [_ann_dict()],
+        }
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        data = load_previous_report(path)
+        assert data["schema_version"] == "5"
+
     def test_missing_schema_version(self, tmp_path: Path) -> None:
         report = {"annotations": []}
         path = tmp_path / "report.json"

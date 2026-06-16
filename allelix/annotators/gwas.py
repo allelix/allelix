@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import sqlite3
 import zipfile
 from typing import TYPE_CHECKING, ClassVar
@@ -55,6 +56,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
+
+# ADR-0035 PR 3: PheCode often arrives embedded in the upstream DISEASE/TRAIT
+# field (e.g. ``"Type 2 diabetes (PheCode 250.2)"``). The annotator extracts it
+# at the boundary so downstream code reads ``Annotation.phecode`` as a
+# structured field instead of regex-parsing prose. The trimmed trait flows into
+# ``Annotation.trait``; ``description`` is rebuilt below from the structured
+# parts so display surfaces still show the PheCode label.
+_PHECODE_SUFFIX_RE = re.compile(r"\s*\(PheCode\s+([\d.]+)\)\s*$")
+
+
+def _split_trait_and_phecode(raw_trait: str) -> tuple[str, str]:
+    """Split an upstream trait into (clean_trait, phecode).
+
+    PheCode (when present) is returned as a bare numeric string like
+    ``"250.2"``. Returns ``""`` for phecode when no PheCode suffix is found.
+    The clean trait is stripped of trailing whitespace.
+    """
+    m = _PHECODE_SUFFIX_RE.search(raw_trait)
+    if m is None:
+        return raw_trait.strip(), ""
+    return raw_trait[: m.start()].rstrip(), m.group(1)
 
 
 def _magnitude(p_value: float | None, or_beta: float | None) -> float:
@@ -288,9 +310,14 @@ class GWASCatalogAnnotator(Annotator):
                 mag = min(_magnitude(p_value, or_beta), _UNKNOWN_RISK_ALLELE_MAG_CAP)
                 risk_note = " (risk allele not specified in study)"
 
+            clean_trait, phecode = _split_trait_and_phecode(trait)
+            phecode_suffix = f" (PheCode {phecode})" if phecode else ""
             p_str = f"p={p_value:.1e}" if p_value is not None else "p=N/A"
             gene_str = gene or "—"
-            description = f"GWAS Catalog: {trait} ({p_str}, gene: {gene_str}){risk_note}"
+            description = (
+                f"GWAS Catalog: {clean_trait}{phecode_suffix} "
+                f"({p_str}, gene: {gene_str}){risk_note}"
+            )
 
             references: list[str] = []
             if pubmed_id:
@@ -309,10 +336,13 @@ class GWASCatalogAnnotator(Annotator):
                     attribution=self.attribution,
                     genotype_match=user_diploid,
                     references=references,
-                    condition=trait,
+                    condition=clean_trait,
                     gene=gene or "",
-                    alt="",
+                    alt=risk_allele or "",
                     is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
+                    trait=clean_trait,
+                    p_value=p_value,
+                    phecode=phecode,
                 )
             )
         return annotations
@@ -377,9 +407,14 @@ class GWASCatalogAnnotator(Annotator):
                     mag = min(_magnitude(p_value, or_beta), _UNKNOWN_RISK_ALLELE_MAG_CAP)
                     risk_note = " (risk allele not specified in study)"
 
+                clean_trait, phecode = _split_trait_and_phecode(trait)
+                phecode_suffix = f" (PheCode {phecode})" if phecode else ""
                 p_str = f"p={p_value:.1e}" if p_value is not None else "p=N/A"
                 gene_str = gene or "—"
-                description = f"GWAS Catalog: {trait} ({p_str}, gene: {gene_str}){risk_note}"
+                description = (
+                    f"GWAS Catalog: {clean_trait}{phecode_suffix} "
+                    f"({p_str}, gene: {gene_str}){risk_note}"
+                )
 
                 references: list[str] = []
                 if pubmed_id:
@@ -397,10 +432,13 @@ class GWASCatalogAnnotator(Annotator):
                     attribution=self.attribution,
                     genotype_match=user_diploid,
                     references=references,
-                    condition=trait,
+                    condition=clean_trait,
                     gene=gene or "",
-                    alt="",
+                    alt=risk_allele or "",
                     is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
+                    trait=clean_trait,
+                    p_value=p_value,
+                    phecode=phecode,
                 )
 
 

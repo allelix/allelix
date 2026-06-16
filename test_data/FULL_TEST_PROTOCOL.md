@@ -31,7 +31,7 @@ against the local cache (GH #45).
 python -m pytest tests/ -x --tb=short
 ```
 
-**Expected for v2.0.2:** **1,540 passed, 0 skipped** when `plink2` is
+**Expected for v2.1.0:** **1,576 passed, 0 skipped** when `plink2` is
 installed locally and the GWAS Catalog auto-fetch succeeds. The
 "0 skipped" line is the goal — silent skips are forbidden as a ship-
 gate signal (GH #45). If `plink2` isn't installed, expect 1 skip on
@@ -47,6 +47,9 @@ Test-count floor by release:
 - v2.0.2: ~1,540 (auto-fetch GWAS fixture #45, chr-prefix build
   detection #38, pyproject version fallback #34, enrichment annotator
   stack-management #36, doc/process cleanup #43/#44/#46/#47/#48)
+- v2.1.0: ~1,576 (ADR-0035 Cluster B: Variant.ref + per-Annotation
+  alt threading + structured GWAS fields + strand-aware carrier
+  matching; pipeline-level Variant.ref population for array data)
 
 Check lint:
 
@@ -500,6 +503,50 @@ allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
 Both should show semicolon-joined conditions, not the single
 `CLNDN[0]` value the pre-#42 loader produced.
 
+### 7d. Strand-aware carrier matching (GH #14 strand-half, R-1 / #50, ADR-0035 PR 4)
+
+v2.1.0 introduces strand-aware carrier matching: complement-strand
+reads of the same biology now produce identical annotation sets to
+forward-strand reads, while preserving the v2.0.1 #18 wrong-allele
+multi-allelic safety invariant via the `Variant.ref` orientation
+guard.
+
+The CLAUDE.md R-1 mandatory test case (rs5742904 APOB forward C/C
+vs coding G/G) isn't in the bundled test fixtures. The unit-test
+suite pins the contract on rs1801133 (mock ClinVar: REF=G ALT=A
+Pathogenic MTHFR) as the protocol-level substitute — same shape,
+exercised against a known fixture. Re-run the dedicated test class
+as a fast in-protocol sanity check:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/annotators/test_clinvar.py::TestStrandAwareCarrierMatch -v
+```
+
+**Expected:** three tests pass:
+
+- `test_hom_ref_both_strands_no_annotation` — hom-ref forward G/G
+  and coding C/C both produce zero ClinVar annotations (CLAUDE.md
+  R-1 mandatory shape).
+- `test_het_carrier_both_strands_same_annotation_set` — het carrier
+  forward G/A and coding-strand C/T produce the **same single**
+  ClinVar annotation (significance / condition / gene match across
+  the two reads).
+- `test_audit_18_multi_allelic_safety_preserved` — when
+  `Variant.ref` disagrees with both the source ref and its
+  complement, strand-flip abstains and direct-match-only applies.
+
+For real-data validation against the Section 19 battery, see
+`tests/utils/test_allele.py::TestStrandAwareCarrierMatch` (helper-
+level, covers palindromic / orientation / multi-allelic branches)
+and the wrong-allele safety invariant check at the end of
+Section 19 — v2.1.0 produces a larger denominator (186/186 GRCh37,
+173/173 GRCh38 vs v2.0.2's 107/107 + 113/113) because PR 2's per-
+Annotation alt threading made more rows eligible for the exact-
+`(rsid, alt)` CADD lookup. **All matches must remain 100% allele-
+direct, 0 via-complement** — that's the v2.0.1 #18 invariant
+holding against the broader denominator.
+
 ## 8. Report formats
 
 ### 8a. HTML report
@@ -555,11 +602,18 @@ has_af = sum(1 for a in data['annotations'] if a.get('allele_frequency') is not 
 has_am = sum(1 for a in data['annotations'] if a.get('am_pathogenicity') is not None)
 print(f\"With gnomAD freq: {has_af}\")
 print(f\"With AM: {has_am}\")
+gwas = [a for a in data['annotations'] if a.get('source') == 'gwas']
+print(f\"GWAS rows w/ structured trait: {sum(1 for a in gwas if a.get('trait'))}\")
+print(f\"GWAS rows w/ p_value: {sum(1 for a in gwas if a.get('p_value') is not None)}\")
 "
 ```
 
-**Expected:** Schema version 4. Multiple sources present. gnomAD and
-AM enrichment counts > 0.
+**Expected:** Schema version 5 (v2.1.0; ADR-0035 Cluster B added
+`variant.ref` internally and `annotation.trait` / `.p_value` /
+`.phecode` to the JSON output). Multiple sources present. gnomAD and
+AM enrichment counts > 0. On any file with GWAS hits, the structured
+`trait` and `p_value` counts must both be > 0 — that's the v5 contract
+delivery check.
 
 ## 9. Stats, extract, and focused reports
 
@@ -814,9 +868,10 @@ snpedia/gwas/pharmgkb ~0.6 GB. CADD adds ~5.8 GB on top.)
 
 ## 18. Upgrade-path verification (v2.0.1+ caches, GH #22 / #42)
 
-When a user upgrades from v2.0.0 to v2.0.2, the next `allelix db
-update` should auto-invalidate exactly the caches whose interpreter
-or schema version bumped, and leave the rest signal-skipped.
+When a user upgrades from an older minor (v2.0.0 → v2.0.2, or
+v2.0.2 → v2.1.0), the next `allelix db update` should auto-invalidate
+exactly the caches whose interpreter or schema version bumped at any
+step in the upgrade window, and leave the rest signal-skipped.
 
 ```bash
 # Pre-condition: a v2.0.0 cache already on disk
@@ -840,6 +895,18 @@ compressed, ~8 GB on disk) prebuilts.
 **v2.0.2 specifics:** no new interpreter / schema bumps. The HF URL
 move (#37, v2.0.1) is invisible — HF redirects from `dial481/...` to
 `allelix/...`; existing pinned installs continue to fetch.
+
+**v2.1.0 specifics:** no new interpreter / schema bumps in the cache
+layer. `CLINVAR_INTERPRETER_VERSION` stays at 2 (v2.0.1 bump);
+PharmGKB / gnomAD / AlphaMissense / CADD interpreter / schema
+versions all unchanged. The ADR-0035 Cluster B work changed query
+semantics, not loader output — `pharmgkb.sqlite` / `clinvar.*.sqlite`
+content is byte-identical. JSON report `schema_version` bumped 4 → 5
+at the cluster's first PR; the new fields (`annotation.trait`,
+`annotation.p_value`, `annotation.phecode`) are additive and v4
+consumers reading v5 output continue to succeed. Existing v2.0.2
+caches stay current on upgrade — `allelix db update` will signal-skip
+all annotators.
 
 ## 19. Gold-standard real-data VCF battery (~1.5 GB, optional but recommended)
 
@@ -1050,7 +1117,7 @@ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
 
 All of the following must be true:
 
-- [ ] Unit test suite: **1,540 passed, 0 skipped** (v2.0.2 floor with
+- [ ] Unit test suite: **1,576 passed, 0 skipped** (v2.1.0 floor with
       `plink2` installed and GWAS auto-fetch succeeding). Skips are a
       ship-gate defect — investigate, don't ignore.
 - [ ] Ruff lint + format: zero warnings (`ruff check .` and `ruff format --check .` both clean)
@@ -1063,13 +1130,14 @@ All of the following must be true:
 - [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: every alt-set CADD score has its alt directly in gnomAD's alts at that rsID; alt-less (raw GWAS) rows only get enrichment via the safe position-fallback path; ClinVar multi-SCV variants show semicolon-joined conditions (rs1800896, rs1063192 sanity check)
 - [ ] **Terminal report (GH #9)**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) all present
-- [ ] JSON report has schema version 4 with gnomAD + AM + CADD enrichment; `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] JSON report has schema version 5 with gnomAD + AM + CADD enrichment; structured GWAS fields populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] **Strand-aware carrier matching (GH #14 strand-half / R-1 / ADR-0035 PR 4)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
 - [ ] Config system correctly gates SNPedia on `license.commercial`
 - [ ] CADD opt-in: `--cadd` downloads cache, license prompt shown, scores enriched
 - [ ] CADD commercial gate: `license.commercial = true` excludes CADD
 - [ ] Edge case files produce expected behavior
 - [ ] `db update` (second run) skips already-current databases
-- [ ] **Upgrade path (GH #22 / #42)**: upgrading from v2.0.0 to v2.0.2 against an existing cache re-downloads only ClinVar (interpreter-version invalidation); other annotators signal-skip
+- [ ] **Upgrade path (GH #22 / #42)**: upgrading from v2.0.0 to v2.0.2 against an existing cache re-downloads only ClinVar (interpreter-version invalidation from v2.0.1); upgrading from v2.0.2 to v2.1.0 against an existing cache signal-skips all annotators (no new interpreter / schema bumps in the ADR-0035 Cluster B work)
 - [ ] GWAS Catalog slow tests pass (auto-fetch the fixture — silent skip is forbidden, GH #45)
 - [ ] `methylation`, `pharmacogenomics`, `compare` subcommands produce output (pharmacogenomics --help says "ClinPGx-style sources")
 - [ ] PLINK export produces valid .bed/.bim/.fam with correct magic and alignment

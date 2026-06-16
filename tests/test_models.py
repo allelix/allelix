@@ -38,6 +38,33 @@ class TestVariant:
         v = Variant("rs1", "1", 100, "A", "A", build="GRCh38")
         assert v.build == "GRCh38"
 
+    def test_ref_defaults_to_none(self):
+        """ADR-0035: Variant.ref is optional; array parsers leave it unset."""
+        v = Variant("rs1", "1", 100, "A", "A")
+        assert v.ref is None
+
+    def test_ref_explicit(self):
+        """ADR-0035: VCF parsers populate ref from the REF column."""
+        v = Variant("rs1", "1", 100, "A", "G", ref="A")
+        assert v.ref == "A"
+
+    def test_ref_lowercase_normalized_to_uppercase(self):
+        """ADR-0035 + GH #14: soft-masked references emit lowercase REF.
+
+        Without normalization the strand-aware carrier match (PR 4) would
+        compare a lowercase user ref against uppercase gnomAD / annotator
+        alleles and silently mismatch — exactly the #14 failure mode for
+        the new field. Normalize at the model boundary so the invariant
+        is impossible to violate downstream.
+        """
+        v = Variant("rs1", "1", 100, "A", "G", ref="a")
+        assert v.ref == "A"
+
+    def test_ref_lowercase_indel_normalized(self):
+        """Multi-base ref (indel locus) normalized in place."""
+        v = Variant("rs1", "7", 117199644, "CTT", "C", ref="cttg")
+        assert v.ref == "CTTG"
+
     def test_indel_genotype(self):
         v = Variant("rs1", "7", 117199644, "CTT", "C")
         assert v.is_heterozygous

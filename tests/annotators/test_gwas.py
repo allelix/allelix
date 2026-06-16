@@ -418,6 +418,100 @@ class TestGenotypeMatching:
         assert capped == _UNKNOWN_RISK_ALLELE_MAG_CAP
 
 
+class TestStructuredFields:
+    """ADR-0035 PR 3: trait / p_value / phecode are populated as structured fields."""
+
+    def test_trait_p_value_populated(self, gwas_data_dir: Path) -> None:
+        """Every emitted GWAS row carries trait structured; p_value tracks the
+        upstream column (None when the source has no published p-value — the
+        annotator's description then renders 'p=N/A')."""
+        annotator = GWASCatalogAnnotator(gwas_data_dir, filter_traits=False)
+        try:
+            v = Variant(
+                rsid="rs4680",
+                chromosome="22",
+                position=19963748,
+                allele1="A",
+                allele2="A",
+                build="GRCh38",
+            )
+            results = annotator.annotate(v)
+            assert results
+            for a in results:
+                assert a.trait
+                # p_value tracks the upstream SQL column — float when published,
+                # None when not (no "always a float" claim).
+                assert a.p_value is None or isinstance(a.p_value, float)
+                # If p_value is None, description signals that (no fabricated value).
+                if a.p_value is None:
+                    assert "p=N/A" in a.description
+        finally:
+            annotator.close()
+
+    def test_split_trait_and_phecode_extracts_phecode(self) -> None:
+        from allelix.annotators.gwas import _split_trait_and_phecode
+
+        trait, phecode = _split_trait_and_phecode("Type 2 diabetes (PheCode 250.2)")
+        assert trait == "Type 2 diabetes"
+        assert phecode == "250.2"
+
+    def test_split_trait_and_phecode_no_phecode_returns_empty(self) -> None:
+        from allelix.annotators.gwas import _split_trait_and_phecode
+
+        trait, phecode = _split_trait_and_phecode("Some trait without code")
+        assert trait == "Some trait without code"
+        assert phecode == ""
+
+    def test_split_trait_and_phecode_handles_integer_phecode(self) -> None:
+        from allelix.annotators.gwas import _split_trait_and_phecode
+
+        trait, phecode = _split_trait_and_phecode("Ischemic heart disease (PheCode 411)")
+        assert trait == "Ischemic heart disease"
+        assert phecode == "411"
+
+
+class TestAltThreading:
+    """ADR-0035 PR 2 — risk_allele threads onto Annotation.alt for exact enrichment."""
+
+    def test_known_risk_allele_threads_as_alt(self, gwas_data_dir: Path) -> None:
+        """rs4680 hom-alt (A/A) — risk allele A populates Annotation.alt."""
+        annotator = GWASCatalogAnnotator(gwas_data_dir, filter_traits=False)
+        try:
+            v = Variant(
+                rsid="rs4680",
+                chromosome="22",
+                position=19963748,
+                allele1="A",
+                allele2="A",
+                build="GRCh38",
+            )
+            results = annotator.annotate(v)
+            assert results
+            # Every emitted row carries the risk allele as alt, enabling
+            # downstream exact-allele enrichment (gnomAD / AlphaMissense / CADD).
+            assert all(a.alt == "A" for a in results)
+        finally:
+            annotator.close()
+
+    def test_batch_annotate_threads_alt_identically(self, gwas_data_dir: Path) -> None:
+        """batch_annotate emits the same alt as annotate (parity invariant)."""
+        annotator = GWASCatalogAnnotator(gwas_data_dir, filter_traits=False)
+        try:
+            v = Variant(
+                rsid="rs4680",
+                chromosome="22",
+                position=19963748,
+                allele1="A",
+                allele2="A",
+                build="GRCh38",
+            )
+            batched = list(annotator.batch_annotate([v]))
+            assert batched
+            assert all(a.alt == "A" for a in batched)
+        finally:
+            annotator.close()
+
+
 class TestAttribution:
     """Source, category, significance labels."""
 

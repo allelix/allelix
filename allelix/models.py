@@ -31,6 +31,13 @@ class Variant:
         allele1: First observed allele. A/T/G/C, multi-base for indels, or "-" for no-call.
         allele2: Second observed allele. Same encoding as allele1.
         build: Reference genome build. "GRCh37" (hg19) or "GRCh38" (hg38).
+        ref: Reference allele on the forward strand at this position, when
+            known. VCF parsers populate from the REF column; array parsers
+            currently leave it None. Required by strand-aware carrier matching
+            (ADR-0035) and downstream consumers that need to identify the risk
+            allele within the user's pair. None means "cannot resolve" —
+            consumers degrade gracefully (return ambiguous, skip strand check,
+            etc.) rather than guess.
     """
 
     rsid: str
@@ -39,9 +46,10 @@ class Variant:
     allele1: str
     allele2: str
     build: str = DEFAULT_BUILD
+    ref: str | None = None
 
     def __post_init__(self) -> None:
-        """Normalize allele case at construction (GH #14).
+        """Normalize allele case at construction (GH #14, ADR-0035).
 
         Reference databases (ClinVar, gnomAD, ClinPGx, etc.) all ship
         uppercase alleles, and carrier matching is raw set membership
@@ -53,11 +61,20 @@ class Variant:
         at the model boundary so the invariant is impossible to
         violate downstream. The no-call marker is left as-is;
         multi-base alleles (indels) are uppercased in place.
+
+        ``ref`` (ADR-0035) is a sibling allele field feeding the same
+        downstream matching path (PR 4 strand-aware carrier matching
+        compares ``ref`` against ``{allele1, allele2}`` and against
+        gnomAD's uppercased REF). VCFs derived from soft-masked
+        references emit lowercase bases in the REF column, so the
+        same normalization applies here for the same reason.
         """
         if self.allele1 and self.allele1 != NO_CALL_MARKER:
             self.allele1 = self.allele1.upper()
         if self.allele2 and self.allele2 != NO_CALL_MARKER:
             self.allele2 = self.allele2.upper()
+        if self.ref is not None and self.ref != NO_CALL_MARKER:
+            self.ref = self.ref.upper()
 
     @property
     def is_heterozygous(self) -> bool:
@@ -126,6 +143,15 @@ class Annotation:
     am_pathogenicity: float | None = None
     am_class: str = ""
     cadd_phred: float | None = None
+    # ADR-0035 cluster manifest (PR 3): structured GWAS fields promoted out of
+    # the rendered ``description`` prose. `description` still carries the same
+    # rendered text for HTML / terminal display, but downstream code (rollup,
+    # diff, future consumers) reads the structured fields directly instead of
+    # regex-parsing prose. Populated by the GWAS annotator; empty / None on
+    # non-GWAS rows.
+    trait: str = ""
+    p_value: float | None = None
+    phecode: str = ""
 
     @property
     def zygosity(self) -> str:

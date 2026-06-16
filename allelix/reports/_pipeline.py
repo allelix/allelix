@@ -167,58 +167,26 @@ class AnalysisResult:
         return out
 
 
-# GH #24: both _gwas_base_trait and _gwas_phecode_parent reach into the
-# formatted description string to recover structured fields. The two
-# previously used inconsistent delimiters (" (PheCode " vs "(PheCode "),
-# the spirit of "no regex on prose" violated with .split()/.find().
-# Until trait/p-value/PheCode are carried as structured fields on
-# Annotation (deferred to v2.1+, see ADR-0024 followup), at least keep
-# the delimiter consistent across both readers.
-_PHECODE_DELIM = " (PheCode "
+# ADR-0035 PR 3 closed the GH #24 structural-half: GWAS rollup now reads
+# trait / phecode / p_value from structured Annotation fields instead of
+# regex-parsing the rendered ``description`` prose. The previous
+# ``_gwas_base_trait`` / ``_gwas_phecode_parent`` / ``_gwas_p_value`` helpers
+# and the ``_PHECODE_DELIM`` shared-delimiter constant (the v2.0.1 suppress-
+# half) are gone — rollup keys directly off ``a.trait``, ``a.phecode``,
+# ``a.p_value``. MTAG suffix still lives in ``description`` for display and
+# is detected with ``"(MTAG)" in a.description``; promoting that to a
+# structured flag is outside the ADR-0035 cluster manifest.
 
 
-def _gwas_base_trait(description: str) -> str | None:
-    """Extract trait text from a GWAS description, stripping MTAG suffix and PheCode label."""
-    marker = "GWAS Catalog: "
-    if marker not in description:
+def _gwas_phecode_parent(phecode: str) -> str | None:
+    """Return the integer parent of a structured PheCode (e.g., ``"411.4"`` → ``"411"``).
+
+    Returns None when no PheCode is set or the prefix isn't an integer.
+    """
+    if not phecode:
         return None
-    s = description.split(marker, 1)[1]
-    s = s.split(" (p=", 1)[0]
-    if s.endswith(" (MTAG)"):
-        s = s[: -len(" (MTAG)")]
-    s = s.split(_PHECODE_DELIM, 1)[0]
-    return s.strip().lower()
-
-
-def _gwas_phecode_parent(description: str) -> str | None:
-    """Extract PheCode parent (numeric prefix before the dot), or None."""
-    idx = description.find(_PHECODE_DELIM)
-    if idx == -1:
-        return None
-    rest = description[idx + len(_PHECODE_DELIM) :]
-    end = rest.find(")")
-    if end == -1:
-        return None
-    code = rest[:end].strip()
-    parent = code.split(".", 1)[0]
+    parent = phecode.split(".", 1)[0]
     return parent if parent.isdigit() else None
-
-
-def _gwas_p_value(description: str) -> float:
-    """Extract p-value from a GWAS description. Returns inf if unparseable."""
-    idx = description.find("(p=")
-    if idx == -1:
-        return float("inf")
-    rest = description[idx + len("(p=") :]
-    end = rest.find(",")
-    if end == -1:
-        end = rest.find(")")
-    if end == -1:
-        return float("inf")
-    try:
-        return float(rest[:end].strip())
-    except ValueError:
-        return float("inf")
 
 
 def rollup_gwas_duplicates(annotations: list[Annotation]) -> list[Annotation]:
@@ -238,29 +206,25 @@ def rollup_gwas_duplicates(annotations: list[Annotation]) -> list[Annotation]:
     if not gwas_rows:
         return annotations
 
-    plain_keys = {
-        (a.rsid, _gwas_base_trait(a.description))
-        for a in gwas_rows
-        if "(MTAG)" not in a.description
-    }
+    plain_keys = {(a.rsid, a.trait.lower()) for a in gwas_rows if "(MTAG)" not in a.description}
     after_mtag = [
         a
         for a in gwas_rows
         if a.is_must_include
         or "(MTAG)" not in a.description
-        or (a.rsid, _gwas_base_trait(a.description)) not in plain_keys
+        or (a.rsid, a.trait.lower()) not in plain_keys
     ]
 
     by_parent: dict[tuple[str, str], list[Annotation]] = {}
     no_phecode: list[Annotation] = []
     for a in after_mtag:
-        parent = _gwas_phecode_parent(a.description)
+        parent = _gwas_phecode_parent(a.phecode)
         if parent is None or a.is_must_include:
             no_phecode.append(a)
         else:
             by_parent.setdefault((a.rsid, parent), []).append(a)
     for group in by_parent.values():
-        winner = min(group, key=lambda x: _gwas_p_value(x.description))
+        winner = min(group, key=lambda x: x.p_value if x.p_value is not None else float("inf"))
         no_phecode.append(winner)
 
     survivors.extend(no_phecode)
@@ -438,6 +402,23 @@ def run_analysis(
                     resolution = clinvar_resolver.bulk_resolve_rsids(rsidless)
                     for (chrom, pos, ref, alt), rsid in resolution.items():
                         resolved_coords[rsid] = (chrom, pos, ref, alt)
+            # ADR-0035 PR 4: populate Variant.ref for array data via gnomAD's
+            # rsid → forward-REF map. VCF inputs already carry ref (PR 1).
+            # Annotators downstream (ClinVar / PharmGKB strand-aware carrier
+            # match; SNPedia / ClinPGx per-row alt threading from PR 2)
+            # consume this. Variants without rsIDs (post-resolution) or
+            # whose rsID isn't in gnomAD keep ref=None and degrade
+            # gracefully — direct-match-only with no strand-flip.
+            if gnomad is not None and gnomad.is_ready():
+                need_ref = {v.rsid for v in batch_buf if v.ref is None and v.rsid.startswith("rs")}
+                if need_ref:
+                    coord_map = gnomad.bulk_resolve_coordinates(need_ref)
+                    for v in batch_buf:
+                        if v.ref is None and v.rsid in coord_map:
+                            entries = coord_map[v.rsid]
+                            # All multi-allelic rows at a position share the
+                            # same REF; first entry's REF is canonical.
+                            v.ref = entries[0][2] if entries else None
             # High-value rsID match runs AFTER resolution so a variant
             # entering as ID=. that resolves to a high-value rsID is still
             # caught. GH #11.

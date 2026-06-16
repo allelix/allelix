@@ -30,6 +30,7 @@ from allelix.databases.manager import (
     verify_file_hash,
 )
 from allelix.models import Annotation
+from allelix.utils.allele import strand_aware_carrier_match
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -384,7 +385,6 @@ class ClinVarAnnotator(Annotator):
             (variant.rsid,),
         ).fetchall()
         annotations: list[Annotation] = []
-        carrier_alleles = {variant.allele1, variant.allele2}
         user_is_multibase = len(variant.allele1) > 1 or len(variant.allele2) > 1
         # ADR-0023: report the user's actual diploid call consistently
         # across annotators, not the matched ALT base alone.
@@ -404,7 +404,14 @@ class ClinVarAnnotator(Annotator):
             clinvar_is_indel = len(ref) > 1 or len(alt) > 1
             if clinvar_is_indel and not user_is_multibase:
                 continue
-            if alt not in carrier_alleles:
+            # ADR-0035 PR 4: strand-aware carrier match. Direct {ref, alt}
+            # membership still covers forward-stranded inputs; the
+            # complement-fallback path fires only when Variant.ref confirms
+            # reverse orientation AND the site isn't palindromic — preserving
+            # the v2.0.1 #18 multi-allelic safety invariant.
+            if not strand_aware_carrier_match(
+                variant.ref, variant.allele1, variant.allele2, ref, alt
+            ):
                 continue
             sig_label = _normalize_clnsig(clnsig) if clnsig else "unknown"
             if not self._include_benign and sig_label in _BENIGN_CLNSIGS:
@@ -562,7 +569,6 @@ class ClinVarAnnotator(Annotator):
             rows = rows_by_build_rsid.get((variant.build, variant.rsid))
             if not rows:
                 continue
-            carrier_alleles = {variant.allele1, variant.allele2}
             user_is_multibase = len(variant.allele1) > 1 or len(variant.allele2) > 1
             user_diploid = _user_diploid(variant)
             for row in rows:
@@ -580,7 +586,11 @@ class ClinVarAnnotator(Annotator):
                 clinvar_is_indel = len(ref) > 1 or len(alt) > 1
                 if clinvar_is_indel and not user_is_multibase:
                     continue
-                if alt not in carrier_alleles:
+                # ADR-0035 PR 4: strand-aware carrier match. See annotate() for
+                # the safety rationale (#18 multi-allelic invariant preserved).
+                if not strand_aware_carrier_match(
+                    variant.ref, variant.allele1, variant.allele2, ref, alt
+                ):
                     continue
                 sig_label = _normalize_clnsig(clnsig) if clnsig else "unknown"
                 if not self._include_benign and sig_label in _BENIGN_CLNSIGS:

@@ -225,6 +225,16 @@ class TestParsePlainVcf:
         assert by_rsid["rs1801133"].chromosome == "1"
         # 'chr1' becomes '1'
         assert by_rsid["rs900000002"].chromosome == "1"
+
+    def test_populates_ref_from_vcf_ref_column(self) -> None:
+        """ADR-0035: VCF parser carries REF onto Variant.ref."""
+        by_rsid = {v.rsid: v for v in VcfParser().parse(_path(MOCK_VCF))}
+        # rs1801133: REF=G, ALT=A (verified against the mock fixture)
+        assert by_rsid["rs1801133"].ref == "G"
+        # rs4680: REF=G, ALT=A
+        assert by_rsid["rs4680"].ref == "G"
+        # rs900000006: indel, REF=ATTC, ALT=A
+        assert by_rsid["rs900000006"].ref == "ATTC"
         # 'chrX' becomes 'X'
         assert by_rsid["rs900000003"].chromosome == "X"
         # 'chrM' becomes 'MT'

@@ -201,6 +201,37 @@ class TestAnnotateGenotype:
         assert results[0].category == "clinical"
         ann.close()
 
+    def test_alt_threading_with_ref_heterozygous(self, snpedia_data_dir: Path) -> None:
+        """ADR-0035 PR 2: REF=C, user is C/T → annotation.alt = "T"."""
+        ann = SNPediaAnnotator(snpedia_data_dir)
+        v = Variant(
+            rsid="rs1801133",
+            chromosome="1",
+            position=11796321,
+            allele1="C",
+            allele2="T",
+            ref="C",
+        )
+        results = ann.annotate(v)
+        assert results
+        assert results[0].alt == "T"
+        ann.close()
+
+    def test_alt_threading_without_ref_stays_empty(self, snpedia_data_dir: Path) -> None:
+        """Array data without Variant.ref leaves alt empty (no guess)."""
+        ann = SNPediaAnnotator(snpedia_data_dir)
+        v = Variant(
+            rsid="rs1801133",
+            chromosome="1",
+            position=11796321,
+            allele1="C",
+            allele2="T",
+        )
+        results = ann.annotate(v)
+        assert results
+        assert results[0].alt == ""
+        ann.close()
+
     def test_homozygous_match(self, snpedia_data_dir: Path) -> None:
         ann = SNPediaAnnotator(snpedia_data_dir)
         v = Variant(

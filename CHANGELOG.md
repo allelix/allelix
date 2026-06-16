@@ -2,6 +2,106 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.1.0] - 2026-06-16
+
+### Added
+
+- **Strand-aware carrier matching (ADR-0035, PR 4 of 4; closes the strand-half
+  of #14 and R-1).** ClinVar and ClinPGx carrier matching now accepts
+  complement-strand reads of the same variant: a het carrier of an ALT scored
+  on the forward strand and the same biology read on the coding strand
+  produce identical annotation sets. The v2.0.1 #18 multi-allelic safety
+  invariant is preserved — strand-flip fires only when `Variant.ref` confirms
+  reverse orientation (`variant.ref == complement(source_ref)`) AND the
+  source `(ref, alt)` pair is non-palindromic. Without that orientation
+  context (`variant.ref is None`) or against palindromic A/T and C/G sites,
+  the match falls back to direct membership only — same behavior as v2.0.x.
+  Two new helpers in `allelix.utils.allele`: `strand_aware_carrier_match` for
+  per-row ClinVar-style `(ref, alt)` carrier checks; `strand_aware_genotype_match`
+  for ClinPGx / SNPedia per-diploid matches. CLAUDE.md R-1's mandatory test
+  case (forward C/C and coding G/G both producing zero annotations on a het
+  pathogenic site) is pinned via the fixture rsid, plus the het-carrier
+  parity case (forward G/A and coding C/T producing the same annotation set)
+  and a #18-regression test (variant.ref disagreement abstains).
+- **Array-data `Variant.ref` population (ADR-0035, PR 4).** The analysis
+  pipeline now resolves the forward REF allele for array-format inputs via
+  gnomAD's `bulk_resolve_coordinates(rsid)` lookup, mutating `Variant.ref`
+  in place at batch-flush time. VCF inputs continue to carry `ref` from the
+  REF column (PR 1). The population step gates on `gnomad.is_ready()` —
+  array runs without a current gnomAD cache continue to leave `ref=None`,
+  and downstream consumers (SNPedia / ClinPGx PR 2 alt threading; the new
+  strand-aware carrier match in this PR) degrade gracefully to direct-match
+  only. This is what unlocks PR 2's allele-specific enrichment on 23andMe /
+  AncestryDNA / MyHappyGenes / FTDNA / MyHeritage / LivingDNA inputs that
+  previously got `alt=""` because `variant.ref` was None.
+- **ClinPGx carrier rule extended to strand-aware (ADR-0035, PR 4).**
+  Previously `WHERE rsid = ? AND genotype = ?` SQL — direct exact-match
+  only. Now fetches all rows for the rsid (typically ≤5) and applies
+  `strand_aware_genotype_match` per row, so reverse-strand array reads
+  match the source diploid when orientation context is available.
+
+
+### Added
+
+- **`Variant.ref` field (ADR-0035, PR 1 of 4 for v2.1 Cluster B).** New
+  optional field on the `Variant` dataclass carrying the reference allele on
+  the forward strand. The VCF parser populates `ref` from the VCF REF column;
+  array parsers leave it `None` for now (population via the existing
+  `resolve_strand` path against gnomAD lands in PR 4 alongside the strand-aware
+  carrier matching that consumes it). Required by downstream consumers
+  (strand-aware comparison, plausibility flagging, future ACMG engine) to
+  identify which side of the user's allele pair is the risk allele. `None`
+  means "cannot resolve" — consumers degrade gracefully rather than guess.
+
+### Changed
+
+- **JSON `schema_version` bumped 4 → 5.** Enters the ADR-0035 cluster contract.
+  The full v2.1 Cluster B manifest landing within v5 across PRs 1-4:
+  `variant.ref` (this PR), `annotation.trait` / `annotation.p_value` /
+  `annotation.phecode` (PR 3, the structured GWAS fields). `annotation.alt`
+  exists since v1.4.1; PR 2 extends its population coverage from ClinVar to
+  GWAS / SNPedia / ClinPGx without a schema change. v4 consumers reading v5
+  output still succeed — every v4 field is unchanged. The diff loader accepts
+  both v4 and v5 baselines.
+- **Per-Annotation `alt` threading: GWAS / SNPedia / ClinPGx (ADR-0035, PR 2
+  of 4; closes the structural-half of #23).** The `Annotation.alt` field
+  exists since v1.4.1 #25 but until this PR only ClinVar populated it. The
+  v2.0.1 #23 suppress-half removed the wrong-allele MAX-fallback for alt-less
+  rows; this PR closes the loop by routing per-row alt from upstream source
+  data onto the annotation so rsID-bearing input VCFs once again get
+  allele-specific gnomAD / AlphaMissense / CADD enrichment via the existing
+  exact-`(rsid, alt)` lookup path. (a) GWAS Catalog: the catalog's
+  per-association risk allele threads as `alt` when present; rows without a
+  specified risk allele continue to emit `alt=""` and stay capped at
+  magnitude 3.0 per ADR-0024. (b) SNPedia: alt is derived from `Variant.ref`
+  + the matched diploid row via `derive_alt_from_diploid()` (new helper in
+  `allelix.utils.allele`); empty when `Variant.ref` is None (array data
+  prior to PR 4's gnomAD-backed ref population). (c) ClinPGx: same
+  derivation as SNPedia. The position-fallback enrichment path (used when
+  rsID-less input VCFs resolve rsIDs on the fly via ClinVar — GH #8)
+  is unchanged; it was already allele-specific and stays that way. No
+  schema-version change — `Annotation.alt` is the same field.
+- **Structured GWAS fields on `Annotation`: `trait` / `p_value` / `phecode`
+  (ADR-0035, PR 3 of 4; closes the structural-half of #24).** v2.0.1 #24's
+  suppress-half merged two inconsistent `(PheCode ` delimiter strings into a
+  shared constant; this PR closes the structural half by promoting the values
+  themselves out of the rendered `description` prose into typed `Annotation`
+  fields. The GWAS annotator extracts the PheCode suffix (when the upstream
+  trait carries one) at the ingestion boundary, populates the structured
+  fields, and rebuilds the rendered `description` from the structured parts.
+  Downstream code reads `a.trait` / `a.phecode` / `a.p_value` directly — the
+  three regex-on-prose helpers (`_gwas_base_trait` / `_gwas_phecode_parent` /
+  `_gwas_p_value`) and the shared `_PHECODE_DELIM` delimiter are deleted.
+  Rollup behavior is unchanged; MTAG detection still uses `"(MTAG)" in
+  a.description` (promotion to a structured flag is outside the ADR-0035
+  cluster manifest). **First PR in the cluster to deliver observable v5 JSON
+  fields** — `annotation.trait` / `.p_value` / `.phecode` now appear in every
+  JSON report. v4 consumers continue to ignore the unknown fields; v5
+  consumers can read them as the structured contract ADR-0035 advertised at
+  PR 1's schema bump.
+
 ## [2.0.2] - 2026-06-16
 
 ### Added

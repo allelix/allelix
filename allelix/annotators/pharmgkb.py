@@ -30,6 +30,7 @@ from allelix.databases.pharmgkb_loader import (
     schema_is_current,
 )
 from allelix.models import Annotation
+from allelix.utils.allele import derive_alt_from_diploid, strand_aware_genotype_match
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -260,20 +261,25 @@ class PharmGKBAnnotator(Annotator):
         if is_clinvar_homref(variant, self._clinvar_ref_provider):
             return []
 
+        # ADR-0035 PR 4: fetch all rows for the rsid (typically <5) and apply
+        # strand-aware genotype match in Python. Forward-stranded users hit
+        # the same set of rows as the v0.7-era ``WHERE genotype = ?`` SQL;
+        # reverse-stranded users now also match when Variant.ref confirms
+        # orientation AND the source genotype is non-palindromic.
         sql = (
             "SELECT genotype, gene, drugs, phenotype, phenotype_category, "
             "annotation_text, level_of_evidence, score, pgkb_annotation_id "
             "FROM pharmgkb_annotations "
-            "WHERE rsid = ? AND genotype = ? AND is_nonfinding = 0"
+            "WHERE rsid = ? AND is_nonfinding = 0"
         )
-        params = (variant.rsid, user_geno)
+        params = (variant.rsid,)
 
         rows = self._connection().execute(sql, params).fetchall()
         annotations: list[Annotation] = []
         user_diploid = _user_diploid(variant)
         for row in rows:
             (
-                _geno,
+                geno,
                 gene,
                 drugs,
                 phenotype,
@@ -283,6 +289,10 @@ class PharmGKBAnnotator(Annotator):
                 _score,
                 pgkb_annotation_id,
             ) = row
+            if not strand_aware_genotype_match(
+                variant.allele1, variant.allele2, geno, variant.ref
+            ):
+                continue
             sig_label = level_of_evidence.strip().lower() or "unknown"
             description_parts = [f"ClinPGx: {drugs}"] if drugs else ["ClinPGx"]
             if phenotype:
@@ -306,6 +316,7 @@ class PharmGKBAnnotator(Annotator):
                     references=references,
                     condition=phenotype or "",
                     gene=gene or "",
+                    alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
                 )
             )
         return annotations
@@ -352,7 +363,7 @@ class PharmGKBAnnotator(Annotator):
             for row in cursor:
                 rows_by_rsid.setdefault(row[0], []).append(row[1:])
 
-        for variant, user_geno in candidates:
+        for variant, _user_geno in candidates:
             rows = rows_by_rsid.get(variant.rsid)
             if not rows:
                 continue
@@ -369,7 +380,11 @@ class PharmGKBAnnotator(Annotator):
                     _score,
                     pgkb_annotation_id,
                 ) = row
-                if geno != user_geno:
+                # ADR-0035 PR 4: strand-aware genotype match. See annotate() for
+                # the safety rationale (palindrome guard + variant.ref orientation).
+                if not strand_aware_genotype_match(
+                    variant.allele1, variant.allele2, geno, variant.ref
+                ):
                     continue
                 sig_label = level_of_evidence.strip().lower() or "unknown"
                 description_parts = [f"ClinPGx: {drugs}"] if drugs else ["ClinPGx"]
@@ -393,6 +408,7 @@ class PharmGKBAnnotator(Annotator):
                     references=references,
                     condition=phenotype or "",
                     gene=gene or "",
+                    alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
                 )
 
 

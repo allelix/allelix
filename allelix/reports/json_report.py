@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "4",
+      "schema_version": "5",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -52,7 +52,11 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
+# v4 → v5 bump: enters the ADR-0035 cluster contract. Incoming cluster fields
+# (variant.ref via Variant model, annotation.trait / .p_value / .phecode via
+# Annotation model) land across PRs 1-4 of the v2.1 Cluster B work. v4
+# consumers reading v5 output still succeed — every v4 field is unchanged.
 
 
 def _annotation_dict(a: Annotation) -> dict:

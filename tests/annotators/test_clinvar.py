@@ -173,6 +173,63 @@ class TestGenotypeMatching:
         assert annotator.annotate(v) == []
 
 
+class TestStrandAwareCarrierMatch:
+    """ADR-0035 PR 4 + CLAUDE.md Feature R-1: complement-strand reads match.
+
+    A clinical lab reports a SNP on the coding strand; the array reports the
+    same position on the forward reference strand. Complementary genotypes
+    are the same biological result and must produce the same set of
+    annotations. The v2.0.1 #18 multi-allelic safety invariant is preserved
+    via the variant.ref orientation guard.
+    """
+
+    def test_hom_ref_both_strands_no_annotation(self, annotator: ClinVarAnnotator):
+        """rs1801133 (mock REF=G ALT=A Pathogenic). Hom-ref on either strand
+        must produce zero annotations (user doesn't carry ALT).
+
+        Mirrors the CLAUDE.md R-1 mandatory test case (rs5742904 forward C/C
+        and coding G/G both producing zero annotations) using the fixture
+        rsid we ship.
+        """
+        forward = Variant("rs1801133", "1", 11796321, "G", "G", ref="G")
+        coding = Variant("rs1801133", "1", 11796321, "C", "C", ref="C")
+        assert annotator.annotate(forward) == []
+        assert annotator.annotate(coding) == []
+
+    def test_het_carrier_both_strands_same_annotation_set(self, annotator: ClinVarAnnotator):
+        """rs1801133 het carrier of ALT (A): forward G/A and coding-strand
+        C/T are the same biological result and must produce the same set
+        of ClinVar annotations.
+        """
+        forward = Variant("rs1801133", "1", 11796321, "G", "A", ref="G")
+        coding = Variant("rs1801133", "1", 11796321, "C", "T", ref="C")
+        forward_results = annotator.annotate(forward)
+        coding_results = annotator.annotate(coding)
+        assert len(forward_results) == 1
+        assert len(coding_results) == 1
+        # Same ClinVar annotation surfaces on either strand reading.
+        assert forward_results[0].significance == coding_results[0].significance
+        assert forward_results[0].condition == coding_results[0].condition
+        assert forward_results[0].gene == coding_results[0].gene
+        # Strand-flip read still surfaces the user's actual diploid call,
+        # not a synthesized forward version. genotype_match is user-rendered.
+        assert forward_results[0].genotype_match == "AG"
+        assert coding_results[0].genotype_match == "CT"
+
+    def test_audit_18_multi_allelic_safety_preserved(self, annotator: ClinVarAnnotator):
+        """Variant.ref disagreement (neither matches source ref nor its
+        complement) → no strand-flip fires. Preserves the v2.0.1 #18
+        wrong-allele invariant.
+        """
+        # User claims variant.ref=A; ClinVar's row has ref=G. A is not G,
+        # not complement(G)=C. variant.ref is inconsistent → abstain.
+        v = Variant("rs1801133", "1", 11796321, "T", "T", ref="A")
+        results = annotator.annotate(v)
+        # Direct check: A not in {T, T}; the strand-flip path is blocked
+        # because variant.ref doesn't fit the forward/reverse pair.
+        assert results == []
+
+
 class TestAttribution:
     """ADR-0003: Significance and attribution must be source-prefixed."""
 

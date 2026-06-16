@@ -29,6 +29,7 @@ from allelix.databases.snpedia_loader import (
     install_prebuilt_cache,
 )
 from allelix.models import Annotation
+from allelix.utils.allele import derive_alt_from_diploid
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -272,6 +273,7 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
+                    alt=derive_alt_from_diploid(variant.ref, allele1, allele2),
                 )
             )
 
@@ -356,4 +358,5 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
+                    alt=derive_alt_from_diploid(variant.ref, allele1, allele2),
                 )
