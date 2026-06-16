@@ -11,7 +11,7 @@ the validation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 NO_CALL_MARKER = "-"
 DEFAULT_BUILD = "GRCh37"
@@ -138,6 +138,10 @@ class Annotation:
     gene: str = ""
     review_status: str = ""
     alt: str = ""
+    # Internal flag — see ``_INTERNAL_ANNOTATION_FIELDS`` below. Excluded
+    # from every public serialization path (JSON report, diff entries,
+    # diff change records). If you add another internal-only field,
+    # extend the frozenset; the three call sites all read from it.
     is_must_include: bool = False
     allele_frequency: float | None = None
     am_pathogenicity: float | None = None
@@ -162,3 +166,34 @@ class Annotation:
         if len(parts) != 2:
             return "Homozygous" if len(set(self.genotype_match)) == 1 else "Heterozygous"
         return "Heterozygous" if parts[0] != parts[1] else "Homozygous"
+
+
+# Annotation fields that are internal-only and MUST be stripped from every
+# public serialization path (JSON report annotations, JSON diff entries,
+# diff change records). Adding a new internal field? Extend this frozenset
+# and every existing serializer picks up the exclusion automatically — no
+# new "remember to strip the field" obligation across N call sites.
+#
+# GH allelix-dev #3 (the v2.1.1 "is_must_include leak by omission risk"
+# cleanup) eliminated the three duplicated inline filters that previously
+# carried this rule. If you find yourself writing
+# ``{k: v for k, v in asdict(a).items() if k != "<some_field>"}`` in a
+# new public-output path, you're re-introducing the bug — add the field
+# here and use ``annotation_to_public_dict`` instead.
+_INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset({"is_must_include"})
+
+
+def annotation_to_public_dict(a: Annotation) -> dict:
+    """Serialize an Annotation for public output, stripping internal fields.
+
+    Canonical helper for every public Annotation serialization path. The
+    JSON report's main annotation list, JSON diff entries, and diff change
+    records all route through this — so any future internal-only field
+    just needs adding to ``_INTERNAL_ANNOTATION_FIELDS`` and every consumer
+    inherits the exclusion.
+
+    Does NOT add display-derived fields (``zygosity``, ``am_caveat``,
+    diff-specific ``previous_*``) — those are layered by the calling
+    serializer after this helper has stripped internal state.
+    """
+    return {k: v for k, v in asdict(a).items() if k not in _INTERNAL_ANNOTATION_FIELDS}

@@ -35,11 +35,11 @@ or strips that field.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from allelix import __version__
+from allelix.models import annotation_to_public_dict
 from allelix.reports import REGULATORY_NOTICE, atomic_write_text
 from allelix.reports._pipeline import rollup_gwas_duplicates
 
@@ -61,7 +61,7 @@ SCHEMA_VERSION = "5"
 
 def _annotation_dict(a: Annotation) -> dict:
     """Serialize an annotation, adding AM caveat for non-protein sources."""
-    d = {k: v for k, v in asdict(a).items() if k != "is_must_include"}
+    d = annotation_to_public_dict(a)
     d["zygosity"] = a.zygosity
     if a.am_pathogenicity is not None and a.source == "pharmgkb":
         d["am_caveat"] = "protein structure impact only"
@@ -159,9 +159,7 @@ def render_json(
         payload["diff"] = {
             "previous_report": diff.previous_generated_at,
             "summary": summarize_diff(diff),
-            "new": [
-                {k: v for k, v in asdict(a).items() if k != "is_must_include"} for a in diff.new
-            ],
+            "new": [annotation_to_public_dict(a) for a in diff.new],
             "changed": [diff_annotation_to_dict(c) for c in diff.changed],
             "removed": diff.removed,
         }

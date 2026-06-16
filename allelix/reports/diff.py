@@ -18,8 +18,10 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from allelix.models import annotation_to_public_dict
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -202,7 +204,7 @@ def summarize_diff(diff: DiffResult) -> str:
 
 def diff_annotation_to_dict(a: ChangedAnnotation) -> dict:
     """Serialize a ChangedAnnotation for JSON output."""
-    d = {k: v for k, v in asdict(a.current).items() if k != "is_must_include"}
+    d = annotation_to_public_dict(a.current)
     d["previous_significance"] = a.previous_significance
     d["previous_magnitude"] = a.previous_magnitude
     return d

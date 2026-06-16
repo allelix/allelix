@@ -40,6 +40,7 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0032: CADD v1.7 integration](0032-cadd-integration.md)
 - [ADR-0033: Schema version bump policy](0033-schema-version-bump-policy.md) — supersedes ADR-0032's schema-version stance
 - [ADR-0034: Magnitude scoring scale and ceiling](0034-magnitude-scoring-scale.md)
+- [ADR-0035: `Variant.ref`, per-Annotation alt threading, and structured GWAS fields](0035-variant-ref-and-coordinated-annotation-model.md) — partially supersedes ADR-0033's strict-per-field schema-version bump policy via the cluster carve-out
 
 ## Writing a new ADR
 

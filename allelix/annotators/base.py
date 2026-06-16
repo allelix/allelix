@@ -144,27 +144,36 @@ class Annotator(ABC):
     def __del__(self) -> None:
         """Safety-net resource release on GC. Deliberately retained.
 
-        GH #36 (audit second pass) flagged ``__del__`` as a Python
-        antipattern — GC timing is nondeterministic and raised exceptions
-        are silently swallowed. The correct usage pattern is the
-        ``__enter__`` / ``__exit__`` context manager pair below, wired
-        through ``contextlib.ExitStack`` in ``reports/_pipeline.py``.
+        Status (v2.1.1 audit, GH #36):
+        - **Production callsites are clean.** ``run_analysis`` wires every
+          primary + enrichment annotator into ``contextlib.ExitStack``
+          (v2.0.2 fix). ``allelix/cli/utility.py`` lines 221 and 476 each
+          construct a ``GnomadAnnotator`` inside ``try / finally
+          gnomad.close()``. ``allelix/annotators/__init__.py`` returns a
+          list that the pipeline immediately wraps in ``ExitStack``.
+        - **Test callsites NOT yet clean.** ~27 sites in
+          ``tests/reports/test_pipeline.py`` instantiate annotators
+          directly without a context manager or explicit close. The
+          pipeline closes them via its own ``ExitStack`` during
+          ``run_analysis``, but the test still holds the closed-instance
+          reference, and the underlying sqlite3 ``Connection``'s GC
+          finalizer surfaces a ``ResourceWarning`` during the next test's
+          startup. pytest's ``error::PytestUnraisableExceptionWarning``
+          filter then converts it to a hard failure on the gate.
 
-        However: removing ``__del__`` exposes residual SQLite connection
-        leaks in code paths that construct an annotator outside a
-        context manager. ``ResourceWarning`` is elevated to error by
-        ``pytest`` config, so leaks fail the suite as
-        ``PytestUnraisableExceptionWarning`` — caught in the v2.0.2
-        ship gate when ``__del__`` was first removed. Until every call
-        site is verified to use ``with`` / ``ExitStack`` / explicit
-        ``close()``, this safety net stays. v2.1 task: audit and
-        remove.
+        Removing ``__del__`` without first refactoring the test sites
+        therefore fails the gate (verified — 3 failures, all in
+        ``tests/reports/test_pipeline.py``, triggered by leaks from
+        earlier tests in the same file). The test-site refactor is
+        tracked separately; ``__del__`` stays as the safety net until
+        that lands. v2.1.x task — see the follow-up issue filed at
+        ``#36``-closure-time.
 
         ``contextlib.suppress(Exception)`` is deliberate — ``__del__``
-        must never raise. The GC timing and shutdown-ordering edges
-        are explicitly silenced; this is exactly the
-        "if you must keep ``__del__``, make absolutely sure it can
-        never raise" mitigation the audit recommended.
+        must never raise. GC timing and shutdown-ordering edges are
+        explicitly silenced; this is exactly the "if you must keep
+        ``__del__``, make absolutely sure it can never raise"
+        mitigation the audit recommended.
         """
         with contextlib.suppress(Exception):
             self.close()

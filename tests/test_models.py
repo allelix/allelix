@@ -130,6 +130,52 @@ class TestAnnotation:
         assert a.condition == ""
         assert a.gene == ""
 
+    def test_annotation_to_public_dict_strips_internal_fields(self):
+        """GH allelix-dev #3 — every internal-only field is excluded.
+
+        The contract: any field name in ``_INTERNAL_ANNOTATION_FIELDS`` MUST NOT
+        appear in the dict returned by ``annotation_to_public_dict``. If a new
+        internal field is added without registering it, this test fires.
+        """
+        from allelix.models import (
+            _INTERNAL_ANNOTATION_FIELDS,
+            annotation_to_public_dict,
+        )
+
+        a = self._minimal(is_must_include=True)
+        d = annotation_to_public_dict(a)
+        for field_name in _INTERNAL_ANNOTATION_FIELDS:
+            assert field_name not in d, (
+                f"{field_name!r} declared internal but leaked into public output dict"
+            )
+        # And spot-check a public field IS present (sanity for the inverse).
+        assert d["source"] == "clinvar"
+        assert d["rsid"] == "rs1"
+
+    def test_annotation_to_public_dict_used_by_all_three_serializers(self):
+        """GH allelix-dev #3 — production serializers route through the
+        canonical helper, not inline filters.
+
+        If any future code path adds a 4th 'asdict(a) minus is_must_include'
+        inline filter, this test won't catch it directly — but the central
+        helper is the only place to remember the rule, and grep-ing for
+        ``annotation_to_public_dict`` shows every consumer that respects it.
+        """
+        from allelix.models import annotation_to_public_dict
+        from allelix.reports import json_report
+        from allelix.reports.diff import diff_annotation_to_dict
+
+        # All three production sites import the helper:
+        assert annotation_to_public_dict in vars(json_report).values()
+        # diff.py imports it at module scope too:
+        from allelix.reports import diff as diff_module
+
+        assert annotation_to_public_dict in vars(diff_module).values()
+        # Sanity: diff_annotation_to_dict exists and is callable
+        # (its body is exercised by tests/reports/test_diff.py — this is just
+        # the import-shape pin).
+        assert callable(diff_annotation_to_dict)
+
     def test_default_references_independent_per_instance(self):
         a1 = self._minimal()
         a2 = self._minimal()

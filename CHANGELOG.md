@@ -4,6 +4,104 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-06-16
+
+Patch release. Focus: docs / process drift caught during prep cycle —
+SECURITY.md staleness, missing ADR index entry, sparse operational
+docs, plus one structural refactor that eliminates the `is_must_include`
+leak-by-omission risk at the model boundary. No user-facing behavior
+changes; existing v2.1.0 caches and reports stay current.
+
+### Security
+
+- **SECURITY.md "Supported versions" table was stuck at 1.8.x while
+  v1.9.0, v2.0.0, v2.0.1, v2.0.2, and v2.1.0 all shipped (#36's audit
+  caught it during v2.1.1 prep).** Table updated to `2.1.x ✓` / `< 2.1 ✗`
+  to match the "current minor release receives security fixes" policy
+  line above it. Out-of-scope third-party data list also corrected:
+  PharmGKB → `ClinPGx (formerly PharmGKB)` to match v2.0+ display-name
+  conventions, plus AlphaMissense / CADD added (they were shipped after
+  SECURITY.md was last touched). No reporting URL change. The
+  `GITHUB_WORKFLOW.md` pre-flight checklist now includes the
+  SECURITY.md "Supported versions" check so this drift class doesn't
+  recur. (commit b298f07)
+
+### Changed
+
+- **Centralized internal-field exclusion for public Annotation
+  serialization (#3 / aac82c1).** Three production sites previously
+  duplicated the inline `asdict(a) minus is_must_include` filter
+  (JSON report's main annotations list, JSON diff "new" entries, the
+  `diff_annotation_to_dict` change records). A fourth public-output
+  path that forgot the filter would have leaked an internal boolean
+  into reports without breaking anything obvious at PR time. New
+  `allelix.models.annotation_to_public_dict()` helper + a
+  module-level `_INTERNAL_ANNOTATION_FIELDS` frozenset are the single
+  place to remember the rule. All three production serializers now
+  route through the helper. Adding a new internal-only field is one
+  line in the frozenset; every existing serializer picks up the
+  exclusion automatically. No JSON schema change — same fields
+  produced, same values, same shape. Test pin
+  `TestAnnotation.test_annotation_to_public_dict_strips_internal_fields`
+  asserts the contract.
+
+### Documentation
+
+- **Operational / data-lifecycle docs in the README (#32 docs-half,
+  #35 / ed5a369).** New "Managing your data" section under the
+  database-sizes block covers cache location
+  (`$XDG_DATA_HOME/allelix`), per-file footprint (~16 GB default,
+  ~22 GB with CADD), the disposability rule (caches are
+  re-downloadable; safe to delete), the manual cleanup path
+  (`rm -rf ~/.local/share/allelix/`), config.toml as the backup
+  target (only non-reproducible state in the install), and the full
+  uninstall procedure. New "Troubleshooting" section before
+  "Architecture" covers six common failure states (3.10 ImportError,
+  partial `db update` failure, "not ready" cache after a release
+  upgrade, build mismatch warnings, the signal-driven staleness
+  model, output-file sensitivity). Python 3.11+ requirement promoted
+  from a buried sentence to the first line of Quickstart with the
+  exact ImportError users see on 3.10 (`cannot import name 'UTC'
+  from 'datetime'` — grep-able). CADD table cell tightened from a
+  full-paragraph cell to a one-line summary + a new "CADD modes"
+  subsection that holds the cache-vs-full-mode explanation. Status
+  banner refreshed from a stale `Latest: v2.0.0` to v2.1.0 with the
+  ADR-0035 cluster summary. The `db clean` / `db path` CLI tooling
+  the original #32 also covered ships in v2.2 (split to #77).
+- **`__del__` removal audit — partial closure (#36 / 320792a).**
+  v2.0.2 deferred `__del__` removal to v2.1 pending an audit of every
+  callsite. v2.1.1 finishes the audit: zero production paths rely on
+  `__del__` for SQLite-connection cleanup. `run_analysis` wires
+  every primary + enrichment annotator into `contextlib.ExitStack`
+  (v2.0.2 fix); `cli/utility.py:221, 476` use explicit `try /
+  finally close()`; the annotators factory returns a list the
+  pipeline immediately wraps. The blocker for actually removing
+  `__del__` is ~27 test sites in `tests/reports/test_pipeline.py`
+  that construct annotators outside a context manager; the
+  pipeline closes them via its own ExitStack but the test still
+  holds the closed-instance reference, and the sqlite3 Connection
+  GC finalizer surfaces a `ResourceWarning` during the next test's
+  startup which pytest's `error::PytestUnraisableExceptionWarning`
+  filter converts to a hard failure. Verified empirically:
+  removing `__del__` produced 3 such failures. `__del__` therefore
+  stays as the safety net with an updated docstring documenting
+  the partial-closure state; full removal is gated on the test
+  refactor (#78) and lands in v2.1.2.
+- **ADR-0035 added to the ADR index (#74-adjacent docs-drift class
+  catch / 719e8cc).** ADR-0035 itself (v2.1.0 Cluster B design)
+  shipped at commit `f3c902c` but didn't update
+  `docs/adr/README.md`'s index. Index entry added with the
+  supersedes note that ADR-0035's cluster carve-out partially
+  supersedes ADR-0033's strict-per-field schema-version bump policy
+  for documented coordinated clusters. Same docs-drift family as
+  the SECURITY.md table fix and the stale README version banner —
+  single-file additions that skip the index/inventory update step.
+  The ADR index update is already step 4 of the "Writing a new ADR"
+  checklist in `docs/adr/README.md`; the v2.0.2 review protocol
+  (memory: `grep_all_variants_in_doc_sweeps`) and the
+  `GITHUB_WORKFLOW.md` pre-flight checklist additions are the
+  going-forward mitigations.
+
 ## [2.1.0] - 2026-06-16
 
 ### Added

@@ -10,19 +10,26 @@ Open-source command-line toolkit for analyzing raw genotype files from consumer 
 > HTML/JSON/terminal reports, methylation + pharmacogenomics focused
 > commands, report diffing, persistent config with commercial-mode
 > safety switch. Build auto-detection from position data (ADR-0021).
-> No regex on prose anywhere in production. **Latest: v2.0.0** — VCF +
-> gVCF parser with multi-sample handling, batched annotation pipeline
-> for WGS scale, FTDNA Illumina raw parser, R-4 ClinVar CLNSIG drift CI
-> test, CLI package restructure.
+> No regex on prose anywhere in production. **Latest: v2.1.0** —
+> ADR-0035 'Cluster B' coordinated model change: `Variant.ref` carries
+> the forward-strand reference allele, per-Annotation `alt` threading
+> on GWAS / SNPedia / ClinPGx enables allele-specific gnomAD /
+> AlphaMissense / CADD enrichment on array inputs, structured GWAS
+> fields (`trait` / `p_value` / `phecode`) replace prose re-parsing in
+> the rollup, and ClinVar / ClinPGx carrier matching is strand-aware
+> with multi-allelic safety guard. JSON `schema_version` bumped 4 → 5
+> (additive, v4 readers unaffected).
 > Release notes:
 > [`CHANGELOG.md`](https://github.com/allelix/allelix/blob/main/CHANGELOG.md).
 
 ## Quickstart
 
+**Requires Python 3.11 or newer.** On Python 3.10 or older, `pip install allelix` succeeds but the first command fails with `ImportError: cannot import name 'UTC' from 'datetime'` — that's the symptom; the fix is to install on 3.11+. Check with `python --version`.
+
 ```bash
 pip install allelix
 
-# Download reference databases (~15GB with all sources).
+# Download reference databases (~16 GB default install; ~22 GB if you opt into CADD).
 # Use --no-gnomad / --no-alphamissense to skip the large ones.
 # CADD is opt-in: allelix db update --cadd
 allelix db update
@@ -40,7 +47,7 @@ allelix analyze trio.vcf.gz --sample HG002 --output report.html
 allelix analyze your_genotype_file.txt --filter-file my_panel.txt --output report.html
 ```
 
-Requires Python 3.11+. See [Development](#development) for source installs and running tests.
+See [Development](#development) for source installs and running tests, [Managing your data](#managing-your-data) for cache locations and cleanup, and [Troubleshooting](#troubleshooting) for common failure states.
 
 ## Supported Formats
 
@@ -79,7 +86,20 @@ Adding a new format means adding one file to `allelix/parsers/` and registering 
 | GWAS Catalog | ✓ | Public domain (EBI/NHGRI). Trait–SNP associations with p-values and effect sizes. Carrier rule (ADR-0007) requires the user to carry the risk allele. P-value magnitude scoring (ADR-0024) maps continuous p-values to the 0–10 scale; unknown-risk-allele entries fire on rsID match alone but are capped at 3.0. |
 | gnomAD | ✓ | ODbL v1.0. **Enrichment annotator** — adds population allele frequency context to existing annotations. Shows how common each variant is in the general population (~16M exome variants from 730K individuals). A pathogenic variant that 35% of people carry reads very differently from one seen in 0.001%. Pre-built cache downloaded via `db update` (~6GB on disk). Use `--no-gnomad` to skip. |
 | AlphaMissense | ✓ | CC BY 4.0. **Enrichment annotator** — adds DeepMind's protein-structure-based pathogenicity predictions to existing annotations. Scores 71M missense variants on a 0–1 scale: <0.34 = likely benign, >0.564 = likely pathogenic. Complements ClinVar's expert classifications with computational predictions — especially valuable for variants ClinVar hasn't reviewed yet. Pre-built cache downloaded via `db update` (~8GB on disk). Use `--no-alphamissense` to skip. |
-| CADD | ✓ | LicenseRef-CADD (non-commercial). **Enrichment annotator** — adds PHRED-scaled deleteriousness scores from CADD v1.7. Ranks how deleterious any single-nucleotide variant is using 100+ annotation tracks (coding, non-coding, regulatory). PHRED 10 = top 10% most deleterious, 20 = top 1%, 30 = top 0.1%. **Opt-in** — disabled by default (`sources.cadd = false`). Enable via `allelix db update --cadd` or `allelix config set sources.cadd true`. Use `--no-cadd` to skip enrichment for a single run. Pre-built cache (~5 GB on disk, ~120M variant keys). Full mode available via pysam for GRCh38 data (`options.cadd_full = true`). Cache mode covers the large majority of variants present in gnomAD, AlphaMissense, and ClinVar — nearly every position allelix can annotate from its other databases. For genotyping chip data (23andMe, AncestryDNA, MyHappyGenes, etc.), cache and full mode produce effectively identical results because chip probes overwhelmingly target known, cataloged variants. Full mode adds coverage for novel or private variants that appear only in whole-genome or whole-exome sequencing data and are not in any pre-computed database. If your input is a genotyping chip file, cache mode is all you need. |
+| CADD | ✓ | LicenseRef-CADD (non-commercial). **Enrichment annotator** — adds PHRED-scaled deleteriousness scores from CADD v1.7. **Opt-in**, disabled by default; see [CADD modes](#cadd-modes) below for details. |
+
+### CADD modes
+
+CADD ranks how deleterious any single-nucleotide variant is using 100+ annotation tracks (coding, non-coding, regulatory). PHRED 10 = top 10% most deleterious, 20 = top 1%, 30 = top 0.1%.
+
+**Opt-in**: enable via `allelix db update --cadd` or `allelix config set sources.cadd true`. Use `--no-cadd` to skip enrichment for a single run.
+
+Two modes:
+
+- **Cache mode** (default): pre-built ~5.8 GB SQLite cache (~120M variant keys). Covers nearly every position allelix can annotate from its other databases (gnomAD, AlphaMissense, ClinVar). For genotyping chip data (23andMe, AncestryDNA, MyHappyGenes, etc.), this mode is functionally complete — chip probes overwhelmingly target known, cataloged variants.
+- **Full mode** (`options.cadd_full = true`): tabix queries against the complete CADD v1.7 file via pysam (GRCh38 only). Adds coverage for novel or private variants that appear only in WGS/WES data and are not in any pre-computed database. Requires `pip install allelix[cadd]` for the pysam dependency.
+
+If your input is a genotyping chip file, cache mode is all you need.
 
 ### Build coverage asymmetry (GRCh37 vs GRCh38)
 
@@ -177,6 +197,48 @@ gnomAD and AlphaMissense are the largest but add the most interpretive context. 
 
 To skip either during download: `allelix db update --no-gnomad --no-alphamissense`. To disable permanently: `allelix config set sources.gnomad false`.
 
+### Managing your data
+
+Allelix stores reference database caches at `~/.local/share/allelix/` (Linux/macOS) or the XDG-equivalent on other platforms. Default install (no CADD) is ~16 GB on disk; with the CADD opt-in it's ~22 GB.
+
+```
+~/.local/share/allelix/
+├── alphamissense.sqlite       ~7.8 GB
+├── gnomad.sqlite              ~6.1 GB
+├── cadd.sqlite                ~5.8 GB   (only if you opted into --cadd)
+├── clinvar.GRCh37.sqlite      ~470 MB
+├── clinvar.GRCh38.sqlite      ~480 MB
+├── gwas_catalog_associations.tsv  ~700 MB
+├── snpedia.sqlite             ~390 MB
+├── gwas.sqlite                ~190 MB
+└── pharmgkb.sqlite            ~14 MB
+```
+
+**The caches are disposable and re-downloadable.** Everything here was fetched by `allelix db update` and can be re-fetched at any time. There's no per-user state in the cache — your genotype files never enter this directory. Safe to delete to reclaim space (or to force a full refresh if you suspect a cache went stale):
+
+```bash
+# Reclaim all ~16-22 GB
+rm -rf ~/.local/share/allelix/
+
+# Reclaim everything except CADD (avoids re-downloading the slowest one)
+find ~/.local/share/allelix/ -mindepth 1 ! -name 'cadd*.sqlite*' -delete
+
+# Re-populate from scratch next time you analyze a file
+allelix db update
+```
+
+**The one thing worth backing up: `config.toml`.** It lives separately (XDG config dir, typically `~/.config/allelix/config.toml`) and stores your license assertions (commercial-mode toggle, CADD opt-in confirmation) and per-source enable/disable settings. It's the only non-reproducible state in the install. The caches will rebuild on the next `db update`; `config.toml` won't.
+
+To fully uninstall allelix and reclaim everything:
+
+```bash
+pip uninstall allelix
+rm -rf ~/.local/share/allelix/    # reference database caches
+rm -rf ~/.config/allelix/         # license + source-toggle config
+```
+
+A `allelix db clean` subcommand to automate the cache-clear step (with confirmation prompt and size report) is planned for v2.2 alongside `allelix db path` (prints the resolved data directory for scripting / backup integration).
+
 ## Data Sources & Licensing
 
 Allelix source code is licensed under the **GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later). Allelix ships with **zero third-party data**. All reference databases are downloaded by the user at runtime via `allelix db update`. Each database retains its original license on the user's machine:
@@ -218,6 +280,42 @@ Of the 104,806 genotype pages in the archive:
 - **2 pages have a space before the parenthesis in the title** (`Rs52820871 (G;G)` and `Rs52820871 (G;T)` instead of the standard `Rs52820871(G;G)` format). The annotator handles both title styles.
 
 None of these are scraping errors. They are editorial inconsistencies on the source wiki. The annotator handles all of them correctly: incomplete entries are skipped, variant title formats are matched, and no false annotations are produced.
+
+## Troubleshooting
+
+### `ImportError: cannot import name 'UTC' from 'datetime'`
+
+You're on Python 3.10 or older. Allelix requires 3.11+. `python --version` to check; upgrade and reinstall.
+
+### `allelix db update` failed partway through
+
+Run it again. The update is idempotent — completed downloads are skipped (signal-matched against the upstream freshness probe), so re-running picks up where it left off. If a specific source keeps failing, you can isolate it: `allelix db update --no-gnomad` (or `--no-alphamissense` etc.) to skip the failing source for now, then retry that source standalone later.
+
+If the failure is a network timeout on the same source repeatedly, the issue is likely on the source's end (HuggingFace / NCBI / EBI / etc. transient outage). Wait an hour and retry.
+
+### `db status` shows an annotator as "not ready" but the cache files exist on disk
+
+Almost always a schema or interpreter version bump in a recent allelix release that invalidates the pre-bump cache. The fix is `allelix db update` — it'll re-ingest only the affected annotators (everything else signal-skips). See the relevant `CHANGELOG.md` entry for "Cache invalidation" notes per release.
+
+### Build mismatch warning when analyzing a known-good file
+
+Either: (a) the file's header claims one build and the position data is actually a different build (real-world MHG / Tempus exports do this — header says 37, positions are 38; ADR-0021 documents the auto-detection), or (b) the file is a GRCh36-era export (pre-2012), which allelix detects accurately but doesn't ship a ClinVar cache for (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md) for the external-liftover path).
+
+If you trust the file's header more than allelix's detection, force the build: `--build grch37` or `--build grch38`. The build banner in the analyze output will reflect what was actually used.
+
+### Is my database stale? How fresh is the data?
+
+`allelix db status` shows the ingestion date of each cache. The freshness model is signal-driven: `allelix db update` queries an upstream freshness signal (md5 / etag) per source and re-ingests only when the signal changed. There's no time-based staleness — a 6-month-old cache against an unchanged source IS current.
+
+If you want to force a refresh: `allelix db update --force` re-downloads every cache regardless of freshness signal.
+
+### Output reports contain real genome annotations
+
+Anything `allelix analyze` writes to disk contains real annotations of your genome. Treat the output files (HTML, JSON, terminal redirects) as sensitive — they're as private as the input genotype file. Allelix does not transmit them; the lifecycle is local.
+
+### Where does allelix store its data?
+
+See [Managing your data](#managing-your-data) above for cache locations, the disposability rule, what to back up, and the uninstall procedure.
 
 ## Architecture & Design Decisions
 
