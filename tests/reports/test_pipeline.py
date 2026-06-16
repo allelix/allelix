@@ -149,10 +149,13 @@ class TestRunAnalysis:
         assert "20260101" in clinvar_versions[0]
 
     def test_annotator_connections_closed_after_run(
-        self, mock_mhg_path: Path, clinvar_data_dir: Path
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        clinvar_data_dir: Path,
     ):
         parser = MyHappyGenesParser()
-        ann = ClinVarAnnotator(clinvar_data_dir)
+        ann = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         run_analysis(mock_mhg_path, parser, [ann])
         # ExitStack closed every per-build connection.
         assert ann._conns == {}
@@ -373,6 +376,7 @@ class TestGnomadEnrichment:
 
     def test_enrichment_stamps_frequency(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
@@ -414,8 +418,8 @@ class TestGnomadEnrichment:
             conn.commit()
 
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
-        gnomad = GnomadAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
+        gnomad = cm_stack.enter_context(GnomadAnnotator(clinvar_data_dir))
         result = run_analysis(
             mock_mhg_path,
             parser,
@@ -428,12 +432,13 @@ class TestGnomadEnrichment:
 
     def test_no_gnomad_no_frequency(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
         """run_analysis without gnomAD leaves allele_frequency as None."""
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         result = run_analysis(mock_mhg_path, parser, [clinvar])
         assert all(a.allele_frequency is None for a in result.annotations)
         assert all(name != "gnomad" for name, _ in result.annotators_used)
@@ -444,6 +449,7 @@ class TestAlphaMissenseEnrichment:
 
     def test_enrichment_stamps_pathogenicity(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
@@ -487,8 +493,8 @@ class TestAlphaMissenseEnrichment:
             conn.commit()
 
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
-        am = AlphaMissenseAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
+        am = cm_stack.enter_context(AlphaMissenseAnnotator(clinvar_data_dir))
         result = run_analysis(
             mock_mhg_path,
             parser,
@@ -502,12 +508,13 @@ class TestAlphaMissenseEnrichment:
 
     def test_no_alphamissense_no_pathogenicity(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
         """run_analysis without AlphaMissense leaves am_pathogenicity as None."""
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         result = run_analysis(mock_mhg_path, parser, [clinvar])
         assert all(a.am_pathogenicity is None for a in result.annotations)
         assert all(name != "alphamissense" for name, _ in result.annotators_used)
@@ -553,7 +560,7 @@ class TestEnrichmentExactVsFallback:
         max_rsids = {x.rsid for x in [a] if not x.alt}
         assert "rs429358" in max_rsids
 
-    def test_gwas_annotations_have_no_alt(self) -> None:
+    def test_gwas_annotations_have_no_alt(self, cm_stack) -> None:
         """GWAS annotations must not set alt (risk allele != VCF ALT)."""
         import sqlite3
         import tempfile
@@ -584,7 +591,7 @@ class TestEnrichmentExactVsFallback:
                         conn.execute(stmt)
                 conn.commit()
             load_gwas_tsv(db_path, gwas_db)
-            ann = GWASCatalogAnnotator(tmp)
+            ann = cm_stack.enter_context(GWASCatalogAnnotator(tmp))
             assert ann.is_ready(), (
                 "GWAS annotator reported not-ready immediately after a "
                 "successful load_gwas_tsv — loader or is_ready() has regressed"
@@ -607,6 +614,7 @@ class TestCaddEnrichment:
 
     def test_enrichment_stamps_cadd_phred(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
@@ -668,9 +676,9 @@ class TestCaddEnrichment:
             conn.commit()
 
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
-        gnomad = GnomadAnnotator(clinvar_data_dir)
-        cadd = CaddAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
+        gnomad = cm_stack.enter_context(GnomadAnnotator(clinvar_data_dir))
+        cadd = cm_stack.enter_context(CaddAnnotator(clinvar_data_dir))
         result = run_analysis(
             mock_mhg_path,
             parser,
@@ -683,20 +691,17 @@ class TestCaddEnrichment:
         assert any(a.cadd_phred == pytest.approx(24.3) for a in mthfr if a.cadd_phred is not None)
         assert ("cadd", "v1.7") in result.annotators_used
 
-    def test_no_cadd_no_phred(
-        self,
-        mock_mhg_path: Path,
-        clinvar_data_dir: Path,
-    ) -> None:
+    def test_no_cadd_no_phred(self, cm_stack, mock_mhg_path: Path, clinvar_data_dir: Path) -> None:
         """run_analysis without CADD leaves cadd_phred as None."""
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         result = run_analysis(mock_mhg_path, parser, [clinvar])
         assert all(a.cadd_phred is None for a in result.annotations)
         assert all(name != "cadd" for name, _ in result.annotators_used)
 
     def test_cadd_without_gnomad_skips_enrichment(
         self,
+        cm_stack,
         mock_mhg_path: Path,
         clinvar_data_dir: Path,
     ) -> None:
@@ -723,8 +728,8 @@ class TestCaddEnrichment:
             conn.commit()
 
         parser = MyHappyGenesParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
-        cadd = CaddAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
+        cadd = cm_stack.enter_context(CaddAnnotator(clinvar_data_dir))
         result = run_analysis(
             mock_mhg_path,
             parser,
@@ -829,7 +834,10 @@ class TestBatchedPipeline:
     """
 
     def test_hv_variants_collected_during_streaming(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        all_annotators_data_dir: Path,
     ):
         """High-value rsIDs accumulate on AnalysisResult.hv_variants.
 
@@ -840,7 +848,7 @@ class TestBatchedPipeline:
         from allelix.parsers.myhappygenes import MyHappyGenesParser
 
         parser = MyHappyGenesParser()
-        ann = ClinVarAnnotator(all_annotators_data_dir)
+        ann = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         # Pick rsIDs known to exist in the mock_mhg fixture.
         hv_rsids = {"rs1801133", "rs4680"}
         try:
@@ -858,14 +866,17 @@ class TestBatchedPipeline:
         assert len(result.hv_variants) == 2
 
     def test_hv_variants_empty_when_none_requested(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        all_annotators_data_dir: Path,
     ):
         """No high_value_rsids → empty hv_variants list (don't collect everything)."""
         from allelix.annotators.clinvar import ClinVarAnnotator
         from allelix.parsers.myhappygenes import MyHappyGenesParser
 
         parser = MyHappyGenesParser()
-        ann = ClinVarAnnotator(all_annotators_data_dir)
+        ann = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             result = run_analysis(mock_mhg_path, parser, [ann])
         finally:
@@ -873,14 +884,17 @@ class TestBatchedPipeline:
         assert result.hv_variants == []
 
     def test_hv_variants_empty_for_unmatched_rsids(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        all_annotators_data_dir: Path,
     ):
         """Asking for rsIDs not in the file → empty hv_variants, no crash."""
         from allelix.annotators.clinvar import ClinVarAnnotator
         from allelix.parsers.myhappygenes import MyHappyGenesParser
 
         parser = MyHappyGenesParser()
-        ann = ClinVarAnnotator(all_annotators_data_dir)
+        ann = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             result = run_analysis(
                 mock_mhg_path,
@@ -893,7 +907,11 @@ class TestBatchedPipeline:
         assert result.hv_variants == []
 
     def test_batch_crosses_size_boundary_produces_same_results(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path, monkeypatch
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        all_annotators_data_dir: Path,
+        monkeypatch,
     ):
         """Forcing a tiny _BATCH_SIZE must not change the annotation set.
 
@@ -908,7 +926,7 @@ class TestBatchedPipeline:
         parser = MyHappyGenesParser()
 
         # Single-batch baseline
-        ann1 = ClinVarAnnotator(all_annotators_data_dir)
+        ann1 = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             baseline = run_analysis(mock_mhg_path, parser, [ann1])
         finally:
@@ -916,7 +934,7 @@ class TestBatchedPipeline:
 
         # Many-batch run with a tiny batch size
         monkeypatch.setattr(pipeline_mod, "_BATCH_SIZE", 7)
-        ann2 = ClinVarAnnotator(all_annotators_data_dir)
+        ann2 = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             tiny_batched = run_analysis(mock_mhg_path, parser, [ann2])
         finally:
@@ -928,7 +946,11 @@ class TestBatchedPipeline:
         assert baseline.total_variants == tiny_batched.total_variants
 
     def test_batch_size_one_works(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path, monkeypatch
+        self,
+        cm_stack,
+        mock_mhg_path: Path,
+        all_annotators_data_dir: Path,
+        monkeypatch,
     ):
         """_BATCH_SIZE=1 (each variant flushes immediately) is correct.
 
@@ -941,14 +963,14 @@ class TestBatchedPipeline:
         from allelix.reports import _pipeline as pipeline_mod
 
         parser = MyHappyGenesParser()
-        ann1 = ClinVarAnnotator(all_annotators_data_dir)
+        ann1 = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             baseline = run_analysis(mock_mhg_path, parser, [ann1])
         finally:
             ann1.close()
 
         monkeypatch.setattr(pipeline_mod, "_BATCH_SIZE", 1)
-        ann2 = ClinVarAnnotator(all_annotators_data_dir)
+        ann2 = cm_stack.enter_context(ClinVarAnnotator(all_annotators_data_dir))
         try:
             unit_batched = run_analysis(mock_mhg_path, parser, [ann2])
         finally:
@@ -967,10 +989,7 @@ class TestRsidlessVcfResolution:
     position, see annotations from every rsID-keyed source.
     """
 
-    def test_rsidless_vcf_produces_annotations(
-        self,
-        clinvar_data_dir,
-    ) -> None:
+    def test_rsidless_vcf_produces_annotations(self, cm_stack, clinvar_data_dir) -> None:
         """rsID-less VCF flows through resolution → ClinVar annotation appears."""
         from pathlib import Path
 
@@ -979,7 +998,7 @@ class TestRsidlessVcfResolution:
 
         fixture_path = Path(__file__).parent.parent / "fixtures" / "mock_vcf_rsidless.vcf"
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 fixture_path,
@@ -997,6 +1016,7 @@ class TestRsidlessVcfResolution:
 
     def test_unknown_position_leaves_rsid_empty(
         self,
+        cm_stack,
         tmp_path,
         clinvar_data_dir,
     ) -> None:
@@ -1016,7 +1036,7 @@ class TestRsidlessVcfResolution:
             "1\t99999999\t.\tA\tT\t100\tPASS\t.\tGT\t0/1\n"
         )
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 Path(vcf_path),
@@ -1032,6 +1052,7 @@ class TestRsidlessVcfResolution:
 
     def test_positional_synthetic_id_treated_as_rsidless(
         self,
+        cm_stack,
         tmp_path,
         clinvar_data_dir,
     ) -> None:
@@ -1056,7 +1077,7 @@ class TestRsidlessVcfResolution:
             "1\t11856378\t1:11856378:G:A\tG\tA\t100\tPASS\t.\tGT\t0/1\n"
         )
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 Path(vcf_path),
@@ -1068,10 +1089,7 @@ class TestRsidlessVcfResolution:
             clinvar.close()
         assert any(a.rsid == "rs1801133" for a in result.annotations)
 
-    def test_high_value_rsid_matches_after_resolution(
-        self,
-        clinvar_data_dir,
-    ) -> None:
+    def test_high_value_rsid_matches_after_resolution(self, cm_stack, clinvar_data_dir) -> None:
         """High-value rsID list catches variants resolved via ClinPGx.
 
         Without this contract: a user passes ``high_value_rsids={"rs1801133"}``,
@@ -1089,7 +1107,7 @@ class TestRsidlessVcfResolution:
 
         fixture_path = Path(__file__).parent.parent / "fixtures" / "mock_vcf_rsidless.vcf"
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 fixture_path,
@@ -1114,10 +1132,7 @@ class TestRsidlessVcfResolution:
         for v in result.hv_variants:
             assert v.rsid.startswith("rs")
 
-    def test_high_value_rsid_no_match_when_unresolved(
-        self,
-        clinvar_data_dir,
-    ) -> None:
+    def test_high_value_rsid_no_match_when_unresolved(self, cm_stack, clinvar_data_dir) -> None:
         """Negative case: rsID-less variant that doesn't resolve stays out of hv_variants.
 
         Pins the symmetry: post-resolution hv_set check must not stamp
@@ -1140,7 +1155,7 @@ class TestRsidlessVcfResolution:
             "1\t99999999\t.\tA\tT\t100\tPASS\t.\tGT\t0/1\n"
         )
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 Path(vcf_path),
@@ -1153,10 +1168,7 @@ class TestRsidlessVcfResolution:
             clinvar.close()
         assert result.hv_variants == []
 
-    def test_rsid_bearing_vcf_unchanged(
-        self,
-        clinvar_data_dir,
-    ) -> None:
+    def test_rsid_bearing_vcf_unchanged(self, cm_stack, clinvar_data_dir) -> None:
         """Regression: VCFs that already have rsIDs are unaffected by resolution.
 
         Resolution only triggers for variants whose ID column isn't an
@@ -1169,7 +1181,7 @@ class TestRsidlessVcfResolution:
 
         fixture_path = Path(__file__).parent.parent / "fixtures" / "mock_vcf.vcf"
         parser = VcfParser()
-        clinvar = ClinVarAnnotator(clinvar_data_dir)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
             result = run_analysis(
                 fixture_path,

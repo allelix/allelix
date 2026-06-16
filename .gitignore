@@ -105,4 +105,8 @@ test_data/gwas_catalog*
 test_data/gwas-catalog*
 test_data/data/
 test_data.tar.gz
+# Real / transcoded genotype files — fetched via scripts/fetch_testdata.sh
+# from the GitHub release asset, not committed (see test_data/README.md).
+test_data/real/
+test_data/transcoded/
 

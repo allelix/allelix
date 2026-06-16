@@ -17,7 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from allelix.utils.build_detect import (
     BUILD_GRCH36,
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from allelix.annotators.alphamissense import AlphaMissenseAnnotator
     from allelix.annotators.base import Annotator
     from allelix.annotators.cadd import CaddAnnotator
+    from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.models import Annotation, Variant
     from allelix.parsers.base import GenotypeParser
@@ -293,9 +294,9 @@ def _enrich_cadd(
 
     for a in annotations:
         if a.alt:
-            coords = coord_map.get(a.rsid)
-            if coords:
-                a.cadd_phred = _lookup_user_allele(a.alt, coords, scores)
+            ann_coords = coord_map.get(a.rsid)
+            if ann_coords:
+                a.cadd_phred = _lookup_user_allele(a.alt, ann_coords, scores)
         elif resolved_coords and a.rsid in resolved_coords:
             # Position fallback: rsID was resolved on the fly via
             # ClinVar; the resolved tuple carries the user's actual
@@ -399,7 +400,9 @@ def run_analysis(
                 # rsID-indexed annotators. GH #8.
                 rsidless = [v for v in batch_buf if not v.rsid.startswith("rs")]
                 if rsidless:
-                    resolution = clinvar_resolver.bulk_resolve_rsids(rsidless)
+                    resolution = cast("ClinVarAnnotator", clinvar_resolver).bulk_resolve_rsids(
+                        rsidless
+                    )
                     for (chrom, pos, ref, alt), rsid in resolution.items():
                         resolved_coords[rsid] = (chrom, pos, ref, alt)
             # ADR-0035 PR 4: populate Variant.ref for array data via gnomAD's
@@ -600,6 +603,7 @@ class _BuildDetectionState:
         if variant.rsid in KNOWN_SNP_POSITIONS:
             result = detect_build(self._buffer)
             if result.is_confident:
+                assert result.build is not None  # is_confident ⇒ build set
                 self.detected = result.build
                 self.matched_count = result.matched
                 self.inspected_count = result.inspected
@@ -653,6 +657,7 @@ class _BuildDetectionState:
                 )
         self.matched_count = result.matched
         self.inspected_count = result.inspected
+        assert self.effective is not None  # all branches above set it
         out = [replace(v, build=self.effective) for v in self._buffer]
         self._buffer.clear()
         return out

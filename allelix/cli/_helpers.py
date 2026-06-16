@@ -16,7 +16,7 @@ import logging
 import re
 import sys
 import time
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import click
 from rich.console import Console
@@ -34,7 +34,10 @@ from allelix.reports.terminal import render_terminal, render_terminal_diff
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from allelix.annotators.alphamissense import AlphaMissenseAnnotator
     from allelix.annotators.base import Annotator
+    from allelix.annotators.cadd import CaddAnnotator
+    from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.parsers.base import GenotypeParser
 
 console = Console()
@@ -489,9 +492,9 @@ def _run_analysis_command(
             ready,
             skipped_count_provider=lambda: counter.count,
             build_override=build,
-            gnomad=gnomad_annotator,
-            alphamissense=am_annotator,
-            cadd=cadd_annotator,
+            gnomad=cast("GnomadAnnotator | None", gnomad_annotator),
+            alphamissense=cast("AlphaMissenseAnnotator | None", am_annotator),
+            cadd=cast("CaddAnnotator | None", cadd_annotator),
             high_value_rsids=hv_rsids,
         )
     finally:

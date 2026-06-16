@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
 from allelix.databases._versions import CADD_SCHEMA_VERSION
@@ -90,9 +90,11 @@ class CaddAnnotator(Annotator):
         self._conn: sqlite3.Connection | None = None
         self._full_mode = full_mode
         self._tabix_path = data_dir / CADD_FULL_FILENAME
-        self._tabix: object | None = None
+        # pysam ships no type stubs (see [tool.mypy.overrides]); the tabix
+        # handle is held as Any so call sites can use `.fetch()` / `.close()`.
+        self._tabix: Any = None
         self._indel_tabix_path = data_dir / CADD_INDEL_FILENAME
-        self._indel_tabix: object | None = None
+        self._indel_tabix: Any = None
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -104,11 +106,11 @@ class CaddAnnotator(Annotator):
             self._conn = sqlite3.connect(self._db_path)
         return self._conn
 
-    def _open_tabix(self) -> object:
+    def _open_tabix(self) -> Any:  # noqa: ANN401 — pysam ships no type stubs
         """Open the tabix file for full-mode queries."""
         if self._tabix is None:
             try:
-                import pysam  # type: ignore[import-untyped]
+                import pysam
             except ImportError:
                 raise ImportError(
                     "Full CADD mode requires pysam. Install with: pip install 'allelix[cadd]'"
@@ -122,7 +124,7 @@ class CaddAnnotator(Annotator):
             self._tabix = pysam.TabixFile(str(self._tabix_path))
         return self._tabix
 
-    def _open_indel_tabix(self) -> object | None:
+    def _open_indel_tabix(self) -> Any:  # noqa: ANN401 — pysam ships no type stubs
         """Open the indel tabix file. Returns None if file doesn't exist."""
         if self._indel_tabix is None:
             if not self._indel_tabix_path.exists():
@@ -131,7 +133,7 @@ class CaddAnnotator(Annotator):
             if not tbi.exists():
                 return None
             try:
-                import pysam  # type: ignore[import-untyped]
+                import pysam
             except ImportError:
                 return None
             self._indel_tabix = pysam.TabixFile(str(self._indel_tabix_path))

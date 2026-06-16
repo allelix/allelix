@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -324,3 +325,33 @@ def all_annotators_data_dir(
         source_url="test://mock-gwas",
     )
     return tmp_path
+
+
+@pytest.fixture
+def cm_stack():
+    """Per-test ``contextlib.ExitStack`` for context-managed resources.
+
+    Tests that construct ``Annotator`` instances (or any other context-manager
+    resource) should register them with this stack instead of binding the
+    instance to a bare local. The stack ``__exit__`` fires at test teardown
+    and propagates ``__exit__`` to each registered resource, guaranteeing
+    deterministic cleanup. The pattern:
+
+        def test_x(self, cm_stack, clinvar_data_dir):
+            clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
+            gnomad  = cm_stack.enter_context(GnomadAnnotator(clinvar_data_dir))
+            result = run_analysis(...)
+
+    Why this exists (GH allelix-dev #78, blocks #36): the pipeline's own
+    ``ExitStack`` closes annotators it receives, but the test still holds the
+    closed-instance reference. When ``Annotator.__del__`` is the safety net,
+    GC of the test-local reference fires ``__del__`` → ``close()`` again
+    (idempotent), no warning. With ``__del__`` removed, GC of the closed
+    instance fires sqlite3's own ``Connection`` GC finalizer, which surfaces
+    a ``ResourceWarning`` during the next test's startup that pytest's
+    ``error::PytestUnraisableExceptionWarning`` filter converts to a hard
+    failure. Wrapping construction in this stack puts cleanup back under
+    deterministic, ``__del__``-independent control.
+    """
+    with contextlib.ExitStack() as stack:
+        yield stack

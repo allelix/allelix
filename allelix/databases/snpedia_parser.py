@@ -61,8 +61,10 @@ def _parse_title_alleles(title: str) -> tuple[str, str] | None:
 
 def _tmpl_param(tmpl: object, name: str) -> str:
     """Extract a named parameter from a mwparserfromhell template."""
-    if tmpl.has(name):
-        return str(tmpl.get(name).value).strip()
+    # mwparserfromhell ships no type stubs (see [[tool.mypy.overrides]]); the
+    # parameter is typed as `object` at the boundary, then unwrapped here.
+    if tmpl.has(name):  # type: ignore[attr-defined]
+        return str(tmpl.get(name).value).strip()  # type: ignore[attr-defined]
     return ""
 
 
@@ -302,9 +304,9 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
 
         repute = _tmpl_param(tmpl, "repute") or None
         summary = _tmpl_param(tmpl, "summary") or None
-        gene = gene_map.get(snp_id) or None
+        snp_gene = gene_map.get(snp_id) or None
 
-        batch.append((snp_id, allele1, allele2, magnitude, repute, summary, gene, scraped_at))
+        batch.append((snp_id, allele1, allele2, magnitude, repute, summary, snp_gene, scraped_at))
 
         if len(batch) >= 1000:
             conn.executemany(

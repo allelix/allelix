@@ -15,7 +15,7 @@ import os
 import re
 import sqlite3
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from allelix.databases.schema import GWAS_SCHEMA
 
@@ -458,7 +458,7 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
             if existing is None:
                 best[key] = record
             else:
-                ep = existing["p_value"]
+                ep = cast("float | None", existing["p_value"])
                 if p_value is not None and (ep is None or p_value < ep):
                     best[key] = record
 

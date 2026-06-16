@@ -500,9 +500,10 @@ class ClinVarAnnotator(Annotator):
             for rows in clinvar_rows.values():
                 rows.sort()
             for v in build_variants:
-                rows = clinvar_rows.get((v.chromosome, v.position))
-                if not rows:
+                pos_rows = clinvar_rows.get((v.chromosome, v.position))
+                if not pos_rows:
                     continue
+                rows = pos_rows
                 user_alleles = {v.allele1, v.allele2}
                 # Stamp only on a UNIQUE consistent match. Multiple matches
                 # mean the Variant model can't distinguish them (the 1/1

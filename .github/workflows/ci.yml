@@ -42,6 +42,9 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+      - name: Mypy
+        run: mypy allelix/
+
       - name: Pytest
         timeout-minutes: 15
         run: pytest -v --tb=short

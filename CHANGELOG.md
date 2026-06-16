@@ -4,6 +4,54 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-06-16
+
+### Changed
+
+- **`Annotator.__del__` safety net removed (#36 / fa07ec3).** v2.1.1
+  finished the production-side audit; v2.1.2 finishes the test-side
+  refactor (see #78 below) and drops the destructor entirely. The
+  pipeline's `contextlib.ExitStack` plus the CLI utility paths' explicit
+  `try/finally close()` are now the only cleanup paths — deterministic,
+  not GC-timed. `import contextlib` removed from `allelix/annotators/base.py`
+  as a follow-on (no longer used).
+- **Test-suite annotator instantiation routed through a `cm_stack`
+  fixture (#78 / 9a82160).** 20 test methods in
+  `tests/reports/test_pipeline.py` previously constructed annotators
+  outside any context manager and relied on `__del__` for SQLite
+  cleanup; that pattern surfaced as `PytestUnraisableExceptionWarning`
+  once `__del__` was removed. New per-test `cm_stack` fixture (a
+  `contextlib.ExitStack`) wraps every `enter_context(Annotator(...))`
+  call so cleanup is deterministic at test-function teardown. Same
+  shape as production's pipeline-ExitStack pattern.
+- **PLINK gnomAD coordinate resolution moved out of the CLI (#30).**
+  The audit flagged `allelix/cli.py` as a god-module with PLINK business
+  logic — gnomAD coordinate lookup + multi-allelic disambiguation —
+  sitting in the presentation layer. The CLI was already split into the
+  `allelix/cli/` package before #30; the remaining business-logic leak
+  was the PLINK ref/alt resolution loop in `allelix/cli/utility.py`. New
+  `allelix.exporters.plink.resolve_ref_alt_via_gnomad()` owns the
+  GnomadAnnotator lifecycle and the multi-allelic match-then-fallback
+  disambiguation; the CLI handler now just calls it inside a small
+  try/except for the user-facing warning. No behavior change — same
+  ref/alt selection rules, same warning text on failure / unavailability.
+
+### CI / Tooling
+
+- **mypy added to the CI gate (#33).** Backs the `py.typed` promise with
+  a real type checker. Baseline is intentionally permissive (no strict
+  mode, no `disallow_untyped_defs`) so the gate landed in CI immediately
+  instead of negotiating dozens of remediation PRs; ratchet later by
+  tightening individual flags. `mypy>=1.11` and `types-PyYAML>=6.0`
+  added to dev extras; `[tool.mypy]` config in `pyproject.toml`; pysam
+  and mwparserfromhell marked `ignore_missing_imports` (neither ships
+  stubs). `.github/workflows/ci.yml` runs `mypy allelix/` after the
+  ruff format check. Real-bug fixes that fell out of the baseline pass:
+  `_pipeline.py` build-detection branches now assert non-None invariants
+  before they `replace(build=…)`, and a `clinvar.py` loop reused the
+  name `rows` for both a `dict.values()` iteration and a `dict.get()`
+  result (renamed to disambiguate).
+
 ## [2.1.1] - 2026-06-16
 
 Patch release. Focus: docs / process drift caught during prep cycle —

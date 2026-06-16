@@ -1123,7 +1123,7 @@ All of the following must be true:
 - [ ] Ruff lint + format: zero warnings (`ruff check .` and `ruff format --check .` both clean)
 - [ ] `db update` downloads all enabled annotators without errors
 - [ ] `db status` shows all annotators ready with version and record count; ClinPGx row labeled "ClinPGx" (not "PharmGKB")
-- [ ] All 8 parser formats produce successful analysis (23andMe, AncestryDNA, FTDNA, MyHeritage, MyHappyGenes, Living DNA, FTDNA Illumina raw, VCF/gVCF)
+- [ ] All 8 parser formats produce successful analysis (23andMe, AncestryDNA, FTDNA, MyHeritage, MHG / Tempus, Living DNA, FTDNA Illumina raw, VCF/gVCF)
 - [ ] Cross-parser identity: same annotation count across all user1190 representations (6 array-based formats; VCF doesn't have a user1190 representation)
 - [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations via ClinPGx resolution (step 5i); multi-sample VCF requires `--sample` (step 5h)
 - [ ] Build auto-detection: warning fires when no rsID + no header signal (step 5j); **chr-prefix contigs auto-infer GRCh38 without `--build` (GH #38)**

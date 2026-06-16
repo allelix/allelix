@@ -15,6 +15,8 @@ from allelix.annotators.base import permission as check_permission
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from allelix.annotators.base import Annotator
+
 logger = logging.getLogger(__name__)
 
 CONFIG_FILENAME = "config.toml"
@@ -46,7 +48,7 @@ class AllelixConfig:
     def is_enabled(
         self,
         source_name: str,
-        annotator_classes: dict[str, type] | None = None,
+        annotator_classes: dict[str, type[Annotator]] | None = None,
     ) -> bool:
         """Check if a source is enabled, respecting the permission ladder.
 

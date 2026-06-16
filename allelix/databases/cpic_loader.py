@@ -211,8 +211,8 @@ def fetch_cpic_allele_functions(
 
     out: dict[tuple[str, str], str] = {}
     for row in location_values:
-        rsid = location_to_rsid.get(row.get("locationid"))
-        function_class = allele_to_function.get(row.get("alleledefinitionid"))
+        rsid = location_to_rsid.get(row.get("locationid"))  # type: ignore[arg-type]
+        function_class = allele_to_function.get(row.get("alleledefinitionid"))  # type: ignore[arg-type]
         base = (row.get("variantallele") or "").strip().upper()
         if not rsid or function_class is None:
             continue

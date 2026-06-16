@@ -57,18 +57,16 @@ def get_annotators(
     return [clinvar, pharmgkb, gwas, snpedia, gnomad, alphamissense, cadd]
 
 
-_ANNOTATOR_CLASSES: dict[str, type[Annotator]] = {
-    cls.name: cls
-    for cls in [
-        ClinVarAnnotator,
-        PharmGKBAnnotator,
-        GWASCatalogAnnotator,
-        SNPediaAnnotator,
-        GnomadAnnotator,
-        AlphaMissenseAnnotator,
-        CaddAnnotator,
-    ]
-}
+_ANNOTATOR_CLASS_LIST: list[type[Annotator]] = [
+    ClinVarAnnotator,
+    PharmGKBAnnotator,
+    GWASCatalogAnnotator,
+    SNPediaAnnotator,
+    GnomadAnnotator,
+    AlphaMissenseAnnotator,
+    CaddAnnotator,
+]
+_ANNOTATOR_CLASSES: dict[str, type[Annotator]] = {cls.name: cls for cls in _ANNOTATOR_CLASS_LIST}
 
 
 def get_annotator_class(name: str) -> type[Annotator] | None:

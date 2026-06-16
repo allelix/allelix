@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.table import Table
@@ -205,7 +205,7 @@ def _execute_tabix_extract(  # pragma: no cover
     wanted: set[str],
     sample: str | None,
     data_dir: Path | None,
-    pysam: object,
+    pysam: Any,  # noqa: ANN401 — pysam ships no type stubs
 ) -> dict[str, Variant] | None:
     """Real tabix execution.
 
@@ -443,7 +443,7 @@ def export_plink_cmd(
     coding when available; falls back to monomorphic (A2=0) for positions
     without gnomAD coverage.
     """
-    from allelix.exporters.plink import _orient_genotype, export_plink
+    from allelix.exporters.plink import export_plink, resolve_ref_alt_via_gnomad
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     prefix = output_prefix if output_prefix else file_path.with_suffix("")
@@ -462,45 +462,15 @@ def export_plink_cmd(
         key=lambda v: (chrom_order.get(v.chromosome, 99), v.chromosome, v.position),
     )
 
-    variant_by_rsid: dict[str, Variant] = {}
-    for v in variants:
-        if not v.is_no_call:
-            variant_by_rsid[v.rsid] = v
-    rsids = set(variant_by_rsid)
+    variant_by_rsid: dict[str, Variant] = {v.rsid: v for v in variants if not v.is_no_call}
 
-    ref_alt_map: dict[str, tuple[str, str]] = {}
-    gnomad = None
     try:
-        from allelix.annotators.gnomad import GnomadAnnotator
-
-        gnomad = GnomadAnnotator(resolved)
-        if gnomad.is_ready():
-            coord_map = gnomad.bulk_resolve_coordinates(rsids)
-            for rsid, coords in coord_map.items():
-                if len(coords) == 1:
-                    _, _, ref, alt = coords[0]
-                    ref_alt_map[rsid] = (ref, alt)
-                else:
-                    v = variant_by_rsid[rsid]
-                    pair = {v.allele1, v.allele2}
-                    for _, _, ref, alt in coords:
-                        if _orient_genotype(
-                            v.allele1, v.allele2, ref, alt
-                        ) is not None and pair <= {ref, alt}:
-                            ref_alt_map[rsid] = (ref, alt)
-                            break
-                    else:
-                        for _, _, ref, alt in coords:
-                            if _orient_genotype(v.allele1, v.allele2, ref, alt) is not None:
-                                ref_alt_map[rsid] = (ref, alt)
-                                break
+        ref_alt_map = resolve_ref_alt_via_gnomad(variant_by_rsid, resolved)
     except Exception:
         console.print(
             "[yellow]gnomAD coordinate resolution failed; using fallback allele coding.[/yellow]"
         )
-    finally:
-        if gnomad is not None:
-            gnomad.close()
+        ref_alt_map = {}
 
     written, skipped, indel_skip, mono = export_plink(
         iter(variants), prefix, effective_build, ref_alt_map or None

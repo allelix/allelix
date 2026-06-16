@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.1.1"
+version = "2.1.2"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,10 +36,12 @@ vcf-index = [
     "pysam>=0.22",
 ]
 dev = [
+    "mypy>=1.11",
     "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-cov>=7,<8",
     "ruff>=0.6",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -89,7 +91,7 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --strict-markers --tb=short --cov=allelix --cov-report=term-missing --cov-fail-under=92"
+addopts = "-v --strict-markers --tb=short --cov=allelix --cov-branch --cov-report=term-missing --cov-fail-under=92"
 markers = [
     "slow: marks tests that download databases or process large files",
     "integration: marks end-to-end pipeline tests",
@@ -99,6 +101,39 @@ filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
+# GH allelix-dev #31: coverage gate now measures BOTH line and branch
+# coverage. Pre-#31 the gate was line-only — a line counted as covered
+# the moment any input crossed it, which is how the v2.0.x carrier-match
+# case/strand and download-truncation correctness bugs shipped green.
+# The 92% floor is calibrated against the branch metric (currently 92.44%
+# with branch coverage enabled); primary annotators sit at 95%+. Raise
+# the floor when new tests close documented missing branches; do not
+# lower it.
+[tool.coverage.run]
+branch = true
+
 [tool.coverage.report]
 precision = 2
 fail_under = 92.00
+
+# GH allelix-dev #33: backs the py.typed promise with a real type checker.
+# The starting baseline is intentionally permissive (no strict mode, no
+# disallow_untyped_defs) so we get the gate in CI immediately instead of
+# negotiating dozens of remediation PRs. Ratchet later by tightening the
+# global flags one at a time and chasing the new errors.
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+# Don't enforce on tests — ruff's per-file-ignores already exempt tests
+# from ANN, and unit-test fixtures use a lot of pytest magic that mypy
+# would flag without strict-mode benefit.
+exclude = ["tests/", "scripts/"]
+
+# Third-party libraries without published type stubs.
+[[tool.mypy.overrides]]
+module = ["pysam", "mwparserfromhell.*"]
+ignore_missing_imports = true

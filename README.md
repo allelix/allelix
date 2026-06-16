@@ -1,26 +1,22 @@
+<div align="center">
+
+<img src="https://allelix.io/apple-touch-icon.png" width="180" alt="Allelix" />
+
+**Open-source genotype analysis. Format-agnostic. Offline-first.**
+
+[Website](https://allelix.io) · [Quickstart](#quickstart) · [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md)
+
+[![python](https://img.shields.io/pypi/pyversions/allelix.svg)](https://www.python.org/downloads/)
+[![pypi](https://img.shields.io/pypi/v/allelix.svg)](https://pypi.org/project/allelix/)
+[![license](https://img.shields.io/pypi/l/allelix.svg)](LICENSE)
+[![CI](https://github.com/allelix/allelix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/allelix/allelix/actions/workflows/ci.yml)
+[![privacy: local-first](https://img.shields.io/badge/privacy-local--first-success)](#privacy)
+
+</div>
+
 # Allelix
 
-Open-source command-line toolkit for analyzing raw genotype files from consumer DNA testing services. Format-agnostic ingestion, database-agnostic annotation, offline-first.
-
-> **Status:** Production — eight parser formats (including VCF + gVCF),
-> four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three
-> enrichment sources (gnomAD population frequencies + AlphaMissense
-> pathogenicity + CADD deleteriousness), licensable-source gating for
-> commercial users, dual-build ClinVar caches (GRCh37 + GRCh38),
-> HTML/JSON/terminal reports, methylation + pharmacogenomics focused
-> commands, report diffing, persistent config with commercial-mode
-> safety switch. Build auto-detection from position data (ADR-0021).
-> No regex on prose anywhere in production. **Latest: v2.1.0** —
-> ADR-0035 'Cluster B' coordinated model change: `Variant.ref` carries
-> the forward-strand reference allele, per-Annotation `alt` threading
-> on GWAS / SNPedia / ClinPGx enables allele-specific gnomAD /
-> AlphaMissense / CADD enrichment on array inputs, structured GWAS
-> fields (`trait` / `p_value` / `phecode`) replace prose re-parsing in
-> the rollup, and ClinVar / ClinPGx carrier matching is strand-aware
-> with multi-allelic safety guard. JSON `schema_version` bumped 4 → 5
-> (additive, v4 readers unaffected).
-> Release notes:
-> [`CHANGELOG.md`](https://github.com/allelix/allelix/blob/main/CHANGELOG.md).
+> **Status:** Production. Eight parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three enrichment sources (gnomAD + AlphaMissense + CADD), licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports, methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Build auto-detection from position data (ADR-0021). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
 
 ## Quickstart
 
@@ -64,16 +60,17 @@ See [Development](#development) for source installs and running tests, [Managing
 
 Adding a new format means adding one file to `allelix/parsers/` and registering an instance in the `PARSERS` list in `allelix/parsers/__init__.py`.
 
-### v2.1+ roadmap
+### Roadmap
 
-| Feature | Notes |
+| Release | Theme |
 |---|---|
-| Per-source scoring | Magnitude breakdown by database. Users see which source drove the composite score. |
-| Annotator-level strand awareness (R-1) | Strand-flip matching wired into every annotator's carrier check. Basic `compare` strand support shipped in v1.1; full annotator integration deferred from v2.0.0. |
-| Good / Bad / Neutral repute | Per-annotation repute field. Reframes the report from "here's what's wrong" to "here's your full picture." Requires Annotation model change + renderer updates. |
-| PLINK import | Read .bed/.bim/.fam as an input format (complement to the v1.7.0 export). |
-| PharmCAT integration | Wrap CPIC's PharmCAT as an optional external engine for star-allele / diplotype calling. Requires VCF input (shipped in v2.0.0). |
-| Genome Watchtower | Real-time variant monitoring via database delta feeds. Privacy-preserving: server publishes universal feed, matching happens locally against your deviation set. Replaces full re-analysis with millisecond set intersection. |
+| **v2.2** | Annotation model expansion (cross-source conflict surfacing, risk-allele display, structured MTAG flag), custom-panel UX improvements, methylation panel retune + citations, ClinVar source switch (VCF → `variant_summary.txt`), CLI cleanups (`db clean` / `db path`). |
+| **v2.3** | Per-source magnitude decomposition, Good / Bad / Neutral annotation repute, JSON v3 (AI-legible output contract), plausibility flagging via zygosity × gnomAD MAF, ClinVar review-status weighting, functional-medicine +/− notation. |
+| **v2.4** | ACMG/AMP automated classification engine, variant consequence annotation (VEP-equivalent). |
+| **v2.5+** | CNVs and repeat-expansion support, dbSNP resolution for rsID-less VCFs, gnomAD genomes (non-coding population frequencies), supplemental genotype file merging. |
+| **v3.0** | Ancestry estimation (PCA + 1KG/HGDP reference panels), Polygenic Risk Score (PRS) integration. |
+
+Issues and milestones are tracked at [github.com/allelix/allelix/issues](https://github.com/allelix/allelix/issues). Annotator-level strand-aware carrier matching (R-1) shipped in v2.1.0's ADR-0035 cluster.
 
 ## Supported Databases
 
