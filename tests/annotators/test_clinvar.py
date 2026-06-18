@@ -375,7 +375,10 @@ class TestGenotypeMatching:
         assert annotator.annotate(v_right) == []
 
     def test_unknown_rsid_does_not_trigger(self, annotator: ClinVarAnnotator):
-        v = Variant("rs999000111", "1", 1000, "A", "T")
+        # rs999000111 was the old sentinel here; GH #111 fixtures
+        # claimed it for the multi-SCV-agreement variant. Pick a rsid
+        # we're certain isn't in the fixture set.
+        v = Variant("rs888888888", "1", 1000, "A", "T")
         assert annotator.annotate(v) == []
 
 
@@ -1087,3 +1090,187 @@ class TestBulkResolveRsids:
             )
         finally:
             ann.close()
+
+
+class TestMultiScvSemantics:
+    """GH #111: pin the per-SCV cache semantics that #42 introduced and the
+    fast suite was previously blind to.
+
+    Every test in this class MUST FAIL on dev tip (the pre-#109,
+    pre-#106-patch state). They pin the CORRECT post-#109 / post-#106
+    behavior. The whole point is that the fast tier now catches the
+    regressions #42 silently enabled.
+    """
+
+    def test_three_identical_scvs_collapse_to_one_annotation(self, annotator: ClinVarAnnotator):
+        """GH #109: a variant with N identical (significance, condition,
+        gene) SCV rows in the cache must emit exactly ONE Annotation —
+        not N copies. On dev tip the annotator emits 3 identical
+        Annotation objects (3-way duplicate), which is the user-visible
+        regression #109 fixes.
+
+        Fixture (#111): rs999000111 on chr1 pos 200000, REF=A ALT=T,
+        three SCV rows all Pathogenic / Cystic_fibrosis_test /
+        MULTI_SCV_AGREE — only review_status differs (one
+        multiple_submitters, two single_submitter).
+        """
+        v = Variant("rs999000111", "1", 200000, "A", "T", build="GRCh37")
+        results = annotator.annotate(v)
+        assert len(results) == 1, (
+            f"3 identical SCV rows must collapse to 1 Annotation; "
+            f"got {len(results)} duplicate(s). This is the #109 "
+            f"regression — visible on every ClinVar report surface."
+        )
+        a = results[0]
+        assert a.gene == "MULTI_SCV_AGREE"
+        assert a.significance == "clinvar_pathogenic"
+
+    def test_collapsed_annotation_keeps_strongest_review_status(self, annotator: ClinVarAnnotator):
+        """GH #109 acceptance criterion: when N SCVs collapse, the
+        surviving Annotation must carry the strongest review_status
+        across the collapsed SCVs (not silently drop provenance).
+
+        Fixture: rs999000111 has one SCV with
+        'criteria_provided,_multiple_submitters,_no_conflicts'
+        (the stronger status under ClinVar's star-rating) and two
+        with 'criteria_provided,_single_submitter'. The collapsed
+        row must carry the multiple-submitters string.
+        """
+        v = Variant("rs999000111", "1", 200000, "A", "T", build="GRCh37")
+        results = annotator.annotate(v)
+        assert len(results) == 1
+        # Strongest review status (more submitters / multi-submitter
+        # consensus is the ClinVar ranking) wins the collapse.
+        assert "multiple_submitters" in results[0].review_status, (
+            f"Collapsed annotation lost the strongest review_status; "
+            f"got {results[0].review_status!r}. #109's acceptance "
+            f"criterion: collapse preserves the strongest provenance."
+        )
+
+    def test_distinct_significance_condition_pairs_survive_dedup(
+        self, annotator: ClinVarAnnotator
+    ):
+        """GH #109 acceptance criterion: distinct (significance,
+        condition) pairs for one variant must remain separate
+        Annotations after dedup — collapsing them would be the
+        Frankenstein-pair regression #42 was BUILT to retire.
+
+        Fixture (#111): rs999000222 on chr1 pos 200100, REF=C ALT=G,
+        with two SCV rows that have genuinely distinct
+        (significance, condition) pairs — Pathogenic / Disease_A
+        and Likely_benign / Disease_B (both with include_benign so
+        benign is reachable; here we just need the annotator to keep
+        both rows).
+        """
+        # include_benign so the Likely_benign row isn't filtered at
+        # query time by the standard non-benign default.
+        from allelix.annotators.clinvar import ClinVarAnnotator as Ann
+
+        ann = Ann(annotator.data_dir, include_benign=True)
+        try:
+            v = Variant("rs999000222", "1", 200100, "C", "G", build="GRCh37")
+            results = ann.annotate(v)
+            assert len(results) == 2, (
+                f"Distinct (significance, condition) pairs on one variant "
+                f"must survive dedup as 2 Annotations; got {len(results)}. "
+                f"Collapsing them would be the Frankenstein-pair "
+                f"regression #42 was built to retire."
+            )
+            sigs = {a.significance for a in results}
+            assert sigs == {"clinvar_pathogenic", "clinvar_likely_benign"}
+            # Conditions stay in the raw form the cache holds (the
+            # annotator doesn't normalize underscores → spaces). The
+            # point is both pairs survived — not the cosmetic shape.
+            conds = {a.condition for a in results}
+            assert "Disease_A_test" in conds
+            assert "Disease_B_test" in conds
+        finally:
+            ann.close()
+
+    def test_sub_floor_variant_present_in_cache_but_below_floor(self, annotator: ClinVarAnnotator):
+        """GH #106 setup: pin that the sub-floor fixture exists in the
+        cache and emits an Annotation, but its magnitude is below the
+        analyze 5.0 floor.
+
+        Fixture (#111): rs999000333 on chr1 pos 200200, REF=T ALT=C,
+        single Likely_benign SCV row → magnitude 2.0 (sub-floor).
+        On dev tip this annotation is correctly produced; the bug is
+        downstream in panel_coverage (#106) which counts it as "found"
+        but the renderer filters it out — pure limbo. This test pins
+        the cache-side reality so #106's downstream test can build on
+        a known-good fact.
+
+        include_benign=True is required because Likely_benign is
+        filtered out by the standard non-benign default at query time.
+        """
+        from allelix.annotators.clinvar import ClinVarAnnotator as Ann
+
+        ann = Ann(annotator.data_dir, include_benign=True)
+        try:
+            v = Variant("rs999000333", "1", 200200, "T", "C", build="GRCh37")
+            results = ann.annotate(v)
+            assert len(results) == 1
+            a = results[0]
+            assert a.significance == "clinvar_likely_benign"
+            assert a.magnitude == 2.0  # sub-floor; vanishes from analyze
+            assert a.gene == "SUB_FLOOR"
+        finally:
+            ann.close()
+
+    def test_unmapped_clnsig_falls_to_default_magnitude(self, annotator: ClinVarAnnotator):
+        """GH #108 (v2.3) pin: this fixture exists so #108 can land
+        the allowlist drift-guard against a known unmapped term.
+
+        Fixture (#111): rs999000444 on chr1 pos 200300, REF=G ALT=A,
+        single SCV with clinical_significance="protective" — a real
+        ClinVar term NOT in _CLNSIG_MAGNITUDE. The dict's 5.0 default
+        applies, equal to the analyze display floor — so the annotation
+        surfaces at exactly the floor without a real magnitude rule.
+        This test pins the silent fallback so #108's future fix has a
+        regression target.
+        """
+        v = Variant("rs999000444", "1", 200300, "G", "A", build="GRCh37")
+        results = annotator.annotate(v)
+        assert len(results) == 1
+        a = results[0]
+        assert a.magnitude == 5.0  # default — feed this to #108 in v2.3
+        assert a.gene == "UNMAPPED_CLNSIG"
+
+    def test_multi_allelic_distinct_alts_survive_dedup(self, annotator: ClinVarAnnotator):
+        """GH #109 cross-PR review Finding 1: two SCVs at a multi-
+        allelic site that share (rsid, significance, condition, gene)
+        but DIFFER on alt must survive dedup as separate Annotations.
+
+        Pre-Finding-1 the dedup key was (rsid, sig, cond, gene) — these
+        two rows would collapse, dropping a distinct-allele annotation
+        and (worse) mis-attaching the surviving row's `alt` to a row
+        that should describe the other allele. Downstream exact-
+        (rsid, alt) lookups for gnomAD / AlphaMissense / CADD would
+        then attach the wrong allele's frequency / pathogenicity /
+        CADD score — the same wrong-allele family of bug v2.0.1's #18
+        retired in the enrichment path.
+
+        Fixture (#111 + Finding 1 addendum): rs999000555 has two
+        Pathogenic / Multi_alt_test / MULTI_ALT_DEDUP rows differing
+        only in alt (T→A vs T→C). A het user A/C carries both alts
+        and must receive two distinct Annotations.
+        """
+        # Het user with both alt alleles called: A/C at a T site.
+        v = Variant("rs999000555", "1", 200400, "A", "C", build="GRCh37")
+        v.ref = "T"  # forward-stranded; carrier match uses ref directly
+        results = annotator.annotate(v)
+        assert len(results) == 2, (
+            f"Two SCVs at a multi-allelic site that differ ONLY on alt "
+            f"must survive dedup as 2 Annotations; got {len(results)}. "
+            f"If the dedup key drops alt, the user's other allele's "
+            f"annotation is lost AND the surviving row's `alt` would "
+            f"be wrong for downstream gnomAD / AM / CADD lookups."
+        )
+        alts = sorted(a.alt for a in results)
+        assert alts == ["A", "C"]
+        # Both annotations carry the same (sig, condition, gene); only
+        # the alt distinguishes them.
+        for a in results:
+            assert a.significance == "clinvar_pathogenic"
+            assert a.gene == "MULTI_ALT_DEDUP"
+            assert a.condition == "Multi_alt_test"

@@ -221,16 +221,27 @@ _CADD_PREFIXES: tuple[str, ...] = ("cadd",)
 # pre-deletion guard. Matched by prefix so future variants (e.g. multi-
 # build forms like clinvar.GRCh37.sqlite, sidecar files like
 # snpedia.sqlite-bak, the PharmGKB raw zip `clinicalAnnotations.zip`) are
-# all caught. `config.toml` is included as a presence-only marker — it
-# never appears in the deletion entries (it's preserved), but its
-# presence is the strongest signal "yes, this is an allelix data dir."
+# all caught.
+#
+# GH #112 (v2.2.1): `config.toml` is intentionally NOT a marker here.
+# It used to be — on the reasoning that any allelix data dir likely
+# carries one — but `config.toml` is a generic filename (Rust projects,
+# Hugo, Rocket, etc. all use it). A typo'd `--data-dir ~/my-rust-project`
+# slipped past the guard simply because that project's root has a
+# `Cargo.lock` and a `config.toml`. The marker set must be allelix-
+# specific.
+#
+# The fresh-install case — a dir with only config.toml and no cache
+# files — is unaffected: `_iter_cache_entries` excludes config.toml,
+# so `entries` is empty and the `if not entries: ... return` short-
+# circuit in `db_clean` reports "Nothing to clean" before the guard
+# ever runs.
 _KNOWN_ARTIFACT_PREFIXES: frozenset[str] = frozenset(
     {
         "alphamissense",
         "cadd",
         "clinicalAnnotations",
         "clinvar",
-        "config.toml",
         "gnomad",
         "gwas",
         "pharmgkb",

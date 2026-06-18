@@ -486,14 +486,26 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
     )
 
 
-def _panel_coverage_section(coverage: PanelCoverage | None) -> str:
-    """GH #75: render the Panel Coverage section.
+def _panel_coverage_section(
+    coverage: PanelCoverage | None,
+    panel_genotypes: dict[str, str] | None = None,
+) -> str:
+    """GH #75 / #120: render the Panel Coverage section.
 
     Quiet when no panel was supplied. Otherwise show the requested/found
     counts plus a table of rsIDs that weren't on the user's chip (state
     3) and rsIDs that were on the chip but produced no findings (state
     2). State 1 hits render in the main annotation table as before, so
     this section is purely a "what's NOT in the table" summary.
+
+    GH #120: when ``panel_genotypes`` is supplied (the rsid → "A/G"
+    map collected during run_analysis), a GT column is added between
+    rsID and Note. Genotyped rsIDs (state 2 + no-call) render their
+    literal call — including "-/-" for full no-calls and "A/-" for
+    half no-calls so the dash is visually obvious even though the v6
+    accounting still folds no-calls into ``no_findings`` (the
+    dedicated ``no_call`` MECE state is #115's job in v2.3). Rows
+    that aren't on the chip (state 3) show "—" (em dash).
     """
     if coverage is None:
         return ""
@@ -501,23 +513,38 @@ def _panel_coverage_section(coverage: PanelCoverage | None) -> str:
     found = int(coverage["found"])
     missing = list(coverage["missing"])
     no_findings = list(coverage["no_findings"])
+    show_gt = panel_genotypes is not None
+
+    def _gt(rsid: str, in_input: bool) -> str:
+        """Render the GT column cell (GH #120).
+
+        State-3 rows (not_on_chip) show em dash; state-2 rows show
+        the literal Variant.genotype (e.g. "A/G", "-/-", "A/-").
+        """
+        if not in_input:
+            return "<td>—</td>"
+        gt = (panel_genotypes or {}).get(rsid, "—")
+        return f"<td><code>{_escape(gt)}</code></td>"
 
     rows = []
     for rsid in missing:
         rows.append(
             f"<tr><td><code>{_escape(rsid)}</code></td>"
+            f"{_gt(rsid, in_input=False) if show_gt else ''}"
             "<td>not genotyped on this chip/platform</td></tr>"
         )
     for rsid in no_findings:
         rows.append(
             f"<tr><td><code>{_escape(rsid)}</code></td>"
+            f"{_gt(rsid, in_input=True) if show_gt else ''}"
             "<td>genotyped, no annotations matched</td></tr>"
         )
     table = ""
     if rows:
+        gt_th = "<th>GT</th>" if show_gt else ""
         table = (
             "<table class='panel-coverage'><thead>"
-            "<tr><th>rsID</th><th>Note</th></tr></thead>"
+            f"<tr><th>rsID</th>{gt_th}<th>Note</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table>"
         )
     return (
@@ -1187,7 +1214,7 @@ def render_html(
         f"{_escape(REGULATORY_NOTICE)}</div>"
         f"{build_warn}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
-        f"{_panel_coverage_section(result.panel_coverage())}"
+        f"{_panel_coverage_section(result.panel_coverage(filtered), result.panel_genotypes)}"
         f"{_EDUCATION_SECTION}"
         f"{_MAGNITUDE_LEGEND}"
         f"{diff_banner}"

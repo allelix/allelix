@@ -25,9 +25,26 @@ Specifics:
       (case-insensitive); 5 columns vs FTDNA Illumina raw's 4.
     - Separate single-character allele columns (vs. concatenated
       RESULT in the Illumina raw variant).
-    - Haploid calls on MT/Y use the single-character pattern
-      ``A``/``-`` in ALLELE1 with empty / missing ALLELE2.
-    - No-calls: ``-`` in one or both allele columns.
+    - Haploid calls on MT/Y use the single-character pattern: the
+      called base in ALLELE1 with EITHER the ALLELE2 column entirely
+      absent (4-column line) OR an empty ALLELE2 cell (5-column
+      line with trailing tab). Both shapes have been observed in
+      real exports. The parser normalizes haploid input to a
+      hemizygous-looking Variant where ``allele1 == allele2 ==
+      <the called base>`` (consistent with the haploid convention
+      in ``_helpers.split_genotype``). GH #113.
+
+      Chromosome-aware: the haploid shape (4-column line OR
+      5-column line with empty ALLELE2) is accepted ONLY when the
+      chromosome is MT or Y. FTDNA does not publish haploid calls
+      on any other chromosome, so the same shape on an autosome or
+      X is almost certainly a truncated diploid that lost an
+      allele in transit — promoting it to hemizygous would silently
+      double the surviving allele and synthesize a wrong-zygosity
+      genotype. The parser warns-and-skips that case instead.
+      Tightened against the v2.2.1 cross-PR review on PR #117.
+    - No-calls: ``-`` in one or both allele columns (with both
+      columns present and ALLELE1 != empty).
     - Build 37 (GRCh37) on every export observed.
     - Detection key: ``famfinder`` substring (case-insensitive) in
       the first ``SNIFF_LINE_LIMIT`` lines AND the canonical 5-column
@@ -136,11 +153,18 @@ class FTDNAFamFinderParser(GenotypeParser):
                     continue
 
                 parts = line.split("\t")
-                if len(parts) != EXPECTED_COLUMNS:
+                # GH #113: accept the 4-column haploid shape (missing
+                # ALLELE2 column for hemizygous MT/Y calls) in addition
+                # to the canonical 5-column diploid shape. The docstring
+                # already claimed haploid support; the impl didn't.
+                # Anything other than 4 or 5 columns is genuinely
+                # malformed.
+                if len(parts) not in (EXPECTED_COLUMNS - 1, EXPECTED_COLUMNS):
                     logger.warning(
-                        "Line %d: expected %d columns, got %d — skipping",
+                        "Line %d: expected %d columns (or %d for haploid), got %d — skipping",
                         lineno,
                         EXPECTED_COLUMNS,
+                        EXPECTED_COLUMNS - 1,
                         len(parts),
                     )
                     continue
@@ -149,7 +173,55 @@ class FTDNAFamFinderParser(GenotypeParser):
                 chrom = parts[1].strip()
                 pos_str = parts[2].strip()
                 allele1 = _normalize_allele(parts[3])
-                allele2 = _normalize_allele(parts[4])
+                # Normalize early — the chromosome-aware haploid guard
+                # below compares against the canonical form {"MT", "Y"}.
+                normalized_chrom = normalize_chromosome(chrom)
+                # Haploid: either the 4-column shape (no ALLELE2 column)
+                # OR the 5-column shape with an empty ALLELE2 cell. Both
+                # are real in FTDNA's MT/Y output. A genuine hemizygous
+                # call is represented as allele1 == allele2 (the
+                # convention shared by 23andMe / _helpers.split_genotype),
+                # NOT allele2 = NO_CALL_MARKER (which would render as a
+                # half no-call and surface the GH #113 reporter's
+                # "lab-spec MT/Y vanishes" behavior).
+                #
+                # GH #113 cross-PR review (#117 review): only accept the
+                # haploid shape on MT and Y — the only chromosomes FTDNA
+                # publishes haploid calls on. A 4-column line (or
+                # 5-column-empty-ALLELE2) on an autosome or X is almost
+                # certainly a truncated diploid that lost an allele in
+                # transit; promoting it to hemizygous would silently
+                # double the surviving allele. Warn-skip instead. This
+                # closes the trade-off the v2.3 follow-up was opened
+                # for; no real MT/Y haploid call is lost (the canonical
+                # shape on those chromosomes is unchanged).
+                if len(parts) == EXPECTED_COLUMNS - 1:
+                    if normalized_chrom not in {"MT", "Y"}:
+                        logger.warning(
+                            "Line %d: %d-column haploid line on non-haploid "
+                            "chromosome %r — almost certainly a truncated "
+                            "diploid; skipping",
+                            lineno,
+                            len(parts),
+                            chrom,
+                        )
+                        continue
+                    allele2 = allele1
+                else:
+                    raw_allele2 = parts[4].strip()
+                    if raw_allele2 == "":
+                        if normalized_chrom not in {"MT", "Y"}:
+                            logger.warning(
+                                "Line %d: empty ALLELE2 on non-haploid "
+                                "chromosome %r — almost certainly a "
+                                "truncated diploid; skipping",
+                                lineno,
+                                chrom,
+                            )
+                            continue
+                        allele2 = allele1
+                    else:
+                        allele2 = _normalize_allele(parts[4])
 
                 try:
                     position = int(pos_str)
@@ -159,7 +231,7 @@ class FTDNAFamFinderParser(GenotypeParser):
 
                 yield Variant(
                     rsid=rsid,
-                    chromosome=normalize_chromosome(chrom),
+                    chromosome=normalized_chrom,
                     position=position,
                     allele1=allele1,
                     allele2=allele2,

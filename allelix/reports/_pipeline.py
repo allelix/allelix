@@ -138,6 +138,14 @@ class AnalysisResult:
     panel_rsids: frozenset[str] | None = None
     genotyped_panel_rsids: frozenset[str] | None = None
     panel_annotated_rsids: frozenset[str] | None = None
+    # GH #120: per-rsID genotype string (e.g. "C/T", "A/-", "-/-")
+    # for each panel rsID present in the input file. Populated only
+    # when --filter-file supplied a panel. None on default analyze
+    # runs (zero behavior change on the default path). The HTML
+    # Panel coverage section renders this in a GT column; JSON shape
+    # stays v6 untouched — display-only addition. The genotype-aware
+    # MECE redesign that lands this in JSON + terminal is #115 (v2.3).
+    panel_genotypes: dict[str, str] | None = None
     # GH #90: variants reaching the annotator phase with ref=None.
     # Used by the CLI to surface the strand-aware-matching-inactive
     # info line once per run for array inputs.
@@ -148,7 +156,9 @@ class AnalysisResult:
     # warning until #62's dbSNP resolution lands.
     rsidless_variant_count: int = 0
 
-    def panel_coverage(self) -> PanelCoverage | None:
+    def panel_coverage(
+        self, filtered_annotations: list[Annotation] | None = None
+    ) -> PanelCoverage | None:
         """Return panel-coverage info when a rsid panel was supplied.
 
         States, per GH #75:
@@ -175,15 +185,56 @@ class AnalysisResult:
         chip presence, not call success. High-value no-calls are
         separately surfaced by the ``hv_warnings`` path in the CLI;
         readers should not interpret ``found`` as "called."
+
+        GH #106 (v2.2.1 patch): when ``filtered_annotations`` is
+        supplied — the post-magnitude-filter list each renderer
+        already produces for the main annotation table — the
+        "annotated" set is derived from THAT list, not from
+        ``panel_annotated_rsids`` (which is populated from the
+        unfiltered annotation set in ``run_analysis``). Without
+        this, panel rsIDs whose only annotations score below the
+        analyze display floor land in ``found`` but render nowhere
+        — they're counted as "found" then filtered out of the
+        annotation table, then NOT folded into ``no_findings``
+        (because the pipeline thinks they had annotations). Pure
+        limbo, a flat lie in ``found``. Passing the filtered list
+        in makes "annotated" equal "actually rendered" and the
+        below-floor variants drop into ``no_findings`` honestly.
+
+        The redesign (genotype-aware MECE 4-state with `no_call`
+        distinct from `typed_no_annotation`, schema 6→7) lands in
+        v2.3 (#115).
         """
         if self.panel_rsids is None:
             return None
         genotyped = self.genotyped_panel_rsids or frozenset()
-        annotated = self.panel_annotated_rsids or frozenset()
-        missing = sorted(self.panel_rsids - genotyped)
+        panel_rsids = self.panel_rsids
+        if filtered_annotations is not None:
+            # GH #106 patch: "annotated" is the set of panel rsIDs that
+            # actually got rendered — derived from the post-filter
+            # annotation list the renderer passes in. Sub-floor-only
+            # panel rsids drop out of `annotated`, so they fall into
+            # `no_findings` instead of limbo. The `found` field still
+            # means "in input file" (genotyped count) — same v6
+            # contract — only `no_findings` widens to be honest.
+            annotated: frozenset[str] = frozenset(
+                a.rsid for a in filtered_annotations if a.rsid in panel_rsids
+            )
+        else:
+            # Back-compat path for callers that don't thread the
+            # filtered list. `annotated` stays the raw pre-filter set,
+            # reproducing the v6.0 behavior (sub-floor panel rsids
+            # land in `found` and vanish from every rendered surface —
+            # the limbo bug the #106 patch retires when the filtered
+            # list IS supplied).
+            annotated = self.panel_annotated_rsids or frozenset()
+        missing = sorted(panel_rsids - genotyped)
+        # Below-floor panel rsids land here on the filtered path: in
+        # genotyped but not in the post-filter annotated set. They had
+        # annotations in the cache but none survived the display floor.
         no_findings = sorted(genotyped - annotated)
         return {
-            "requested": len(self.panel_rsids),
+            "requested": len(panel_rsids),
             "found": len(genotyped),
             "missing": missing,
             "no_findings": no_findings,
@@ -442,6 +493,11 @@ def run_analysis(
     # so a 600k-variant input contributes ~panel-size memory, not
     # 600k rsids.
     genotyped_panel: set[str] = set()
+    # GH #120: per-rsID genotype for panel members. First-occurrence
+    # wins (a 23andMe-style chip emits one row per rsID anyway; multi-
+    # row input formats keep the earliest reading). HTML-only surface
+    # in v2.2.1; #115 carries the JSON + terminal addition in v2.3.
+    panel_genotypes_map: dict[str, str] = {}
     # GH #90 / #91: per-run diagnostic totals for ref-None and
     # rsidless variants reaching the annotator phase. Used by the CLI
     # to emit the "strand-aware inactive" info line (#90) and the
@@ -513,7 +569,14 @@ def run_analysis(
             if hv_set:
                 hv_variants.extend(v for v in batch_buf if v.rsid in hv_set)
             if panel_rsids:
-                genotyped_panel.update(v.rsid for v in batch_buf if v.rsid in panel_rsids)
+                for v in batch_buf:
+                    if v.rsid in panel_rsids:
+                        genotyped_panel.add(v.rsid)
+                        # First-occurrence wins; renders as "A/G",
+                        # "C/C", "A/-", "-/-" honestly — uses the
+                        # same Variant.genotype property the rest of
+                        # the codebase uses.
+                        panel_genotypes_map.setdefault(v.rsid, v.genotype)
             # GH #90 / #91: per-batch diagnostic counters. Tallied AFTER
             # the ref-population and resolver passes so the counts
             # reflect the final state annotators see — not the raw input.
@@ -629,10 +692,12 @@ def run_analysis(
         result_panel = frozenset(panel_rsids)
         result_genotyped = frozenset(genotyped_panel)
         result_annotated = frozenset(a.rsid for a in annotations if a.rsid in panel_rsids)
+        result_genotypes: dict[str, str] | None = dict(panel_genotypes_map)
     else:
         result_panel = None
         result_genotyped = None
         result_annotated = None
+        result_genotypes = None
 
     return AnalysisResult(
         file_path=file_path,
@@ -649,6 +714,7 @@ def run_analysis(
         panel_rsids=result_panel,
         genotyped_panel_rsids=result_genotyped,
         panel_annotated_rsids=result_annotated,
+        panel_genotypes=result_genotypes,
         no_ref_variant_count=no_ref_total,
         rsidless_variant_count=rsidless_total,
     )

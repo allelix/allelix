@@ -24,6 +24,15 @@ FIXTURES = "tests/fixtures"
 MOCK_VCF = f"{FIXTURES}/mock_vcf.vcf"
 MOCK_GVCF = f"{FIXTURES}/mock_gvcf.g.vcf"
 MOCK_MULTISAMPLE = f"{FIXTURES}/mock_multisample.vcf"
+# GH #121: full matrix of committed VCF fixtures — the v2.2.0 evaluator's
+# real-data battery exposed that gzipped + non-UTF-8 inputs crashed
+# can_parse with a raw Python traceback because the test suite only ever
+# carried plain ASCII .vcf files. CI now exercises the four-way matrix:
+# {.vcf, .vcf.gz} x {UTF-8 only, non-UTF-8 header byte}. Each fixture is
+# under 400 bytes — safe for every CI matrix leg.
+MOCK_VCF_GZ = f"{FIXTURES}/mock_vcf.vcf.gz"
+MOCK_VCF_NON_UTF8 = f"{FIXTURES}/mock_vcf_non_utf8_header.vcf"
+MOCK_VCF_NON_UTF8_GZ = f"{FIXTURES}/mock_vcf_non_utf8_header.vcf.gz"
 
 
 def _path(rel: str) -> Path:
@@ -60,6 +69,89 @@ class TestCanParse:
         with gzip.open(gz, "wt") as h:
             h.write("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
         assert VcfParser().can_parse(gz)
+
+
+class TestRobustInputMatrix:
+    """GH #121: full matrix of committed-fixture inputs the v2.2.0
+    evaluator's real-data battery showed crashed the parser before this
+    fix. Every combination of {plain .vcf, .vcf.gz} x {UTF-8 only,
+    non-UTF-8 header byte} must:
+
+      1. Be recognized by ``can_parse`` (no traceback escape).
+      2. Yield ``Variant`` objects from ``parse`` (no decoder crash
+         mid-iteration; non-UTF-8 bytes substituted in the header
+         stream don't poison the data lines).
+
+    Pre-#121 the parser opened files in strict UTF-8 text mode and
+    ``can_parse`` only caught ``OSError``, so a single non-UTF-8 byte
+    anywhere in the header (typical in GATK / DeepVariant / bcftools
+    output — they emit ``©``/``0xa9`` in ``##CL=`` lines) leaked a
+    ``UnicodeDecodeError`` traceback all the way to the CLI. ``.vcf.gz``
+    files (the standard distribution format for every public VCF) had
+    the same fate the moment a header byte was non-ASCII.
+    """
+
+    def test_can_parse_plain_utf8_vcf(self) -> None:
+        """Baseline: pristine ASCII .vcf — the only shape the test
+        suite covered pre-#121."""
+        assert VcfParser().can_parse(_path(MOCK_VCF))
+
+    def test_can_parse_plain_non_utf8_vcf(self) -> None:
+        """A latin-1 ``©`` (0xa9) in a ``##CL=`` header used to crash
+        with ``UnicodeDecodeError``; now it's substituted (errors=
+        "replace") and the file recognizes cleanly."""
+        assert VcfParser().can_parse(_path(MOCK_VCF_NON_UTF8))
+
+    def test_can_parse_gzipped_utf8_vcf(self) -> None:
+        """Committed .vcf.gz fixture — the format every public VCF
+        (GIAB, 1000G, dbSNP, gnomAD) ships in."""
+        assert VcfParser().can_parse(_path(MOCK_VCF_GZ))
+
+    def test_can_parse_gzipped_non_utf8_vcf(self) -> None:
+        """The combined real-world case: gzipped GATK output with a
+        non-UTF-8 byte in the command-line header. The v2.0.0-era
+        parser crashed on this exact shape from day one."""
+        assert VcfParser().can_parse(_path(MOCK_VCF_NON_UTF8_GZ))
+
+    @pytest.mark.parametrize(
+        "fixture",
+        [MOCK_VCF, MOCK_VCF_NON_UTF8, MOCK_VCF_GZ, MOCK_VCF_NON_UTF8_GZ],
+    )
+    def test_parse_yields_variants_across_full_matrix(self, fixture: str) -> None:
+        """End-to-end parse across the full matrix. Each fixture has
+        at least one data line for rs1801133 on chr1 — verify the
+        parser walks past the header (where the non-UTF-8 substitution
+        happens) and emits the expected Variant."""
+        variants = list(VcfParser().parse(_path(fixture)))
+        rsids = {v.rsid for v in variants}
+        assert "rs1801133" in rsids, (
+            f"{fixture} should yield rs1801133 from the chr1:11856378 data "
+            f"line; non-UTF-8 substitution in the header must not poison "
+            f"the ASCII data-line decode. Got: {sorted(rsids)}"
+        )
+
+    def test_binary_garbage_does_not_crash_can_parse(self, tmp_path: Path) -> None:
+        """A truncated tabix index or other binary file with a gzip
+        magic prefix but non-VCF content must return False from
+        can_parse — never escape a traceback. The evaluator's real-data
+        battery hit this with a mislabeled ``.vcf.gz`` that was
+        actually a .tbi index file."""
+        f = tmp_path / "fake.vcf.gz"
+        # Gzip magic + garbage payload (decompresses, but not VCF).
+        with gzip.open(f, "wb") as h:
+            h.write(b"\x00\xff\xfe" * 100)
+        # Must return False cleanly — no traceback.
+        assert VcfParser().can_parse(f) is False
+
+    def test_truncated_gzip_does_not_crash_can_parse(self, tmp_path: Path) -> None:
+        """A truncated .vcf.gz (incomplete gzip stream) must also
+        return False cleanly. EOFError on read mid-decompression
+        is the failure mode."""
+        f = tmp_path / "truncated.vcf.gz"
+        # First few bytes of a gzip stream — incomplete, will EOFError
+        # on read.
+        f.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00")
+        assert VcfParser().can_parse(f) is False
 
 
 # ── vcf_type detection ──────────────────────────────────────────

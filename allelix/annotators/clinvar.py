@@ -92,6 +92,101 @@ def _magnitude(clnsig: str) -> float:
     return _CLNSIG_MAGNITUDE.get(_normalize_clnsig(clnsig), 5.0)
 
 
+# GH #109: ClinVar review-status ranking — lower index = stronger
+# evidence per ClinVar's star-rating documentation. Used to pick the
+# winning row when N SCVs with identical (significance, condition,
+# gene) tuples collapse during per-SCV dedup; the surviving Annotation
+# carries the highest-rated review_status across the group instead of
+# silently dropping provenance.
+#
+# Real cache rows use the comma-and-underscore form
+# (`criteria_provided,_multiple_submitters,_no_conflicts`). The rank
+# helper normalizes via _normalize_clnsig so it's robust to spacing
+# variation. Unknown values fall through to "weakest known."
+_REVIEW_STATUS_RANK: tuple[str, ...] = (
+    "practice_guideline",
+    "reviewed_by_expert_panel",
+    "criteria_provided,_multiple_submitters,_no_conflicts",
+    "criteria_provided,_conflicting_classifications",
+    "criteria_provided,_conflicting_interpretations",
+    "criteria_provided,_single_submitter",
+    "no_assertion_criteria_provided",
+    "no_assertion_provided",
+    "no_classification_provided",
+)
+
+
+def _review_status_rank(status: str) -> int:
+    """Return the rank index for a review_status string.
+
+    Lower index = stronger evidence. Unknown / unrecognized values get
+    the max rank (weakest), so a known SCV always beats an unknown one
+    when collapsing.
+    """
+    if not status:
+        return len(_REVIEW_STATUS_RANK)
+    normalized = _normalize_clnsig(status)
+    for i, candidate in enumerate(_REVIEW_STATUS_RANK):
+        if candidate == normalized:
+            return i
+    return len(_REVIEW_STATUS_RANK)
+
+
+def _collapse_identical_scvs(annotations: list[Annotation]) -> list[Annotation]:
+    """Collapse identical per-SCV rows from the #42 TSV loader (GH #109).
+
+    Two Annotations are identical for dedup purposes if they share
+    (rsid, significance, condition, gene, alt). The surviving row carries:
+
+      - the strongest ``review_status`` across the collapsed group
+        (per ``_REVIEW_STATUS_RANK``)
+      - the union of ``references`` across the collapsed group
+        (preserving first-seen order — never silently drops provenance)
+
+    Distinct (significance, condition) pairs on the same variant are
+    preserved as separate rows — that's exactly what #42 was built to
+    surface, and collapsing them would be the Frankenstein-pair
+    regression #42 retired.
+
+    GH #109 cross-PR review (Finding 1): ``alt`` is in the key for the
+    #18 wrong-allele safety invariant. Two SCVs at a multi-allelic site
+    can share (significance, condition, gene) but differ in alt — e.g.
+    rs1065852 (G→A drug_response/Codeine_response + G→C drug_response/
+    Codeine_response would be a hypothetical). Collapsing across alts
+    would (a) drop a distinct-allele annotation and (b) mis-attach the
+    surviving row's ``alt`` field to the merged result, breaking the
+    downstream exact-(rsid, alt) lookup that gnomAD / AlphaMissense /
+    CADD use for allele-specific enrichment. The pre-#109 v2.2.0 code
+    emitted one Annotation per cache row, so this case was always
+    handled correctly; the post-#109 dedup must preserve that property.
+
+    Input order is preserved for the kept rows: each group is replaced
+    by its winner at the position of the group's first occurrence.
+    """
+    from dataclasses import replace
+
+    groups: dict[tuple[str, str, str, str, str], list[Annotation]] = {}
+    for a in annotations:
+        key = (a.rsid, a.significance, a.condition, a.gene, a.alt)
+        groups.setdefault(key, []).append(a)
+
+    out: list[Annotation] = []
+    for group in groups.values():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        winner = min(group, key=lambda a: _review_status_rank(a.review_status))
+        seen_refs: set[str] = set()
+        merged_refs: list[str] = []
+        for a in group:
+            for ref in a.references:
+                if ref not in seen_refs:
+                    seen_refs.add(ref)
+                    merged_refs.append(ref)
+        out.append(replace(winner, references=merged_refs))
+    return out
+
+
 class ClinVarAnnotator(Annotator):
     """Annotates variants with ClinVar's clinical significance classifications.
 
@@ -502,7 +597,11 @@ class ClinVarAnnotator(Annotator):
                     alt=alt,
                 )
             )
-        return annotations
+        # GH #109: collapse identical per-SCV rows from the #42 TSV loader.
+        # Without this, a variant with N identical Pathogenic submissions
+        # emits N identical Annotation objects (visible duplicates on every
+        # surface). Distinct (significance, condition) pairs survive.
+        return _collapse_identical_scvs(annotations)
 
     def bulk_resolve_rsids(self, variants: list[Variant]) -> dict[tuple[str, int, str, str], str]:
         """Resolve rsIDs by (chromosome, position) for variants with no ID.
@@ -636,6 +735,12 @@ class ClinVarAnnotator(Annotator):
                 continue
             user_is_multibase = len(variant.allele1) > 1 or len(variant.allele2) > 1
             user_diploid = _user_diploid(variant)
+            # GH #109: collect per-variant Annotations and dedup before
+            # yielding, mirroring the annotate() collapse. Without this,
+            # bulk callers (the analyze pipeline goes through
+            # batch_annotate) leak the same per-SCV duplicates the
+            # single-variant path used to.
+            variant_annotations: list[Annotation] = []
             for row in rows:
                 (
                     _chrom,
@@ -665,21 +770,24 @@ class ClinVarAnnotator(Annotator):
                     f"{clnsig.replace('_', ' ') if clnsig else 'unknown significance'}"
                 )
                 references = [f"clinvar:allele/{allele_id}"] if allele_id else []
-                yield Annotation(
-                    source=self.name,
-                    rsid=variant.rsid,
-                    significance=f"clinvar_{sig_label}",
-                    category="clinical",
-                    magnitude=_magnitude(clnsig),
-                    description=description,
-                    attribution=self.attribution,
-                    genotype_match=user_diploid,
-                    references=references,
-                    condition="" if not condition or condition == "." else condition,
-                    gene=gene or "",
-                    review_status=review_status or "",
-                    alt=alt,
+                variant_annotations.append(
+                    Annotation(
+                        source=self.name,
+                        rsid=variant.rsid,
+                        significance=f"clinvar_{sig_label}",
+                        category="clinical",
+                        magnitude=_magnitude(clnsig),
+                        description=description,
+                        attribution=self.attribution,
+                        genotype_match=user_diploid,
+                        references=references,
+                        condition="" if not condition or condition == "." else condition,
+                        gene=gene or "",
+                        review_status=review_status or "",
+                        alt=alt,
+                    )
                 )
+            yield from _collapse_identical_scvs(variant_annotations)
 
 
 def _user_diploid(variant: Variant) -> str:

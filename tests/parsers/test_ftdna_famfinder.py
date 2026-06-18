@@ -164,16 +164,85 @@ class TestParse:
         assert variants[0].rsid == "rs_good"
 
     def test_skips_wrong_column_count(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
+        """GH #113: 4 columns is the haploid shape and is now accepted
+        (see test_haploid_4_column_line). Genuinely wrong column counts
+        — 3 columns (missing both alleles) or 6+ (extra data) — are
+        still skipped."""
         f = _write(
             tmp_path,
             _FAMFINDER_HEADER
-            + "rs_short\t1\t100\tA\n"  # 4 cols
-            + "rs_long\t1\t100\tA\tG\tEXTRA\n"  # 6 cols
+            + "rs_too_short\t1\t100\n"  # 3 cols — both alleles missing
+            + "rs_long\tMT\t100\tA\tG\tEXTRA\n"  # 6 cols
             + "rs_good\t1\t100\tA\tG\n",
         )
         variants = list(parser.parse(f))
         assert len(variants) == 1
         assert variants[0].rsid == "rs_good"
+
+    def test_haploid_4_column_line(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
+        """GH #113: a 4-column line (missing ALLELE2 column entirely)
+        is a haploid MT/Y call in the FamFinder convention. Parser
+        emits a hemizygous Variant where allele1 == allele2 == the
+        called base — NOT a half no-call.
+
+        Pre-#113 the parser warned and skipped the line, dropping
+        every haploid MT/Y call.
+        """
+        f = _write(
+            tmp_path,
+            _FAMFINDER_HEADER
+            + "rs_haploid_mt\tMT\t100\tA\n"  # 4 cols, real call
+            + "rs_haploid_y\tY\t200\tC\n"  # 4 cols, real call
+            + "rs_haploid_nc\tMT\t300\t-\n"  # 4 cols, no-call
+            + "rs_diploid\t1\t400\tA\tG\n",
+        )
+        by_rsid = {v.rsid: v for v in parser.parse(f)}
+        assert len(by_rsid) == 4
+        assert by_rsid["rs_haploid_mt"].allele1 == "A"
+        assert by_rsid["rs_haploid_mt"].allele2 == "A"
+        assert by_rsid["rs_haploid_mt"].chromosome == "MT"
+        assert by_rsid["rs_haploid_y"].allele1 == "C"
+        assert by_rsid["rs_haploid_y"].allele2 == "C"
+        # No-call shape: both alleles end up as the no-call marker via
+        # haploid-doubling of "-". Variant.is_no_call must still fire.
+        assert by_rsid["rs_haploid_nc"].is_no_call
+        # Diploid lines on the same file still work normally.
+        assert by_rsid["rs_diploid"].allele1 == "A"
+        assert by_rsid["rs_diploid"].allele2 == "G"
+
+    def test_haploid_shape_on_autosome_skipped_as_truncated_diploid(
+        self, parser: FTDNAFamFinderParser, tmp_path: Path
+    ) -> None:
+        """GH #113 cross-PR review (PR #117): the haploid shape (4-col
+        line OR 5-col with empty ALLELE2) is accepted ONLY on MT and Y.
+        FTDNA does not publish haploid calls on autosomes or X — the
+        same shape on chr1 is almost certainly a truncated diploid
+        that lost an allele in transit. Promoting it to hemizygous
+        would silently double the surviving allele and synthesize a
+        wrong-zygosity genotype. The parser warns-and-skips instead.
+
+        Pre-review the parser accepted the autosomal 4-col line as
+        haploid → `(A, A)`, silently mis-reporting a truncated `A?`
+        as a homozygous AA call. Post-review the row is dropped with
+        a warning, matching the canonical published FamFinder shape.
+        """
+        f = _write(
+            tmp_path,
+            _FAMFINDER_HEADER
+            + "rs_chr1_truncated\t1\t100\tA\n"  # 4-col on autosome
+            + "rs_chr22_truncated\t22\t200\tG\n"  # 4-col on autosome
+            + "rs_chrx_truncated\tX\t300\tC\n"  # 4-col on X
+            + "rs_chr1_empty\t1\t400\tA\t\n"  # 5-col empty-ALLELE2 on autosome
+            + "rs_haploid_mt\tMT\t500\tA\n"  # 4-col on MT — kept
+            + "rs_diploid\t1\t600\tA\tG\n",  # canonical diploid — kept
+        )
+        by_rsid = {v.rsid: v for v in parser.parse(f)}
+        # Only MT haploid + canonical diploid survive.
+        assert set(by_rsid.keys()) == {"rs_haploid_mt", "rs_diploid"}
+        assert by_rsid["rs_haploid_mt"].allele1 == "A"
+        assert by_rsid["rs_haploid_mt"].allele2 == "A"
+        assert by_rsid["rs_diploid"].allele1 == "A"
+        assert by_rsid["rs_diploid"].allele2 == "G"
 
     def test_comments_skipped(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
         f = _write(
@@ -204,20 +273,46 @@ class TestParse:
         assert by_rsid["rs_chr_m"].chromosome == "MT"
         assert by_rsid["rs_canonical"].chromosome == "22"
 
-    def test_empty_allele_cell_treated_as_no_call(
+    def test_empty_allele2_cell_treated_as_haploid(
         self, parser: FTDNAFamFinderParser, tmp_path: Path
     ) -> None:
-        """An empty cell (rather than ``-``) in an allele column maps to ``-``."""
+        """GH #113: a 5-column line with an empty trailing ALLELE2 cell
+        is also the haploid shape — same biology as the 4-column line,
+        just from a writer that emitted the trailing tab. Both must
+        parse the same way: hemizygous, not half no-call.
+
+        Pre-#113 the empty ALLELE2 was normalized to ``-``, producing
+        a synthetic half no-call (e.g. ``A/-``) that the analyze
+        pipeline correctly abstained on — losing every haploid MT/Y
+        call to a no-call sink.
+        """
         f = _write(
             tmp_path,
-            _FAMFINDER_HEADER + "rs_empty\t1\t100\tA\t\n",
+            _FAMFINDER_HEADER + "rs_empty\tMT\t100\tA\t\n",
         )
         variants = list(parser.parse(f))
-        # 5-col split with trailing tab gives "" — that's allele2 here.
-        # The parser should normalize to "-".
         assert len(variants) == 1
+        # Hemizygous, not half no-call.
         assert variants[0].allele1 == "A"
-        assert variants[0].allele2 == "-"
+        assert variants[0].allele2 == "A"
+        assert not variants[0].is_no_call
+
+    def test_empty_allele1_cell_still_no_call(
+        self, parser: FTDNAFamFinderParser, tmp_path: Path
+    ) -> None:
+        """Symmetry guard: an empty ALLELE1 (the lead allele) doesn't
+        get the haploid treatment — there's no called base to
+        double. That row genuinely is a no-call, and normalize
+        keeps it as ``-/-``."""
+        f = _write(
+            tmp_path,
+            _FAMFINDER_HEADER + "rs_lead_empty\t1\t100\t\tG\n",
+        )
+        variants = list(parser.parse(f))
+        assert len(variants) == 1
+        assert variants[0].allele1 == "-"
+        assert variants[0].allele2 == "G"
+        assert variants[0].is_no_call
 
 
 class TestGetMetadata:

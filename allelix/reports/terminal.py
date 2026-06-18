@@ -60,7 +60,7 @@ def render_terminal(
     )
     filtered = rollup_gwas_duplicates(filtered)
     _print_table(filtered, console)
-    _print_panel_coverage_warning(result, console)
+    _print_panel_coverage_warning(result, console, filtered)
     _print_regulatory_notice(console)
     return len(filtered)
 
@@ -78,14 +78,24 @@ def _print_regulatory_notice(console: Console) -> None:
     console.print(f"\n[dim italic]{REGULATORY_NOTICE}[/dim italic]")
 
 
-def _print_panel_coverage_warning(result: AnalysisResult, console: Console) -> None:
+def _print_panel_coverage_warning(
+    result: AnalysisResult,
+    console: Console,
+    filtered_annotations: list[Annotation],
+) -> None:
     """GH #75: surface panel rsIDs that weren't in the user's input file.
 
     "Not on your chip" is critically different from "homozygous reference"
     — making this invisible was the original audit complaint. Quiet when
     no panel was supplied, or when every panel rsID was genotyped.
+
+    GH #106: the post-filter annotation list is threaded through so
+    `panel_coverage()` derives "annotated" from what was actually rendered,
+    not from the unfiltered set. Without this thread, panel rsids whose
+    only annotations were below the magnitude floor showed in "found" but
+    not in any rendered surface (the 9-of-20 limbo bug).
     """
-    coverage = result.panel_coverage()
+    coverage = result.panel_coverage(filtered_annotations)
     if coverage is None:
         return
     missing = coverage["missing"]

@@ -393,8 +393,47 @@ class TestIterTsvRecords:
         # And the placeholder set must be the exact set used by the
         # protocol §7b ship-gate. If you broaden one, broaden both
         # together — that's the cross-PR-review lesson.
-        expected = frozenset({"", "-", "not specified", "no classification provided"})
+        # GH #116: the set grew with "other", "association",
+        # "association not found" — non-classification curatorial
+        # terms surfaced by the #42 per-SCV switch that fell to the
+        # 5.0 default before this filter.
+        expected = frozenset(
+            {
+                "",
+                "-",
+                "not specified",
+                "no classification provided",
+                "other",
+                "association",
+                "association not found",
+            }
+        )
         assert expected == _CLINVAR_PLACEHOLDER_CLNSIGS
+
+    def test_skips_junk_clnsig_curatorial_terms(self, tmp_path):
+        """GH #116: ClinVar's per-SCV TSV surfaces non-classification
+        curatorial terms — "other", "association", "association not
+        found" — that the old summarized data hid. Each is a real
+        ClinVar value (a curator chose it) but is not a classification,
+        is not in _CLNSIG_MAGNITUDE, and would surface at the 5.0
+        default as a fake finding.
+
+        Pinned: ingest drops these three terms while real
+        classifications survive."""
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
+        ss = _write_tsv(
+            tmp_path / "ss.tsv",
+            _SS_HEADER,
+            [
+                _ss_row(significance="other"),
+                _ss_row(significance="association"),
+                _ss_row(significance="association not found"),
+                _ss_row(significance="Pathogenic"),
+            ],
+        )
+        records = list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+        sigs = sorted(r["clinical_significance"] for r in records)
+        assert sigs == ["Pathogenic"]
 
     def test_placeholder_skip_is_case_insensitive(self, tmp_path):
         """The skip filter must match regardless of casing because

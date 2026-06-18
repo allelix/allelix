@@ -187,8 +187,10 @@ _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 
 # GH #42 follow-up (evaluator defect 5, PR #101): exact set of
 # ClinicalSignificance values the TSV loader filters at ingest.
-# These are placeholders that ClinVar uses to mark SCVs with no
-# recorded classification AND that aren't in
+# These are values that ClinVar uses to mark SCVs with no actionable
+# classification — placeholders ("-", "", "not specified") AND
+# non-classification curatorial categories ("other", "association",
+# "association not found") — AND that aren't in
 # `allelix.annotators.clinvar._CLNSIG_MAGNITUDE` (so without this
 # filter they'd land at the 5.0 default — equal to the analyze
 # display floor — and surface to users as bogus annotations).
@@ -199,6 +201,13 @@ _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 #     would lose real submitter records.
 #   - "no classification for the single variant" — same.
 #
+# GH #116 added the three non-classification terms ("other",
+# "association", "association not found"). The per-SCV TSV
+# switch (#42) surfaced these from the underlying submission_summary
+# rows where the old summarized data hid them; they're meaningfully
+# distinct from placeholders (a curator chose them) but equally
+# unactionable as report content.
+#
 # The protocol's §7b significance-sentinel ship-gate scans the
 # same set to verify the loader's commitment against the live cache.
 # Keep both in sync.
@@ -208,6 +217,13 @@ _CLINVAR_PLACEHOLDER_CLNSIGS: frozenset[str] = frozenset(
         "-",
         "not specified",
         "no classification provided",
+        # GH #116: non-classification curatorial terms — kept out of
+        # _CLNSIG_MAGNITUDE deliberately (they aren't classifications)
+        # and out of _BENIGN_CLNSIGS (they aren't benign; #56's repute
+        # work must not see them as "good").
+        "other",
+        "association",
+        "association not found",
     }
 )
 

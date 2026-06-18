@@ -133,7 +133,17 @@ class VcfParser(GenotypeParser):
     # ── Public API ──────────────────────────────────────────────
 
     def can_parse(self, file_path: Path) -> bool:
-        """True if the first non-blank line is ``##fileformat=VCF...``."""
+        """True if the first non-blank line is ``##fileformat=VCF...``.
+
+        GH #121: catches ``UnicodeDecodeError`` and ``EOFError`` (corrupt
+        gzip / truncated BGZF) on top of ``OSError`` so format sniffing
+        never raises through into ``detect_parser``. A real-world
+        ``.vcf.gz`` shouldn't reach the decode path's replacement
+        substitution (``_open_vcf`` uses ``errors="replace"``), but
+        binary garbage or a truncated tabix index masquerading as a
+        ``.vcf.gz`` would otherwise still leak a traceback at the
+        ``read`` boundary in ``gzip.open``.
+        """
         try:
             with _open_vcf(file_path) as handle:
                 for line in handle:
@@ -141,7 +151,7 @@ class VcfParser(GenotypeParser):
                     if not stripped:
                         continue
                     return stripped.startswith("##fileformat=VCF")
-        except OSError:
+        except (OSError, UnicodeDecodeError, EOFError):
             return False
         return False
 
@@ -548,6 +558,18 @@ def _open_vcf(file_path: Path) -> TextIO:
     gzipped content still parse). The caller is responsible for closing
     the returned handle (it's a context manager).
 
+    GH #121: ``errors="replace"`` on the text decode. Real-world VCFs
+    routinely carry non-UTF-8 bytes in tool headers — a ``©`` (latin-1
+    ``0xa9``) in a ``##CL=`` line is extremely common (GATK / DeepVariant
+    / bcftools all do it). A strict decode would raise ``UnicodeDecodeError``
+    mid-iteration, leaking a Python traceback through ``can_parse`` and
+    ``parse``. Replacement renders the bad byte as U+FFFD inside the
+    header block — VCF data lines are pure ASCII tab-separated values
+    and never reach the substitution path, so genotype fidelity is
+    preserved. ``can_parse`` also catches ``UnicodeDecodeError`` as a
+    belt-and-braces guard for the case where ``errors="replace"`` is
+    ever lifted.
+
     Returns ``typing.TextIO`` rather than the concrete ``io.TextIOBase``
     so mypy-strict callers see the ``__enter__`` / ``__exit__`` protocol
     on the returned handle.
@@ -555,5 +577,5 @@ def _open_vcf(file_path: Path) -> TextIO:
     with open(file_path, "rb") as raw:
         magic = raw.read(2)
     if magic == b"\x1f\x8b":
-        return gzip.open(file_path, "rt", encoding="utf-8")
-    return open(file_path, encoding="utf-8")
+        return gzip.open(file_path, "rt", encoding="utf-8", errors="replace")
+    return open(file_path, encoding="utf-8", errors="replace")

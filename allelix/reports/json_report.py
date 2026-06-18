@@ -157,7 +157,11 @@ def render_json(
     # object distinguishes "not on chip" from "homozygous reference"
     # from "had a finding". `missing` is state 3, `no_findings` is
     # state 2, both lists are sorted for deterministic diffs.
-    panel_coverage = result.panel_coverage()
+    # GH #106 (v2.2.1 patch): thread the post-filter annotation list so
+    # `panel_coverage` derives "annotated" from what actually got
+    # rendered. Without this, sub-floor panel rsids vanished from every
+    # rendered surface while still being counted as "found".
+    panel_coverage = result.panel_coverage(filtered)
     if panel_coverage is not None:
         payload["panel_coverage"] = panel_coverage
 

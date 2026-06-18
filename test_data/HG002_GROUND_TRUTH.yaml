@@ -1,0 +1,266 @@
+# HG002 (NA24385) — published ground-truth spot checks for §19 VCF battery
+#
+# Purpose
+#   Concrete, unfalsifiable assertions about what allelix MUST emit when
+#   pointed at the GIAB HG002 benchmark VCFs. These are ground truth from
+#   the GIAB v4.2.1 benchmark itself (the file we're analyzing), not
+#   "what allelix happened to produce on date X." A regression here
+#   means the pipeline is misreading the file or the cache is corrupted —
+#   not a defensible drift.
+#
+#   These checks complement the floor invariants in §19; floors catch
+#   over-filter regressions on aggregate counts, ground-truth pins catch
+#   regressions on specific known variants where drift is NOT acceptable.
+#
+# Why this file exists separately
+#   §19 used to pin total-annotation counts (~4-5K, ~60-70K, ~30-60).
+#   Those drift legitimately with every dedup / vocab / ClinVar refresh,
+#   and got re-pinned each time, which masked one real over-filter risk
+#   per pin (the trap §7, §15, §19 all hit). Switching to floors + this
+#   ground-truth file separates "did the contract hold" from "did the
+#   incidental count change."
+#
+# How to add a new spot check
+#   1. Confirm the genotype from the GIAB benchmark VCF directly
+#      (sqlite the .tbi-indexed file, or `bcftools view -r chr:pos`).
+#   2. Add an entry under `extract:` with chrom + pos + expected genotype.
+#   3. If the rsID should also surface in `analyze` output, add it under
+#      `analyze:` with the expected source set and significance pattern.
+#   4. Re-run the §19 harness to confirm.
+#
+# Schema
+#   See the §19 harness comment block in FULL_TEST_PROTOCOL.md for the
+#   exact keys consumed. Anything in this file that the harness doesn't
+#   know about is ignored (forward-compatible).
+
+source_of_truth: "GIAB v4.2.1 HG002 benchmark VCFs (NIST FTP, build dates 2020-12 GRCh38 / 2020-12 GRCh37)"
+sample: "HG002 (NA24385, Ashkenazim son, Personal Genome Project)"
+
+# `extract` invariants — exact genotypes at specific positions.
+# Run: allelix extract <file> --snps <rsid>
+# Pass condition: chrom/pos/genotype/het all match.
+#
+# Coordinate notes:
+#   - chrom_grch37/pos_grch37 used when analyzing the GRCh37 benchmark
+#   - chrom_grch38/pos_grch38 used when analyzing the GRCh38 benchmark
+#   - genotype field is build-independent (same allele identity)
+#   - "absent" means the variant is not in the file because HG002 is ref/ref
+#     at that position (GIAB benchmark only emits non-ref calls)
+extract:
+  - rsid: rs1801133
+    gene: MTHFR
+    variant_name: "MTHFR C677T (Ala222Val)"
+    chrom_grch37: "1"
+    pos_grch37: 11856378
+    chrom_grch38: "1"
+    pos_grch38: 11796321
+    expected_genotype: "G/A"
+    expected_het: true
+    note: "HG002 is a published MTHFR C677T heterozygote — one of the most-cited variants for methylation pathway research."
+
+  - rsid: rs7412
+    gene: APOE
+    variant_name: "APOE rs7412 (Arg176Cys, the E2 marker)"
+    chrom_grch37: "19"
+    pos_grch37: 45412079
+    chrom_grch38: "19"
+    pos_grch38: 44908822
+    expected_genotype: "C/T"
+    expected_het: true
+    note: "HG002 carries one APOE2 allele. Combined with rs429358=T/T below, this gives the published E2/E3 APOE haplotype."
+
+  - rsid: rs429358
+    gene: APOE
+    variant_name: "APOE rs429358 (Cys130Arg, the E4 marker)"
+    chrom_grch37: "19"
+    pos_grch37: 45411941
+    chrom_grch38: "19"
+    pos_grch38: 44908684
+    expected_genotype: "absent"
+    expected_het: null
+    note: "HG002 has no APOE4 allele — ref/ref (T/T) at this position. The GIAB benchmark only emits non-ref calls, so this rsID is absent from the file. allelix's extract must report 'not in file', NOT a wrong genotype."
+
+  - rsid: rs2010963
+    gene: VEGFA
+    variant_name: "VEGFA promoter -634G>C"
+    chrom_grch37: "6"
+    pos_grch37: 43738350
+    chrom_grch38: "6"
+    pos_grch38: 43770612
+    expected_genotype: "G/G"
+    expected_het: false
+    note: "HG002 is homozygous-alt at this VEGFA promoter site (the C677T-style upstream MTHFR pair). Useful homozygote for verifying allele-pair handling on non-het carriers."
+
+  - rsid: rs6025
+    gene: F5
+    variant_name: "Factor V Leiden (Arg506Gln)"
+    chrom_grch37: "1"
+    pos_grch37: 169519049
+    chrom_grch38: "1"
+    pos_grch38: 169549811
+    expected_genotype: "C/C"
+    expected_het: false
+    note: "HG002 is NOT a Factor V Leiden carrier — ref/ref C/C. This is a load-bearing 'not present' check: a false-positive FVL report on HG002 would be a clinically meaningful regression (this is the most-tested thrombophilia variant in consumer genomics)."
+
+# `analyze` invariants — what allelix's analyze output must surface for
+# each of these rsIDs when run on the GIAB GRCh37 benchmark (which has
+# rsIDs in the ID column, so the rsID fast-path lights up every annotator).
+#
+# Run: allelix analyze <grch37 benchmark> --min-magnitude 0 --output X.json
+# Pass condition: for each rsid listed:
+#   - row count for that rsid in `annotations[]` ≥ min_rows
+#   - the set of `source` values across those rows is a SUPERSET of expected_sources
+#   - the set of `significance` values is a SUBSET of allowed_significance_patterns (regex)
+#   - at least one row has non-empty `condition`
+#   - all rows have non-null `magnitude`, `source`, `attribution`
+#
+# `applies_to` scopes a spot-check to specific files (keys from `floors:`
+# below). Default — if omitted — is "applies to every analyze output."
+# Necessary because the GRCh38 benchmark is rsID-less (position-only
+# resolution), so rsIDs that aren't carried by HG002 won't surface in
+# GRCh38 output even though they surface in GRCh37 (where the ID column
+# carries rsIDs from nearby submitted variants).
+analyze:
+  - rsid: rs1801133
+    applies_to: [giab_grch37_benchmark, giab_grch38_benchmark]
+    min_rows: 5
+    expected_sources: [clinvar, pharmgkb]
+    allowed_significance_patterns:
+      - "^clinvar_[a-z_]+$"
+      - "^pharmgkb_loe_[0-9a-z]+$"
+    must_have_condition: true
+    note: "MTHFR C677T is in both ClinVar (drug response — methotrexate) and PharmGKB (multiple LoE annotations). Multi-row by design. HG002 is a het carrier, so the variant appears as a non-ref call in both benchmarks and surfaces in both."
+
+  - rsid: rs7412
+    applies_to: [giab_grch37_benchmark, giab_grch38_benchmark]
+    min_rows: 3
+    expected_sources: [clinvar, pharmgkb]
+    allowed_significance_patterns:
+      - "^clinvar_[a-z_]+$"
+      - "^pharmgkb_loe_[0-9a-z]+$"
+    must_have_condition: true
+    note: "APOE rs7412 is in ClinVar (hyperlipoproteinemia, late-onset AD risk modifier) and PharmGKB (statin response, multiple drug interactions). HG002 carries one E2 allele so the variant is in both benchmarks."
+
+  - rsid: rs6025
+    applies_to: [giab_grch37_benchmark]
+    min_rows: 2
+    expected_sources: [clinvar]
+    allowed_significance_patterns:
+      - "^clinvar_[a-z_]+$"
+      - "^pharmgkb_loe_[0-9a-z]+$"
+    must_have_condition: true
+    note: "Factor V Leiden surfaces on the GRCh37 benchmark because the VCF carries rsIDs in the ID column (so the rsID-keyed lookup fires for any row tagged rs6025, even if HG002 is ref/ref at the variant position). On the GRCh38 benchmark — which is rsID-less — position-only resolution at the FVL coordinate finds no variant row (HG002 is ref/ref) and rs6025 correctly does NOT surface. Scoping this check to GRCh37 only."
+
+# Vocabulary invariants — every `significance` value emitted by allelix
+# must be in the known-vocabulary union. A value outside this set means
+# a junk CLNSIG slipped through the loader filter (a #116 / #101 regression).
+vocabulary:
+  # ClinVar normalized significance tokens.
+  # Authoritative set: derived from allelix/annotators/clinvar.py
+  # `_CLNSIG_MAGNITUDE` keys, prefixed with `clinvar_`.
+  # If allelix emits a `significance` starting with `clinvar_` that is
+  # NOT in this set, the loader has stopped filtering placeholder
+  # significance values — DO NOT TAG.
+  clinvar_allowed:
+    - clinvar_pathogenic
+    - clinvar_likely_pathogenic
+    - clinvar_drug_response
+    - clinvar_risk_factor
+    - clinvar_likely_risk_allele
+    - clinvar_uncertain_risk_allele
+    - clinvar_uncertain_significance
+    - clinvar_conflicting_classifications
+    - clinvar_conflicting_interpretations_of_pathogenicity
+    - clinvar_protective
+    - clinvar_affects
+    - clinvar_confers_sensitivity
+    - clinvar_other
+    - clinvar_association
+    - clinvar_association_not_found
+    - clinvar_not_provided
+    - clinvar_likely_benign
+    - clinvar_benign
+
+  # PharmGKB level-of-evidence tokens. Loader emits one of these per
+  # PharmGKB annotation.
+  pharmgkb_allowed:
+    - pharmgkb_loe_1a
+    - pharmgkb_loe_1b
+    - pharmgkb_loe_2a
+    - pharmgkb_loe_2b
+    - pharmgkb_loe_3
+    - pharmgkb_loe_4
+
+  # Forbidden values. These specifically must NEVER appear in
+  # `annotation.significance` (would indicate placeholder leakage).
+  forbidden_significance_values:
+    - "-"
+    - ""
+    - null
+    - "not_specified"
+    - "no_classification_provided"
+
+# Aggregate floor invariants per file. Sized at ~80% of v2.2.1 (de0de64)
+# observed values to absorb legitimate dedup / vocab drift. Failing a
+# floor means SOMETHING is over-filtering — run the v2.2.0→v2.2.1-style
+# baseline diff to classify removed annotations before re-pinning.
+#
+# Calibration date: 2026-06-18 against v2.2.1 (de0de64).
+floors:
+  giab_grch38_benchmark:
+    file: "test_data/real/vcf/HG002_GRCh38_benchmark.vcf.gz"
+    build: grch38
+    total_annotations_mag_0_min: 1500     # observed 1873
+    written_annotations_mag_0_min: 700    # observed 773
+    unique_dedup_keys_min: 550            # observed 611
+    default_filter_written_min: 240       # observed 298 at --min-magnitude 5 (default)
+    expected_build_detection: "GRCh38 (override)"
+
+  giab_grch37_benchmark:
+    file: "test_data/real/vcf/HG002_GRCh37_benchmark.vcf.gz"
+    build: grch37
+    total_annotations_mag_0_min: 55000    # observed 66008
+    written_annotations_mag_0_min: 2500   # observed 3058
+    unique_dedup_keys_min: 1700           # observed 2157
+    default_filter_written_min: 500       # observed 668 at --min-magnitude 5 (default)
+    expected_build_detection: "GRCh37 (override)"
+
+  hg00187_gatkhc_gvcf:
+    file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
+    build: grch37
+    total_annotations_mag_0_min: 8        # observed 11; tight floor on tiny dataset
+    written_annotations_mag_0_min: 4      # observed 6
+    unique_dedup_keys_min: 4              # observed 6
+    default_filter_written_min: 3         # observed 5
+    expected_build_detection: "GRCh37 (override)"
+    note: "Tiny dataset — totals are in single/double digits. A drop below floor on this file is a serious signal; do not ratchet down without root-cause classification."
+
+# Cross-cutting invariants on every analyze output.
+universal:
+  # Every annotation row must have these non-null.
+  required_non_null_fields:
+    - rsid
+    - source
+    - significance
+    - category
+    - magnitude
+    - attribution
+
+  # `source` is one of these — drift would mean a new annotator added
+  # without protocol update.
+  allowed_source_values:
+    - clinvar
+    - pharmgkb
+    - gwas
+    - snpedia
+
+  # `attribution` (the human-readable display name) must match this
+  # one-to-one mapping with `source`.
+  attribution_map:
+    clinvar: "ClinVar"
+    pharmgkb: "ClinPGx"
+    gwas: "GWAS Catalog"
+    snpedia: "SNPedia"
+
+  # `magnitude` must be in [0, 10] — the documented allelix magnitude range.
+  magnitude_range: [0, 10]

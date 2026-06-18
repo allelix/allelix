@@ -218,6 +218,76 @@ class TestPanelCoverage:
         assert "rs999999999" in cov["missing"]
         assert "rs999999999" not in cov["no_findings"]
 
+    def test_sub_floor_panel_rsid_lands_in_no_findings_not_limbo(self):
+        """GH #106 patch: when ``filtered_annotations`` is supplied
+        the "annotated" set is derived from THAT list (post-magnitude-
+        filter) instead of the raw pre-filter set.
+
+        Repro of the v2.2.0 accounting lie: a panel rsid has an
+        annotation in the cache (so it's in
+        ``panel_annotated_rsids``), but the annotation's magnitude is
+        below the analyze display floor, so the renderer's
+        ``filter()`` drops it. Pre-#106, the rsid:
+          - counted as "found" (because panel_annotated_rsids has it)
+          - dropped from the annotation table (below floor)
+          - NOT in no_findings (because the pipeline thought it had
+            annotations)
+        Pure limbo.
+
+        Post-#106, threading the filtered list in makes "annotated"
+        equal "actually rendered" — the sub-floor rsid lands in
+        no_findings honestly.
+
+        Pinned invariant: requested == len(missing) + len(no_findings)
+        + count of distinct displayed-annotation rsids.
+        """
+        panel = frozenset({"rs_displayed", "rs_subfloor", "rs_notonchip"})
+        # rs_displayed: genotyped, mag 9.0, will survive the filter.
+        # rs_subfloor: genotyped, mag 2.0, won't survive the filter.
+        # rs_notonchip: never in input.
+        genotyped = frozenset({"rs_displayed", "rs_subfloor"})
+        # Pre-filter "annotated" set: both genotyped rsids had cache
+        # annotations. This is what run_analysis populates today.
+        panel_annotated_raw = frozenset({"rs_displayed", "rs_subfloor"})
+
+        r = self._result(
+            panel_rsids=panel,
+            genotyped_panel_rsids=genotyped,
+            panel_annotated_rsids=panel_annotated_raw,
+            annotations=[
+                _ann(rsid="rs_displayed", magnitude=9.0),
+                _ann(rsid="rs_subfloor", magnitude=2.0),
+            ],
+        )
+
+        # Post-filter list: only rs_displayed survived the 5.0 floor.
+        filtered = r.filter(min_magnitude=5.0)
+        assert [a.rsid for a in filtered] == ["rs_displayed"]
+
+        # Pre-#106 (back-compat path): the limbo bug — rs_subfloor
+        # counted as "found" but rendered nowhere.
+        legacy_cov = r.panel_coverage()
+        assert legacy_cov is not None
+        assert legacy_cov["found"] == 2
+        assert "rs_subfloor" not in legacy_cov["no_findings"]
+
+        # Post-#106: thread the filtered list. rs_subfloor falls into
+        # no_findings; `found` still means "in input file" (genotyped
+        # count) — same v6 contract.
+        cov = r.panel_coverage(filtered)
+        assert cov is not None
+        assert cov["requested"] == 3
+        assert cov["found"] == 2  # both genotyped, unchanged
+        assert cov["missing"] == ["rs_notonchip"]
+        assert cov["no_findings"] == ["rs_subfloor"]  # was [] in legacy
+
+        # Pinned accounting invariant: the math closes against the
+        # user-visible report.
+        displayed_rsids = {a.rsid for a in filtered} & panel
+        assert cov["requested"] == (
+            len(cov["missing"]) + len(cov["no_findings"]) + len(displayed_rsids)
+        )
+
 
 class TestRunAnalysis:
     def test_streams_and_collects(self, mock_mhg_path: Path, all_annotators_data_dir: Path):

@@ -190,6 +190,149 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
         "criteria_provided,_single_submitter",
         100021,
     ),
+    # GH #111 fixtures: multi-SCV variants needed to pin #42's read-side
+    # behavior. Pre-#42 each variant was one row; post-#42 (per-SCV TSV
+    # loader) each SCV submission gets its own row, so these mirror the
+    # real cache shape and exercise the per-SCV semantics fast-tier
+    # tests previously couldn't reach (root-cause coverage gap behind
+    # #106 and #109).
+    #
+    # rs999000111 — three identical SCV rows for the same (variant,
+    # sig, condition, gene) quadruple. On today's dev tip the
+    # annotator emits three identical Annotation objects (the #109
+    # regression — visible in terminal/HTML/JSON). The #109 fix
+    # collapses to one Annotation while preserving the strongest
+    # review_status and the union of references.
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100030,
+    ),
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_single_submitter",
+        100031,
+    ),
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_single_submitter",
+        100032,
+    ),
+    # rs999000222 — two SCV rows for the same variant with distinct
+    # (significance, condition) pairs. #109's dedup MUST preserve
+    # both rows (this is exactly what #42 was built to surface;
+    # collapsing them would be a Frankenstein-pair regression).
+    (
+        "rs999000222",
+        "1",
+        200100,
+        "C",
+        "G",
+        "Pathogenic",
+        "Disease_A_test",
+        "MULTI_SCV_CONFLICT",
+        "criteria_provided,_single_submitter",
+        100040,
+    ),
+    (
+        "rs999000222",
+        "1",
+        200100,
+        "C",
+        "G",
+        "Likely_benign",
+        "Disease_B_test",
+        "MULTI_SCV_CONFLICT",
+        "criteria_provided,_single_submitter",
+        100041,
+    ),
+    # rs999000333 — sub-floor: the only annotation maps to magnitude
+    # 2.0 (Likely_benign), below the 5.0 analyze floor. On today's
+    # dev tip this rsid lands in panel_coverage.found and vanishes
+    # from every rendered surface — the #106 accounting lie. The
+    # #106 patch reroutes it to no_findings.
+    (
+        "rs999000333",
+        "1",
+        200200,
+        "T",
+        "C",
+        "Likely_benign",
+        "Sub_floor_test",
+        "SUB_FLOOR",
+        "criteria_provided,_single_submitter",
+        100050,
+    ),
+    # rs999000444 — unmapped CLNSIG long-tail. "protective" is a
+    # real ClinVar term but is NOT in _CLNSIG_MAGNITUDE → falls to
+    # the 5.0 default. Pinned here for #108 (v2.3) to retire the
+    # silent 5.0-default surface; not actionable in v2.2.1.
+    (
+        "rs999000444",
+        "1",
+        200300,
+        "G",
+        "A",
+        "protective",
+        "Unmapped_clnsig_test",
+        "UNMAPPED_CLNSIG",
+        "criteria_provided,_single_submitter",
+        100060,
+    ),
+    # rs999000555 — multi-allelic site with two SCV rows that share
+    # (significance, condition, gene) but differ ONLY on alt. Pinned
+    # for #109 Finding 1: the dedup key MUST include alt or these
+    # rows collapse and the surviving annotation mis-attaches its
+    # `alt` field downstream — breaking the exact-(rsid, alt) lookup
+    # gnomAD / AlphaMissense / CADD use for allele-specific
+    # enrichment. Carrier biology: a het user (A/C) at this site
+    # carries both alts and should receive two distinct annotations,
+    # one per alt — the #18 wrong-allele safety case applied to dedup.
+    (
+        "rs999000555",
+        "1",
+        200400,
+        "T",
+        "A",
+        "Pathogenic",
+        "Multi_alt_test",
+        "MULTI_ALT_DEDUP",
+        "criteria_provided,_single_submitter",
+        100070,
+    ),
+    (
+        "rs999000555",
+        "1",
+        200400,
+        "T",
+        "C",
+        "Pathogenic",
+        "Multi_alt_test",
+        "MULTI_ALT_DEDUP",
+        "criteria_provided,_single_submitter",
+        100071,
+    ),
 )
 
 _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
@@ -350,6 +493,118 @@ _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
         "CYP2D6",
         "criteria_provided,_single_submitter",
         100021,
+    ),
+    # GH #111 fixtures (mirror of GRCh37 set above — see those rows
+    # for the rationale per variant). Same synthetic chr1 coordinates
+    # for cross-build symmetry; the per-SCV semantics being pinned
+    # are build-independent.
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100030,
+    ),
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_single_submitter",
+        100031,
+    ),
+    (
+        "rs999000111",
+        "1",
+        200000,
+        "A",
+        "T",
+        "Pathogenic",
+        "Cystic_fibrosis_test",
+        "MULTI_SCV_AGREE",
+        "criteria_provided,_single_submitter",
+        100032,
+    ),
+    (
+        "rs999000222",
+        "1",
+        200100,
+        "C",
+        "G",
+        "Pathogenic",
+        "Disease_A_test",
+        "MULTI_SCV_CONFLICT",
+        "criteria_provided,_single_submitter",
+        100040,
+    ),
+    (
+        "rs999000222",
+        "1",
+        200100,
+        "C",
+        "G",
+        "Likely_benign",
+        "Disease_B_test",
+        "MULTI_SCV_CONFLICT",
+        "criteria_provided,_single_submitter",
+        100041,
+    ),
+    (
+        "rs999000333",
+        "1",
+        200200,
+        "T",
+        "C",
+        "Likely_benign",
+        "Sub_floor_test",
+        "SUB_FLOOR",
+        "criteria_provided,_single_submitter",
+        100050,
+    ),
+    (
+        "rs999000444",
+        "1",
+        200300,
+        "G",
+        "A",
+        "protective",
+        "Unmapped_clnsig_test",
+        "UNMAPPED_CLNSIG",
+        "criteria_provided,_single_submitter",
+        100060,
+    ),
+    (
+        "rs999000555",
+        "1",
+        200400,
+        "T",
+        "A",
+        "Pathogenic",
+        "Multi_alt_test",
+        "MULTI_ALT_DEDUP",
+        "criteria_provided,_single_submitter",
+        100070,
+    ),
+    (
+        "rs999000555",
+        "1",
+        200400,
+        "T",
+        "C",
+        "Pathogenic",
+        "Multi_alt_test",
+        "MULTI_ALT_DEDUP",
+        "criteria_provided,_single_submitter",
+        100071,
     ),
 )
 

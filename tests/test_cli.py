@@ -533,7 +533,14 @@ class TestDbCommands:
         ):
             info = get_database_info(db_path, clinvar_record_name(build))
             assert info is not None, f"{build} cache missing version row"
-            assert info["record_count"] == 13
+            # GH #111 grew the fixture set: 13 → 20 (added 3 identical-SCV
+            # rows for rs999000111, 2 conflicting-SCV rows for rs999000222,
+            # 1 sub-floor row for rs999000333, 1 unmapped-CLNSIG row for
+            # rs999000444). #109 cross-PR review (Finding 1) added 2 more
+            # rows for rs999000555 (multi-allelic distinct-alt dedup
+            # guard) → 22 total. Cache row count stays at 22 even after
+            # #109's dedup — dedup is annotator-side, not loader-side.
+            assert info["record_count"] == 22
             assert info["version"] == "20260101"
 
         pharmgkb_info = get_database_info(pharmgkb_sqlite, "pharmgkb")
@@ -1047,6 +1054,18 @@ class TestDbCommands:
         import os
         import stat
 
+        # GH #110: chmod 0 is bypassed by root — root sees a "readonly"
+        # dir as writable (DAC override) and the test silently passes
+        # for the wrong reason. CI runners and dev containers commonly
+        # run as root; skip there with a clear message so the test
+        # isn't a false-green on those environments. Hermetic
+        # local-dev runs (non-root) keep the real assertion.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip(
+                "chmod-readonly is bypassed under root (DAC override); "
+                "test is non-hermetic in that environment. Run as a "
+                "non-root user to exercise the writability check."
+            )
         # Make the dir non-writable
         os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
         try:
@@ -1210,6 +1229,33 @@ class TestDbCommands:
         assert result.exit_code == 1
         stderr_flat = " ".join(result.stderr.split())
         assert "doesn't look like an allelix cache" in stderr_flat
+
+    def test_db_clean_refuses_dir_with_only_generic_config_toml(self, tmp_path: Path):
+        """GH #112: a `config.toml` alongside non-allelix content (the
+        Rust / Hugo / Rocket / etc. project shape) must NOT pass the
+        guard. Pre-#112 the guard accepted any dir with a config.toml
+        — so a typo'd `--data-dir ~/my-rust-project` could trigger
+        `rm -rf` against a Cargo project root.
+
+        Pinned: a generic config.toml + any non-allelix file →
+        guard refuses with the "doesn't look like an allelix cache"
+        error and exit code 1, regardless of what's in config.toml.
+        """
+        # A Rust-shaped config.toml (no allelix-specific sections).
+        (tmp_path / "config.toml").write_text("[package]\nname = 'not-allelix'\n")
+        (tmp_path / "Cargo.lock").write_text("# cargo lockfile\n")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.rs").write_text("fn main() {}\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
+        assert result.exit_code == 1
+        stderr_flat = " ".join(result.stderr.split())
+        assert "doesn't look like an allelix cache" in stderr_flat
+        # And the Cargo project survives the encounter unharmed.
+        assert (tmp_path / "config.toml").exists()
+        assert (tmp_path / "Cargo.lock").exists()
+        assert (tmp_path / "src" / "main.rs").exists()
 
 
 class TestAnalyzeOutputDispatch:

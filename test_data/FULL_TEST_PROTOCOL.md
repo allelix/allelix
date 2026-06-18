@@ -552,9 +552,14 @@ handles correctly (e.g. `"not provided"` maps to 2.0, harmless).
 # different casing than the canonical form.
 allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
   "SELECT clinical_significance, COUNT(*) FROM clinvar_variants \
-   WHERE LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided') \
+   WHERE LOWER(clinical_significance) IN \
+     ('-', '', 'not specified', 'no classification provided', \
+      'other', 'association', 'association not found') \
    GROUP BY clinical_significance;"
-# Expected: 0 rows.
+# Expected: 0 rows. v2.2.1 (#116) added the three non-classification
+# curatorial terms — "other", "association", "association not found".
+# Keep this list in sync with _CLINVAR_PLACEHOLDER_CLNSIGS in
+# databases/manager.py.
 
 # Spot-check a known-affected rsID:
 allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
@@ -1049,36 +1054,42 @@ mkdir -p /tmp/allelix-review
 # 1. GIAB GRCh38 truth set
 allelix analyze test_data/real/vcf/HG002_GRCh38_benchmark.vcf.gz \
   --build grch38 \
+  --min-magnitude 0 \
   --output /tmp/allelix-review/giab_grch38.json \
   --report-format json
-# Expected: ~4-5K total annotations across 4 source databases.
-# Default filter passes ~380 annotations. Build: GRCh38 (override).
+# Build: GRCh38 (override). See "Floor invariants" and
+# "Spot-check invariants" below for pass/fail criteria — exact
+# counts are NOT pinned (they legitimately drift on dedup, vocab,
+# and ClinVar refresh changes; pinning them produced stale-pin
+# regressions in §7, §15, and §19 historically).
 
 # 2. GIAB GRCh37 truth set
 allelix analyze test_data/real/vcf/HG002_GRCh37_benchmark.vcf.gz \
   --build grch37 \
+  --min-magnitude 0 \
   --output /tmp/allelix-review/giab_grch37.json \
   --report-format json
-# Expected: ~60-70K total annotations, ~500-600 at default filter.
 # Per-build ClinVar cache dispatches correctly (ADR-0021). The
-# total dwarfs the GRCh38 run (~5K) because the upstream NIST
-# GRCh37 benchmark VCF carries rsIDs in the ID column (~95% of
-# rows) whereas the GRCh38 one has none — so rsID-keyed GWAS /
-# SNPedia / ClinPGx lookups fire on nearly every row here.
+# total annotation count dwarfs the GRCh38 run (an order of
+# magnitude higher) because the upstream NIST GRCh37 benchmark
+# VCF carries rsIDs in the ID column (~95% of rows) whereas the
+# GRCh38 one has none — so rsID-keyed GWAS / SNPedia / ClinPGx
+# lookups fire on nearly every row here.
 
 # 3. HG00187 GATK-HC gVCF — real caller at WGS scale (GRCh37 build)
 allelix analyze test_data/real/vcf/HG00187_gatkhc.g.vcf.gz \
   --build grch37 \
+  --min-magnitude 0 \
   --output /tmp/allelix-review/hg00187_gatk.json \
   --report-format json
-# Expected: ~30-60 total annotations, ~5-10 at default filter.
 # This file is GATK-HC raw output (no rsIDs in ID column), so all
 # hits come via position-based ClinVar + rsID-less resolution (#8)
 # rather than the rsID fast-path used by Step 2. ~19.3M lines in
 # the input, ~99.8% are reference blocks that the parser must skip,
 # leaving ~44K non-ref variants. Exercises the gVCF parser
 # (reference-block skip, alt,<NON_REF> handling, 0/0 hom-ref
-# filter) at real WGS scale.
+# filter) at real WGS scale. Annotation totals here are small
+# (tens, not thousands) — see floors below.
 
 # 4. 1000 Genomes chr22 multisample — --sample binding
 allelix analyze test_data/real/vcf/thousandG_chr22.vcf.gz 2>&1 | head -3
@@ -1097,6 +1108,72 @@ allelix analyze test_data/real/vcf/mock_gvcf.g.vcf --build grch37 \
 allelix analyze test_data/real/vcf/mock_vcf_rsidless.vcf --build grch37 \
   --output /tmp/allelix-review/mock_rsidless.json
 ```
+
+### Ground-truth invariants — published HG002 spot checks + floors
+
+Exact annotation counts are NOT pinned. Pinning them produced
+stale-pin regressions three times (§7, §15, §19 historically) and the
+last re-pin would have masked an over-filter regression of similar
+shape to the one tagged this section's calibration. Instead the
+battery's pass/fail is decided by **`test_data/check_ground_truth.py`**
+against **`test_data/HG002_GROUND_TRUTH.yaml`** — the harness asserts:
+
+1. **Floor invariants per file** (`floors:` in the YAML) — written /
+   total / unique-key counts must clear floors sized at ~80% of
+   v2.2.1 (de0de64, 2026-06-18) observed values. A drop below floor
+   is an over-filter or vocab-leak regression: classify the removed
+   annotations with a v2.2.0→v2.2.x baseline `--diff` run before
+   ratcheting the floor down. **"Plausible drift" is not a license
+   to re-pin.**
+
+2. **Spot-check invariants per rsID** (`analyze:` in the YAML) —
+   concrete published HG002 ground truth at MTHFR rs1801133, APOE
+   rs7412 / rs429358, VEGFA rs2010963, Factor V rs6025: row counts,
+   required sources (`{clinvar, pharmgkb}` for pharmacogenomic
+   rsIDs), significance-pattern conformance, condition non-empty.
+   The GIAB benchmark file IS the source of truth; the harness just
+   verifies allelix reflects it faithfully. Unfalsifiable by drift.
+
+3. **Vocabulary invariants** (`vocabulary:` in the YAML) — every
+   emitted `significance` value must be in
+   `clinvar_allowed ∪ pharmgkb_allowed`, with explicit forbidden
+   placeholders the loader must filter. A novel value means the
+   `_CLINVAR_PLACEHOLDER_CLNSIGS` filter regressed (a #116 / #101
+   leak). The denylist form here is reactive; R-4
+   (`tests/databases/test_clinvar_clnsig_drift.py`) is the durable
+   structural form.
+
+4. **Universal invariants** (`universal:` in the YAML) — every
+   annotation has the required non-null fields, `source` ∈
+   {clinvar, pharmgkb, gwas, snpedia}, `attribution` matches the
+   `source`-to-display-name map, `magnitude` ∈ [0, 10].
+
+Run the harness against each of the three battery outputs:
+
+```bash
+python3 test_data/check_ground_truth.py \
+  /tmp/allelix-review/giab_grch38.json giab_grch38_benchmark
+python3 test_data/check_ground_truth.py \
+  /tmp/allelix-review/giab_grch37.json giab_grch37_benchmark
+python3 test_data/check_ground_truth.py \
+  /tmp/allelix-review/hg00187_gatk.json hg00187_gatkhc_gvcf
+```
+
+Each invocation prints a single `✓ <key>: N annotations, M unique
+keys, all invariants hold` line on success and exits 0. Any failure
+prints the failing assertions to stderr and exits 1.
+
+**To add a new spot check** (e.g. a newly-published HG002 genotype,
+or a regression-canary rsID for a specific fix): edit
+`HG002_GROUND_TRUTH.yaml` — append to `analyze:` with `applies_to`
+scoping the check to whichever battery files surface the rsID. The
+harness picks up new entries automatically.
+
+**To recalibrate floors after a legitimate dedup or vocab change**:
+edit the `# observed N` comments in `floors:` and re-derive the
+`_min` values at ~80% of new observed. Include the diff-classification
+output (from the `analyze --diff` run that justified the recalibration)
+in the commit message.
 
 ### Recommended extras (NOT bundled, downloadable separately)
 
@@ -1212,7 +1289,7 @@ All of the following must be true:
 - [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations via ClinPGx resolution (step 5i); multi-sample VCF requires `--sample` (step 5h)
 - [ ] Build auto-detection: warning fires when no rsID + no header signal (step 5j); **chr-prefix contigs auto-infer GRCh38 without `--build` (GH #38)**
 - [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: every alt-set CADD score has its alt directly in gnomAD's alts at that rsID; alt-less (raw GWAS) rows only get enrichment via the safe position-fallback path; ClinVar emits one row per (variant, SCV submission) — the per-SCV pairing structurally retires the Frankenstein-pair hazard the original audit raised (v2.2 per-SCV TSV loader)
-- [ ] **ClinVar significance-sentinel ship-gate (Defect 5 / §7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). Denylist form is reactive; durable allowlist form lives in R-4 (`test_clinvar_clnsig_drift.py`)
+- [ ] **ClinVar significance-sentinel ship-gate (Defect 5 / §7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided', 'other', 'association', 'association not found')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). v2.2.1 (#116) added the three non-classification curatorial terms. Denylist form is reactive; durable allowlist form lives in R-4 (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report (GH #9)**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) all present
 - [ ] JSON report has schema version 6 with gnomAD + AM + CADD enrichment; structured GWAS fields populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` object appears when `--filter-file` is used (GH #75); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
@@ -1228,4 +1305,4 @@ All of the following must be true:
 - [ ] PLINK export produces valid .bed/.bim/.fam with correct magic and alignment
 - [ ] PLINK export resolves ref/alt from gnomAD when available
 - [ ] `allelix --version` reports the actual pyproject version even from a bare source checkout (GH #34)
-- [ ] **Gold-standard VCF battery (step 19)**: GIAB benchmark + DeepVariant gVCF + GATK-HC GRCh37 all analyze cleanly; gVCF is a strict superset of the benchmark at production filter (0 missing); allele-direct CADD invariant holds (0 via-complement); ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the pre-#42 shape
+- [ ] **Gold-standard VCF battery (step 19)**: GIAB benchmark + DeepVariant gVCF + GATK-HC GRCh37 all analyze cleanly; `check_ground_truth.py` exits 0 on all three battery files (`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`) — enforces floor counts, published HG002 spot-checks at rs1801133 / rs7412 / rs2010963 / rs6025, the significance vocabulary union, and per-row universal invariants; gVCF is a strict superset of the benchmark at production filter (0 missing); allele-direct CADD invariant holds (0 via-complement); ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the pre-#42 shape

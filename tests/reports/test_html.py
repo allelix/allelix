@@ -90,6 +90,59 @@ class TestPanelCoverageHtml:
         assert "rs4680" in body
         assert "no annotations matched" in body
 
+    def test_panel_gt_column_renders_when_genotypes_supplied(self, tmp_path: Path):
+        """GH #120: when `result.panel_genotypes` is supplied (the
+        rsid → "A/G" map run_analysis collected during the batch
+        flush), the HTML Panel Coverage table grows a GT column.
+        Genotyped rsIDs show their literal call; state-3 rows show
+        em dash; no-call rows surface their dash genotype (-/-, A/-)
+        so the no-call is visually obvious even though the v6
+        accounting still folds it into no_findings.
+        """
+        result = self._result_with_panel(
+            [_ann(rsid="rs1801133")],
+            panel_rsids=frozenset({"rs1801133", "rs4680", "rs_nocall", "rs999"}),
+            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680", "rs_nocall"}),
+            panel_annotated_rsids=frozenset({"rs1801133"}),
+        )
+        result.panel_genotypes = {
+            "rs1801133": "A/G",
+            "rs4680": "C/T",
+            "rs_nocall": "-/-",
+        }
+        out = tmp_path / "r.html"
+        render_html(result, output_path=out)
+        body = out.read_text()
+        # GT column header present.
+        assert "<th>GT</th>" in body
+        # State 2 row: rs4680 with its genotype rendered.
+        assert "C/T" in body
+        # No-call row: literal -/- visible to the user.
+        assert "rs_nocall" in body
+        assert "-/-" in body
+        # State 3 row: em dash in the GT cell.
+        assert "rs999" in body
+        # Em dash specifically — easier to grep without false-positives.
+        assert "<td>—</td>" in body
+
+    def test_panel_gt_column_omitted_when_no_genotype_map(self, tmp_path: Path):
+        """Back-compat: a result without panel_genotypes (e.g. older
+        callers, manual AnalysisResult construction) renders the
+        original two-column shape with no GT column."""
+        result = self._result_with_panel(
+            [_ann(rsid="rs1801133")],
+            panel_rsids=frozenset({"rs1801133", "rs4680", "rs999"}),
+            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680"}),
+            panel_annotated_rsids=frozenset({"rs1801133"}),
+        )
+        # panel_genotypes deliberately left unset (None).
+        out = tmp_path / "r.html"
+        render_html(result, output_path=out)
+        body = out.read_text()
+        assert "Panel coverage" in body
+        # GT column header NOT present.
+        assert "<th>GT</th>" not in body
+
 
 class TestRenderHtml:
     def test_writes_self_contained_file(self, tmp_path: Path):
