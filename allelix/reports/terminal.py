@@ -60,7 +60,45 @@ def render_terminal(
     )
     filtered = rollup_gwas_duplicates(filtered)
     _print_table(filtered, console)
+    _print_panel_coverage_warning(result, console)
+    _print_regulatory_notice(console)
     return len(filtered)
+
+
+def _print_regulatory_notice(console: Console) -> None:
+    """Emit the ADR-0003 regulatory notice in terminal output.
+
+    Evaluator defect 1: HTML and JSON already carry the same notice.
+    The terminal is the default analyze output; without this line the
+    disclaimer that lives in the other surfaces is missing from the
+    most common one.
+    """
+    from allelix.reports import REGULATORY_NOTICE
+
+    console.print(f"\n[dim italic]{REGULATORY_NOTICE}[/dim italic]")
+
+
+def _print_panel_coverage_warning(result: AnalysisResult, console: Console) -> None:
+    """GH #75: surface panel rsIDs that weren't in the user's input file.
+
+    "Not on your chip" is critically different from "homozygous reference"
+    — making this invisible was the original audit complaint. Quiet when
+    no panel was supplied, or when every panel rsID was genotyped.
+    """
+    coverage = result.panel_coverage()
+    if coverage is None:
+        return
+    missing = coverage["missing"]
+    requested = coverage["requested"]
+    if not missing:
+        return
+    sample = ", ".join(missing[:3])
+    if len(missing) > 3:
+        sample = f"{sample}, …"
+    console.print(
+        f"[yellow]⚠[/yellow] {len(missing)}/{requested} panel variants not "
+        f"found in input: {sample}"
+    )
 
 
 def render_terminal_diff(

@@ -11,7 +11,7 @@ import logging
 import os
 import sqlite3
 import urllib.request
-from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from allelix import __version__
@@ -19,19 +19,24 @@ from allelix.databases.schema import CLINVAR_SCHEMA
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CLINVAR_URL_GRCH37 = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz"
-CLINVAR_URL_GRCH38 = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz"
-
-# ADR-0021: per-build cache filenames. The annotator holds at most one
-# connection per build; each is independent.
-CLINVAR_URL_BY_BUILD: dict[str, str] = {
-    "GRCh37": CLINVAR_URL_GRCH37,
-    "GRCh38": CLINVAR_URL_GRCH38,
-}
+# GH #42: ADR-0021 per-build dispatch is preserved at the SQLite cache
+# layer (clinvar.GRCh37.sqlite + clinvar.GRCh38.sqlite), but the source
+# is a single TSV pair that carries rows for every supported Assembly.
+# variant_summary.txt.gz holds per-(VariationID, Assembly) rows with
+# position / ref / alt / rsID / gene; submission_summary.txt.gz holds
+# per-SCV (VariationID, ClinicalSignificance, ReportedPhenotypeInfo,
+# ReviewStatus, SCV ID) rows that join on VariationID. The loader
+# emits one cache record per (variant, SCV) — the per-SCV pairing
+# that the prior VCF loader's CLNSIG|CLNDN parse could not.
+CLINVAR_VARIANT_SUMMARY_URL = (
+    "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz"
+)
+CLINVAR_SUBMISSION_SUMMARY_URL = (
+    "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/submission_summary.txt.gz"
+)
 INSERT_BATCH_SIZE = 5_000
 DOWNLOAD_TIMEOUT_SECONDS = 60
 SIGNAL_TIMEOUT_SECONDS = 15
@@ -154,222 +159,394 @@ def verify_file_hash(path: Path, algorithm: str, expected_hex: str) -> None:
         )
 
 
-def _parse_info(info: str) -> dict[str, str]:
-    """Parse a VCF INFO field (`KEY=VALUE;FLAG;...`) into a dict."""
-    out: dict[str, str] = {}
-    for entry in info.split(";"):
-        if "=" in entry:
-            key, _, value = entry.partition("=")
-            out[key] = value
-        else:
-            out[entry] = ""
-    return out
+# --- GH #42: per-SCV TSV loader ------------------------------------
+#
+# Column indices (zero-based) inside the TSV files, taken from the
+# verified column-header rows fetched 2026-06-17 from
+#   https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/
+# Both files use `\t` as field separator and `#` as comment-line prefix.
+
+# variant_summary.txt.gz — 43 columns. We only need a handful.
+_VS_RS = 9  # "RS# (dbSNP)"     — number only, no `rs` prefix
+_VS_GENE_SYMBOL = 4  # "GeneSymbol"
+_VS_REVIEW_STATUS = 24  # "ReviewStatus" — aggregate
+_VS_ASSEMBLY = 16  # "Assembly"        — "GRCh37" / "GRCh38" / "NCBI36"
+_VS_CHROMOSOME = 18  # "Chromosome"
+_VS_VARIATION_ID = 30  # "VariationID"   — join key against submission_summary
+_VS_POSITION_VCF = 31  # "PositionVCF"
+_VS_REF_ALLELE_VCF = 32  # "ReferenceAlleleVCF"
+_VS_ALT_ALLELE_VCF = 33  # "AlternateAlleleVCF"
+
+# submission_summary.txt.gz — 16 columns.
+_SS_VARIATION_ID = 0  # "VariationID"   — join key
+_SS_CLIN_SIG = 1  # "ClinicalSignificance"  — per-SCV (single token)
+_SS_REPORTED_PHENO = 5  # "ReportedPhenotypeInfo" — "MedGenID:Name" tuples
+_SS_REVIEW_STATUS = 6  # "ReviewStatus" — per-SCV
+_SS_SCV = 10  # "SCV"                   — submission accession
+_SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
+
+# GH #42 follow-up (evaluator defect 5, PR #101): exact set of
+# ClinicalSignificance values the TSV loader filters at ingest.
+# These are placeholders that ClinVar uses to mark SCVs with no
+# recorded classification AND that aren't in
+# `allelix.annotators.clinvar._CLNSIG_MAGNITUDE` (so without this
+# filter they'd land at the 5.0 default — equal to the analyze
+# display floor — and surface to users as bogus annotations).
+#
+# Values intentionally NOT in this set:
+#   - "not provided" / "not_provided" — already maps to 2.0 in
+#     _CLNSIG_MAGNITUDE (safe below the floor); dropping at ingest
+#     would lose real submitter records.
+#   - "no classification for the single variant" — same.
+#
+# The protocol's §7b significance-sentinel ship-gate scans the
+# same set to verify the loader's commitment against the live cache.
+# Keep both in sync.
+_CLINVAR_PLACEHOLDER_CLNSIGS: frozenset[str] = frozenset(
+    {
+        "",
+        "-",
+        "not specified",
+        "no classification provided",
+    }
+)
 
 
-def _pick(values: list[str], index: int) -> str:
-    """Index into a list of parallel-indexed VCF INFO values, padding with last.
-
-    Pads instead of zipping strictly because real ClinVar reliably parallel-
-    indexes CLNSIG/CLNDN/ALLELEID with ALT, but third-party VCFs sometimes
-    publish a single CLNSIG that applies to all ALTs. Falling through to the
-    last value is the more permissive interpretation; a strict zip would drop
-    annotations on those rows.
-    """
-    if not values:
-        return ""
-    if index < len(values):
-        return values[index]
-    return values[-1]
-
-
-def parse_clinvar_version(vcf_path: Path) -> str | None:
-    """Extract `##fileDate=YYYYMMDD` from a ClinVar VCF header, or None."""
-    opener = gzip.open if vcf_path.suffix == ".gz" else open
-    with opener(vcf_path, "rt", encoding="utf-8") as fh:
-        for raw in fh:
-            if not raw.startswith("##"):
-                return None
-            if raw.startswith("##fileDate="):
-                return raw.removeprefix("##fileDate=").strip()
-    return None
-
-
-def iter_clinvar_records(vcf_path: Path) -> Iterator[dict[str, object]]:
-    """Stream parse a ClinVar VCF (.vcf or .vcf.gz). Skip entries without an RS id.
-
-    Multi-allelic rows (ALT="A,T") are split into one record per ALT.
-    Parallel INFO fields ``CLNSIG`` and ``ALLELEID`` are separated by
-    ``|`` and index-paired with the ALTs.
-
-    GH #42: ``CLNDN`` is NOT index-paired with ALTs — its ``|`` separator
-    enumerates the union of conditions across all SCV submissions on the
-    variant, with no positional mapping to CLNSIG. Joining the full list
-    into a single ``condition`` string per record avoids the Frankenstein
-    pairing (one SCV's classification next to another SCV's condition)
-    that index-picking introduced. The primary classification
-    (``CLNSIG[0]``) is kept as-is — that value is correct as a
-    variant-level claim; only the condition-pairing was misleading.
-    Full per-(classification, condition) pairing via
-    ``submission_summary.txt.gz`` is tracked for v2.1.
-    """
-    opener = gzip.open if vcf_path.suffix == ".gz" else open
-    with opener(vcf_path, "rt", encoding="utf-8") as fh:
+def _open_tsv(path: Path) -> Iterator[list[str]]:
+    """Stream a (possibly-gzipped) tab-delimited TSV, skipping comment lines."""
+    opener: object = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as fh:  # type: ignore[operator]
         for raw in fh:
             line = raw.rstrip("\n")
             if not line or line.startswith("#"):
                 continue
-            parts = line.split("\t")
-            if len(parts) < 8:
-                logger.warning("Skipping ClinVar line with %d columns", len(parts))
-                continue
-            chrom, pos_str, _vid, ref, alt_field, _qual, _filter, info = parts[:8]
-            try:
-                pos = int(pos_str)
-            except ValueError:
-                logger.warning("Skipping ClinVar entry with non-integer position %r", pos_str)
-                continue
-            info_dict = _parse_info(info)
-            rs = info_dict.get("RS")
-            if not rs:
-                continue
-
-            alts = alt_field.split(",")
-            clnsigs = info_dict.get("CLNSIG", "").split("|") if info_dict.get("CLNSIG") else [""]
-            clndns = info_dict.get("CLNDN", "").split("|") if info_dict.get("CLNDN") else [""]
-            allele_ids = (
-                info_dict.get("ALLELEID", "").split("|") if info_dict.get("ALLELEID") else [""]
-            )
-            review_status = info_dict.get("CLNREVSTAT", "")
-            gene = _extract_gene(info_dict.get("GENEINFO", ""))
-
-            # GH #42: CLNDN's `|`-separator is per-SCV, not per-ALT.
-            # Join the full list once per row (same string emitted for
-            # every ALT split-out of this record). Empty/`.`/blank
-            # tokens are filtered out so callers don't see leading/trailing
-            # separators.
-            joined_condition = "; ".join(c.replace("_", " ") for c in clndns if c and c != ".")
-            for i, alt in enumerate(alts):
-                yield {
-                    "rsid": f"rs{rs}",
-                    "chromosome": chrom,
-                    "position": pos,
-                    "ref": ref,
-                    "alt": alt,
-                    "clinical_significance": _pick(clnsigs, i),
-                    "condition": joined_condition,
-                    "gene": gene,
-                    "review_status": review_status,
-                    "allele_id": _safe_int(_pick(allele_ids, i)),
-                }
+            yield line.split("\t")
 
 
-def _extract_gene(geneinfo: str) -> str:
-    """`GENEINFO=BRCA1:672|...` → `"BRCA1"`."""
-    if not geneinfo:
-        return ""
-    return geneinfo.split(":", 1)[0].split("|", 1)[0]
+def _decode_reported_phenotype(field: str) -> str:
+    """Strip MedGen ID prefixes from a `ReportedPhenotypeInfo` cell.
 
+    submission_summary encodes conditions as ``MedGenID:Name`` tuples
+    separated by ``|``. Sometimes ``MedGenID`` is ``na`` when no MedGen
+    identifier exists. We want the human-readable name without the
+    prefix; multiple conditions stay ``;``-joined to match the VCF
+    loader's output convention so the downstream display path is
+    unchanged.
 
-def _safe_int(value: str | None) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
-
-
-def load_clinvar_vcf(
-    vcf_path: Path,
-    db_path: Path,
-    source_url: str = "",
-    remote_signal: str | None = None,
-    record_name: str = "clinvar",
-) -> int:
-    """Parse a ClinVar VCF into a fresh SQLite cache atomically.
-
-    Writes to a `.tmp` sibling and `os.replace`s onto `db_path` only after a
-    successful commit. If parsing fails mid-load, the previous cache (if any)
-    is left intact.
-
-    `remote_signal` is the value `fetch_remote_signal` returned at the time
-    of this download; stored alongside version metadata so the next
-    `db update` can detect remote changes without re-downloading.
-
-    `record_name` is the key under which the version row is stored. ADR-0021:
-    per-build ClinVar caches use `"clinvar.GRCh37"` / `"clinvar.GRCh38"` so
-    the same data_dir can hold both. Default `"clinvar"` is the legacy
-    single-cache identifier.
-
-    Returns the number of records loaded.
+    Examples:
+        ``"C3150901:Hereditary spastic paraplegia 48"``
+            → ``"Hereditary spastic paraplegia 48"``
+        ``"na:not provided"``
+            → ``"not provided"``
+        ``"C1|C2:Cond A|C3:Cond B"``
+            → ``"Cond A; Cond B"``  (lone token "C1" dropped — no Name)
     """
-    tmp_path = db_path.parent / f"{db_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    if not field or field == "-":
+        return ""
+    parts = []
+    for token in field.split("|"):
+        token = token.strip()
+        if not token or token == "-":
+            continue
+        if ":" not in token:
+            # Token without "ID:Name" structure — skip rather than emit
+            # a bare MedGen ID that looks like noise.
+            continue
+        _, _, name = token.partition(":")
+        name = name.strip()
+        if name and name != "-":
+            parts.append(name)
+    return "; ".join(parts)
 
-    file_date = parse_clinvar_version(vcf_path)
-    version = file_date or datetime.now(UTC).strftime("%Y-%m-%d")
 
+def iter_clinvar_tsv_records(
+    variant_summary_path: Path,
+    submission_summary_path: Path,
+    build: str,
+    *,
+    aggregate_only: bool = True,
+) -> Iterator[dict[str, object]]:
+    """Yield one cache record per (variant, SCV submission).
+
+    Joins ``submission_summary.txt.gz`` (per-SCV rows) against
+    ``variant_summary.txt.gz`` (per-(VariationID, Assembly) rows) for
+    the requested ``build`` and emits one dict per matched submission
+    keyed for the downstream cache writer.
+
+    Why two files: ``submission_summary`` carries the true
+    (ClinicalSignificance, ReportedPhenotypeInfo) pair for each SCV
+    submission. ``variant_summary`` carries the position / ref / alt /
+    rsID / gene per (variant, build). The legacy VCF loader's
+    CLNSIG|CLNDN Frankenstein pairing (GH #42, removed in stage C) is
+    structurally absent here because each row is one submission.
+
+    Memory: the variant_summary index uses a temp on-disk SQLite, NOT
+    a Python dict. The full dataset is ~50M variants x ~150 bytes per
+    dict entry = ~7.5 GB resident, which would OOM small CI runners
+    and is wasteful on any host. SQLite's b-tree pages and OS-level
+    caching keep peak memory in the low hundreds of MB regardless of
+    input size.
+
+    Args:
+        variant_summary_path: Path to ``variant_summary.txt.gz`` (or .txt).
+        submission_summary_path: Path to ``submission_summary.txt.gz``.
+        build: Target genome build — ``"GRCh37"`` or ``"GRCh38"``. Rows
+            from other Assembly values are skipped during the
+            variant_summary pass.
+        aggregate_only: When True (default), skip SCV submissions whose
+            ``ContributesToAggregateClassification`` is not ``"yes"``.
+            ClinVar uses that flag to mark submissions that were rolled
+            into the aggregate variant-level classification. Submissions
+            flagged ``"no"`` (e.g. older submissions superseded by a
+            newer one) would otherwise inflate per-variant row counts
+            without adding signal. Set False to materialize EVERY
+            historical SCV — used by forensic dives, not production
+            ingest.
+
+    Yields:
+        Dicts shaped for the cache INSERT in ``load_clinvar_tsv``. The
+        ``allele_id`` field is repurposed to carry the VariationID
+        (per-variant integer, no per-SCV granularity).
+    """
+    import tempfile
+
+    if build not in ("GRCh37", "GRCh38"):
+        msg = f"unsupported build {build!r} — expected 'GRCh37' or 'GRCh38'"
+        raise ValueError(msg)
+
+    # Stream variant_summary into a temp SQLite indexed by VariationID
+    # for the requested build only. Roughly halves the row count vs.
+    # keeping both builds.
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
     try:
-        with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
-            conn.executescript(CLINVAR_SCHEMA)
-            insert_sql = (
-                "INSERT INTO clinvar_variants "
-                "(rsid, chromosome, position, ref, alt, clinical_significance, "
-                "condition, gene, review_status, allele_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        with contextlib.closing(sqlite3.connect(tmp_path)) as tmp_conn:
+            tmp_conn.executescript(
+                "CREATE TABLE vs ("
+                "  variation_id INTEGER PRIMARY KEY, "
+                "  rsid TEXT, "
+                "  chromosome TEXT, "
+                "  position INTEGER, "
+                "  ref TEXT, "
+                "  alt TEXT, "
+                "  gene TEXT, "
+                "  review_status TEXT"
+                ");"
             )
-            batch: list[tuple] = []
-            count = 0
-            for record in iter_clinvar_records(vcf_path):
+            batch: list[tuple[object, ...]] = []
+            for cols in _open_tsv(variant_summary_path):
+                if len(cols) <= _VS_ALT_ALLELE_VCF:
+                    continue
+                if cols[_VS_ASSEMBLY] != build:
+                    continue
+                rs = cols[_VS_RS].strip()
+                if not rs or rs == "-1":
+                    continue
+                pos_str = cols[_VS_POSITION_VCF].strip()
+                if not pos_str or pos_str == "-1":
+                    continue
+                try:
+                    position = int(pos_str)
+                except ValueError:
+                    continue
+                ref = cols[_VS_REF_ALLELE_VCF].strip()
+                alt = cols[_VS_ALT_ALLELE_VCF].strip()
+                if not ref or ref in ("-", "na") or not alt or alt in ("-", "na"):
+                    # Skip rows without VCF-style ref/alt — these are
+                    # complex or copy-number variants the SNV-shaped
+                    # cache can't represent. Logged at debug, not warn,
+                    # because they're expected (typical clinvar load
+                    # drops ~5% of rows here).
+                    continue
+                try:
+                    variation_id = int(cols[_VS_VARIATION_ID].strip())
+                except (ValueError, IndexError):
+                    continue
                 batch.append(
                     (
-                        record["rsid"],
-                        record["chromosome"],
-                        record["position"],
-                        record["ref"],
-                        record["alt"],
-                        record["clinical_significance"],
-                        record["condition"],
-                        record["gene"],
-                        record["review_status"],
-                        record["allele_id"],
+                        variation_id,
+                        f"rs{rs}",
+                        cols[_VS_CHROMOSOME].strip(),
+                        position,
+                        ref,
+                        alt,
+                        cols[_VS_GENE_SYMBOL].strip(),
+                        cols[_VS_REVIEW_STATUS].strip(),
                     )
                 )
                 if len(batch) >= INSERT_BATCH_SIZE:
-                    conn.executemany(insert_sql, batch)
-                    count += len(batch)
+                    tmp_conn.executemany(
+                        "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        batch,
+                    )
                     batch.clear()
             if batch:
-                conn.executemany(insert_sql, batch)
-                count += len(batch)
+                tmp_conn.executemany(
+                    "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    batch,
+                )
+            tmp_conn.commit()
+
+            # Second pass: stream submission_summary, look each SCV's
+            # VariationID up against the temp index, emit on hit.
+            cursor = tmp_conn.cursor()
+            for cols in _open_tsv(submission_summary_path):
+                if len(cols) <= _SS_CONTRIBUTES:
+                    continue
+                if aggregate_only and cols[_SS_CONTRIBUTES].strip().lower() != "yes":
+                    continue
+                try:
+                    variation_id = int(cols[_SS_VARIATION_ID].strip())
+                except (ValueError, IndexError):
+                    continue
+                row = cursor.execute(
+                    "SELECT rsid, chromosome, position, ref, alt, gene, review_status "
+                    "FROM vs WHERE variation_id = ?",
+                    (variation_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                rsid, chromosome, position, ref, alt, gene, review_status_agg = row
+                clinical_significance = cols[_SS_CLIN_SIG].strip()
+                # GH #42 follow-up (evaluator defect 5 + cross-PR value-
+                # domain review on PR #101): ClinVar's submission_summary
+                # carries several placeholder values that mean "no clinical
+                # significance recorded." A placeholder that ISN'T in
+                # `_CLNSIG_MAGNITUDE` falls through to that dict's 5.0
+                # default — equal to the analyze display floor — and
+                # surfaces as a bogus annotation on real rsIDs.
+                #
+                # The set below is exactly the placeholders that are
+                # NOT in the magnitude dict (those that ARE — "not
+                # provided", "no_classification_for_the_single_variant"
+                # — map to 2.0, safe below the floor; dropping them at
+                # ingest would lose real submitter records).
+                #
+                # Case-insensitive: `_magnitude()` normalizes via
+                # `_normalize_clnsig()` (`.lower().replace(" ", "_")`),
+                # so a case-sensitive filter here would let
+                # "Not Specified" / "NO CLASSIFICATION PROVIDED" slip
+                # past the skip and still land at the 5.0 default.
+                # `-` (the confirmed real defect) is unaffected — the
+                # extra robustness covers the prose placeholders that
+                # were added by domain reasoning, not observed
+                # in-the-wild casing.
+                if clinical_significance.lower() in _CLINVAR_PLACEHOLDER_CLNSIGS:
+                    continue
+                condition = _decode_reported_phenotype(cols[_SS_REPORTED_PHENO])
+                # Per-SCV review_status from submission_summary is more
+                # specific than the aggregate; prefer it when present.
+                per_scv_review = cols[_SS_REVIEW_STATUS].strip()
+                review_status = per_scv_review or review_status_agg
+                yield {
+                    "rsid": rsid,
+                    "chromosome": chromosome,
+                    "position": position,
+                    "ref": ref,
+                    "alt": alt,
+                    "clinical_significance": clinical_significance,
+                    "condition": condition,
+                    "gene": gene,
+                    "review_status": review_status,
+                    "allele_id": variation_id,
+                }
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def load_clinvar_tsv(
+    variant_summary_path: Path,
+    submission_summary_path: Path,
+    db_path: Path,
+    build: str,
+    *,
+    source_url: str = "",
+    remote_signal: str | None = None,
+    aggregate_only: bool = True,
+) -> None:
+    """Build a ClinVar SQLite cache from the per-SCV TSV sources.
+
+    Production ingest path for ClinVar (#42). The annotator returns
+    MULTIPLE Annotation objects per variant when multiple SCVs target
+    the same (chrom, pos, ref, alt); the annotator-side reconciliation
+    landed in stage B.
+    """
+    if db_path.exists():
+        db_path.unlink()
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(CLINVAR_SCHEMA)
+        batch: list[tuple[object, ...]] = []
+        for record in iter_clinvar_tsv_records(
+            variant_summary_path,
+            submission_summary_path,
+            build,
+            aggregate_only=aggregate_only,
+        ):
+            batch.append(
+                (
+                    record["rsid"],
+                    record["chromosome"],
+                    record["position"],
+                    record["ref"],
+                    record["alt"],
+                    record["clinical_significance"],
+                    record["condition"],
+                    record["gene"],
+                    record["review_status"],
+                    record["allele_id"],
+                )
+            )
+            if len(batch) >= INSERT_BATCH_SIZE:
+                conn.executemany(
+                    "INSERT INTO clinvar_variants "
+                    "(rsid, chromosome, position, ref, alt, "
+                    "clinical_significance, condition, gene, "
+                    "review_status, allele_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    batch,
+                )
+                batch.clear()
+        if batch:
+            conn.executemany(
+                "INSERT INTO clinvar_variants "
+                "(rsid, chromosome, position, ref, alt, "
+                "clinical_significance, condition, gene, "
+                "review_status, allele_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                batch,
+            )
+        record_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
+        if remote_signal:
+            from datetime import UTC, datetime
+
             from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 
+            stamp_remote_signal(conn, "clinvar", remote_signal, source_url)
+            _ensure_local_version_tag_column(conn)
+            # GH #42 follow-up (evaluator defect 3): stamp_remote_signal
+            # inserts version=NULL by design — it's a freshness-only
+            # stamper meant to upsert remote_signal onto existing rows
+            # (e.g. the baked-in metadata of the HF .sqlite.gz caches).
+            # Caches built from scratch by load_clinvar_tsv have no
+            # pre-existing row, so version stays NULL and `db status`
+            # shows "version: None". Stamp the build date here so the
+            # cache identifies itself. The old VCF loader effectively
+            # stamped from ClinVar's VCF ##fileDate header; the per-SCV
+            # TSVs don't carry one, so build-date is the practical
+            # equivalent. Freshness (remote_signal md5) is unchanged.
+            build_date = datetime.now(UTC).strftime("%Y-%m-%d")
             conn.execute(
-                "INSERT INTO database_versions "
-                "(name, source_url, version, downloaded_at, record_count, "
-                "remote_signal, local_version_tag) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "UPDATE database_versions SET version = ?, "
+                "local_version_tag = ?, "
+                "record_count = ? WHERE name = ?",
                 (
-                    record_name,
-                    source_url,
-                    version,
-                    datetime.now(UTC).isoformat(),
-                    count,
-                    remote_signal or "",
+                    build_date,
                     f"iv:{CLINVAR_INTERPRETER_VERSION}",
+                    record_count,
+                    "clinvar",
                 ),
             )
-            conn.commit()
-        os.replace(tmp_path, db_path)
-        return count
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                logger.warning("Could not remove failed temp DB %s", tmp_path)
-        raise
+        conn.commit()
 
 
 def get_database_info(db_path: Path, name: str) -> DatabaseInfo | None:
@@ -480,21 +657,45 @@ def stamp_remote_signal(
 
 
 def stamp_existing_clinvar_cache(db_path: Path) -> bool:
-    """One-shot migration: stamp ``local_version_tag`` on a ClinVar cache.
+    """One-shot migration: self-heal a ClinVar cache up to the current iv tag.
 
-    Handles two legacy states:
+    Self-heal is allowed ONLY when there is positive evidence the cache
+    was built by the current interpreter version. Absent that evidence
+    the function returns False and ``ClinVarAnnotator.is_ready()`` lets
+    ``db update`` reingest from upstream. Silent promotion of an
+    unknown-version cache is the failure mode this exists to prevent —
+    serving pre-format-change data labeled as fresh would be worse than
+    paying the redownload cost.
 
-    1. Pre-mechanism caches (no interpreter stamp at all) — writes the tag.
-    2. Old-format caches with ``|iv:N`` baked into ``remote_signal`` —
-       moves the tag to ``local_version_tag`` and cleans ``remote_signal``.
+    Decision matrix (for each ``database_versions`` row matching
+    ``clinvar%``):
 
-    Only stamps when the tag is absent (NULL).  A stale tag (wrong
-    version number) means the interpreter changed and the cache needs
-    re-downloading — that is NOT self-healable.
+    +-----------------------+---------------------------+-------------------+
+    | local_version_tag     | remote_signal `|iv:N`     | Action            |
+    +=======================+===========================+===================+
+    | == CURRENT            | (any)                     | noop, return True |
+    +-----------------------+---------------------------+-------------------+
+    | != CURRENT (some N)   | (any)                     | return False      |
+    +-----------------------+---------------------------+-------------------+
+    | NULL                  | baked N == CURRENT        | self-heal: move   |
+    |                       |                           | tag to column,    |
+    |                       |                           | strip `|iv:`      |
+    +-----------------------+---------------------------+-------------------+
+    | NULL                  | baked N != CURRENT        | return False      |
+    +-----------------------+---------------------------+-------------------+
+    | NULL                  | no `|iv:` marker          | return False      |
+    +-----------------------+---------------------------+-------------------+
 
-    Returns True if the current interpreter version is now stamped.
-    Called from ``ClinVarAnnotator.is_ready()`` so existing caches
-    self-heal on first run without re-downloading 400 MB.
+    The bottom-right case is the v2.2 #42 stage-B safety hole: a
+    pre-v2.0.1 cache (iv:1-era, NULL tag, no baked marker) skipping
+    straight to v2.2 used to get stamped as iv:CURRENT unconditionally —
+    serving old single-row VCF data labeled as fresh per-SCV TSV data.
+    Bumping to iv:3 made that promotion newly catastrophic because the
+    interpreter changed the data shape, not just the emit rules. NULL
+    tag with no marker is now treated as unknown legacy and reingests.
+
+    Returns True only when every clinvar row in the cache now carries
+    the current tag.
     """
     if not db_path.exists():
         return False
@@ -519,6 +720,13 @@ def stamp_existing_clinvar_cache(db_path: Path) -> bool:
             if existing_tag == tag:
                 continue
             if existing_tag is not None:
+                # iv:N != iv:CURRENT — interpreter changed, reingest.
+                return False
+            # NULL tag: self-heal only if remote_signal carries a baked
+            # `|iv:N` marker matching CURRENT. No marker or mismatched
+            # N → unknown / wrong-version legacy → reingest.
+            baked = _parse_baked_iv(sig)
+            if baked != CLINVAR_INTERPRETER_VERSION:
                 return False
             clean_signal = (sig or "").split("|iv:")[0]
             conn.execute(
@@ -530,3 +738,21 @@ def stamp_existing_clinvar_cache(db_path: Path) -> bool:
         if stamped:
             conn.commit()
         return True
+
+
+def _parse_baked_iv(remote_signal: str | None) -> int | None:
+    """Extract the ``|iv:N`` suffix from a legacy ``remote_signal``, or None.
+
+    Pre-v2.0.1 caches baked the interpreter version into the
+    ``remote_signal`` column as ``"<sig>|iv:N"`` before
+    ``local_version_tag`` existed. This helper recovers ``N`` so the
+    caller can decide between self-heal and reingest. Returns None for
+    missing or malformed markers (caller treats as unknown).
+    """
+    if not remote_signal or "|iv:" not in remote_signal:
+        return None
+    _, _, after = remote_signal.partition("|iv:")
+    head = after.split("|", 1)[0].strip()
+    if not head.isdigit():
+        return None
+    return int(head)

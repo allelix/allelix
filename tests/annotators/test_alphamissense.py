@@ -129,6 +129,121 @@ class TestAlphaMissenseAnnotator:
         am.close()
 
 
+class TestCheckGnomadVersion:
+    """Warning paths in _check_gnomad_version.
+
+    The AlphaMissense cache stamps which gnomAD version it was built
+    against (`alphamissense_gnomad_source` row). On first connection, the
+    annotator compares that stamp against the installed gnomAD cache and
+    warns if they diverge. Three branches:
+
+    1. `stamped == "no_gnomad"` — cache was built without gnomAD rsID
+       resolution; rsID lookups will silently miss. Warn loudly.
+    2. `stamped != installed` — cache was built against a different
+       gnomAD version; mappings may be stale. Warn with rebuild hint.
+    3. `stamped is None` or `installed is None` — no comparison possible;
+       silently return.
+    """
+
+    def _build_with_gnomad_source(self, tmp_path: Path, gnomad_source: str) -> Path:
+        """Build an AM cache stamped with a specific alphamissense_gnomad_source value."""
+        db_path = _build_db(tmp_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO database_versions "
+            "(name, source_url, version, downloaded_at, record_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("alphamissense_gnomad_source", "internal://stamp", gnomad_source, "2026-06-08", 0),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _install_gnomad_cache(self, tmp_path: Path, version: str) -> None:
+        """Stage a fake gnomad.sqlite at the expected path with a version row."""
+        from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
+
+        gnomad_db = tmp_path / GNOMAD_DB_FILENAME
+        conn = sqlite3.connect(gnomad_db)
+        conn.execute(
+            "CREATE TABLE database_versions ("
+            "name TEXT PRIMARY KEY, source_url TEXT NOT NULL, "
+            "version TEXT, downloaded_at TEXT NOT NULL, "
+            "record_count INTEGER NOT NULL, remote_signal TEXT, "
+            "local_version_tag TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO database_versions "
+            "(name, source_url, version, downloaded_at, record_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("gnomad", "test://gnomad", version, "2026-06-08", 0),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_no_gnomad_stamp_warns_loudly(self, tmp_path: Path, caplog) -> None:
+        """Branch 1: stamp == 'no_gnomad'. Warn that rsID lookups will miss."""
+        self._build_with_gnomad_source(tmp_path, "no_gnomad")
+        am = AlphaMissenseAnnotator(tmp_path)
+        with caplog.at_level("WARNING"):
+            am._connection()  # triggers _check_gnomad_version
+        am.close()
+        joined = " ".join(rec.message for rec in caplog.records)
+        assert "no_gnomad" in joined or "without gnomAD" in joined
+        assert "rsID lookups" in joined
+
+    def test_version_mismatch_warns_with_rebuild_hint(self, tmp_path: Path, caplog) -> None:
+        """Branch 2: stamp != installed. Warn with the rebuild command."""
+        self._build_with_gnomad_source(tmp_path, "4.0")
+        self._install_gnomad_cache(tmp_path, "4.1")  # different version
+        am = AlphaMissenseAnnotator(tmp_path)
+        with caplog.at_level("WARNING"):
+            am._connection()
+        am.close()
+        joined = " ".join(rec.message for rec in caplog.records)
+        assert "4.0" in joined
+        assert "4.1" in joined
+        assert "stale" in joined.lower() or "rebuild" in joined.lower()
+        assert "build_alphamissense_cache" in joined
+
+    def test_version_match_does_not_warn(self, tmp_path: Path, caplog) -> None:
+        """Stamp == installed. Silent — no warning emitted."""
+        self._build_with_gnomad_source(tmp_path, "4.1")
+        self._install_gnomad_cache(tmp_path, "4.1")
+        am = AlphaMissenseAnnotator(tmp_path)
+        with caplog.at_level("WARNING"):
+            am._connection()
+        am.close()
+        warnings = [
+            rec for rec in caplog.records if "gnomAD" in rec.message or "gnomad" in rec.message
+        ]
+        assert warnings == []
+
+    def test_no_gnomad_cache_installed_returns_silently(self, tmp_path: Path, caplog) -> None:
+        """Branch 3: stamp present but no gnomad.sqlite at the expected path.
+        get_database_info returns None and the check silently exits."""
+        self._build_with_gnomad_source(tmp_path, "4.1")
+        # Deliberately do NOT install a gnomad cache.
+        am = AlphaMissenseAnnotator(tmp_path)
+        with caplog.at_level("WARNING"):
+            am._connection()
+        am.close()
+        warnings = [rec for rec in caplog.records if "stale" in rec.message.lower()]
+        assert warnings == []
+
+    def test_no_stamp_row_returns_silently(self, tmp_path: Path, caplog) -> None:
+        """No `alphamissense_gnomad_source` row at all — older cache; silent."""
+        _build_db(tmp_path)  # base build, no gnomad_source stamp
+        am = AlphaMissenseAnnotator(tmp_path)
+        with caplog.at_level("WARNING"):
+            am._connection()
+        am.close()
+        warnings = [
+            rec for rec in caplog.records if "gnomAD" in rec.message or "gnomad" in rec.message
+        ]
+        assert warnings == []
+
+
 class TestBulkLookupByAlt:
     """Exact (rsid, alt) lookup for multi-allelic enrichment."""
 

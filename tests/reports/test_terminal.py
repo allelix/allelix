@@ -61,6 +61,77 @@ def _render(annotations, **kwargs) -> tuple[str, int]:
     return buf.getvalue(), count
 
 
+def _render_with_panel(
+    annotations,
+    *,
+    panel_rsids,
+    genotyped_panel_rsids,
+    panel_annotated_rsids,
+) -> str:
+    result = AnalysisResult(
+        file_path=Path("dummy.txt"),
+        parser_name="x",
+        parser_display_name="X",
+        sample_id="S",
+        build="GRCh37",
+        total_variants=0,
+        skipped_count=0,
+        annotators_used=[],
+        annotations=annotations,
+        panel_rsids=panel_rsids,
+        genotyped_panel_rsids=genotyped_panel_rsids,
+        panel_annotated_rsids=panel_annotated_rsids,
+    )
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=200)
+    render_terminal(result, console=console)
+    return buf.getvalue()
+
+
+class TestPanelCoverageTerminal:
+    """GH #75: terminal warning surfaces panel rsIDs not in the input
+    file. The user explicitly asked for the count-of-N format."""
+
+    def test_no_panel_no_warning(self):
+        """Default analyze run never emits a coverage warning."""
+        out, _ = _render([_ann()])
+        assert "panel variants" not in out
+
+    def test_warning_for_missing_panel_rsids(self):
+        out = _render_with_panel(
+            [_ann(rsid="rs1")],
+            panel_rsids=frozenset({"rs1", "rs2", "rs3"}),
+            genotyped_panel_rsids=frozenset({"rs1"}),
+            panel_annotated_rsids=frozenset({"rs1"}),
+        )
+        assert "2/3 panel variants not found in input" in out
+        assert "rs2" in out
+        assert "rs3" in out
+
+    def test_no_warning_when_all_genotyped(self):
+        """All panel rsIDs were on the chip — no warning needed."""
+        out = _render_with_panel(
+            [_ann(rsid="rs1")],
+            panel_rsids=frozenset({"rs1"}),
+            genotyped_panel_rsids=frozenset({"rs1"}),
+            panel_annotated_rsids=frozenset({"rs1"}),
+        )
+        assert "panel variants" not in out
+
+    def test_warning_truncates_long_missing_list(self):
+        """Show only the first 3 missing rsIDs in the terminal line; the
+        full list lives in the JSON/HTML report."""
+        missing = {f"rs{i}" for i in range(10)}
+        out = _render_with_panel(
+            [],
+            panel_rsids=frozenset(missing),
+            genotyped_panel_rsids=frozenset(),
+            panel_annotated_rsids=frozenset(),
+        )
+        assert "10/10 panel variants not found in input" in out
+        assert "…" in out
+
+
 class TestRenderTerminal:
     def test_empty_list_renders_message(self):
         out, count = _render([])
@@ -71,6 +142,23 @@ class TestRenderTerminal:
         out, _ = _render([_ann()])
         assert "ClinVar" in out
         assert "Source" in out
+
+    def test_regulatory_disclaimer_present(self):
+        """Evaluator defect 1: the ADR-0003 regulatory notice ("not
+        medical advice") must appear in terminal output the same way
+        it appears in HTML and JSON. The terminal is the default
+        analyze output — if the disclaimer is only in the other two
+        formats, the most common output path leaks an unattributed
+        clinical-sounding table."""
+        out, _ = _render([_ann()])
+        assert "not medical advice" in out
+        assert "not a diagnosis" in out
+
+    def test_regulatory_disclaimer_present_on_empty_results(self):
+        """The disclaimer must fire even when no annotations rendered —
+        an empty report is still a report."""
+        out, _ = _render([])
+        assert "not medical advice" in out
 
     def test_sorts_by_magnitude_descending(self):
         annotations = [

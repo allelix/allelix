@@ -417,6 +417,63 @@ def _emit_build_diagnostics(result: object) -> None:
         )
 
 
+def _emit_runtime_nudges(result: object) -> None:
+    """Surface runtime-degradation notes the analyze run can detect.
+
+    Both are once-per-run, post-pipeline. Neither blocks the report; the
+    intent is transparency for cases where the silent default behavior
+    used to leave the user uncertain about WHY their count looked low.
+
+    - **GH #90: strand-aware matching inactive.** When carrier/genotype
+      matching ran with ``Variant.ref`` unavailable across the input —
+      typically array data with ``--no-gnomad`` or no gnomAD cache —
+      the strand-flip path in ``utils/allele.py`` falls back to the
+      v2.0.x direct-match-only behavior. Behavior is correct (forward-
+      normalized array data matches the direct path regardless), just
+      degraded relative to v2.1+'s contract. VCF inputs always carry
+      REF from the file, so this never fires for them.
+    - **GH #91: GRCh38 rsID-less undercount.** When the effective
+      build is GRCh38 AND most variants entered the pipeline without
+      rsIDs (the variant-caller ``ID=.`` case), annotation coverage
+      is materially lower than the GRCh37 equivalent because rsID
+      resolution falls back to ClinVar position lookup — a smaller
+      surface than dbSNP. Real fix is #62; this is the interim
+      honesty signal until then.
+    """
+    no_ref = getattr(result, "no_ref_variant_count", 0)
+    rsidless = getattr(result, "rsidless_variant_count", 0)
+    total = getattr(result, "total_variants", 0)
+    parser_name = getattr(result, "parser_name", "")
+    diag = getattr(result, "build_diagnostics", None)
+    effective_build = diag.effective_build if diag is not None else None
+
+    # GH #90: array inputs (everything except the VCF parser) running
+    # without a usable gnomAD cache leave every variant ref=None. Gate
+    # on "the whole input lacked ref" rather than "any variant lacked
+    # ref" so a hybrid file (e.g. a few ref-less rows in an otherwise
+    # populated VCF) doesn't flap the message on.
+    if parser_name != "vcf" and total > 0 and no_ref == total:
+        console.print(
+            "[dim]strand-aware matching inactive — no reference context "
+            "(run `allelix db update` for gnomAD-backed ref resolution, "
+            "or this is expected with `--no-gnomad`)[/dim]"
+        )
+
+    # GH #91: GRCh38 + a high rsID-less fraction. The threshold (>50%)
+    # distinguishes a variant-caller VCF (mostly ID=. — fires) from a
+    # 23andMe-style array (rsID-bearing — no warning) or a mostly-
+    # rsID-bearing VCF where a handful of novel calls came in with
+    # ID=. (no warning, ID=. for novel sites is expected).
+    if effective_build == "GRCh38" and total > 0 and rsidless / total > 0.5:
+        console.print(
+            "[yellow]GRCh38 input without rsIDs: annotation coverage is "
+            "currently lower than GRCh37 because rsID resolution falls "
+            "back to ClinVar positions. Full dbSNP resolution is planned "
+            "(#62). If you have a GRCh37 build available, it currently "
+            "surfaces more annotations.[/yellow]"
+        )
+
+
 def _run_analysis_command(
     file_path: Path,
     fmt: str | None,
@@ -496,11 +553,13 @@ def _run_analysis_command(
             alphamissense=cast("AlphaMissenseAnnotator | None", am_annotator),
             cadd=cast("CaddAnnotator | None", cadd_annotator),
             high_value_rsids=hv_rsids,
+            panel_rsids=rsids,
         )
     finally:
         _unwire_parser_logging(counter, stderr_handler, snapshot)
 
     _emit_build_diagnostics(result)
+    _emit_runtime_nudges(result)
 
     hv_warnings = scan_no_calls(result.hv_variants, high_value)
     if hv_warnings:

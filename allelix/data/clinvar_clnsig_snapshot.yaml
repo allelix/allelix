@@ -83,10 +83,22 @@ values:
   - other
 
   # ── Curatorial categories (no clinical assertion attached) ──
+  # These map to magnitude 2.0 in _CLNSIG_MAGNITUDE (safe below the
+  # analyze 5.0 floor) so they're kept in the cache. Listing them
+  # here is what tells R-4 they're known vocab.
   - not_provided
   - no_classification_for_the_single_variant
-  - no_classification_provided
   - no_classifications_from_unflagged_records
+  # `no_classification_provided` was here. Removed: as of PR #101,
+  # the loader filters it via _CLINVAR_PLACEHOLDER_CLNSIGS (it's
+  # not in _CLNSIG_MAGNITUDE, so it'd fall through to the 5.0
+  # default — same family of bug as "-" and "not specified"). The
+  # snapshot must NOT pretend to know about a filtered placeholder:
+  # if the loader ever regresses on it, R-4's allowlist-style live
+  # drift check is the durable backstop the §7b denylist points to
+  # — but only if the snapshot doesn't list it. The "honest snapshot"
+  # invariant: every entry below should appear in a real db update
+  # cache; filtered placeholders shouldn't.
 
   # ── Aggregate interpretations (slash-combined compounds) ──
   # ClinVar emits these when the review process produces a single

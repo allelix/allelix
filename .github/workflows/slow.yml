@@ -1,0 +1,37 @@
+name: Slow suite
+
+# Real-data / network / binary-dependent tests. Excluded from PR CI (they run
+# locally pre-commit per CONTRIBUTING.md). Run here on a weekly schedule so
+# upstream drift — notably ClinVar CLNSIG vocabulary changes (R-4) — is still
+# caught in CI, plus on demand via the Actions tab.
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install plink (for @integration roundtrip)
+        run: sudo apt-get update && sudo apt-get install -y plink
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Generate test fixture
+        run: python tests/generate_mock_data.py
+
+      - name: Pytest (slow + integration only)
+        run: pytest -v --tb=short -m "slow or integration" --no-cov

@@ -56,6 +56,7 @@ See [Development](#development) for source installs and running tests, [Managing
 | MyHeritage DNA | ✓ | CSV, same structure as FTDNA. Detected by "MyHeritage" in comment header. Handles double-double-quoted field variant. |
 | Living DNA | ✓ | Tab-delimited despite `.csv` extension. Handles AX-, AFFX-prefixed and CHR:POS positional SNP IDs. |
 | FTDNA Illumina raw | ✓ | Tab-delimited variant of the FTDNA export (distinct from the CSV format above). `RSID/CHROMOSOME/POSITION/RESULT` columns. Build 37 default. |
+| FTDNA FamFinder | ✓ | Third FTDNA file shape: tab-delimited with **separate `ALLELE1` / `ALLELE2` columns** instead of a concatenated `RESULT`. Detected by the `famfinder` substring in the file header plus the 5-column canonical header. Build 37 default. |
 | VCF / gVCF | ✓ | REF/ALT encoding, `0/1` genotype notation. Plain VCF: absence at a position means reference. gVCF: explicit reference blocks (lines with `<NON_REF>` ALT and `END=` INFO) are skipped — they match nothing in any annotation database. Multi-sample files require `--sample <ID>`. Streams via stdlib; `.vcf.gz` handled transparently. Optional `pip install allelix[vcf-index]` enables pysam-backed tabix random access for fast `extract --snps` on huge VCFs. |
 
 Adding a new format means adding one file to `allelix/parsers/` and registering an instance in the `PARSERS` list in `allelix/parsers/__init__.py`.
@@ -214,27 +215,43 @@ Allelix stores reference database caches at `~/.local/share/allelix/` (Linux/mac
 **The caches are disposable and re-downloadable.** Everything here was fetched by `allelix db update` and can be re-fetched at any time. There's no per-user state in the cache — your genotype files never enter this directory. Safe to delete to reclaim space (or to force a full refresh if you suspect a cache went stale):
 
 ```bash
-# Reclaim all ~16-22 GB
-rm -rf ~/.local/share/allelix/
+# Reclaim all ~16-22 GB, with size report and confirmation prompt
+allelix db clean
 
-# Reclaim everything except CADD (avoids re-downloading the slowest one)
-find ~/.local/share/allelix/ -mindepth 1 ! -name 'cadd*.sqlite*' -delete
+# Preserve the CADD cache (avoids re-downloading the slowest one, ~5.8 GB)
+allelix db clean --keep-cadd
+
+# Show what would be deleted without acting
+allelix db clean --dry-run
+
+# Scripted use — skip the confirmation prompt
+allelix db clean --yes
 
 # Re-populate from scratch next time you analyze a file
 allelix db update
 ```
 
-**The one thing worth backing up: `config.toml`.** It lives separately (XDG config dir, typically `~/.config/allelix/config.toml`) and stores your license assertions (commercial-mode toggle, CADD opt-in confirmation) and per-source enable/disable settings. It's the only non-reproducible state in the install. The caches will rebuild on the next `db update`; `config.toml` won't.
+`db clean` refuses to act on a directory that doesn't contain any recognized allelix cache files — a typo'd `--data-dir ~/Documents` won't result in `rm -rf` against an unrelated tree, even with `--yes`. Pass `--force` if you've staged caches under a non-standard name and want to delete them anyway.
+
+For scripting and backup integration, `allelix db path` prints the resolved data directory:
+
+```bash
+ALLELIX_DATA=$(allelix db path)
+du -sh "$ALLELIX_DATA"
+
+# --check additionally verifies the path is writable; exit non-zero if not
+allelix db path --check
+```
+
+**The one thing worth backing up: `config.toml`.** It lives separately (XDG config dir, typically `~/.config/allelix/config.toml`) and stores your license assertions (commercial-mode toggle, CADD opt-in confirmation) and per-source enable/disable settings. It's the only non-reproducible state in the install. The caches will rebuild on the next `db update`; `config.toml` won't. `allelix db clean` preserves `config.toml` even when it lives inside the data directory (older installs).
 
 To fully uninstall allelix and reclaim everything:
 
 ```bash
 pip uninstall allelix
-rm -rf ~/.local/share/allelix/    # reference database caches
+allelix db clean --yes            # reference database caches
 rm -rf ~/.config/allelix/         # license + source-toggle config
 ```
-
-A `allelix db clean` subcommand to automate the cache-clear step (with confirmation prompt and size report) is planned for v2.2 alongside `allelix db path` (prints the resolved data directory for scripting / backup integration).
 
 ## Data Sources & Licensing
 
@@ -343,6 +360,8 @@ pytest
 ```
 
 The pre-commit hook enforces `ruff check` + `ruff format --check`. If a commit is blocked, fix the underlying problem rather than skipping the hook.
+
+For the full real-data release-validation battery — every parser format, VCF/gVCF, PLINK round-trip, edge cases, the GIAB/1000G corpus — see [`test_data/FULL_TEST_PROTOCOL.md`](test_data/FULL_TEST_PROTOCOL.md). That document is the project's real-data testing story; running `pytest` covers the fast suite that gates every commit.
 
 ## License
 

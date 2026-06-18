@@ -129,6 +129,96 @@ class TestAnalysisResultFilter:
         assert [a.rsid for a in kept] == ["rs1"]
 
 
+class TestPanelCoverage:
+    """GH #75: panel coverage distinguishes "not on chip" (state 3) from
+    "genotyped but no findings" (state 2) from "genotyped with findings"
+    (state 1)."""
+
+    def _result(self, **kwargs) -> AnalysisResult:
+        from pathlib import Path
+
+        defaults = dict(
+            file_path=Path("dummy.txt"),
+            parser_name="x",
+            parser_display_name="X",
+            sample_id="S",
+            build="GRCh37",
+            total_variants=0,
+            skipped_count=0,
+            annotators_used=[],
+            annotations=[],
+        )
+        defaults.update(kwargs)
+        return AnalysisResult(**defaults)
+
+    def test_no_panel_returns_none(self):
+        """No filter-file supplied → panel_coverage() is None and
+        nothing should render."""
+        r = self._result()
+        assert r.panel_coverage() is None
+
+    def test_classifies_three_states(self):
+        """A panel of 4 rsIDs where one had findings, one was genotyped
+        but produced no annotations, two weren't on the chip."""
+        panel = frozenset({"rs1", "rs2", "rs3", "rs4"})
+        genotyped = frozenset({"rs1", "rs2"})
+        annotated = frozenset({"rs1"})
+        r = self._result(
+            panel_rsids=panel,
+            genotyped_panel_rsids=genotyped,
+            panel_annotated_rsids=annotated,
+        )
+        cov = r.panel_coverage()
+        assert cov is not None
+        assert cov["requested"] == 4
+        assert cov["found"] == 2
+        assert cov["missing"] == ["rs3", "rs4"]
+        assert cov["no_findings"] == ["rs2"]
+
+    def test_all_genotyped_with_findings_clean_coverage(self):
+        """Happy path: every panel rsID was both genotyped and produced
+        an annotation. missing + no_findings are both empty."""
+        panel = frozenset({"rs1", "rs2"})
+        r = self._result(
+            panel_rsids=panel,
+            genotyped_panel_rsids=frozenset({"rs1", "rs2"}),
+            panel_annotated_rsids=frozenset({"rs1", "rs2"}),
+        )
+        cov = r.panel_coverage()
+        assert cov == {"requested": 2, "found": 2, "missing": [], "no_findings": []}
+
+    def test_nothing_genotyped_all_missing(self):
+        """The chip didn't carry any of the requested rsIDs."""
+        panel = frozenset({"rs1", "rs2"})
+        r = self._result(panel_rsids=panel)
+        cov = r.panel_coverage()
+        assert cov is not None
+        assert cov["found"] == 0
+        assert cov["missing"] == ["rs1", "rs2"]
+        assert cov["no_findings"] == []
+
+    def test_run_analysis_populates_coverage(
+        self, mock_mhg_path: Path, all_annotators_data_dir: Path
+    ):
+        """End-to-end: panel_rsids passed into run_analysis are
+        recorded on AnalysisResult, and the genotyped/annotated sets
+        come from the actual pipeline pass."""
+        parser = MyHappyGenesParser()
+        annotators = [
+            ClinVarAnnotator(all_annotators_data_dir),
+            PharmGKBAnnotator(all_annotators_data_dir),
+        ]
+        # rs1801133 is in the MHG fixture AND has ClinVar findings;
+        # rs999999999 is a synthetic ClinVar rsID never on a real chip.
+        panel = frozenset({"rs1801133", "rs999999999"})
+        result = run_analysis(mock_mhg_path, parser, annotators, panel_rsids=panel)
+        cov = result.panel_coverage()
+        assert cov is not None
+        assert cov["requested"] == 2
+        assert "rs999999999" in cov["missing"]
+        assert "rs999999999" not in cov["no_findings"]
+
+
 class TestRunAnalysis:
     def test_streams_and_collects(self, mock_mhg_path: Path, all_annotators_data_dir: Path):
         parser = MyHappyGenesParser()

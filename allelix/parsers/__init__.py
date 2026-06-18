@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from allelix.parsers.ancestrydna import AncestryDNAParser
 from allelix.parsers.base import GenotypeParser
 from allelix.parsers.ftdna import FTDNAParser
+from allelix.parsers.ftdna_famfinder import FTDNAFamFinderParser
 from allelix.parsers.ftdna_illumina import FTDNAIlluminaParser
 from allelix.parsers.livingdna import LivingDNAParser
 from allelix.parsers.myhappygenes import MyHappyGenesParser
@@ -26,6 +27,7 @@ PARSERS: list[GenotypeParser] = [
     LivingDNAParser(),
     MyHeritageParser(),
     FTDNAParser(),
+    FTDNAFamFinderParser(),  # 5-col tab; must precede FTDNAIlluminaParser
     FTDNAIlluminaParser(),
     VcfParser(),
 ]

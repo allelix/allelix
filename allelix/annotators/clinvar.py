@@ -25,7 +25,7 @@ from allelix.databases.manager import (
     download,
     fetch_remote_text,
     get_database_info,
-    load_clinvar_vcf,
+    load_clinvar_tsv,
     stamp_existing_clinvar_cache,
     verify_file_hash,
 )
@@ -90,11 +90,6 @@ def _normalize_clnsig(value: str) -> str:
 
 def _magnitude(clnsig: str) -> float:
     return _CLNSIG_MAGNITUDE.get(_normalize_clnsig(clnsig), 5.0)
-
-
-def _vcf_filename_for_url(url: str) -> str:
-    """Pick the right local filename suffix based on the URL."""
-    return "clinvar.vcf.gz" if url.endswith(".gz") else "clinvar.vcf"
 
 
 class ClinVarAnnotator(Annotator):
@@ -186,39 +181,88 @@ class ClinVarAnnotator(Annotator):
         return self._conns[build]
 
     def setup(self) -> None:
-        """Download each managed build's ClinVar VCF and ingest atomically."""
-        for build in self._builds:
-            self._setup_one(build)
+        """Download the per-SCV TSV pair once and ingest both builds from it.
 
-    def _setup_one(self, build: str) -> None:
-        url = _manager_module.CLINVAR_URL_BY_BUILD[build]
-        signal = self._fetch_remote_signal_for(build)
+        v2.2 #42 stage B: the VCF-per-build path is replaced by the
+        variant_summary + submission_summary TSV pair. variant_summary
+        carries per-(VariationID, Assembly) rows so the same downloaded
+        file populates both GRCh37 and GRCh38 caches with no second
+        download. submission_summary is build-agnostic; one fetch
+        applies across builds.
+
+        Freshness signal is derived from submission_summary's md5
+        endpoint — that file drives the meaningful change cadence
+        (per-SCV submissions land daily) and variant_summary turns over
+        weekly on a slower clock.
+        """
+        signal = self._fetch_remote_signal_for_tsv()
         if signal is None:
             msg = (
-                f"clinvar ({build}): cannot verify remote freshness signal. "
+                "clinvar: cannot verify remote freshness signal. "
                 "Refresh aborted to avoid persisting an incomplete cache stamp. "
                 "Retry, or pass --force if you accept that next `db update` "
                 "will re-download to re-establish the signal."
             )
             raise RuntimeError(msg)
-        vcf_path = self.data_dir / _vcf_filename_for_url(url)
-        download(url, vcf_path)
+
+        vs_url = _manager_module.CLINVAR_VARIANT_SUMMARY_URL
+        ss_url = _manager_module.CLINVAR_SUBMISSION_SUMMARY_URL
+        vs_path = self.data_dir / "variant_summary.txt.gz"
+        ss_path = self.data_dir / "submission_summary.txt.gz"
+
+        download(vs_url, vs_path)
+        download(ss_url, ss_path)
+        # We don't md5-verify variant_summary; signal is calibrated against
+        # submission_summary (the more frequently-updated file) and that
+        # endpoint's md5 is what we hashed below. variant_summary integrity
+        # is asserted structurally by the loader (rows that fail to parse
+        # are skipped, mismatched assemblies are dropped).
         try:
-            verify_file_hash(vcf_path, "md5", signal.removeprefix("md5:"))
-            load_clinvar_vcf(
-                vcf_path,
-                self._db_paths[build],
-                source_url=url,
-                remote_signal=signal,
-                record_name=clinvar_record_name(build),
-            )
+            verify_file_hash(ss_path, "md5", signal.removeprefix("md5:"))
+            for build in self._builds:
+                self._setup_one_from_tsv(vs_path, ss_path, build, signal, vs_url)
         finally:
-            try:
-                vcf_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                logger.warning("Could not remove staged VCF at %s", vcf_path)
+            for tmp in (vs_path, ss_path):
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("Could not remove staged TSV at %s", tmp)
+
+    def _setup_one_from_tsv(
+        self,
+        vs_path: Path,
+        ss_path: Path,
+        build: str,
+        signal: str,
+        source_url: str,
+    ) -> None:
+        """Run the per-build cache build against an already-downloaded TSV pair."""
+        load_clinvar_tsv(
+            vs_path,
+            ss_path,
+            self._db_paths[build],
+            build,
+            source_url=source_url,
+            remote_signal=signal,
+        )
+        # load_clinvar_tsv stamps the record name as "clinvar"; for
+        # backward compatibility with the per-build record-name scheme
+        # (clinvar.GRCh37 / clinvar.GRCh38), rename the row in place.
+        # This keeps is_ready() / version() per-build dispatch working
+        # against the existing database_versions table layout.
+        import contextlib
+        import sqlite3
+
+        per_build_name = clinvar_record_name(build)
+        if per_build_name != "clinvar":
+            with contextlib.closing(sqlite3.connect(self._db_paths[build])) as conn:
+                conn.execute(
+                    "UPDATE database_versions SET name = ? WHERE name = 'clinvar'",
+                    (per_build_name,),
+                )
+                conn.commit()
 
     def is_ready(self) -> bool:
         """True iff EVERY managed build has a populated, version-stamped cache.
@@ -300,11 +344,15 @@ class ClinVarAnnotator(Annotator):
         # can't suppress a single-base array readout. The per-build cache
         # may have BOTH SNV and indel rows for the same rsid; the WHERE
         # filters those out so we keep only the SNV REF.
-        rows = conn.execute(
+        #
+        # GH #28 item 1: iterate the cursor directly instead of fetchall()
+        # so peak memory is one row + the dict, not the entire result set
+        # twice.
+        cursor = conn.execute(
             "SELECT DISTINCT rsid, ref FROM clinvar_variants WHERE length(ref) = 1"
-        ).fetchall()
+        )
         out: dict[str, str] = {}
-        for rsid, ref in rows:
+        for rsid, ref in cursor:
             # If a rsid has multiple single-base REFs (shouldn't happen at
             # one position but defending against future data shapes), keep
             # the first.
@@ -313,23 +361,21 @@ class ClinVarAnnotator(Annotator):
         return out
 
     def fetch_remote_signal(self) -> str | None:
-        r"""Composite freshness signal across managed builds.
+        r"""Freshness signal derived from the per-SCV submission_summary md5.
 
-        Format: `"GRCh37:md5:<hex>|GRCh38:md5:<hex>"`. Returns None if
-        ANY managed build's signal probe fails — the CLI then prints
-        "can't verify" and skips refresh per ADR-0012's policy.
+        v2.2 #42 stage B: pre-stage-B this returned a composite VCF-md5
+        per build. After stage B, the cache is built from a build-agnostic
+        TSV pair, and submission_summary's md5 endpoint is the change
+        cadence we want to track (per-SCV submissions land daily; the
+        slower-moving variant_summary only adds new VariationIDs).
+        Returns the signal as ``"md5:<hex>"`` to keep ``setup()``'s
+        ``signal.removeprefix("md5:")`` contract unchanged.
         """
-        parts: list[str] = []
-        for build in self._builds:
-            sig = self._fetch_remote_signal_for(build)
-            if sig is None:
-                return None
-            parts.append(f"{build}:{sig}")
-        return "|".join(parts) if parts else None
+        return self._fetch_remote_signal_for_tsv()
 
     @staticmethod
-    def _fetch_remote_signal_for(build: str) -> str | None:
-        body = fetch_remote_text(_manager_module.CLINVAR_URL_BY_BUILD[build] + ".md5")
+    def _fetch_remote_signal_for_tsv() -> str | None:
+        body = fetch_remote_text(_manager_module.CLINVAR_SUBMISSION_SUMMARY_URL + ".md5")
         if not body:
             return None
         first_token = body.strip().split(None, 1)[0] if body.strip() else ""
@@ -338,19 +384,29 @@ class ClinVarAnnotator(Annotator):
             # as a transient signal failure rather than poisoning the
             # cache: callers handle `None` as "freshness unknown, skip"
             # in `db update`, and `setup()` raises rather than passing
-            # garbage to `verify_file_hash` (which would delete the VCF).
+            # garbage to `verify_file_hash` (which would delete the TSV).
             logger.warning(
-                "clinvar(%s): .md5 endpoint returned a body whose first token "
-                "is not a 32-char hex digest (got %r); treating as no signal",
-                build,
+                "clinvar: submission_summary.md5 endpoint returned a body whose "
+                "first token is not a 32-char hex digest (got %r); treating as "
+                "no signal",
                 first_token[:32],
             )
             return None
         return f"md5:{first_token}"
 
     def cached_remote_signal(self) -> str | None:
-        """Composite cached signal across managed builds. None if any missing."""
-        parts: list[str] = []
+        """Return the signal stamped at the last successful setup, or None.
+
+        None if any managed build's cache is absent / unstamped or if the
+        builds' stamps diverge (an interrupted partial reingest).
+
+        Stage B: both builds now share the same source TSVs and therefore
+        the same remote_signal. We still cross-check that EVERY managed
+        build's cache carries the stamp; a missing build means the
+        last-setup didn't complete, treat as "no signal" and let
+        ``db update`` decide.
+        """
+        signals: set[str] = set()
         for build in self._builds:
             info = get_database_info(self._db_paths[build], clinvar_record_name(build))
             if info is None or info["remote_signal"] is None:
@@ -358,8 +414,16 @@ class ClinVarAnnotator(Annotator):
             sig = info["remote_signal"]
             if not sig:
                 return None
-            parts.append(f"{build}:{sig}")
-        return "|".join(parts) if parts else None
+            signals.add(sig)
+        if not signals:
+            return None
+        # All builds should carry the same signal (single download, single
+        # ingest run). If they diverge — e.g. someone reingested one build
+        # against a newer TSV — treat as "no signal" so the next
+        # `db update` re-syncs both.
+        if len(signals) > 1:
+            return None
+        return signals.pop()
 
     def annotate(self, variant: Variant) -> list[Annotation]:
         """Return ClinVar annotations whose REF/ALT matches the user's genotype.

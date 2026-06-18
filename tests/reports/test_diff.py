@@ -287,6 +287,19 @@ class TestLoadPreviousReport:
         data = load_previous_report(path)
         assert data["schema_version"] == "5"
 
+    def test_accepts_v6_baseline(self, tmp_path: Path) -> None:
+        """GH #75 bump: v6 baselines (with panel_coverage) load without error."""
+        report = {
+            "schema_version": "6",
+            "generated_at": "2026-06-18T00:00:00",
+            "annotations": [_ann_dict()],
+            "panel_coverage": {"requested": 1, "found": 1, "missing": [], "no_findings": []},
+        }
+        path = tmp_path / "report.json"
+        path.write_text(json.dumps(report))
+        data = load_previous_report(path)
+        assert data["schema_version"] == "6"
+
     def test_missing_schema_version(self, tmp_path: Path) -> None:
         report = {"annotations": []}
         path = tmp_path / "report.json"

@@ -108,6 +108,17 @@ def strand_aware_carrier_match(
         ``variant_ref`` context with no direct match, ref disagreement that
         isn't a clean complement).
     """
+    # Defensive case normalization: the Variant model upper-cases its own
+    # fields on construction, but `source_ref` / `source_alt` come from
+    # external annotator queries (ClinVar VCF, ClinPGx TSV) and a future
+    # source variant or a soft-masked-reference VCF could leak lowercase.
+    # A lowercase letter would silently false-negative every comparison
+    # below — normalize at the entry point so the function is robust.
+    source_ref = source_ref.upper()
+    source_alt = source_alt.upper()
+    if variant_ref is not None:
+        variant_ref = variant_ref.upper()
+
     user = {allele1, allele2}
     if source_alt in user:
         return True
@@ -147,6 +158,13 @@ def strand_aware_genotype_match(
         True when the user matches ``source_geno`` directly or via a
         complement reading. False otherwise.
     """
+    # Defensive case normalization (see note on strand_aware_carrier_match):
+    # source_geno comes from a third-party SQLite cache; lowercase would
+    # silently false-negative the sorted-pair equality below.
+    source_geno = source_geno.upper()
+    if variant_ref is not None:
+        variant_ref = variant_ref.upper()
+
     if len(allele1) != 1 or len(allele2) != 1 or len(source_geno) != 2:
         return False
     user_normalized = "".join(sorted((allele1, allele2)))

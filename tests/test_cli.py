@@ -191,10 +191,15 @@ class TestAnalyzeCommand:
             ["analyze", str(mock_mhg_mislabeled_path), "--data-dir", str(clinvar_data_dir)],
         )
         assert result.exit_code == 0, result.output
-        assert "Build mismatch" in result.output
-        assert "header claims GRCh37" in result.output
-        assert "position data is GRCh38" in result.output
-        assert "Using GRCh38" in result.output
+        # Width-independent — Rich wraps "Using GRCh38" mid-phrase at
+        # COLUMNS=80 (the CliRunner default), even though this test sets
+        # COLUMNS=200 in env. The warning text passes through Rich's
+        # console.print which respects the runtime width.
+        flat = " ".join(result.output.split())
+        assert "Build mismatch" in flat
+        assert "header claims GRCh37" in flat
+        assert "position data is GRCh38" in flat
+        assert "Using GRCh38" in flat
 
     def test_analyze_no_warning_on_clean_grch37(
         self, mock_mhg_grch37_path, clinvar_data_dir: Path
@@ -407,18 +412,19 @@ class TestDbCommands:
     def test_db_update_with_file_url(
         self,
         tmp_path: Path,
-        mock_clinvar_vcf: Path,
         mock_pharmgkb_dir: Path,
         mock_cpic_lookup: dict[tuple[str, str], str],
         mock_gwas_tsv: Path,
         mock_gnomad_gz: Path,
+        build_synthetic_clinvar_cache,
         monkeypatch,
     ):
         """M-3: download+ingest path runs end-to-end against file:// URLs.
 
         All annotators must succeed -- `db update` iterates the whole registry,
-        so each needs a local file:// URL or mock fixture. ClinVar, ClinPGx,
-        and GWAS use mock archives; gnomAD uses a mock gzipped SQLite cache.
+        so each needs a local file:// URL or mock fixture. ClinVar setup is
+        mocked to call build_synthetic_clinvar_cache; ClinPGx and GWAS use
+        mock archives; gnomAD uses a mock gzipped SQLite cache.
         """
         import zipfile
         from urllib.request import pathname2url
@@ -426,18 +432,8 @@ class TestDbCommands:
         from allelix.annotators import gwas as gwas_module
         from allelix.annotators import pharmgkb as pharmgkb_module
         from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
-        from allelix.databases import manager as manager_module
         from allelix.databases.gwas_loader import GWAS_DB_FILENAME
         from allelix.databases.manager import get_database_info
-
-        # ADR-0021: per-build URL map. Point both builds at the same local
-        # mock VCF so db update can populate either cache from one fixture.
-        clinvar_url = f"file:{pathname2url(str(mock_clinvar_vcf.resolve()))}"
-        monkeypatch.setattr(
-            manager_module,
-            "CLINVAR_URL_BY_BUILD",
-            {"GRCh37": clinvar_url, "GRCh38": clinvar_url},
-        )
 
         pharmgkb_zip = tmp_path / "fixture_clinical_annotations.zip"
         with zipfile.ZipFile(pharmgkb_zip, "w") as zf:
@@ -473,11 +469,18 @@ class TestDbCommands:
         from allelix.annotators.gwas import GWASCatalogAnnotator
         from allelix.annotators.pharmgkb import PharmGKBAnnotator
 
-        monkeypatch.setattr(
-            ClinVarAnnotator,
-            "_fetch_remote_signal_for",
-            staticmethod(lambda _build: "md5:test_signal"),
-        )
+        def _fake_clinvar_setup(self):
+            for build in self._builds:
+                build_synthetic_clinvar_cache(
+                    self._db_paths[build],
+                    build,
+                    source_url="test://stage-c-mock",
+                    remote_signal="md5:test_signal",
+                )
+
+        monkeypatch.setattr(ClinVarAnnotator, "setup", _fake_clinvar_setup)
+        # cached_remote_signal returns the shared TSV md5: both per-build
+        # caches stamp the same value because they ingest one TSV pair.
         monkeypatch.setattr(clinvar_mod, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(
             PharmGKBAnnotator,
@@ -565,11 +568,28 @@ class TestDbCommands:
         info_before = get_database_info(sqlite_path, clinvar_record_name("GRCh37"))
         assert info_before is not None
 
-        # Connection-refused URL on the GRCh37 build only.
+        # Stage B (#42): the annotator downloads variant_summary +
+        # submission_summary instead of the per-build VCF. Pointing
+        # either at a refused connection still exercises the M-1+M-2
+        # "failure preserves cache" invariant.
         monkeypatch.setattr(
             manager_module,
-            "CLINVAR_URL_BY_BUILD",
-            {"GRCh37": "http://127.0.0.1:1/missing.vcf.gz"},
+            "CLINVAR_VARIANT_SUMMARY_URL",
+            "http://127.0.0.1:1/missing-variant_summary.txt.gz",
+        )
+        monkeypatch.setattr(
+            manager_module,
+            "CLINVAR_SUBMISSION_SUMMARY_URL",
+            "http://127.0.0.1:1/missing-submission_summary.txt.gz",
+        )
+        # Need a non-None signal to get past the signal guard and into
+        # the actual download attempt.
+        from allelix.annotators.clinvar import ClinVarAnnotator
+
+        monkeypatch.setattr(
+            ClinVarAnnotator,
+            "_fetch_remote_signal_for_tsv",
+            staticmethod(lambda: "md5:" + "0" * 32),
         )
 
         from urllib.request import pathname2url
@@ -623,22 +643,24 @@ class TestDbCommands:
         assert "16" in result.output
 
     def test_db_update_skips_when_remote_signal_matches(
-        self, tmp_path: Path, mock_clinvar_vcf: Path, mock_gnomad_gz: Path, monkeypatch
+        self,
+        tmp_path: Path,
+        mock_gnomad_gz: Path,
+        build_synthetic_clinvar_cache,
+        monkeypatch,
     ):
         """Remote signal matches cached signal → skip without --force."""
         from allelix.annotators import clinvar as clinvar_module
         from allelix.annotators import gwas as gwas_module
         from allelix.annotators import pharmgkb as pharmgkb_module
-        from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
-        from allelix.databases.manager import load_clinvar_vcf
+        from allelix.annotators.clinvar import clinvar_db_filename
 
         # Pre-populate the GRCh37 ClinVar cache with a known signal.
-        load_clinvar_vcf(
-            mock_clinvar_vcf,
+        build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename("GRCh37"),
+            "GRCh37",
             source_url="test",
             remote_signal="md5:cached_value",
-            record_name=clinvar_record_name("GRCh37"),
         )
         monkeypatch.setattr(
             clinvar_module.ClinVarAnnotator,
@@ -690,21 +712,23 @@ class TestDbCommands:
         assert "already current" in result.output
 
     def test_db_update_refreshes_when_remote_signal_differs(
-        self, tmp_path: Path, mock_clinvar_vcf: Path, mock_gnomad_gz: Path, monkeypatch
+        self,
+        tmp_path: Path,
+        mock_gnomad_gz: Path,
+        build_synthetic_clinvar_cache,
+        monkeypatch,
     ):
         """Remote signal differs from cached → trigger refresh without --force."""
         from allelix.annotators import clinvar as clinvar_module
         from allelix.annotators import gwas as gwas_module
         from allelix.annotators import pharmgkb as pharmgkb_module
-        from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
-        from allelix.databases.manager import load_clinvar_vcf
+        from allelix.annotators.clinvar import clinvar_db_filename
 
-        load_clinvar_vcf(
-            mock_clinvar_vcf,
+        build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename("GRCh37"),
+            "GRCh37",
             source_url="test",
             remote_signal="md5:OLD",
-            record_name=clinvar_record_name("GRCh37"),
         )
         monkeypatch.setattr(
             clinvar_module.ClinVarAnnotator,
@@ -799,7 +823,7 @@ class TestDbCommands:
         assert "can't be verified" in result.output
 
     def test_db_update_legacy_cache_redownloads(
-        self, tmp_path: Path, mock_clinvar_vcf: Path, mock_gnomad_gz: Path, monkeypatch
+        self, tmp_path: Path, mock_gnomad_gz: Path, monkeypatch
     ):
         """GH #20: a cache with no stored signal predates the signal mechanism
         (i.e., is old). It must be re-downloaded, NOT silently stamped as
@@ -946,10 +970,27 @@ class TestDbCommands:
         from allelix.annotators.alphamissense import AlphaMissenseAnnotator
         from allelix.databases import manager as manager_module
 
+        # Stage B (#42): TSV URLs replace the per-build VCF map. Refused-
+        # connection URLs on both files still exercise the W-2 friendly-
+        # error invariant.
         monkeypatch.setattr(
             manager_module,
-            "CLINVAR_URL_BY_BUILD",
-            {"GRCh37": "http://127.0.0.1:1/missing.vcf.gz"},
+            "CLINVAR_VARIANT_SUMMARY_URL",
+            "http://127.0.0.1:1/missing-variant_summary.txt.gz",
+        )
+        monkeypatch.setattr(
+            manager_module,
+            "CLINVAR_SUBMISSION_SUMMARY_URL",
+            "http://127.0.0.1:1/missing-submission_summary.txt.gz",
+        )
+        # Signal needs to succeed so the friendly-error path tests the
+        # download failure, not the signal-guard failure.
+        from allelix.annotators.clinvar import ClinVarAnnotator
+
+        monkeypatch.setattr(
+            ClinVarAnnotator,
+            "_fetch_remote_signal_for_tsv",
+            staticmethod(lambda: "md5:" + "0" * 32),
         )
         monkeypatch.setattr(pharmgkb_module.PharmGKBAnnotator, "requires_download", False)
         monkeypatch.setattr(gwas_module.GWASCatalogAnnotator, "requires_download", False)
@@ -982,6 +1023,193 @@ class TestDbCommands:
         assert result.exit_code == 0
         assert "clinvar:" in result.output
         assert not isinstance(result.exception, urllib.error.URLError)
+
+    def test_db_path_prints_resolved_dir(self, tmp_path: Path):
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path)])
+        assert result.exit_code == 0
+        assert str(tmp_path) in result.output
+
+    def test_db_path_no_styling_escape_codes(self, tmp_path: Path):
+        """Output must be shell-safe for $(allelix db path) capture."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path)])
+        assert result.exit_code == 0
+        # No ANSI escape sequences — Rich's color codes start with \x1b[
+        assert "\x1b[" not in result.output
+
+    def test_db_path_check_passes_on_writable_dir(self, tmp_path: Path):
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path), "--check"])
+        assert result.exit_code == 0
+
+    def test_db_path_check_fails_on_readonly_dir(self, tmp_path: Path):
+        import os
+        import stat
+
+        # Make the dir non-writable
+        os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            runner = CliRunner()
+            result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path), "--check"])
+            assert result.exit_code == 1
+            # Error goes to stderr (plain print, not console.print); normalize
+            # whitespace so the assertion survives any line-wrapping.
+            stderr_flat = " ".join(result.stderr.split())
+            assert "not writable" in stderr_flat
+        finally:
+            # Restore so tmp_path cleanup works
+            os.chmod(tmp_path, stat.S_IRWXU)
+
+    def test_db_clean_empty_dir_is_noop(self, tmp_path: Path):
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
+        assert result.exit_code == 0
+        assert "Nothing to clean" in result.output
+
+    def test_db_clean_missing_dir_resolves_to_empty_noop(self, tmp_path: Path):
+        # resolve_data_dir creates the dir if missing; clean then finds
+        # nothing to delete. Verify the directory is created AND the
+        # command exits cleanly.
+        runner = CliRunner()
+        missing = tmp_path / "does-not-exist"
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(missing), "--yes"])
+        assert result.exit_code == 0
+        assert "Nothing to clean" in result.output
+        assert missing.exists() and missing.is_dir()
+
+    def test_db_clean_removes_caches_with_yes(self, tmp_path: Path):
+        # Stage mock cache files + a sub-dir + a config.toml that MUST survive
+        (tmp_path / "clinvar.GRCh38.sqlite").write_bytes(b"x" * 1024)
+        (tmp_path / "gnomad.sqlite").write_bytes(b"y" * 2048)
+        (tmp_path / "cadd.sqlite").write_bytes(b"z" * 4096)
+        nested = tmp_path / "snpedia"
+        nested.mkdir()
+        (nested / "page.txt").write_text("snpedia raw")
+        (tmp_path / "config.toml").write_text("[sources]\nclinvar = true\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        # Cache files gone
+        assert not (tmp_path / "clinvar.GRCh38.sqlite").exists()
+        assert not (tmp_path / "gnomad.sqlite").exists()
+        assert not (tmp_path / "cadd.sqlite").exists()
+        assert not nested.exists()
+        # config.toml preserved
+        assert (tmp_path / "config.toml").exists()
+        assert (tmp_path / "config.toml").read_text() == "[sources]\nclinvar = true\n"
+
+    def test_db_clean_keep_cadd_preserves_cadd_cache(self, tmp_path: Path):
+        (tmp_path / "clinvar.GRCh38.sqlite").write_bytes(b"x" * 1024)
+        (tmp_path / "cadd.sqlite").write_bytes(b"z" * 4096)
+        (tmp_path / "config.toml").write_text("")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["db", "clean", "--data-dir", str(tmp_path), "--keep-cadd", "--yes"]
+        )
+        assert result.exit_code == 0
+        assert not (tmp_path / "clinvar.GRCh38.sqlite").exists()
+        assert (tmp_path / "cadd.sqlite").exists()
+        assert (tmp_path / "config.toml").exists()
+
+    def test_db_clean_dry_run_deletes_nothing(self, tmp_path: Path):
+        (tmp_path / "clinvar.GRCh38.sqlite").write_bytes(b"x" * 1024)
+        (tmp_path / "cadd.sqlite").write_bytes(b"z" * 4096)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--dry-run"])
+        assert result.exit_code == 0
+        assert "Dry run" in result.output
+        assert "Would delete" in result.output
+        assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
+        assert (tmp_path / "cadd.sqlite").exists()
+
+    def test_db_clean_confirmation_prompt_blocks_on_no(self, tmp_path: Path):
+        (tmp_path / "clinvar.GRCh38.sqlite").write_bytes(b"x" * 1024)
+
+        runner = CliRunner()
+        # Send "n\n" to the confirmation prompt
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path)], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+        assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
+
+    def test_db_clean_keep_cadd_with_only_cadd_present_is_noop(self, tmp_path: Path):
+        (tmp_path / "cadd.sqlite").write_bytes(b"z" * 4096)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["db", "clean", "--data-dir", str(tmp_path), "--keep-cadd", "--yes"]
+        )
+        assert result.exit_code == 0
+        assert "Nothing to clean" in result.output
+        assert "CADD preserved" in result.output
+        assert (tmp_path / "cadd.sqlite").exists()
+
+    def test_db_clean_refuses_unrecognized_dir_even_with_yes(self, tmp_path: Path):
+        # Fat-fingered --data-dir pointing at a user's documents folder. No
+        # recognized allelix artifacts. The --yes path MUST still refuse.
+        (tmp_path / "resume.pdf").write_bytes(b"x" * 1024)
+        (tmp_path / "tax_2025.xlsx").write_bytes(b"y" * 2048)
+        subdir = tmp_path / "vacation_photos"
+        subdir.mkdir()
+        (subdir / "IMG_0001.jpg").write_bytes(b"z" * 4096)
+
+        # Click 8.4 separates result.stdout / result.stderr automatically;
+        # the guard error routes to stderr (matches `db path --check` pattern).
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
+        assert result.exit_code == 1
+        # Normalize whitespace so the assertion survives any line-wrapping —
+        # the resolved tmp_path can push the phrase across terminal-width
+        # boundaries on narrow runners. (PR 1 lesson: console.print() was
+        # Rich-wrapping mid-phrase under CliRunner's 80-col default.)
+        stderr_flat = " ".join(result.stderr.split())
+        assert "doesn't look like an allelix cache" in stderr_flat
+        assert "--force" in stderr_flat
+        # Everything still present
+        assert (tmp_path / "resume.pdf").exists()
+        assert (tmp_path / "tax_2025.xlsx").exists()
+        assert (subdir / "IMG_0001.jpg").exists()
+
+    def test_db_clean_force_bypasses_guard(self, tmp_path: Path):
+        # User explicitly opts in via --force.
+        (tmp_path / "non_standard_cache.bin").write_bytes(b"x" * 1024)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["db", "clean", "--data-dir", str(tmp_path), "--force", "--yes"],
+        )
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert not (tmp_path / "non_standard_cache.bin").exists()
+
+    def test_db_clean_config_toml_alone_is_recognition_marker(self, tmp_path: Path):
+        # A data dir with ONLY config.toml means a fresh install pre-update.
+        # entries is empty (config.toml is preserved), so noop path applies.
+        (tmp_path / "config.toml").write_text("[sources]\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
+        assert result.exit_code == 0
+        assert "Nothing to clean" in result.output
+        assert (tmp_path / "config.toml").exists()
+
+    def test_db_clean_dry_run_also_blocks_unrecognized_dir(self, tmp_path: Path):
+        # The guard runs BEFORE --dry-run so even previewing against an
+        # unrelated tree is refused — would print a misleading "would
+        # delete" listing otherwise.
+        (tmp_path / "random_file.txt").write_text("not allelix")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--dry-run"])
+        assert result.exit_code == 1
+        stderr_flat = " ".join(result.stderr.split())
+        assert "doesn't look like an allelix cache" in stderr_flat
 
 
 class TestAnalyzeOutputDispatch:
@@ -1129,7 +1357,17 @@ class TestMethylationCommand:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "Homocysteine levels" in result.output
+        # Width-independent assertion — at narrow widths Rich wraps the
+        # Condition column cell into "Homocysteine │ │ │ │ levels" (the
+        # box-drawing chars and whitespace from neighboring columns
+        # interleave between the two words). Strip everything except
+        # letters and spaces, then collapse whitespace, then check.
+        # See the PR 81 / cli/db.py lesson about width-fragile assertions.
+        import re
+
+        letters_only = re.sub(r"[^A-Za-z ]+", " ", result.output)
+        flat = " ".join(letters_only.split())
+        assert "Homocysteine levels" in flat
 
     def test_default_output_below_threshold(self, mock_mhg_path, all_annotators_data_dir: Path):
         """Default methylation (no flags) on canonical mocks stays under 20 rows."""
@@ -1146,6 +1384,44 @@ class TestMethylationCommand:
             f"Methylation default produced {len(lines)} annotation rows, "
             f"exceeding the 20-row sanity threshold."
         )
+
+    def test_default_floor_surfaces_loe_3_hits(self, mock_mhg_path, all_annotators_data_dir: Path):
+        """#52: methylation default --min-magnitude is 3.0, not analyze's 5.0.
+
+        ClinPGx LoE 3 hits (magnitude 4.0) on COMT / MTHFR / MTR / CBS are
+        exactly the signal a user running the focused subcommand wants to
+        see. The old 5.0 default — inherited from the noise-prone general
+        report — filtered them out.
+        """
+        runner = CliRunner(env={"COLUMNS": "200"})
+        result = runner.invoke(
+            main,
+            ["methylation", str(mock_mhg_path), "--data-dir", str(all_annotators_data_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        # loe_3 → "Reduced response" cell in the mock; magnitude 4.0.
+        # Would not appear at the old 5.0 floor.
+        assert "loe_3" in result.output
+
+    def test_explicit_min_magnitude_5_still_filters_loe_3(
+        self, mock_mhg_path, all_annotators_data_dir: Path
+    ):
+        """Users keep the escape hatch — passing --min-magnitude 5 restores the
+        old behavior. The default changed, the flag didn't."""
+        runner = CliRunner(env={"COLUMNS": "200"})
+        result = runner.invoke(
+            main,
+            [
+                "methylation",
+                str(mock_mhg_path),
+                "--data-dir",
+                str(all_annotators_data_dir),
+                "--min-magnitude",
+                "5",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "loe_3" not in result.output
 
 
 class TestPharmacogenomicsCommand:
@@ -2554,3 +2830,160 @@ class TestBuildDiagnosticsFallback:
             _helpers.console = original
 
         assert "Build detection inconclusive" not in buf.getvalue()
+
+
+class TestRuntimeNudges:
+    """GH #90 / #91: post-pipeline diagnostic emission for
+    strand-aware-inactive (array input + no ref) and GRCh38 rsID-less
+    undercount cases. Both are once-per-run and side-effect-only."""
+
+    def _capture(self, result) -> str:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from allelix.cli import _helpers
+
+        buf = StringIO()
+        original = _helpers.console
+        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        try:
+            _helpers._emit_runtime_nudges(result)
+        finally:
+            _helpers.console = original
+        return buf.getvalue()
+
+    def _result(self, **overrides):
+        """Synthetic minimal AnalysisResult-shaped object. The CLI
+        path only reads getattr() values; no need for the real dataclass."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        defaults = dict(
+            parser_name="23andme",
+            total_variants=1000,
+            no_ref_variant_count=0,
+            rsidless_variant_count=0,
+            build_diagnostics=BuildDiagnostics(
+                header_build=None,
+                detected_build="GRCh37",
+                effective_build="GRCh37",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+            ),
+        )
+        defaults.update(overrides)
+
+        class _R:
+            pass
+
+        r = _R()
+        for k, v in defaults.items():
+            setattr(r, k, v)
+        return r
+
+    # ---- GH #90 strand-aware inactive ----
+
+    def test_array_input_all_ref_none_fires_strand_warning(self):
+        """23andMe-style input with every variant ref=None →
+        strand-aware-inactive info line."""
+        result = self._result(no_ref_variant_count=1000)
+        out = self._capture(result)
+        assert "strand-aware matching inactive" in out
+
+    def test_array_input_with_ref_populated_quiet(self):
+        """Same input but gnomAD ref-resolution succeeded → no notice."""
+        result = self._result(no_ref_variant_count=0)
+        out = self._capture(result)
+        assert "strand-aware" not in out
+
+    def test_vcf_input_never_fires_strand_warning(self):
+        """VCF inputs carry REF natively. Even if a few rows came in
+        ref-less, the message is array-specific and should be silent."""
+        result = self._result(parser_name="vcf", no_ref_variant_count=1000)
+        out = self._capture(result)
+        assert "strand-aware" not in out
+
+    def test_partial_ref_population_does_not_fire(self):
+        """Half the variants had ref populated (e.g. an array file that
+        only partially overlaps gnomAD). Don't flap the warning on."""
+        result = self._result(no_ref_variant_count=500, total_variants=1000)
+        out = self._capture(result)
+        assert "strand-aware" not in out
+
+    # ---- GH #91 GRCh38 rsID-less undercount ----
+
+    def test_grch38_rsidless_fires_warning(self):
+        """GRCh38 VCF with mostly ID=. rows → undercount warning."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            parser_name="vcf",
+            total_variants=1000,
+            rsidless_variant_count=900,
+            build_diagnostics=BuildDiagnostics(
+                header_build="GRCh38",
+                detected_build="GRCh38",
+                effective_build="GRCh38",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+            ),
+        )
+        out = self._capture(result)
+        assert "GRCh38 input without rsIDs" in out
+        assert "#62" in out
+
+    def test_grch38_with_rsids_no_warning(self):
+        """GRCh38 VCF where most rows carry rsIDs (rare but real for
+        GRCh38 files passed through a dbSNP annotator) → silent."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            parser_name="vcf",
+            total_variants=1000,
+            rsidless_variant_count=100,
+            build_diagnostics=BuildDiagnostics(
+                header_build="GRCh38",
+                detected_build="GRCh38",
+                effective_build="GRCh38",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+            ),
+        )
+        out = self._capture(result)
+        assert "GRCh38 input without rsIDs" not in out
+
+    def test_grch37_rsidless_no_warning(self):
+        """The undercount story is GRCh38-specific. A GRCh37 input —
+        even one without rsIDs — gets the equivalent coverage as
+        always; #91 is interim until #62, so don't fire."""
+        result = self._result(
+            parser_name="vcf",
+            total_variants=1000,
+            rsidless_variant_count=900,
+        )
+        out = self._capture(result)
+        assert "GRCh38" not in out
+
+    def test_array_input_no_grch38_warning(self):
+        """Array inputs are always rsID-bearing — the GRCh38 case
+        doesn't apply, even if the build happened to be GRCh38."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            parser_name="23andme",
+            total_variants=1000,
+            rsidless_variant_count=0,
+            build_diagnostics=BuildDiagnostics(
+                header_build="GRCh38",
+                detected_build="GRCh38",
+                effective_build="GRCh38",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+            ),
+        )
+        out = self._capture(result)
+        assert "GRCh38 input without rsIDs" not in out

@@ -83,6 +83,79 @@ class TestDownload:
         assert not dest.exists()
 
 
+class _TruncatingHandler(http.server.BaseHTTPRequestHandler):
+    """Lies about Content-Length to simulate a truncated upstream.
+
+    #79 missing-branch coverage: the canonical _CapturingHandler always
+    matches header bytes to delivered bytes, so the size-mismatch check
+    at databases/manager.py:117-124 never fires under tests. This handler
+    advertises a longer payload than it actually delivers — exercising
+    the OSError("Download truncated") branch.
+    """
+
+    advertised: ClassVar[int] = 1000  # claim 1000 bytes
+    actual_payload: ClassVar[bytes] = b"partial-allelix-payload"  # 23 bytes
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Length", str(self.advertised))
+        self.end_headers()
+        # Deliver fewer bytes than advertised, then close — simulates a
+        # mid-transfer connection drop after a CDN sent the header.
+        self.wfile.write(self.actual_payload)
+
+    def log_message(self, *args, **kwargs) -> None:
+        pass
+
+
+@pytest.fixture
+def truncating_server():
+    port = _free_port()
+    server = http.server.HTTPServer(("127.0.0.1", port), _TruncatingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}/data"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+class TestDownloadTruncation:
+    """#79 missing-branch coverage: server lies about Content-Length, the
+    download function must detect the size mismatch and refuse the cache."""
+
+    def test_truncated_response_raises_download_truncated(
+        self, truncating_server: str, tmp_path: Path
+    ) -> None:
+        dest = tmp_path / "truncated.bin"
+        with pytest.raises(OSError, match="Download truncated"):
+            download(truncating_server, dest)
+
+    def test_truncated_response_reports_both_sizes(
+        self, truncating_server: str, tmp_path: Path
+    ) -> None:
+        """The error message should carry the expected and actual byte counts
+        so the operator can tell what was advertised vs delivered."""
+        dest = tmp_path / "truncated.bin"
+        with pytest.raises(OSError) as exc:
+            download(truncating_server, dest)
+        msg = str(exc.value)
+        assert "1,000" in msg or "1000" in msg  # advertised
+        assert "23" in msg  # actual delivered
+
+    def test_truncated_response_leaves_no_part_file(
+        self, truncating_server: str, tmp_path: Path
+    ) -> None:
+        """Truncation must NOT leave a partial .part file or a half-written dest."""
+        dest = tmp_path / "truncated.bin"
+        with pytest.raises(OSError):
+            download(truncating_server, dest)
+        assert not (tmp_path / "truncated.bin.part").exists()
+        assert not dest.exists()
+
+
 class TestVerifyFileHash:
     """Integrity verification for downloaded database files."""
 

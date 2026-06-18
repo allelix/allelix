@@ -45,6 +45,36 @@ class AllelixConfig:
         """Return whether the user asserts they hold a license for this source."""
         return self.license_overrides.get(source_name, False)
 
+    def permission_for(
+        self,
+        source_name: str,
+        annotator_classes: dict[str, type[Annotator]] | None = None,
+    ) -> Permission | None:
+        """Compute the three-state ``Permission`` for ``source_name``.
+
+        Resolves the annotator class for ``source_name`` and applies the
+        current license context (``commercial`` flag + per-source override).
+        Returns ``None`` when there is no annotator class registered for the
+        name. Callers that need a bool answer should use :meth:`is_enabled`
+        instead. The CLI's ``config show`` calls this directly because it
+        renders different table cells per permission state.
+        """
+        cls = None
+        if annotator_classes:
+            cls = annotator_classes.get(source_name)
+        if cls is None:
+            from allelix.annotators import get_annotator_class
+
+            cls = get_annotator_class(source_name)
+
+        if cls is None:
+            return None
+        return check_permission(
+            cls.license,
+            commercial=self.commercial,
+            license_held=self.license_held(source_name),
+        )
+
     def is_enabled(
         self,
         source_name: str,
@@ -56,20 +86,8 @@ class AllelixConfig:
         ``Permission``, and returns ``False`` for any non-ALLOW result.
         Falls through to the source toggle for allowed sources.
         """
-        cls = None
-        if annotator_classes:
-            cls = annotator_classes.get(source_name)
-        if cls is None:
-            from allelix.annotators import get_annotator_class
-
-            cls = get_annotator_class(source_name)
-
-        if cls is not None:
-            perm = check_permission(
-                cls.license,
-                commercial=self.commercial,
-                license_held=self.license_held(source_name),
-            )
+        perm = self.permission_for(source_name, annotator_classes)
+        if perm is not None:
             if perm is not Permission.ALLOW:
                 return False
         elif source_name not in _DEFAULT_SOURCES:

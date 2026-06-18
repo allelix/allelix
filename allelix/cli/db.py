@@ -211,6 +211,237 @@ def db_update(
                 )
 
 
+# Cache items considered part of the CADD opt-in footprint. Matched by
+# prefix against each entry in the data dir so a future renaming of the
+# sqlite file (e.g. cadd.GRCh38.sqlite) is still caught.
+_CADD_PREFIXES: tuple[str, ...] = ("cadd",)
+
+
+# Names that identify a directory as an allelix data dir for `db clean`'s
+# pre-deletion guard. Matched by prefix so future variants (e.g. multi-
+# build forms like clinvar.GRCh37.sqlite, sidecar files like
+# snpedia.sqlite-bak, the PharmGKB raw zip `clinicalAnnotations.zip`) are
+# all caught. `config.toml` is included as a presence-only marker — it
+# never appears in the deletion entries (it's preserved), but its
+# presence is the strongest signal "yes, this is an allelix data dir."
+_KNOWN_ARTIFACT_PREFIXES: frozenset[str] = frozenset(
+    {
+        "alphamissense",
+        "cadd",
+        "clinicalAnnotations",
+        "clinvar",
+        "config.toml",
+        "gnomad",
+        "gwas",
+        "pharmgkb",
+        "snpedia",
+    }
+)
+
+
+def _is_cadd_cache(name: str) -> bool:
+    return any(name.startswith(p) for p in _CADD_PREFIXES)
+
+
+def _looks_like_data_dir(resolved: Path) -> bool:
+    """Return True if the dir contains at least one recognized allelix artifact.
+
+    The guard for `db clean`: a fat-fingered `--data-dir ~/Documents` should
+    not result in `rm -rf ~/Documents`. We scan the dir for any name matching
+    a known cache-file prefix; absence of any match means the user almost
+    certainly mistyped the path.
+    """
+    return any(
+        any(entry.name.startswith(p) for p in _KNOWN_ARTIFACT_PREFIXES)
+        for entry in resolved.iterdir()
+    )
+
+
+def _human_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:,.1f} {unit}" if unit != "B" else f"{n:,} {unit}"
+        n /= 1024  # type: ignore[assignment]
+    return f"{n:,.1f} TB"
+
+
+def _iter_cache_entries(resolved: Path, *, keep_cadd: bool) -> list[Path]:
+    """Return data-dir entries to be deleted by `db clean`.
+
+    Excludes `config.toml` (per ADR-0006: the cache dir doubles as the
+    XDG-shaped config home in older installs; never delete config). When
+    `keep_cadd` is True, also excludes CADD cache files.
+    """
+    out: list[Path] = []
+    for entry in sorted(resolved.iterdir()):
+        if entry.name == "config.toml":
+            continue
+        if keep_cadd and _is_cadd_cache(entry.name):
+            continue
+        out.append(entry)
+    return out
+
+
+def _entry_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+@db.command("clean")
+@_DATA_DIR_OPT
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be deleted without removing anything.",
+)
+@click.option(
+    "--keep-cadd",
+    is_flag=True,
+    default=False,
+    help="Preserve the CADD cache (the largest opt-in download, ~5.8 GB).",
+)
+@click.option(
+    "--yes",
+    "skip_confirm",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt (for scripted use).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help=(
+        "Bypass the looks-like-an-allelix-cache safety guard. Required when "
+        "the target directory contains content but no recognized allelix "
+        "cache files (e.g. you've staged caches under a non-standard name)."
+    ),
+)
+def db_clean(
+    data_dir: Path | None,
+    dry_run: bool,
+    keep_cadd: bool,
+    skip_confirm: bool,
+    force: bool,
+) -> None:
+    """Remove downloaded reference database caches to reclaim disk space.
+
+    The caches are disposable — every file removed here can be re-fetched
+    by `allelix db update`. Your config.toml (license assertions, source
+    toggles) is preserved; it lives outside the cache.
+
+    Pass `--keep-cadd` to preserve the CADD cache (largest opt-in
+    download, ~5.8 GB; expensive to re-download). Pass `--dry-run` to
+    preview the deletion without acting. Pass `--yes` to skip the
+    confirmation prompt for scripted use.
+    """
+    import shutil
+    import sys
+
+    # resolve_data_dir creates the dir if missing — existence is guaranteed
+    # but the dir may be empty (matched as a no-op below).
+    resolved = resolve_data_dir(data_dir)
+    entries = _iter_cache_entries(resolved, keep_cadd=keep_cadd)
+
+    # Safety guard: refuse to delete content from a directory that doesn't
+    # look like an allelix cache. Runs BEFORE --yes / --dry-run so a typo'd
+    # --data-dir cannot result in `rm -rf` against an unrelated tree even
+    # in the scripted-skip-confirm path. --force is the explicit opt-out.
+    # Plain print to stderr (same routing as `db path --check`) — Rich
+    # console.print would wrap the message at the terminal width and
+    # would route to stdout, both of which are wrong for an error.
+    if entries and not force and not _looks_like_data_dir(resolved):
+        print(
+            f"error: {resolved} doesn't look like an allelix cache directory "
+            "(no recognized cache files found). Refusing to delete. "
+            "Pass --force if this is intended.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not entries:
+        console.print(
+            f"[dim]Nothing to clean at {resolved}"
+            f"{' (CADD preserved via --keep-cadd)' if keep_cadd else ''}[/dim]"
+        )
+        return
+
+    table = Table(title=f"{'Would delete' if dry_run else 'Will delete'} ({resolved})")
+    table.add_column("Item", style="cyan", no_wrap=True)
+    table.add_column("Size", justify="right")
+    total = 0
+    for entry in entries:
+        size = _entry_size(entry)
+        total += size
+        table.add_row(entry.name, _human_bytes(size))
+    table.add_row("[bold]total[/bold]", f"[bold]{_human_bytes(total)}[/bold]")
+    console.print(table)
+
+    if keep_cadd:
+        console.print(
+            "[dim]CADD cache preserved (--keep-cadd). Re-running `db update --cadd` "
+            "would otherwise re-download ~5.8 GB.[/dim]"
+        )
+
+    if dry_run:
+        console.print("[dim]Dry run — no files removed.[/dim]")
+        return
+
+    if not skip_confirm and not click.confirm(
+        f"Delete {len(entries)} item(s) ({_human_bytes(total)})?",
+        default=False,
+    ):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    removed = 0
+    for entry in entries:
+        if entry.is_file() or entry.is_symlink():
+            entry.unlink()
+        else:
+            shutil.rmtree(entry)
+        removed += 1
+    console.print(
+        f"[green]✓ Removed {removed} item(s) ({_human_bytes(total)}).[/green] "
+        "Re-populate with [bold]allelix db update[/bold]."
+    )
+
+
+@db.command("path")
+@_DATA_DIR_OPT
+@click.option(
+    "--check",
+    is_flag=True,
+    default=False,
+    help="Verify the path exists and is writable (non-zero exit on failure).",
+)
+def db_path(data_dir: Path | None, check: bool) -> None:
+    """Print the resolved reference-database cache directory.
+
+    Useful for scripting / backup integration:
+
+        ALLELIX_DATA=$(allelix db path)
+        du -sh "$ALLELIX_DATA"
+
+    With `--check`, additionally verify the path is writable; exit
+    non-zero (and print a diagnostic to stderr) if it is not.
+    Existence is guaranteed — the path is created on resolution.
+    """
+    import os
+    import sys
+
+    resolved = resolve_data_dir(data_dir)
+    # Plain print (not rich console.print) so the output is shell-safe
+    # for `$(allelix db path)` capture — no styling escape sequences.
+    print(str(resolved))
+
+    if check and not os.access(resolved, os.W_OK):
+        print(f"error: path is not writable: {resolved}", file=sys.stderr)
+        sys.exit(1)
+
+
 @db.command("status")
 @_DATA_DIR_OPT
 def db_status(data_dir: Path | None) -> None:

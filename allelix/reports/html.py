@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from allelix.models import Annotation
-    from allelix.reports._pipeline import AnalysisResult
+    from allelix.reports._pipeline import AnalysisResult, PanelCoverage
     from allelix.reports.diff import DiffResult
 
 
@@ -166,6 +166,15 @@ a { color: var(--link); }
   border-left: 4px solid var(--notice-warn-border, #e65100);
   padding: 1rem; margin: 1.5rem 0; border-radius: 4px; font-size: .95rem;
 }
+.notice table.panel-coverage {
+  margin-top: .75rem; border-collapse: collapse; font-size: .85rem;
+}
+.notice table.panel-coverage th,
+.notice table.panel-coverage td {
+  text-align: left; padding: .25rem .75rem .25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.notice table.panel-coverage th { font-weight: 600; }
 .education {
   background: var(--bg-surface); border-left: 4px solid var(--border);
   padding: 1rem 1.25rem; margin: 1.5rem 0; border-radius: 4px; font-size: .9rem;
@@ -474,6 +483,49 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
         '<div class="notice-warn"><strong>High-value no-calls.</strong> '
         "The following clinically important SNPs returned no genotype call:"
         f"<ul>{items}</ul></div>"
+    )
+
+
+def _panel_coverage_section(coverage: PanelCoverage | None) -> str:
+    """GH #75: render the Panel Coverage section.
+
+    Quiet when no panel was supplied. Otherwise show the requested/found
+    counts plus a table of rsIDs that weren't on the user's chip (state
+    3) and rsIDs that were on the chip but produced no findings (state
+    2). State 1 hits render in the main annotation table as before, so
+    this section is purely a "what's NOT in the table" summary.
+    """
+    if coverage is None:
+        return ""
+    requested = int(coverage["requested"])
+    found = int(coverage["found"])
+    missing = list(coverage["missing"])
+    no_findings = list(coverage["no_findings"])
+
+    rows = []
+    for rsid in missing:
+        rows.append(
+            f"<tr><td><code>{_escape(rsid)}</code></td>"
+            "<td>not genotyped on this chip/platform</td></tr>"
+        )
+    for rsid in no_findings:
+        rows.append(
+            f"<tr><td><code>{_escape(rsid)}</code></td>"
+            "<td>genotyped, no annotations matched</td></tr>"
+        )
+    table = ""
+    if rows:
+        table = (
+            "<table class='panel-coverage'><thead>"
+            "<tr><th>rsID</th><th>Note</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+    return (
+        '<div class="notice"><strong>Panel coverage.</strong> '
+        f"{found}/{requested} requested rsIDs genotyped in this input "
+        f"({len(missing)} not on chip, {len(no_findings)} "
+        "genotyped with no findings)."
+        f"{table}</div>"
     )
 
 
@@ -1135,6 +1187,7 @@ def render_html(
         f"{_escape(REGULATORY_NOTICE)}</div>"
         f"{build_warn}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
+        f"{_panel_coverage_section(result.panel_coverage())}"
         f"{_EDUCATION_SECTION}"
         f"{_MAGNITUDE_LEGEND}"
         f"{diff_banner}"

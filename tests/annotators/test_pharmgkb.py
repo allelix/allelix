@@ -529,11 +529,6 @@ class TestCpicFallback:
         assert ann.is_ready()
         assert ann.version() is not None
 
-    def test_signal_triggers_refresh_when_cpic_recovers(self):
-        cached = "pgkb:etag:abc|cpic:unavailable"
-        remote = "pgkb:etag:abc|cpic:lastchange:2026-06-01"
-        assert cached != remote
-
     def test_signal_cpic_down_returns_unavailable(self):
         ann = PharmGKBAnnotator.__new__(PharmGKBAnnotator)
         with (

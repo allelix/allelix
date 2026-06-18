@@ -5,19 +5,409 @@
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
+from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.gwas_loader import load_gwas_tsv
-from allelix.databases.manager import load_clinvar_vcf
 from allelix.databases.pharmgkb_loader import (
     FUNCTION_CLASS_DECREASED,
     FUNCTION_CLASS_NO_FUNCTION,
     FUNCTION_CLASS_NORMAL,
     load_pharmgkb_tsv,
 )
+from allelix.databases.schema import CLINVAR_SCHEMA
+
+# Synthetic ClinVar cache rows used by clinvar_data_dir and
+# all_annotators_data_dir. Pre-stage-C this content lived in
+# tests/fixtures/mock_clinvar_grch{37,38}.vcf and was parsed by
+# iter_clinvar_records. Stage C removes the VCF loader, so the
+# data is encoded directly in Python and inserted into the cache
+# via SQLite. The biology is identical to the prior VCFs — every
+# test that depends on these records keeps its semantics.
+#
+# Format: (rsid, chromosome, position, ref, alt, clinical_significance,
+#          condition, gene, review_status, allele_id)
+_MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
+    (
+        "rs1801133",
+        "1",
+        11856378,
+        "G",
+        "A",
+        "Pathogenic",
+        "MTHFR_deficiency",
+        "MTHFR",
+        "criteria_provided,_single_submitter",
+        100001,
+    ),
+    (
+        "rs1801131",
+        "1",
+        11854476,
+        "T",
+        "G",
+        "Likely_pathogenic",
+        "Hyperhomocysteinemia",
+        "MTHFR",
+        "criteria_provided,_single_submitter",
+        100002,
+    ),
+    (
+        "rs1801394",
+        "5",
+        7870860,
+        "A",
+        "G",
+        "Likely_benign",
+        "Folate_metabolism_disorder",
+        "MTRR",
+        "criteria_provided,_single_submitter",
+        100003,
+    ),
+    (
+        "rs4680",
+        "22",
+        19951271,
+        "G",
+        "A",
+        "Drug_response",
+        "Methylphenidate_response",
+        "COMT",
+        "criteria_provided,_single_submitter",
+        100004,
+    ),
+    (
+        "rs1799853",
+        "10",
+        96702047,
+        "C",
+        "T",
+        "Drug_response",
+        "Warfarin_response",
+        "CYP2C9",
+        "criteria_provided,_single_submitter",
+        100005,
+    ),
+    (
+        "rs4149056",
+        "12",
+        21331549,
+        "T",
+        "C",
+        "Drug_response",
+        "Statin-induced_myopathy",
+        "SLCO1B1",
+        "criteria_provided,_single_submitter",
+        100006,
+    ),
+    (
+        "rs80357906",
+        "17",
+        41209080,
+        "G",
+        "A",
+        "Pathogenic",
+        "Hereditary_breast_and_ovarian_cancer_syndrome",
+        "BRCA1",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100007,
+    ),
+    (
+        "rs121918506",
+        "17",
+        7577538,
+        "G",
+        "T",
+        "Pathogenic",
+        "Li-Fraumeni_syndrome",
+        "TP53",
+        "criteria_provided,_single_submitter",
+        100008,
+    ),
+    (
+        "rs999999999",
+        "1",
+        100,
+        "A",
+        "T",
+        "Benign",
+        "Synthetic_test_only",
+        "TESTGENE",
+        "no_assertion_provided",
+        100009,
+    ),
+    (
+        "rs113993960",
+        "7",
+        117199644,
+        "CTT",
+        "C",
+        "Pathogenic",
+        "Cystic_fibrosis",
+        "CFTR",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100010,
+    ),
+    # ADR-0021 strand-inversion pin: GRCh37 NIPA1 REF=C ALT=G.
+    (
+        "rs104894490",
+        "15",
+        23060816,
+        "C",
+        "G",
+        "Pathogenic",
+        "Hereditary_spastic_paraplegia_6",
+        "NIPA1",
+        "criteria_provided,_single_submitter",
+        100011,
+    ),
+    # rs1065852 multi-allelic split (G->A drug_response, G->C benign).
+    (
+        "rs1065852",
+        "22",
+        42526694,
+        "G",
+        "A",
+        "Drug_response",
+        "Codeine_response",
+        "CYP2D6",
+        "criteria_provided,_single_submitter",
+        100020,
+    ),
+    (
+        "rs1065852",
+        "22",
+        42526694,
+        "G",
+        "C",
+        "Benign",
+        "Synthetic_benign_pair",
+        "CYP2D6",
+        "criteria_provided,_single_submitter",
+        100021,
+    ),
+)
+
+_MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
+    (
+        "rs1801133",
+        "1",
+        11796321,
+        "G",
+        "A",
+        "Pathogenic",
+        "MTHFR_deficiency",
+        "MTHFR",
+        "criteria_provided,_single_submitter",
+        100001,
+    ),
+    (
+        "rs1801131",
+        "1",
+        11794419,
+        "T",
+        "G",
+        "Likely_pathogenic",
+        "Hyperhomocysteinemia",
+        "MTHFR",
+        "criteria_provided,_single_submitter",
+        100002,
+    ),
+    (
+        "rs1801394",
+        "5",
+        7870973,
+        "A",
+        "G",
+        "Likely_benign",
+        "Folate_metabolism_disorder",
+        "MTRR",
+        "criteria_provided,_single_submitter",
+        100003,
+    ),
+    (
+        "rs4680",
+        "22",
+        19963748,
+        "G",
+        "A",
+        "Drug_response",
+        "Methylphenidate_response",
+        "COMT",
+        "criteria_provided,_single_submitter",
+        100004,
+    ),
+    (
+        "rs1799853",
+        "10",
+        94942290,
+        "C",
+        "T",
+        "Drug_response",
+        "Warfarin_response",
+        "CYP2C9",
+        "criteria_provided,_single_submitter",
+        100005,
+    ),
+    (
+        "rs4149056",
+        "12",
+        21178615,
+        "T",
+        "C",
+        "Drug_response",
+        "Statin-induced_myopathy",
+        "SLCO1B1",
+        "criteria_provided,_single_submitter",
+        100006,
+    ),
+    (
+        "rs80357906",
+        "17",
+        43057063,
+        "G",
+        "A",
+        "Pathogenic",
+        "Hereditary_breast_and_ovarian_cancer_syndrome",
+        "BRCA1",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100007,
+    ),
+    (
+        "rs121918506",
+        "17",
+        7674222,
+        "G",
+        "T",
+        "Pathogenic",
+        "Li-Fraumeni_syndrome",
+        "TP53",
+        "criteria_provided,_single_submitter",
+        100008,
+    ),
+    (
+        "rs999999999",
+        "1",
+        100,
+        "A",
+        "T",
+        "Benign",
+        "Synthetic_test_only",
+        "TESTGENE",
+        "no_assertion_provided",
+        100009,
+    ),
+    (
+        "rs113993960",
+        "7",
+        117559590,
+        "CTT",
+        "C",
+        "Pathogenic",
+        "Cystic_fibrosis",
+        "CFTR",
+        "criteria_provided,_multiple_submitters,_no_conflicts",
+        100010,
+    ),
+    # ADR-0021 strand-inversion pin: GRCh38 NIPA1 REF=G ALT=A.
+    (
+        "rs104894490",
+        "15",
+        22812251,
+        "G",
+        "A",
+        "Pathogenic",
+        "Hereditary_spastic_paraplegia_6",
+        "NIPA1",
+        "criteria_provided,_single_submitter",
+        100011,
+    ),
+    # rs1065852 multi-allelic split.
+    (
+        "rs1065852",
+        "22",
+        42130692,
+        "G",
+        "A",
+        "Drug_response",
+        "Codeine_response",
+        "CYP2D6",
+        "criteria_provided,_single_submitter",
+        100020,
+    ),
+    (
+        "rs1065852",
+        "22",
+        42130692,
+        "G",
+        "C",
+        "Benign",
+        "Synthetic_benign_pair",
+        "CYP2D6",
+        "criteria_provided,_single_submitter",
+        100021,
+    ),
+)
+
+
+def _build_synthetic_clinvar_cache(
+    db_path: Path,
+    build: str,
+    *,
+    source_url: str = "test://mock",
+    remote_signal: str | None = None,
+) -> None:
+    """Build a per-build ClinVar SQLite cache from the synthetic rows above.
+
+    Stage C (#42) removed load_clinvar_vcf; this helper replaces it for
+    tests that just need a populated cache. The rows are identical to
+    what the prior mock_clinvar_grch{37,38}.vcf fixtures parsed into.
+    Stamps the current CLINVAR_INTERPRETER_VERSION so the annotator's
+    is_ready() check passes without invoking stamp_existing_clinvar_cache.
+    """
+    if db_path.exists():
+        db_path.unlink()
+    rows = _MOCK_CLINVAR_ROWS_GRCH37 if build == "GRCh37" else _MOCK_CLINVAR_ROWS_GRCH38
+    record_name = clinvar_record_name(build)
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        conn.executescript(CLINVAR_SCHEMA)
+        conn.executemany(
+            "INSERT INTO clinvar_variants (rsid, chromosome, position, ref, "
+            "alt, clinical_significance, condition, gene, review_status, "
+            "allele_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.execute(
+            "INSERT INTO database_versions (name, source_url, version, "
+            "downloaded_at, record_count, remote_signal, local_version_tag) "
+            "VALUES (?, ?, '20260101', '2026-06-08', ?, ?, ?)",
+            (
+                record_name,
+                source_url,
+                len(rows),
+                remote_signal,
+                f"iv:{CLINVAR_INTERPRETER_VERSION}",
+            ),
+        )
+        conn.commit()
+
+
+@pytest.fixture
+def build_synthetic_clinvar_cache():
+    """Provide the synthetic ClinVar cache builder to tests outside conftest.
+
+    Stage C (#42) replaced the VCF loader with a TSV loader; production
+    tests that previously called `load_clinvar_vcf(...)` against a VCF
+    to pre-populate a cache for unit tests now request this fixture and
+    call it as `build_synthetic_clinvar_cache(db_path, build)`. Same
+    biology (13 ClinVar rows per build), same per-build dispatch,
+    no VCF parsing path involved.
+    """
+    return _build_synthetic_clinvar_cache
 
 
 @pytest.fixture(autouse=True)
@@ -125,6 +515,15 @@ def mock_ftdna_illumina_path() -> Path:
 
 
 @pytest.fixture
+def mock_ftdna_famfinder_path() -> Path:
+    """Path to the committed synthetic FTDNA FamFinder fixture."""
+    path = FIXTURES_DIR / "mock_ftdna_famfinder.txt"
+    if not path.exists():
+        pytest.fail(f"Mock fixture missing: {path}")
+    return path
+
+
+@pytest.fixture
 def mock_myheritage_path() -> Path:
     """Path to the committed synthetic MyHeritage fixture."""
     path = FIXTURES_DIR / "mock_myheritage.csv"
@@ -169,65 +568,20 @@ def mock_mhg_mislabeled_path() -> Path:
 
 
 @pytest.fixture
-def mock_clinvar_grch37_vcf() -> Path:
-    """ADR-0021 fixture: synthetic ClinVar VCF with GRCh37 positions."""
-    path = FIXTURES_DIR / "mock_clinvar_grch37.vcf"
-    if not path.exists():
-        pytest.fail(
-            f"Mock GRCh37 ClinVar VCF missing: {path}. Run: "
-            "python tests/generate_clinvar_fixture.py"
-        )
-    return path
-
-
-@pytest.fixture
-def mock_clinvar_grch38_vcf() -> Path:
-    """ADR-0021 fixture: synthetic ClinVar VCF with GRCh38 positions and
-    build-specific REF/ALT for the NIPA1 rs104894490 strand-inverted case.
-    """
-    path = FIXTURES_DIR / "mock_clinvar_grch38.vcf"
-    if not path.exists():
-        pytest.fail(
-            f"Mock GRCh38 ClinVar VCF missing: {path}. Run: "
-            "python tests/generate_clinvar_fixture.py"
-        )
-    return path
-
-
-# Back-compat: many tests reference `mock_clinvar_vcf` as a single path.
-# They predate ADR-0021's dual-build split. Most query by rsID (position-
-# agnostic), so a single fixture works for them. Point this at the GRCh37
-# build to preserve historical semantics. New tests should use the
-# build-specific fixtures above.
-@pytest.fixture
-def mock_clinvar_vcf(mock_clinvar_grch37_vcf: Path) -> Path:
-    return mock_clinvar_grch37_vcf
-
-
-@pytest.fixture
-def clinvar_data_dir(
-    tmp_path: Path,
-    mock_clinvar_grch37_vcf: Path,
-    mock_clinvar_grch38_vcf: Path,
-) -> Path:
+def clinvar_data_dir(tmp_path: Path) -> Path:
     """Build a fresh data dir with populated per-build ClinVar caches.
 
-    ADR-0021 + ADR-0015: GRCh37 cache loaded from the GRCh37 fixture
-    (REF=C ALT=G at NIPA1 etc.), GRCh38 cache from the GRCh38 fixture
-    (REF=G ALT=A at NIPA1 etc.). The annotator dispatches by
-    `variant.build`; tests that exercise the strand-inverted regression
-    case can now observe DIFFERENT results across caches.
+    ADR-0021 + ADR-0015: GRCh37 and GRCh38 caches built from the
+    synthetic row tables at the top of this module. NIPA1 (rs104894490)
+    has REF=C ALT=G on GRCh37 and REF=G ALT=A on GRCh38 — tests that
+    exercise the strand-inverted regression case observe DIFFERENT
+    results across caches.
     """
-    fixture_by_build = {
-        "GRCh37": mock_clinvar_grch37_vcf,
-        "GRCh38": mock_clinvar_grch38_vcf,
-    }
-    for build, vcf in fixture_by_build.items():
-        load_clinvar_vcf(
-            vcf,
+    for build in ("GRCh37", "GRCh38"):
+        _build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename(build),
+            build,
             source_url=f"test://mock-{build}",
-            record_name=clinvar_record_name(build),
         )
     return tmp_path
 
@@ -293,25 +647,18 @@ def gwas_data_dir(tmp_path: Path, mock_gwas_tsv: Path) -> Path:
 @pytest.fixture
 def all_annotators_data_dir(
     tmp_path: Path,
-    mock_clinvar_grch37_vcf: Path,
-    mock_clinvar_grch38_vcf: Path,
     mock_pharmgkb_dir: Path,
     mock_gwas_tsv: Path,
 ) -> Path:
     """Build a fresh data dir with all annotators ready (ClinVar + ClinPGx + GWAS).
 
-    Per-build ClinVar caches from the GRCh37 / GRCh38 fixtures (ADR-0021).
+    Per-build ClinVar caches built from the synthetic row tables (ADR-0021).
     """
-    fixture_by_build = {
-        "GRCh37": mock_clinvar_grch37_vcf,
-        "GRCh38": mock_clinvar_grch38_vcf,
-    }
-    for build, vcf in fixture_by_build.items():
-        load_clinvar_vcf(
-            vcf,
+    for build in ("GRCh37", "GRCh38"):
+        _build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename(build),
+            build,
             source_url=f"test://mock-{build}",
-            record_name=clinvar_record_name(build),
         )
     load_pharmgkb_tsv(
         mock_pharmgkb_dir,

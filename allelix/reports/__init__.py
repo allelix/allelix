@@ -25,9 +25,9 @@ REGULATORY_NOTICE = (
 def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
     """Write `content` to `path` via a `.tmp` sibling + `os.replace`.
 
-    Mirrors `download()` / `load_clinvar_vcf` atomicity: a killed process
-    mid-write leaves either the previous file or no file at the target,
-    never a half-written one.
+    Mirrors `download()` atomicity: a killed process mid-write leaves
+    either the previous file or no file at the target, never a
+    half-written one.
     """
     tmp = path.with_name(path.name + ".tmp")
     try:

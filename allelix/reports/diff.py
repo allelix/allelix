@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5"}
+_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6"}
 
 # GH #25: magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5

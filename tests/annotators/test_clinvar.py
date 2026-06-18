@@ -12,7 +12,6 @@ import pytest
 
 from allelix.annotators.clinvar import ClinVarAnnotator, clinvar_db_filename, clinvar_record_name
 from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
-from allelix.databases.manager import load_clinvar_vcf
 from allelix.models import Variant
 
 if TYPE_CHECKING:
@@ -57,13 +56,190 @@ class TestSetupAndStatus:
 
 class TestSignalGuard:
     def test_setup_aborts_when_signal_fetch_fails(self, tmp_path: Path, monkeypatch):
-        """setup() raises RuntimeError when remote signal is None."""
+        """setup() raises RuntimeError when remote signal is None.
+
+        Stage B: signal is fetched once from submission_summary.md5
+        (not per-build), so the patch target is the single static method.
+        """
         ann = ClinVarAnnotator(tmp_path)
         monkeypatch.setattr(
-            ClinVarAnnotator, "_fetch_remote_signal_for", staticmethod(lambda _build: None)
+            ClinVarAnnotator, "_fetch_remote_signal_for_tsv", staticmethod(lambda: None)
         )
         with pytest.raises(RuntimeError, match="cannot verify remote freshness signal"):
             ann.setup()
+
+
+class TestStageBWiring:
+    """#42 stage B: ClinVarAnnotator.setup() drives the per-SCV TSV loader."""
+
+    def _stub_downloads_and_loader(self, tmp_path: Path, monkeypatch):
+        """Wire a complete fake setup path:
+
+        - signal returns a deterministic hex md5
+        - downloads create empty staging files (so the cleanup path runs)
+        - load_clinvar_tsv writes a tiny synthetic cache so the per-build
+          rename + downstream assertions can verify the cache landed
+        - verify_file_hash is a no-op (the staging files aren't real md5s)
+        """
+        from allelix.annotators import clinvar as clinvar_module
+        from allelix.databases import manager as manager_mod
+
+        monkeypatch.setattr(
+            ClinVarAnnotator,
+            "_fetch_remote_signal_for_tsv",
+            staticmethod(lambda: "md5:" + "a" * 32),
+        )
+        monkeypatch.setattr(clinvar_module, "verify_file_hash", lambda *_a, **_kw: None)
+
+        # Fake download: just create the destination file empty.
+        def _fake_download(url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"")
+
+        monkeypatch.setattr(clinvar_module, "download", _fake_download)
+
+        # Fake load_clinvar_tsv: write a minimal cache with one row stamped
+        # at the current interpreter version. Captures the build it was
+        # called with so tests can verify per-build dispatch.
+        load_calls: list[str] = []
+
+        def _fake_loader(
+            vs_path, ss_path, db_path, build, *, source_url="", remote_signal=None, **_kw
+        ):
+            from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
+            from allelix.databases.schema import CLINVAR_SCHEMA
+
+            load_calls.append(build)
+            if db_path.exists():
+                db_path.unlink()
+            with contextlib.closing(sqlite3.connect(db_path)) as conn:
+                conn.executescript(CLINVAR_SCHEMA)
+                conn.execute(
+                    "INSERT INTO clinvar_variants (rsid, chromosome, position, "
+                    "ref, alt, clinical_significance, condition, gene, "
+                    "review_status, allele_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("rs999", "1", 100, "G", "A", "Pathogenic", "Test cond", "TEST", "", 1),
+                )
+                if remote_signal:
+                    conn.execute(
+                        "INSERT INTO database_versions "
+                        "(name, source_url, version, downloaded_at, record_count, "
+                        "remote_signal, local_version_tag) "
+                        "VALUES ('clinvar', ?, '20260101', '2026-06-17', 1, ?, ?)",
+                        (source_url, remote_signal, f"iv:{CLINVAR_INTERPRETER_VERSION}"),
+                    )
+                conn.commit()
+
+        monkeypatch.setattr(clinvar_module, "load_clinvar_tsv", _fake_loader)
+        # Patch the manager module symbol too — the annotator imports it
+        # via _manager_module to honor patches on the TSV URL constants
+        # in tests, but load_clinvar_tsv is bound at import time on the
+        # clinvar module above. Belt-and-suspenders.
+        monkeypatch.setattr(manager_mod, "load_clinvar_tsv", _fake_loader)
+        return load_calls
+
+    def test_setup_dispatches_to_both_builds_from_one_download(self, tmp_path: Path, monkeypatch):
+        """Stage B's key win: one TSV pair → both build caches."""
+        load_calls = self._stub_downloads_and_loader(tmp_path, monkeypatch)
+        ann = ClinVarAnnotator(tmp_path)
+        try:
+            ann.setup()
+            # The loader was called once per managed build, against the
+            # SAME TSV pair (we don't get a second download leg).
+            assert sorted(load_calls) == ["GRCh37", "GRCh38"]
+            # Both per-build cache files exist.
+            assert (tmp_path / "clinvar.GRCh37.sqlite").exists()
+            assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
+        finally:
+            ann.close()
+
+    def test_setup_cleans_up_staged_tsvs(self, tmp_path: Path, monkeypatch):
+        """Both downloaded TSV files are deleted after a successful setup."""
+        self._stub_downloads_and_loader(tmp_path, monkeypatch)
+        ann = ClinVarAnnotator(tmp_path)
+        try:
+            ann.setup()
+            assert not (tmp_path / "variant_summary.txt.gz").exists()
+            assert not (tmp_path / "submission_summary.txt.gz").exists()
+        finally:
+            ann.close()
+
+    def test_setup_single_build_only_loads_that_build(self, tmp_path: Path, monkeypatch):
+        """Restricting to one build via the constructor still downloads
+        once but only ingests the target. Used by `--build grch37/grch38`."""
+        load_calls = self._stub_downloads_and_loader(tmp_path, monkeypatch)
+        ann = ClinVarAnnotator(tmp_path, builds=("GRCh38",))
+        try:
+            ann.setup()
+            assert load_calls == ["GRCh38"]
+            assert not (tmp_path / "clinvar.GRCh37.sqlite").exists()
+            assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
+        finally:
+            ann.close()
+
+    def test_setup_renames_database_versions_to_per_build(self, tmp_path: Path, monkeypatch):
+        """load_clinvar_tsv stamps the row with name='clinvar'; setup
+        must rename it to the per-build form so is_ready() can dispatch."""
+        self._stub_downloads_and_loader(tmp_path, monkeypatch)
+        ann = ClinVarAnnotator(tmp_path, builds=("GRCh38",))
+        try:
+            ann.setup()
+            with contextlib.closing(sqlite3.connect(tmp_path / "clinvar.GRCh38.sqlite")) as conn:
+                names = {row[0] for row in conn.execute("SELECT name FROM database_versions")}
+            assert "clinvar.GRCh38" in names
+            assert "clinvar" not in names  # renamed in place
+        finally:
+            ann.close()
+
+    def test_interpreter_version_current(self):
+        """Stage B bumped CLINVAR_INTERPRETER_VERSION 2 → 3 so iv:2
+        VCF-era caches auto-reingest. PR #101 (evaluator defect 5)
+        bumped iv:3 → iv:4 because the per-SCV TSV loader was
+        landing placeholder CLNSIG values ("-", "not specified",
+        etc.) in the cache; without the bump, existing iv:3 caches
+        stayed poisoned across the fix. Every cache-content change
+        requires a bump per CLAUDE.md.
+
+        Pin the current value here so a future content-altering
+        loader change is forced to revisit this assertion (and the
+        version bump that goes with it) rather than silently inherit
+        whatever number is in the constant."""
+        from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
+
+        assert CLINVAR_INTERPRETER_VERSION == 4
+
+    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3"])
+    def test_stale_cache_is_not_ready(self, tmp_path: Path, stale_iv: str):
+        """Any iv-tag older than CLINVAR_INTERPRETER_VERSION must fail
+        is_ready() so db update triggers a reingest.
+
+        - ``iv:2`` is the pre-stage-B VCF-era cache.
+        - ``iv:3`` is the broken-loader cache from before PR #101's
+          placeholder-CLNSIG fix; bumping to iv:4 was the whole point
+          of forcing existing caches to rebuild against the fixed
+          loader.
+        """
+        from allelix.annotators.clinvar import clinvar_db_filename
+        from allelix.databases import schema as schema_mod
+
+        db_path = tmp_path / clinvar_db_filename("GRCh37")
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.executescript(schema_mod.CLINVAR_SCHEMA)
+            conn.execute(
+                "INSERT INTO database_versions "
+                "(name, source_url, version, downloaded_at, record_count, "
+                "remote_signal, local_version_tag) "
+                "VALUES ('clinvar.GRCh37', 'test', '20260101', '2026-06-17', 1, "
+                "'md5:old', ?)",
+                (stale_iv,),
+            )
+            conn.commit()
+
+        ann = ClinVarAnnotator(tmp_path, builds=("GRCh37",))
+        try:
+            assert ann.is_ready() is False
+        finally:
+            ann.close()
 
 
 class TestInterpreterVersionStamp:
@@ -73,18 +249,17 @@ class TestInterpreterVersionStamp:
         """Freshly loaded cache has the current iv stamp — is_ready returns True."""
         assert annotator.is_ready() is True
 
-    def test_is_ready_rejects_cache_without_tag(
-        self, tmp_path: Path, mock_clinvar_grch37_vcf: Path
+    def test_is_ready_rejects_null_tag_without_baked_marker(
+        self, tmp_path: Path, build_synthetic_clinvar_cache
     ):
-        """Cache with no local_version_tag is self-healed by one-shot migration."""
+        """PR-1 safety fix: NULL local_version_tag with no `|iv:N` marker
+        in remote_signal is an unknown-version legacy cache. is_ready()
+        returns False so db update reingests, instead of silent-promoting
+        the cache to the current interpreter version across what may be a
+        data-format boundary."""
         build = "GRCh37"
         db_path = tmp_path / clinvar_db_filename(build)
-        load_clinvar_vcf(
-            mock_clinvar_grch37_vcf,
-            db_path,
-            source_url="test://mock",
-            record_name=clinvar_record_name(build),
-        )
+        build_synthetic_clinvar_cache(db_path, build)
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 "UPDATE database_versions SET remote_signal = 'md5:abc', "
@@ -93,24 +268,55 @@ class TestInterpreterVersionStamp:
             )
             conn.commit()
         ann = ClinVarAnnotator(tmp_path, builds=(build,))
-        assert ann.is_ready() is True
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
-            tag = conn.execute(
-                "SELECT local_version_tag FROM database_versions WHERE name = ?",
-                (clinvar_record_name(build),),
-            ).fetchone()[0]
-            assert tag == f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        try:
+            assert ann.is_ready() is False
+            # Tag must stay NULL — no silent promotion.
+            with contextlib.closing(sqlite3.connect(db_path)) as conn:
+                tag = conn.execute(
+                    "SELECT local_version_tag FROM database_versions WHERE name = ?",
+                    (clinvar_record_name(build),),
+                ).fetchone()[0]
+            assert tag is None
+        finally:
+            ann.close()
 
-    def test_is_ready_rejects_old_iv_stamp(self, tmp_path: Path, mock_clinvar_grch37_vcf: Path):
+    def test_is_ready_self_heals_null_tag_with_baked_current_marker(
+        self, tmp_path: Path, build_synthetic_clinvar_cache
+    ):
+        """The preserved benefit: a legacy cache that DID stamp its
+        interpreter version into remote_signal as `|iv:CURRENT` still
+        self-heals without a redownload. NULL tag + matching baked
+        marker means we have positive version evidence."""
+        build = "GRCh37"
+        db_path = tmp_path / clinvar_db_filename(build)
+        build_synthetic_clinvar_cache(db_path, build)
+        baked_signal = f"md5:abc|iv:{CLINVAR_INTERPRETER_VERSION}"
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE database_versions SET remote_signal = ?, "
+                "local_version_tag = NULL WHERE name = ?",
+                (baked_signal, clinvar_record_name(build)),
+            )
+            conn.commit()
+        ann = ClinVarAnnotator(tmp_path, builds=(build,))
+        try:
+            assert ann.is_ready() is True
+            with contextlib.closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    "SELECT local_version_tag, remote_signal "
+                    "FROM database_versions WHERE name = ?",
+                    (clinvar_record_name(build),),
+                ).fetchone()
+            assert row[0] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
+            assert row[1] == "md5:abc"  # |iv: marker scrubbed
+        finally:
+            ann.close()
+
+    def test_is_ready_rejects_old_iv_stamp(self, tmp_path: Path, build_synthetic_clinvar_cache):
         """Cache stamped with an older iv version is rejected."""
         build = "GRCh37"
         db_path = tmp_path / clinvar_db_filename(build)
-        load_clinvar_vcf(
-            mock_clinvar_grch37_vcf,
-            db_path,
-            source_url="test://mock",
-            record_name=clinvar_record_name(build),
-        )
+        build_synthetic_clinvar_cache(db_path, build)
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 "UPDATE database_versions SET local_version_tag = 'iv:0' WHERE name = ?",
@@ -344,19 +550,18 @@ class TestRemoteSignal:
     """Freshness signal: ClinVar uses the .md5 sidecar file (ADR-0012)."""
 
     def test_fetch_returns_md5_prefixed_signal(self, annotator: ClinVarAnnotator, monkeypatch):
-        """ADR-0021: signal is composite across managed builds."""
+        """Stage B: signal is a single md5 from submission_summary.md5
+        (build-agnostic — the per-SCV TSV pair serves both builds from one
+        download)."""
         from allelix.annotators import clinvar as clinvar_module
 
         valid_md5 = "abcdef0123456789abcdef0123456789"  # 32 hex digits
         monkeypatch.setattr(
             clinvar_module,
             "fetch_remote_text",
-            lambda url: f"{valid_md5}  clinvar.vcf.gz\n",
+            lambda url: f"{valid_md5}  submission_summary.txt.gz\n",
         )
-        # Default annotator manages both builds → composite signal.
-        assert annotator.fetch_remote_signal() == (
-            f"GRCh37:md5:{valid_md5}|GRCh38:md5:{valid_md5}"
-        )
+        assert annotator.fetch_remote_signal() == f"md5:{valid_md5}"
 
     def test_fetch_returns_none_on_network_error(self, annotator: ClinVarAnnotator, monkeypatch):
         from allelix.annotators import clinvar as clinvar_module
@@ -415,29 +620,26 @@ class TestRemoteSignal:
 
     def test_cached_returns_none_for_v041_cache(self, annotator: ClinVarAnnotator):
         """v0.4.1 caches were populated without a remote_signal column."""
-        # The clinvar_data_dir fixture writes via load_clinvar_vcf without
-        # passing remote_signal, so the column exists (new schema) but the
-        # value is NULL — cached_remote_signal should return None.
+        # The clinvar_data_dir fixture stamps a cache via
+        # build_synthetic_clinvar_cache without passing remote_signal, so
+        # the column exists (new schema) but the value is NULL —
+        # cached_remote_signal should return None.
         assert annotator.cached_remote_signal() is None
 
-    def test_cached_round_trip_after_setup(self, tmp_path: Path, mock_clinvar_vcf: Path):
-        """ADR-0021: composite cached signal is `GRCh37:<sig>|GRCh38:<sig>`.
+    def test_cached_round_trip_after_setup(self, tmp_path: Path, build_synthetic_clinvar_cache):
+        """Stage B: cached signal is the single TSV md5, not a per-build composite.
 
-        For a single-build annotator the composite collapses to one part.
+        Builds share the same source TSVs and therefore stamp the same
+        remote_signal. cached_remote_signal() returns the shared value.
         """
-        from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
-        from allelix.databases.manager import load_clinvar_vcf
-
-        load_clinvar_vcf(
-            mock_clinvar_vcf,
+        build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename("GRCh37"),
-            source_url="test",
+            "GRCh37",
             remote_signal="md5:deadbeef",
-            record_name=clinvar_record_name("GRCh37"),
         )
         ann = ClinVarAnnotator(tmp_path, builds=("GRCh37",))
         try:
-            assert ann.cached_remote_signal() == "GRCh37:md5:deadbeef"
+            assert ann.cached_remote_signal() == "md5:deadbeef"
         finally:
             ann.close()
 

@@ -33,6 +33,25 @@ _MIN_MAG_OPT = click.option(
     show_default=True,
     help="Filter annotations below this magnitude. Use 0 for the full unfiltered set.",
 )
+# The focused subcommands (`allelix methylation`, `allelix pharmacogenomics`)
+# default to a lower floor than the general `analyze` report. The intent of
+# a focused report is to surface focused-level signal — ClinPGx LoE 3 hits
+# on COMT / MTHFR / MTR / CBS for `methylation`, similar for the pharma
+# subcommand — which the magnitude-5 floor that protects `analyze` from
+# noise would filter out as if they were noise. Floor 3.0 keeps LoE 3
+# in, keeps ClinVar Benign (mag 1.0) out.
+_FOCUSED_MIN_MAG_OPT = click.option(
+    "--min-magnitude",
+    type=float,
+    default=3.0,
+    show_default=True,
+    help=(
+        "Filter annotations below this magnitude. Focused subcommands default "
+        "to 3.0 (vs. analyze's 5.0) so ClinPGx LoE 3 hits on panel genes — "
+        "the intended signal of a focused report — aren't filtered out. "
+        "Use 0 for the full unfiltered set."
+    ),
+)
 _OUTPUT_OPT = click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),

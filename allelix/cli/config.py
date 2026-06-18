@@ -29,7 +29,6 @@ def config_show(data_dir: Path | None) -> None:
     """Display current configuration."""
     from allelix.annotators import _ANNOTATOR_CLASSES
     from allelix.annotators.base import Permission
-    from allelix.annotators.base import permission as check_permission
     from allelix.config import load_config
 
     resolved = resolve_data_dir(data_dir)
@@ -40,24 +39,17 @@ def config_show(data_dir: Path | None) -> None:
     table.add_column("Enabled", justify="center")
     table.add_column("Note", style="dim")
     for name, enabled in sorted(cfg.sources.items()):
-        cls = _ANNOTATOR_CLASSES.get(name)
+        perm = cfg.permission_for(name, _ANNOTATOR_CLASSES)
         note = ""
-        if cls is not None:
-            perm = check_permission(
-                cls.license,
-                commercial=cfg.commercial,
-                license_held=cfg.license_held(name),
-            )
-            if perm is Permission.BLOCK_PURCHASABLE:
-                marker = "[red]no[/red]"
-                note = f"requires commercial license — purchase: {cls.license.purchase_url}"
-            elif perm is Permission.BLOCK_FINAL:
-                marker = "[red]no[/red]"
-                note = "no commercial license is available"
-            elif enabled:
-                marker = "[green]yes[/green]"
-            else:
-                marker = "[red]no[/red]"
+        if perm is Permission.BLOCK_PURCHASABLE:
+            # cls is guaranteed non-None — permission_for only returns
+            # BLOCK_PURCHASABLE when an annotator class was resolved.
+            cls = _ANNOTATOR_CLASSES[name]
+            marker = "[red]no[/red]"
+            note = f"requires commercial license — purchase: {cls.license.purchase_url}"
+        elif perm is Permission.BLOCK_FINAL:
+            marker = "[red]no[/red]"
+            note = "no commercial license is available"
         elif enabled:
             marker = "[green]yes[/green]"
         else:

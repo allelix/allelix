@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "5",
+      "schema_version": "6",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 # v4 → v5 bump: enters the ADR-0035 cluster contract. Incoming cluster fields
 # (variant.ref via Variant model, annotation.trait / .p_value / .phecode via
 # Annotation model) land across PRs 1-4 of the v2.1 Cluster B work. v4
@@ -152,6 +152,14 @@ def render_json(
 
     if high_value_no_calls:
         payload["high_value_no_calls"] = high_value_no_calls
+
+    # GH #75: when --filter-file supplied a panel, the panel_coverage
+    # object distinguishes "not on chip" from "homozygous reference"
+    # from "had a finding". `missing` is state 3, `no_findings` is
+    # state 2, both lists are sorted for deterministic diffs.
+    panel_coverage = result.panel_coverage()
+    if panel_coverage is not None:
+        payload["panel_coverage"] = panel_coverage
 
     if diff is not None:
         from allelix.reports.diff import diff_annotation_to_dict, summarize_diff

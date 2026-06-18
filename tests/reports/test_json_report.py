@@ -101,6 +101,42 @@ class TestRenderJson:
         assert payload["annotations"] == []
 
 
+class TestPanelCoverageJson:
+    """GH #75: panel_coverage object in JSON when --filter-file used."""
+
+    def test_no_panel_omits_section(self, tmp_path: Path):
+        """Default analyze run (no --filter-file) produces no
+        panel_coverage key — keeps reports unchanged for the common case."""
+        out = tmp_path / "r.json"
+        render_json(_result([_ann()]), output_path=out)
+        payload = json.loads(out.read_text())
+        assert "panel_coverage" not in payload
+
+    def test_panel_coverage_object_shape(self, tmp_path: Path):
+        result = AnalysisResult(
+            file_path=Path("g.txt"),
+            parser_name="myhappygenes",
+            parser_display_name="MyHappyGenes",
+            sample_id="S",
+            build="GRCh37",
+            total_variants=0,
+            skipped_count=0,
+            annotators_used=[],
+            annotations=[_ann(rsid="rs1801133")],
+            panel_rsids=frozenset({"rs1801133", "rs4680", "rs999"}),
+            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680"}),
+            panel_annotated_rsids=frozenset({"rs1801133"}),
+        )
+        out = tmp_path / "r.json"
+        render_json(result, output_path=out)
+        payload = json.loads(out.read_text())
+        cov = payload["panel_coverage"]
+        assert cov["requested"] == 3
+        assert cov["found"] == 2
+        assert cov["missing"] == ["rs999"]
+        assert cov["no_findings"] == ["rs4680"]
+
+
 class TestZygosityField:
     def test_zygosity_in_json_heterozygous(self, tmp_path: Path):
         out = tmp_path / "r.json"

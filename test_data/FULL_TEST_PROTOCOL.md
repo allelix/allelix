@@ -31,7 +31,8 @@ against the local cache (GH #45).
 python -m pytest tests/ -x --tb=short
 ```
 
-**Expected for v2.1.0:** **1,576 passed, 0 skipped** when `plink2` is
+**Expected for v2.2.0:** **~1,672 passed, 0 skipped** (fast tier:
+`pytest -m "not slow and not integration"`) when `plink2` is
 installed locally and the GWAS Catalog auto-fetch succeeds. The
 "0 skipped" line is the goal — silent skips are forbidden as a ship-
 gate signal (GH #45). If `plink2` isn't installed, expect 1 skip on
@@ -50,6 +51,12 @@ Test-count floor by release:
 - v2.1.0: ~1,576 (ADR-0035 Cluster B: Variant.ref + per-Annotation
   alt threading + structured GWAS fields + strand-aware carrier
   matching; pipeline-level Variant.ref population for array data)
+- v2.2.0: ~1,672 (#42 per-SCV ClinVar TSV loader + dash-CLNSIG
+  guard; #28 streaming ClinVar ref-lookup + permission resolver
+  dedup; #70 FTDNA FamFinder parser; #75 panel-coverage states +
+  JSON schema_version 5→6; #90/#91 runtime nudges; #79 branch
+  coverage; #51/#52 methylation panel + magnitude floor; #77
+  db clean / db path subcommands)
 
 Check lint:
 
@@ -491,17 +498,89 @@ stamped CADD score, the alt must appear directly in gnomAD's alts at
 that rsID (no complement-resolved hits). Counted across the v2.0.1
 HG002 gVCF battery: 578/578 direct, 0 via-complement.
 
-**#42 condition-join sanity.** After a `db update` on v2.0.1+:
+**#42 ClinVar real-cache content gates.** After a `db update` against
+the v2.2 per-SCV TSV loader. **These are ship-gates** in the same
+sense §14 and §45's GWAS gates are: zero expected results mean
+ship; any non-zero result means **do not tag**. The flagship
+ClinVar loader gets the same gating posture as every other annotator.
+
+**(a) Per-SCV row shape (Defect 4 — supersedes the pre-#42 join pin).**
+The v2.2 loader stores one row per (variant, SCV submission), not one
+row per variant with semicolons. Expect multiple rows per multi-SCV
+rsID, each carrying a single SCV's condition exactly as the submitter
+recorded it:
 
 ```bash
 allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
-  "SELECT rsid, condition FROM clinvar_variants WHERE rsid IN ('rs1800896', 'rs1063192');"
-# Expected for rs1800896: "Leprosy, susceptibility to, 1; Hepatitis C virus, susceptibility to"
-# Expected for rs1063192: "Three Vessel Coronary Disease; Malignant tumor of breast"
+  "SELECT rsid, COUNT(*) FROM clinvar_variants \
+   WHERE rsid IN ('rs1800896', 'rs1063192') GROUP BY rsid;"
+# Expected: ≥1 row per rsID. Multi-SCV variants will show >1 row
+# (e.g. rs1063192 typically shows 2+). A single combined row with a
+# semicolon-joined condition is a regression to the pre-#42 shape.
 ```
 
-Both should show semicolon-joined conditions, not the single
-`CLNDN[0]` value the pre-#42 loader produced.
+The pre-#42 Frankenstein-pairing safety question is preserved
+structurally: each per-SCV row carries one submitter's
+(significance, condition) pair, so there is no cross-product
+pairing risk anymore. The semicolon-join in the old pin was the
+loader's coping mechanism for the VCF's CLNSIG|CLNDN parallel
+arrays; with per-SCV rows that mechanism is unnecessary.
+
+**(b) Significance-sentinel guard (Defect 5 ship-gate).** ClinVar's
+`submission_summary.txt.gz` carries several placeholder values that
+mean "no classification recorded." The hazard isn't every
+placeholder equally — it's specifically the placeholders that ISN'T
+in `allelix.annotators.clinvar._CLNSIG_MAGNITUDE`. Anything in that
+dict scores below the 5.0 analyze display floor and is safely
+suppressed; anything missing falls through to the 5.0 default and
+surfaces as a meaningless annotation on real rsIDs (rs137854557 →
+Meningioma was the canary). The loader filters exactly that set at
+ingest; the gate scans for the same set.
+
+The authoritative set is `_CLINVAR_PLACEHOLDER_CLNSIGS` in
+`allelix/databases/manager.py`. **Do not broaden the SQL below
+without broadening the loader's set in the same PR** — they must
+agree, or the gate will false-block on values the loader already
+handles correctly (e.g. `"not provided"` maps to 2.0, harmless).
+
+```bash
+# Sentinel scan: zero rows expected. Any row → do not tag.
+# Set MUST match _CLINVAR_PLACEHOLDER_CLNSIGS in databases/manager.py.
+# LOWER() because the loader's skip is case-insensitive (matches
+# _magnitude()'s _normalize_clnsig normalization); a case-sensitive
+# scan would show false-green if ClinVar emits a placeholder with
+# different casing than the canonical form.
+allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
+  "SELECT clinical_significance, COUNT(*) FROM clinvar_variants \
+   WHERE LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided') \
+   GROUP BY clinical_significance;"
+# Expected: 0 rows.
+
+# Spot-check a known-affected rsID:
+allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
+  "SELECT rsid, clinical_significance FROM clinvar_variants WHERE rsid = 'rs137854557';"
+# Expected: real classifications (e.g. Pathogenic / Likely pathogenic).
+# Never a placeholder.
+```
+
+Repeat the sentinel scan against `clinvar.GRCh37.sqlite`. Both
+builds share the same TSV source pair, so both must be clean.
+
+**Note on denylist vs allowlist.** This gate is a *denylist* — it
+catches the placeholders we've observed. Any future ClinVar term
+not in `_CLNSIG_MAGNITUDE` (a new real classification, a freshly-
+introduced placeholder, an alternative casing) falls to the 5.0
+default, and both the loader's skip and this denylist miss it
+(false-green). The durable form is an *allowlist* drift-guard
+asserting every distinct `clinical_significance` is in
+`_CLNSIG_MAGNITUDE ∪ _CLINVAR_PLACEHOLDER_CLNSIGS`, else "do not
+tag." That's R-4 (CLNSIG vocabulary drift —
+`tests/databases/test_clinvar_clnsig_drift.py` +
+`allelix/data/clinvar_clnsig_snapshot.yaml`). When R-4 evolves
+from snapshot-equality to "every value ∈ {known magnitude vocab,
+placeholder set}", point it at the same caches this gate scans;
+this §7b gate then graduates from "denylist confirmation" to a
+spot-check of what R-4 enforces structurally.
 
 ### 7d. Strand-aware carrier matching (GH #14 strand-half, R-1 / #50, ADR-0035 PR 4)
 
@@ -786,8 +865,16 @@ allelix analyze test_data/edge_cases/ftdna_grch36_positions.csv 2>&1 | grep -i "
 
 # Unsupported formats
 allelix stats test_data/edge_cases/unsupported_decodeme.txt 2>&1
+# Expected: "No parser recognized" (decodeme is genuinely unsupported)
+
+# Previously-unsupported, now-supported: the 23andMe exome VCF is a valid
+# VCFv4.1 file and is recognized by the VCF parser added after this fixture
+# was named. Pin the regression — if "No parser recognized" comes back,
+# VCF detection broke.
 allelix stats test_data/edge_cases/unsupported_23andme_exome_vcf.txt 2>&1
-# Expected: "No parser recognized" for both
+# Expected: parser auto-detected as VCF, stats displayed (the
+# `unsupported_` prefix is historical — the fixture name predates VCF
+# support and is retained for git-mtime continuity).
 ```
 
 ## 16. PLINK export
@@ -1094,18 +1181,15 @@ for name in ['hg002_gvcf', 'hg00187_gatk', 'giab_grch37', 'giab_grch38']:
 "
 ```
 
-**ClinVar condition-join (#42):** multi-SCV variants surface a
-semicolon-joined condition list, never a single-condition
-Frankenstein pair. Confirm with rs1063192 and rs1800896 (test
-fixtures for the original audit):
-
-```bash
-sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
-  "SELECT rsid, condition FROM clinvar_variants WHERE rsid IN ('rs1063192','rs1800896');"
-# Expected:
-# rs1063192|Three Vessel Coronary Disease; Malignant tumor of breast
-# rs1800896|Leprosy, susceptibility to, 1; Hepatitis C virus, susceptibility to
-```
+**ClinVar per-SCV row shape (#42 v2.2):** multi-SCV variants surface
+one row per submission, not a single semicolon-joined row. The
+Frankenstein-pair safety question that the original audit asked
+about is now structurally impossible — each row carries one
+submitter's (significance, condition) pair from
+`submission_summary.txt.gz`, so no cross-product pairing exists.
+The legacy semicolon-joined pin from the VCF era is removed.
+See §7 for the post-update real-cache ship-gate (per-SCV row shape
++ significance-sentinel scan).
 
 ### When to run this battery
 
@@ -1127,10 +1211,11 @@ All of the following must be true:
 - [ ] Cross-parser identity: same annotation count across all user1190 representations (6 array-based formats; VCF doesn't have a user1190 representation)
 - [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations via ClinPGx resolution (step 5i); multi-sample VCF requires `--sample` (step 5h)
 - [ ] Build auto-detection: warning fires when no rsID + no header signal (step 5j); **chr-prefix contigs auto-infer GRCh38 without `--build` (GH #38)**
-- [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: every alt-set CADD score has its alt directly in gnomAD's alts at that rsID; alt-less (raw GWAS) rows only get enrichment via the safe position-fallback path; ClinVar multi-SCV variants show semicolon-joined conditions (rs1800896, rs1063192 sanity check)
+- [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: every alt-set CADD score has its alt directly in gnomAD's alts at that rsID; alt-less (raw GWAS) rows only get enrichment via the safe position-fallback path; ClinVar emits one row per (variant, SCV submission) — the per-SCV pairing structurally retires the Frankenstein-pair hazard the original audit raised (v2.2 per-SCV TSV loader)
+- [ ] **ClinVar significance-sentinel ship-gate (Defect 5 / §7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). Denylist form is reactive; durable allowlist form lives in R-4 (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report (GH #9)**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) all present
-- [ ] JSON report has schema version 5 with gnomAD + AM + CADD enrichment; structured GWAS fields populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] JSON report has schema version 6 with gnomAD + AM + CADD enrichment; structured GWAS fields populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` object appears when `--filter-file` is used (GH #75); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
 - [ ] **Strand-aware carrier matching (GH #14 strand-half / R-1 / ADR-0035 PR 4)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
 - [ ] Config system correctly gates SNPedia on `license.commercial`
 - [ ] CADD opt-in: `--cadd` downloads cache, license prompt shown, scores enriched
@@ -1143,4 +1228,4 @@ All of the following must be true:
 - [ ] PLINK export produces valid .bed/.bim/.fam with correct magic and alignment
 - [ ] PLINK export resolves ref/alt from gnomAD when available
 - [ ] `allelix --version` reports the actual pyproject version even from a bare source checkout (GH #34)
-- [ ] **Gold-standard VCF battery (step 19)**: GIAB benchmark + DeepVariant gVCF + GATK-HC GRCh37 all analyze cleanly; gVCF is a strict superset of the benchmark at production filter (0 missing); allele-direct CADD invariant holds (0 via-complement); rs1063192 / rs1800896 show semicolon-joined conditions in the cache
+- [ ] **Gold-standard VCF battery (step 19)**: GIAB benchmark + DeepVariant gVCF + GATK-HC GRCh37 all analyze cleanly; gVCF is a strict superset of the benchmark at production filter (0 missing); allele-direct CADD invariant holds (0 via-complement); ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the pre-#42 shape

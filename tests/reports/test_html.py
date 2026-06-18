@@ -47,6 +47,50 @@ def _ann(**overrides) -> Annotation:
 # ---- Existing tests (updated for new structure) ----
 
 
+class TestPanelCoverageHtml:
+    """GH #75: HTML report grows a Panel Coverage section near the top
+    when --filter-file supplied a rsid panel."""
+
+    def _result_with_panel(
+        self,
+        annotations: list[Annotation],
+        *,
+        panel_rsids: frozenset[str],
+        genotyped_panel_rsids: frozenset[str],
+        panel_annotated_rsids: frozenset[str],
+    ) -> AnalysisResult:
+        base = _result(annotations)
+        base.panel_rsids = panel_rsids
+        base.genotyped_panel_rsids = genotyped_panel_rsids
+        base.panel_annotated_rsids = panel_annotated_rsids
+        return base
+
+    def test_no_panel_omits_section(self, tmp_path: Path):
+        out = tmp_path / "r.html"
+        render_html(_result([_ann()]), output_path=out)
+        body = out.read_text()
+        assert "Panel coverage" not in body
+
+    def test_section_includes_counts_and_missing(self, tmp_path: Path):
+        out = tmp_path / "r.html"
+        result = self._result_with_panel(
+            [_ann(rsid="rs1801133")],
+            panel_rsids=frozenset({"rs1801133", "rs4680", "rs999"}),
+            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680"}),
+            panel_annotated_rsids=frozenset({"rs1801133"}),
+        )
+        render_html(result, output_path=out)
+        body = out.read_text()
+        assert "Panel coverage" in body
+        assert "2/3 requested rsIDs genotyped" in body
+        # State 3: missing rsID surfaced with chip note.
+        assert "rs999" in body
+        assert "not genotyped on this chip" in body
+        # State 2: genotyped-but-no-findings rsID surfaced.
+        assert "rs4680" in body
+        assert "no annotations matched" in body
+
+
 class TestRenderHtml:
     def test_writes_self_contained_file(self, tmp_path: Path):
         out = tmp_path / "report.html"

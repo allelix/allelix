@@ -219,6 +219,98 @@ class TestStrandAwareGenotypeMatch:
         assert strand_aware_genotype_match("C", "T", "AG", "A") is False
 
 
+class TestStrandAwareCarrierMatchLowercase:
+    """#79 missing-branch coverage: lowercase source alleles should not
+    silently false-negative.
+
+    Variant.allele1 / allele2 / ref are upper-cased in Variant.__post_init__,
+    but source_ref / source_alt / variant_ref reach strand_aware_carrier_match
+    from external annotator queries — ClinVar VCF rows, ClinPGx TSV cells,
+    SNPedia genotype strings. A soft-masked-reference VCF can emit
+    lowercase REF/ALT; a future source variant could too. The pre-fix
+    code was case-sensitive and would silently return False on lowercase
+    input, masking real carrier matches. These tests pin the defensive
+    upper-case normalization in place.
+    """
+
+    def test_direct_alt_match_with_lowercase_source(self):
+        from allelix.utils.allele import strand_aware_carrier_match
+
+        # User T/T (uppercase via Variant model); lowercase source "c"→"t".
+        # Pre-fix: `"t" in {"T", "T"}` → False (silent false-negative).
+        # Post-fix: source upper-cased, direct alt match → True.
+        assert strand_aware_carrier_match("C", "T", "T", "c", "t") is True
+
+    def test_strand_flip_match_with_lowercase_source(self):
+        """User reverse-strand T/T at lowercase source a→g; variant_ref
+        is complement of source_ref → flip path fires once case is
+        normalized."""
+        from allelix.utils.allele import strand_aware_carrier_match
+
+        # variant_ref="T" is complement of source_ref="a" (i.e. "A").
+        # source_alt="g" → complement "C" — but user is T/T not C/C.
+        # Verify direct + flip both work case-insensitively against
+        # the SAME lowercase source row. Use a case where the user
+        # IS the strand-flipped alt: user C/C, source a>g lowercase.
+        # variant_ref="T" (complement of A) → flip path checks
+        # complement("g") = "C" in {C, C} → True.
+        assert strand_aware_carrier_match("T", "C", "C", "a", "g") is True
+
+    def test_lowercase_variant_ref_normalized(self):
+        """variant_ref lowercase must not break the flip-orientation check."""
+        from allelix.utils.allele import strand_aware_carrier_match
+
+        # All three external inputs lowercase. User uppercase per Variant model.
+        # variant_ref="t" → upper "T" = complement("A") → flip path.
+        # source_alt="g" → upper "G" → complement "C" → user C/C carries.
+        assert strand_aware_carrier_match("t", "C", "C", "a", "g") is True
+
+    def test_lowercase_palindromic_still_blocked(self):
+        """Case normalization must not weaken the palindromic safety guard."""
+        from allelix.utils.allele import strand_aware_carrier_match
+
+        # Lowercase "a", "t" is still palindromic after normalization.
+        # No direct match, palindrome → flip path blocked → False.
+        assert strand_aware_carrier_match("T", "C", "C", "a", "t") is False
+
+    def test_lowercase_no_match_returns_false(self):
+        """Lowercase normalization must not produce false positives either."""
+        from allelix.utils.allele import strand_aware_carrier_match
+
+        # User G/G, lowercase source "c">"t". After normalization the
+        # function evaluates against {"C","T"} — G is in neither.
+        # variant_ref="C" matches source_ref → forward orientation,
+        # flip blocked. Result must be False.
+        assert strand_aware_carrier_match("C", "G", "G", "c", "t") is False
+
+
+class TestStrandAwareGenotypeMatchLowercase:
+    """#79 missing-branch coverage: lowercase source_geno / variant_ref
+    must not silently false-negative the diploid match."""
+
+    def test_direct_match_with_lowercase_source_geno(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        # User A/G; lowercase source "ag" — pre-fix sorted("AG") != "ag"
+        # so direct path missed. Post-fix normalization → True.
+        assert strand_aware_genotype_match("A", "G", "ag", "A") is True
+
+    def test_strand_flip_match_with_lowercase_inputs(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        # Reverse-strand reading: user C/T against lowercase source "ag",
+        # variant_ref="t" lowercase (complement of A). Both lowercase
+        # inputs normalize and flip path fires.
+        assert strand_aware_genotype_match("C", "T", "ag", "t") is True
+
+    def test_lowercase_no_variant_ref_skips_flip(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        # No variant_ref → flip skipped regardless of source case.
+        # Direct match fails (CT != AG); result False.
+        assert strand_aware_genotype_match("C", "T", "ag", None) is False
+
+
 class TestDeriveAltFromDiploid:
     """ADR-0035 PR 2: alt derivation for SNPedia / ClinPGx matched genotypes."""
 

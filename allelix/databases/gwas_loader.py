@@ -407,6 +407,16 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
     Skips multi-SNP haplotypes, rows without traits, and rows where the
     p-value is unparseable. Deduplicates by (rsid, trait), keeping the
     row with the lowest p-value.
+
+    Not strictly streaming: the (rsid, trait) dedup-on-min-p-value pass
+    has to see every row before any (rsid, trait) is final, so the
+    intermediate ``best`` dict holds the post-filter row set in memory
+    until the input is exhausted. GH #28 item 1 audit noted this; the
+    GWAS Catalog has ~600k post-filter rows, peak memory stays well
+    under a normal-machine budget, and a true streaming pass would
+    require either a pre-sort on disk or a two-pass design with
+    materially worse wall-clock. Worth revisiting only if the catalog
+    grows an order of magnitude.
     """
     best: dict[tuple[str, str], dict[str, object]] = {}
 

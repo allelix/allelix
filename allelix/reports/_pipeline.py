@@ -17,7 +17,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from allelix.utils.build_detect import (
     BUILD_GRCH36,
@@ -101,6 +101,19 @@ class BuildDiagnostics:
         )
 
 
+class PanelCoverage(TypedDict):
+    """GH #75: shape returned by AnalysisResult.panel_coverage().
+
+    Same shape lands in the JSON report under ``panel_coverage`` and
+    drives the HTML Panel Coverage section.
+    """
+
+    requested: int
+    found: int
+    missing: list[str]
+    no_findings: list[str]
+
+
 @dataclass
 class AnalysisResult:
     """Everything a renderer needs to produce a report."""
@@ -116,6 +129,65 @@ class AnalysisResult:
     annotations: list[Annotation] = field(default_factory=list)
     build_diagnostics: BuildDiagnostics | None = None
     hv_variants: list[Variant] = field(default_factory=list)
+    # GH #75: when --filter-file supplies a rsid panel, the pipeline
+    # records which panel rsIDs the input file actually carries so
+    # reporters can surface coverage (state 2: genotyped but no
+    # annotations; state 3: not on the user's chip). Both None when
+    # no panel was supplied — that path is the default analyze run
+    # with no behavior change.
+    panel_rsids: frozenset[str] | None = None
+    genotyped_panel_rsids: frozenset[str] | None = None
+    panel_annotated_rsids: frozenset[str] | None = None
+    # GH #90: variants reaching the annotator phase with ref=None.
+    # Used by the CLI to surface the strand-aware-matching-inactive
+    # info line once per run for array inputs.
+    no_ref_variant_count: int = 0
+    # GH #91: variants reaching the annotator phase whose rsID isn't
+    # an "rs..." string (variant-caller VCFs emit ID=. — see GH #8).
+    # Used by the CLI to surface the GRCh38 rsID-less undercount
+    # warning until #62's dbSNP resolution lands.
+    rsidless_variant_count: int = 0
+
+    def panel_coverage(self) -> PanelCoverage | None:
+        """Return panel-coverage info when a rsid panel was supplied.
+
+        States, per GH #75:
+
+        - **state 1** (genotyped + has annotations): rsid is in
+          ``genotyped_panel_rsids`` AND ``panel_annotated_rsids``;
+          rendered normally in the main annotation table.
+        - **state 2** (genotyped + no annotations): rsid is in
+          ``genotyped_panel_rsids`` but NOT in
+          ``panel_annotated_rsids``; rendered as a "no findings" entry
+          in panel coverage so the user knows it was on their chip but
+          carries no risk allele.
+        - **state 3** (not genotyped): rsid is in ``panel_rsids`` but
+          NOT in ``genotyped_panel_rsids``; rendered as "not on chip".
+
+        Returns None when no panel was supplied (no coverage section
+        should appear). Returns the dict shape rendered into the JSON
+        report and the HTML Panel Coverage section.
+
+        A no-call (``-/-``) panel variant that IS in the input file
+        counts as ``found`` and lands in ``no_findings`` (state 2),
+        not ``missing`` (state 3). This matches the issue's literal
+        "not in input file" definition for state 3 — "found" reports
+        chip presence, not call success. High-value no-calls are
+        separately surfaced by the ``hv_warnings`` path in the CLI;
+        readers should not interpret ``found`` as "called."
+        """
+        if self.panel_rsids is None:
+            return None
+        genotyped = self.genotyped_panel_rsids or frozenset()
+        annotated = self.panel_annotated_rsids or frozenset()
+        missing = sorted(self.panel_rsids - genotyped)
+        no_findings = sorted(genotyped - annotated)
+        return {
+            "requested": len(self.panel_rsids),
+            "found": len(genotyped),
+            "missing": missing,
+            "no_findings": no_findings,
+        }
 
     def filter(
         self,
@@ -315,6 +387,7 @@ def run_analysis(
     alphamissense: AlphaMissenseAnnotator | None = None,
     cadd: CaddAnnotator | None = None,
     high_value_rsids: set[str] | None = None,
+    panel_rsids: frozenset[str] | None = None,
 ) -> AnalysisResult:
     """Stream the file once; batch-annotate; return a fully-populated result.
 
@@ -363,6 +436,18 @@ def run_analysis(
     annotations: list[Annotation] = []
     hv_variants: list[Variant] = []
     hv_set: set[str] = high_value_rsids or set()
+    # GH #75: rsIDs the input file actually carries that are in the
+    # supplied panel. Only collected when ``panel_rsids`` is non-empty
+    # (so a normal analyze run has zero overhead). Filtered at insert
+    # so a 600k-variant input contributes ~panel-size memory, not
+    # 600k rsids.
+    genotyped_panel: set[str] = set()
+    # GH #90 / #91: per-run diagnostic totals for ref-None and
+    # rsidless variants reaching the annotator phase. Used by the CLI
+    # to emit the "strand-aware inactive" info line (#90) and the
+    # "GRCh38 rsID-less undercount" warning (#91).
+    no_ref_total = 0
+    rsidless_total = 0
     total = 0
     diag = _BuildDetectionState(
         override=build_override,
@@ -427,6 +512,14 @@ def run_analysis(
             # caught. GH #11.
             if hv_set:
                 hv_variants.extend(v for v in batch_buf if v.rsid in hv_set)
+            if panel_rsids:
+                genotyped_panel.update(v.rsid for v in batch_buf if v.rsid in panel_rsids)
+            # GH #90 / #91: per-batch diagnostic counters. Tallied AFTER
+            # the ref-population and resolver passes so the counts
+            # reflect the final state annotators see — not the raw input.
+            nonlocal no_ref_total, rsidless_total
+            no_ref_total += sum(1 for v in batch_buf if v.ref is None)
+            rsidless_total += sum(1 for v in batch_buf if not v.rsid.startswith("rs"))
             for annotator in bound:
                 annotations.extend(annotator.batch_annotate(batch_buf))
             batch_buf.clear()
@@ -528,6 +621,19 @@ def run_analysis(
     if cadd is not None and cadd.is_ready():
         annotators_used.append((cadd.name, cadd.version()))
 
+    # GH #75: panel coverage derives genotyped rsIDs above (state 2+3
+    # boundary) and annotated rsIDs from the post-enrichment annotation
+    # set (state 1 boundary). Empty frozensets vs None disambiguate
+    # "no panel supplied" from "panel supplied, zero hits".
+    if panel_rsids:
+        result_panel = frozenset(panel_rsids)
+        result_genotyped = frozenset(genotyped_panel)
+        result_annotated = frozenset(a.rsid for a in annotations if a.rsid in panel_rsids)
+    else:
+        result_panel = None
+        result_genotyped = None
+        result_annotated = None
+
     return AnalysisResult(
         file_path=file_path,
         parser_name=parser.name,
@@ -540,6 +646,11 @@ def run_analysis(
         annotations=annotations,
         build_diagnostics=diag.diagnostics(),
         hv_variants=hv_variants,
+        panel_rsids=result_panel,
+        genotyped_panel_rsids=result_genotyped,
+        panel_annotated_rsids=result_annotated,
+        no_ref_variant_count=no_ref_total,
+        rsidless_variant_count=rsidless_total,
     )
 
 

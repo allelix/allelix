@@ -26,6 +26,12 @@ that are gitignored due to size. As of v2.0.2 (GH #45), these fixtures
 are **auto-fetched on first use** and cached locally — no manual
 download step is required for the GWAS catalog.
 
+For the full real-data release-validation battery — all parser formats,
+VCF/gVCF, PLINK round-trip, edge cases, and upgrade-path checks — see
+[`test_data/FULL_TEST_PROTOCOL.md`](test_data/FULL_TEST_PROTOCOL.md).
+This is the project's primary answer to "do you validate against real
+data" and is what every release run executes.
+
 Two fixture sources, cached under `test_data/`:
 
 - **GWAS Catalog** (`test_data/gwas_catalog.zip`, ~65 MB) — auto-fetched
@@ -193,9 +199,37 @@ Create `tests/fixtures/mock_vendorname.txt` with synthetic data. Include:
 - A no-call line
 - An edge case (blank line, extra whitespace, etc.)
 
+**The synthetic fixture IS the format spec.** It must exercise every
+documented field-shape variant — concatenated vs. separate alleles,
+no-calls (full and partial where applicable), haploid calls on MT/Y if
+the format permits them, comment-line handling, header-detection
+signals, chromosome normalization cases. Test coverage of this fixture
+is what gates the PR; if a future ambiguity is discovered against a
+real file, that's a bug, file an issue and extend the synthetic fixture
+to cover it.
+
+**Real-data validation is OPPORTUNISTIC, not a merge gate.** Public
+CC0 files for the new format may not exist in our corpus (openSNP /
+Personal Genome Project don't host every vendor). Don't block your PR
+waiting for one. The pattern when a public file later surfaces:
+
+1. Add the public file under `test_data/real/<vendor>/` (gitignored —
+   joins the GitHub release asset on the next bump).
+2. Add a cross-parser identity test if biology overlaps an existing
+   donor (see the user1190 transcoded set for the pattern).
+3. If the file exposes a real-vs-synthetic ambiguity, extend the
+   synthetic fixture FIRST (the spec gets richer), then ship the
+   real-file test as a regression pin.
+
+Annotators follow the same rule — synthetic mock loader fixtures cover
+the parse / interpreter contract; real-data validation runs against
+the pinned databases via `test_data/databases/` and the `@slow`
+integration set documented above.
+
 All `tests/fixtures/` files are synthetic (produced by mock data
-generators). Real-data integration tests use CC0 public-domain openSNP
-genotype files available via `scripts/fetch_testdata.sh`.
+generators or hand-written). Real-data integration tests use CC0
+public-domain openSNP genotype files fetched via
+`scripts/fetch_testdata.sh`.
 
 ### Step 4: Write tests
 
@@ -410,10 +444,69 @@ Two hooks run locally:
 - **pre-commit** (managed by pre-commit framework): `ruff check` + `ruff format --check`
 - **pre-push** (raw hook in `.githooks/`): blocks tag pushes where the tag doesn't match `pyproject.toml`
 
-CI runs the fast test suite (synthetic fixtures only) on every push to
-main and on pull requests. Slow tests that require real-data fixtures run
-locally only. There is no pre-push pytest gate — run the full suite
-yourself before pushing.
+CI (`.github/workflows/ci.yml`) fires on:
+
+- Push to `main` or `dev`
+- Push of a `v*` tag
+- Pull requests targeting `main` or `dev` (so feature PRs to `dev` are
+  coverage / mypy / matrix-gated at PR time, not only post-merge)
+- Manual dispatch via the Actions UI (`workflow_dispatch`)
+
+CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
+fixtures only) on a Python 3.11 / 3.12 matrix. `@slow` and
+`@integration`-marked tests auto-skip in CI because the runner doesn't
+have the ~1.5 GB real-genotype fixture set or the ~15 GB annotator
+database cache — fetching either would push CI runtime past 45 minutes
+per push and burn GitHub Actions minutes that the local-run discipline
+already covers.
+
+### Where the slow / real-data battery actually runs
+
+**Locally, at ship time, by the developer.** `GITHUB_WORKFLOW.md` Phase
+0c (the pre-Phase-1 gate) requires the full pytest suite + the real-data
+battery from `test_data/FULL_TEST_PROTOCOL.md` to pass against the dev
+tree before any squash. The reviewer asks for that report at ship time
+and blocks the release without it. That's the gate that catches real-data
+regressions; CI runs the fast checks, the ship procedure runs the
+expensive ones.
+
+### Why we don't put the slow battery in CI
+
+- The slow tests don't change on every commit. They only matter when
+  parser / annotator / exporter code changes or before a ship — both
+  cases are already covered by the local-run discipline.
+- A 45-minute CI run per push-to-main would burn ~225 minutes/month for
+  zero new signal beyond what the ship gate already produces.
+- The two failure modes CI-on-slow-tests would defend against —
+  developer forgets to run locally, or a mid-cycle regression goes
+  unnoticed until ship — are both caught at Phase 0c, which is enforced
+  by the reviewer.
+
+When in doubt, you can manually fire the existing CI workflow against
+any branch via `gh workflow run ci.yml --ref <branch>` or the "Run
+workflow" button in the Actions UI. The fast suite catches everything
+CI is supposed to catch.
+
+### Coverage gate: CI is the source of truth
+
+Local `pytest` and the CI matrix can report different `--cov-branch`
+totals (~0.1-0.2pp drift) because newer Python versions execute a
+handful of lines that 3.11 / 3.12 don't (CPython internals, `__future__`
+import paths, error-message construction). The coverage gate
+(`--cov-fail-under` in `pyproject.toml`) is calibrated against the **CI
+matrix**, not against local measurement.
+
+When raising the floor:
+
+1. Confirm CI is green on `dev` at the candidate threshold.
+2. Pull the CI run's reported coverage:
+   `gh run view <run_id> --log-failed | grep TOTAL`
+   (or `--log` on a passing run; `TOTAL` line is the project number).
+3. Set the new floor slightly below the lowest CI number across the
+   3.11 / 3.12 matrix. Local numbers are not the source of truth.
+
+The floor-history comment in `pyproject.toml` records the CI-measured
+baseline at each ratchet so the next bump calibrates correctly.
 
 ## Pull Request Checklist
 

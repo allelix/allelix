@@ -288,6 +288,29 @@ class TestAllelixConfig:
             perm = permission(cls.license, commercial=False, license_held=False)
             assert perm is Permission.ALLOW, f"{cls.name} should be ALLOW in non-commercial mode"
 
+    def test_permission_for_returns_three_state(self):
+        """GH #28 item 3: permission_for is the single resolver shared by
+        is_enabled (which collapses to bool) and `config show` (which
+        renders different table cells per state). All three states are
+        reachable through this entry point."""
+        classes = _annotator_classes()
+
+        # ALLOW: non-commercial mode, any source with an annotator class.
+        personal = AllelixConfig()
+        assert personal.permission_for("gnomad", classes) is Permission.ALLOW
+
+        # BLOCK_FINAL: commercial mode, source whose license isn't
+        # licensable (SNPedia: CC-BY-NC-SA, no commercial path).
+        commercial = AllelixConfig(commercial=True)
+        assert commercial.permission_for("snpedia", classes) is Permission.BLOCK_FINAL
+
+        # BLOCK_PURCHASABLE: commercial mode, source with a purchase URL
+        # but no asserted license (CADD).
+        assert commercial.permission_for("cadd", classes) is Permission.BLOCK_PURCHASABLE
+
+        # None: unknown source name has no annotator class.
+        assert personal.permission_for("not_a_real_source", classes) is None
+
     def test_is_enabled_distinguishes_toggle_from_license(self):
         """is_enabled returns False for both; permission() tells why."""
         from allelix.annotators.snpedia import SNPediaAnnotator

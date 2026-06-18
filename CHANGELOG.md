@@ -2,7 +2,201 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-06-18
+
+### Changed
+
+- **ClinVar source switched from VCF to per-SCV TSV pair (#42).** The
+  loader now ingests `variant_summary.txt.gz` + `submission_summary.txt.gz`
+  from NCBI's tab-delimited dump, emitting one cache record per (variant,
+  SCV submission) instead of one combined row per variant. Structurally
+  retires the CLNSIG|CLNDN Frankenstein-pair hazard the original audit
+  flagged: each row carries one submitter's exact (significance,
+  condition) pair, so there is no cross-product pairing risk. Record
+  count roughly doubles (~5.79M → ~9.09M GRCh38) — expected from per-SCV
+  granularity. `CLINVAR_INTERPRETER_VERSION` bumps `2 → 4` so existing
+  caches auto-invalidate on the next `db update` (iv:3 was the in-flight
+  bump for the initial loader; iv:4 forces the placeholder-skip fix
+  described under Fixed). Old VCF loader + URL constants removed (stage
+  C / #96).
+- **JSON report `schema_version` bumped 5 → 6 (#75, ADR-0033).** Adds
+  the new top-level `panel_coverage` object when `--filter-file`
+  supplies a rsID panel. Additive only — prior-version consumers still
+  parse the new output. Diff loader's `_SUPPORTED_SCHEMA_VERSIONS` grows
+  monotonically to include "6".
+- **Focused subcommand `--min-magnitude` default lowered 5.0 → 3.0
+  (#52).** `allelix methylation` and `allelix pharmacogenomics`
+  previously inherited the same magnitude floor as `allelix analyze`
+  (5.0). That floor protects the general report from noise but filters
+  out the exact signal a focused subcommand is supposed to surface —
+  ClinPGx LoE 3 hits (mag 4.0) on COMT / MTHFR / MTR / CBS for
+  `methylation`, similar pharmacogenomic hits for `pharmacogenomics`.
+  New default 3.0 keeps LoE 3 in, keeps ClinVar benign (mag 1.0) out.
+  `allelix analyze` default unchanged at 5.0.
+- **Permission-resolution dedup (#28 item 3).** `AllelixConfig.is_enabled`
+  and the `config show` table-cell renderer used to each fetch the
+  annotator class and call `check_permission()` inline. Both now
+  delegate to a single `AllelixConfig.permission_for()` that returns
+  the three-state `Permission | None`. No behavior change; eliminates
+  drift surface.
+- **Streaming ClinVar reference-lookup (#28 item 1).**
+  `ClinVarAnnotator._load_ref_lookup` switches from `fetchall()` to
+  direct cursor iteration; peak memory drops from "full result list +
+  output dict" to "one row + output dict". `iter_gwas_records`
+  intentionally retained as buffering (dedup-on-min-p-value requires
+  full input visibility); docstring now explicitly acknowledges this
+  instead of claiming streaming.
+
+### Added
+
+- **Panel coverage in custom-panel reports (#75).** When `--filter-file`
+  supplies a rsID panel, the analyze command now distinguishes three
+  states per requested rsID instead of silently dropping two of them:
+  state 1 (genotyped + has annotations) renders normally in the main
+  table; state 2 (genotyped + no annotations) and state 3 (not in input
+  file) surface in a "Panel coverage" section. Terminal output emits a
+  one-line warning when state 3 is non-empty
+  (`⚠ N/M panel variants not found in input: rs1, rs2, rs3, …`); JSON
+  payload carries a `panel_coverage` object
+  (`{requested, found, missing, no_findings}`); HTML report shows the
+  section between the high-value no-call banner and the education
+  section with a per-rsID table. New `AnalysisResult.panel_coverage()`
+  returns a typed dict — or `None` when no panel was supplied (zero
+  behavior change on the default analyze run).
+- **FTDNA FamFinder parser (#70).** Third FTDNA file shape —
+  tab-delimited with separate `ALLELE1` / `ALLELE2` columns instead of
+  a concatenated `RESULT` (the FTDNA and FTDNA-Illumina-raw siblings).
+  Detected by the `famfinder` substring in the file header plus the
+  canonical 5-column header; requiring both signals avoids false
+  positives against any future tab-delimited 5-column format that
+  isn't a FamFinder file. Empty / `-` cells in either allele column
+  map to the no-call convention (`-`). 25 new tests; synthetic
+  fixture at `tests/fixtures/mock_ftdna_famfinder.txt`.
+- **`allelix db clean` and `allelix db path` CLI subcommands (#77).**
+  `db clean` removes downloaded reference database caches (default
+  `~/.local/share/allelix/`) with a size report and a confirmation
+  prompt; `--keep-cadd` preserves the CADD opt-in cache (~5.8 GB,
+  expensive to re-download); `--dry-run` previews; `--yes` skips the
+  prompt for scripted use. `db clean` runs a pre-deletion safety
+  guard: if the target directory contains content but no recognized
+  allelix cache files, it refuses with a clear error even on the
+  `--yes` path; `--force` bypasses for non-standard installs.
+  `db path` prints the resolved data directory for shell capture
+  (`$(allelix db path)`); `--check` verifies the directory is writable.
+  Replaces the manual `rm -rf` recipe in the README "Managing your
+  data" section.
+- **Runtime degradation nudges (#90, #91).** Two once-per-run info
+  lines surface previously-silent post-pipeline conditions: when array
+  input runs without a usable gnomAD ref-resolution path (`--no-gnomad`
+  or no gnomAD cache), every variant lands `ref=None` and the
+  strand-flip path silently falls back to v2.0.x direct-match-only;
+  analyze now emits a dim
+  "strand-aware matching inactive — no reference context" notice
+  (#90). When the effective build is GRCh38 and a high fraction of
+  input variants are rsID-less (the variant-caller `ID=.` case),
+  analyze emits a yellow undercount warning pointing at #62 as the
+  planned real fix via dbSNP resolution (#91). Array inputs and
+  GRCh37 inputs are silent on #91; VCF inputs are silent on #90.
+- **Methylation panel + magnitude floor retune (#51, #52).** Curated
+  gene panel for the `methylation` subcommand with annotated
+  citations; magnitude floor for the focused-subcommand path retuned
+  to 3.0 (see Changed).
+- **Documentation cross-links from README + CONTRIBUTING to
+  `test_data/FULL_TEST_PROTOCOL.md` (#89).** The full real-data
+  release-validation battery is now linked from both the README's
+  Development section and CONTRIBUTING's testing section, instead of
+  being mentioned only at line ~461 of CONTRIBUTING.
+- **`FULL_TEST_PROTOCOL.md §7b` ClinVar significance-sentinel
+  ship-gate.** Post-`db update` SQL scan verifying zero rows match
+  `_CLINVAR_PLACEHOLDER_CLNSIGS` in either build cache, with
+  `LOWER()` for case-insensitive symmetry with the loader. Named
+  ship-gate ("0 rows expected; any row → do not tag") and a
+  forward-pointer to R-4 as the durable allowlist backstop.
+
+### Fixed
+
+- **TSV loader filters ClinVar placeholder CLNSIGs (#42 follow-up,
+  evaluator defect 5).** ClinVar's `submission_summary.txt.gz`
+  carries several placeholder values that mean "no clinical
+  significance recorded." Values not in `_CLNSIG_MAGNITUDE` fell
+  through to the dict's 5.0 default — equal to the analyze display
+  floor — and surfaced as bogus annotations on real rsIDs
+  (rs137854557 → Meningioma was the canary). The loader now filters
+  the exact set that would otherwise default
+  (`_CLINVAR_PLACEHOLDER_CLNSIGS = {"", "-", "not specified",
+  "no classification provided"}`), with case-insensitive membership
+  testing to mirror `_magnitude()`'s `_normalize_clnsig`
+  normalization. `not provided` and
+  `no_classification_for_the_single_variant` are intentionally kept
+  (both map to 2.0 — safe below the floor; dropping them would lose
+  real submitter records). The drift snapshot is updated to remove
+  `no_classification_provided` so R-4's live drift guard remains
+  honest about what's filtered. `CLINVAR_INTERPRETER_VERSION` bumps
+  `3 → 4` to force reingest of any iv:3 cache built by the
+  pre-fix loader.
+- **TSV loader stamps a real `version` value (#42 follow-up,
+  evaluator defect 3).** `db status` previously showed
+  "ClinVar version: None" after the per-SCV rebuild;
+  `stamp_remote_signal` inserts `version=NULL` by design (it's a
+  freshness-only stamper meant to upsert remote_signal onto
+  baked-in HuggingFace cache rows), and the TSV loader had no
+  pre-existing row. Now stamps build date `YYYY-MM-DD` UTC — the
+  practical equivalent of the old VCF loader's `##fileDate` header.
+- **Terminal output emits the regulatory disclaimer (evaluator
+  defect 1).** HTML and JSON have carried the ADR-0003
+  "not medical advice / not a diagnosis" notice since v2.0.x; the
+  terminal — the **default** analyze output — did not. Anyone
+  running `analyze` without `--output` got a clinical-looking
+  table with no disclaimer.
+- **`FULL_TEST_PROTOCOL.md §7` per-SCV condition contract
+  (evaluator defect 4).** The flagship #42 sanity block was still
+  pinning the pre-#42 VCF-era semicolon-joined condition shape
+  (`rs1800896 → "Leprosy ... ; Hepatitis C ..."`). Doc rewritten
+  to pin the per-SCV row shape (multi-row, never combined) and
+  explain why the join-pin is structurally retired.
+- **`FULL_TEST_PROTOCOL.md §15` stale exome-VCF expectation
+  (evaluator defect 2).** `unsupported_23andme_exome_vcf.txt` is a
+  valid VCFv4.1 file and is parsed by the VCF parser added after
+  the fixture was named. Doc split into "still unsupported"
+  (decodeme) and "previously-unsupported / now-supported regression
+  pin" (the 23andMe exome VCF, kept under its historical filename
+  for git-mtime continuity).
+
+### Internal
+
+- **`#42` stage A/B/C as three coordinated PRs (#80 stage A, #90
+  stage B, #96 stage C).** Stage A added the per-SCV TSV loader
+  alongside the VCF loader; stage B wired the annotator to drive it
+  and bumped `CLINVAR_INTERPRETER_VERSION`; stage C deleted the
+  legacy VCF code path entirely (`load_clinvar_vcf`,
+  `iter_clinvar_records`, `parse_clinvar_version`,
+  `_vcf_filename_for_url`, `CLINVAR_URL_BY_BUILD` and the four
+  build-specific URL constants, plus the VCF fixture pair and the
+  generator script).
+- **Branch coverage + CI policy split (#79, #92).** PR runs deselect
+  `@slow` and `@integration` (the slow tier auto-fetches large
+  GWAS / ClinVar fixtures and would balloon CI time); a separate
+  weekly workflow runs the slow tier end-to-end. Branch coverage is
+  now on by default with a 92.5% floor on the gated runs.
+- **`AnalysisResult` carries per-run pipeline diagnostics.** Three
+  new optional fields populated only when relevant:
+  `panel_rsids` / `genotyped_panel_rsids` / `panel_annotated_rsids`
+  (#75), `no_ref_variant_count` (#90), `rsidless_variant_count`
+  (#91). All `None` / `0` on default runs; zero behavior change on
+  the legacy path.
+- **`_CLINVAR_PLACEHOLDER_CLNSIGS` exported as a module constant.**
+  The loader's skip set, the protocol §7b SQL ship-gate, the fast
+  unit test that pins the set, and the slow ingest test that
+  validates the cache all reference the same constant. The
+  cross-PR review caught two independent divergences (different
+  sets in different places); centralizing makes future divergence
+  structurally impossible.
+- **`R-4` `clinvar_clnsig_snapshot.yaml` cleaned of filtered
+  placeholders.** `no_classification_provided` removed from the
+  snapshot now that the loader filters it. R-4 remains the durable
+  allowlist backstop pointed at by §7b's denylist — if the filter
+  ever regresses on a value the snapshot doesn't list, the slow
+  drift guard catches it.
 
 ## [2.1.2] - 2026-06-16
 

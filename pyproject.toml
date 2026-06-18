@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.1.2"
+version = "2.2.0"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -91,7 +91,7 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --strict-markers --tb=short --cov=allelix --cov-branch --cov-report=term-missing --cov-fail-under=92"
+addopts = "-v --strict-markers --tb=short --cov=allelix --cov-branch --cov-report=term-missing --cov-fail-under=92.5"
 markers = [
     "slow: marks tests that download databases or process large files",
     "integration: marks end-to-end pipeline tests",
@@ -105,16 +105,33 @@ filterwarnings = [
 # coverage. Pre-#31 the gate was line-only — a line counted as covered
 # the moment any input crossed it, which is how the v2.0.x carrier-match
 # case/strand and download-truncation correctness bugs shipped green.
-# The 92% floor is calibrated against the branch metric (currently 92.44%
-# with branch coverage enabled); primary annotators sit at 95%+. Raise
-# the floor when new tests close documented missing branches; do not
-# lower it.
+#
+# Floor history (CI numbers, NOT local):
+#   - #31 (v2.1.2):  92.0   line-only → 92.44 with branch enabled
+#   - #79 (v2.2):    92.4   after the missing-branch test batches landed
+#     (carrier-match case norm + download truncation + clinvar stamp
+#     migration + cadd_loader facade). CI on 3.11 / 3.12 reports 92.47;
+#     local on 3.14 reports 92.62. The 0.15pp delta is Python-version-
+#     dependent (~8 lines that run on 3.14 don't run on 3.11/3.12).
+#   - #52 (v2.2):    92.5   after _check_gnomad_version warning-path
+#     tests landed in PR 7. CI now clears the 92.5 bar honestly instead
+#     of relying on the 0.07pp margin under it.
+#
+# *** CI is the floor's source of truth, NOT local. ***
+# Local readings overstate coverage on this codebase because the CI
+# matrix (3.11 + 3.12) misses a few lines that newer Python versions
+# happen to execute. Calibrate the next ratchet from the CI matrix
+# output (gh run view <run_id> --log-failed | grep TOTAL), never from
+# a local pytest run.
+#
+# Primary annotators sit at 95%+. Raise the floor when new tests close
+# documented missing branches; do NOT lower it.
 [tool.coverage.run]
 branch = true
 
 [tool.coverage.report]
 precision = 2
-fail_under = 92.00
+fail_under = 92.50
 
 # GH allelix-dev #33: backs the py.typed promise with a real type checker.
 # The starting baseline is intentionally permissive (no strict mode, no
