@@ -489,13 +489,14 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
 def _panel_coverage_section(
     coverage: PanelCoverage | None,
     panel_genotypes: dict[str, str] | None = None,
+    parser_name: str = "",
 ) -> str:
-    """GH #75 / #120: render the Panel Coverage section.
+    """GH #75 / #120 / #128: render the Panel Coverage section.
 
     Quiet when no panel was supplied. Otherwise show the requested/found
-    counts plus a table of rsIDs that weren't on the user's chip (state
-    3) and rsIDs that were on the chip but produced no findings (state
-    2). State 1 hits render in the main annotation table as before, so
+    counts plus a table of rsIDs that weren't in the input (state 3)
+    and rsIDs that were present but produced no findings (state 2).
+    State 1 hits render in the main annotation table as before, so
     this section is purely a "what's NOT in the table" summary.
 
     GH #120: when ``panel_genotypes`` is supplied (the rsid → "A/G"
@@ -505,7 +506,23 @@ def _panel_coverage_section(
     half no-calls so the dash is visually obvious even though the v6
     accounting still folds no-calls into ``no_findings`` (the
     dedicated ``no_call`` MECE state is #115's job in v2.3). Rows
-    that aren't on the chip (state 3) show "—" (em dash).
+    that aren't in the input (state 3) show "—" (em dash).
+
+    GH #128: state-3 wording is format-aware. Array inputs (23andMe,
+    AncestryDNA, FTDNA, etc.) test a fixed set of positions, so
+    "not genotyped on this chip/platform" is the accurate framing —
+    a missing rsID truly wasn't on the user's chip. VCF / gVCF inputs
+    have no chip; an rsID is absent because either (a) the input file
+    has no variant call at that position (the sample is reference
+    /reference, and gVCFs only emit non-reference calls), or (b) the
+    position-based rsID resolver couldn't find a unique match. The
+    VCF-side label reflects that — "reference at this position or
+    no variant call" — instead of carrying array-format assumptions
+    into a context where they're meaningless. The legitimate
+    ref/ref case (e.g. rs429358 on an HG002 input, where HG002 has
+    T/T and DeepVariant emits no row) reads honestly under the new
+    label; under the old label it read as "not on chip" on a
+    chip-less input.
     """
     if coverage is None:
         return ""
@@ -526,12 +543,20 @@ def _panel_coverage_section(
         gt = (panel_genotypes or {}).get(rsid, "—")
         return f"<td><code>{_escape(gt)}</code></td>"
 
+    # GH #128: VCF / gVCF inputs use a format-aware label; array inputs
+    # keep the historical "chip/platform" framing.
+    is_vcf = parser_name.lower() in {"vcf", "gvcf", "vcf parser"}
+    missing_label = (
+        "reference at this position or no variant call"
+        if is_vcf
+        else "not genotyped on this chip/platform"
+    )
     rows = []
     for rsid in missing:
         rows.append(
             f"<tr><td><code>{_escape(rsid)}</code></td>"
             f"{_gt(rsid, in_input=False) if show_gt else ''}"
-            "<td>not genotyped on this chip/platform</td></tr>"
+            f"<td>{missing_label}</td></tr>"
         )
     for rsid in no_findings:
         rows.append(
@@ -547,10 +572,12 @@ def _panel_coverage_section(
             f"<tr><th>rsID</th>{gt_th}<th>Note</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table>"
         )
+    # GH #128: parallel format-aware framing in the summary header.
+    missing_summary = "reference or no call" if is_vcf else "not on chip"
     return (
         '<div class="notice"><strong>Panel coverage.</strong> '
         f"{found}/{requested} requested rsIDs genotyped in this input "
-        f"({len(missing)} not on chip, {len(no_findings)} "
+        f"({len(missing)} {missing_summary}, {len(no_findings)} "
         "genotyped with no findings)."
         f"{table}</div>"
     )
@@ -1214,7 +1241,7 @@ def render_html(
         f"{_escape(REGULATORY_NOTICE)}</div>"
         f"{build_warn}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
-        f"{_panel_coverage_section(result.panel_coverage(filtered), result.panel_genotypes)}"
+        f"{_panel_coverage_section(result.panel_coverage(filtered), result.panel_genotypes, result.parser_name)}"  # noqa: E501
         f"{_EDUCATION_SECTION}"
         f"{_MAGNITUDE_LEGEND}"
         f"{diff_banner}"

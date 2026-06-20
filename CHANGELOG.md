@@ -2,6 +2,84 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.2] - 2026-06-20
+
+### Fixed
+
+- **rsID-less VCF coverage on `analyze --filter-file` and `extract`.**
+  VCFs that don't stamp dbSNP identifiers in the ID column —
+  DeepVariant gVCFs, Sequencing.com / DRAGEN output, GIAB GRCh38
+  benchmarks — produced wellness-panel reports with most rsIDs
+  classified as "not in file" even when the sample carried the
+  underlying variants. The ClinVar position resolver already
+  recovered an rsID for variants in ClinVar's curated subset, but
+  most pharmacogenomic, GWAS-only, and SNPedia-only rsIDs aren't
+  in ClinVar and stayed unresolved. The pipeline now runs a
+  second-pass position resolver against gnomAD's full dbSNP
+  coordinate map after ClinVar's pass, recovering rsIDs across
+  the much broader gnomAD universe. `extract` was rewritten
+  symmetrically — both the tabix fast-path and the sequential
+  fallback now match by `(chrom, pos, ref, alt)` instead of an
+  rsID equality check that always failed on rsID-less inputs.
+  Real-world measurement on a DeepVariant HG002 gVCF with a
+  22-rsID wellness panel: panel coverage went from 3/20 found
+  to 8/22 found, with the rest reading honestly as "reference at
+  this position or no variant call" instead of the misleading
+  "not on chip" framing.
+
+- **VCF parser tolerance for UTF-8 BOM and leading preamble lines.**
+  `_open_vcf` now opens files with the `utf-8-sig` codec, which
+  strips a leading UTF-8 BOM (`\xef\xbb\xbf`) transparently
+  without affecting BOM-less inputs. `can_parse` and the header
+  reader scan the first 10 non-blank lines for `##fileformat=VCF`
+  rather than requiring it on line 1 — robust against tool
+  banners, comment-line preambles, and other upstream
+  pipeline quirks that previously caused silent format-detection
+  failures. Four committed fixtures and 10 new tests cover the
+  full matrix of {plain, gzipped} × {BOM only, preamble only,
+  BOM + preamble}, plus a pathological-input rejection pin.
+
+- **HTML panel-coverage wording on VCF / gVCF inputs.** State-3
+  panel rsIDs (requested by the user, not present in the file)
+  rendered as "not genotyped on this chip/platform" regardless
+  of input format. For array inputs that's accurate; for VCF /
+  gVCF inputs there is no chip, and the genuine ref/ref case
+  (e.g., HG002 at rs429358 — no variant call because the sample
+  is ref/ref) read as a platform-coverage failure. The label is
+  now format-aware: array inputs keep the historical wording;
+  VCF / gVCF inputs surface "reference at this position or no
+  variant call." Both the per-row state-3 label and the
+  summary-header count are updated.
+
+- **Blank `Build` column in `allelix stats` on caller-output VCFs.**
+  Caller outputs (DeepVariant, DRAGEN, GIAB GRCh38 benchmark)
+  don't write `##reference=` in their headers, so the VCF
+  parser returned an empty build string and the stats summary
+  rendered a blank cell — reading as broken even though stats
+  deliberately does not run build detection (that's an `analyze`
+  job per the protocol). The cell now renders an em dash, plus
+  a short hint pointing the user to `analyze` when chr-prefixed
+  contigs suggest a likely build.
+
+### Performance
+
+- **gnomAD position-index lookup ~5x faster on WGS analyze.**
+  The new rsID-less position resolver hit a missing covering
+  index — `gnomad_frequencies` carried only an `rsid` index,
+  so every position-keyed query was a full scan against 57
+  million rows. Added `idx_gnomad_position` over `(chrom, pos)`
+  to the canonical schema, with a lazy migration in
+  `GnomadAnnotator._connection` so existing 2.7 GB caches don't
+  need re-download: `CREATE INDEX IF NOT EXISTS` runs once on
+  first use against a pre-v2.2.2 cache (a few minutes against
+  the 57M rows), then stays a microsecond-cost no-op forever
+  after. The per-batch SQL was also collapsed from one statement
+  per chromosome to one combined row-value `IN` per batch — on
+  WGS input each batch touches ~24 chromosomes, so the original
+  shape was a 24× query multiplier the new index alone could
+  not amortize. Real-world measurement on a 5.2 M-variant
+  DeepVariant HG002 gVCF: ~165s → ~133s.
+
 ## [2.2.1] - 2026-06-18
 
 ### Fixed

@@ -20,6 +20,7 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
+from allelix.models import NO_CALL_MARKER
 
 if TYPE_CHECKING:
     from allelix.models import Variant
@@ -67,7 +68,21 @@ def stats(file_path: Path, fmt: str | None, sample: str | None) -> None:
     summary.add_column("Value", style="green")
     summary.add_row("Format", parser.display_name)
     summary.add_row("Sample ID", metadata["sample_id"] or "(unknown)")
-    summary.add_row("Build", metadata["build"])
+    # ``metadata["build"]`` is blank on every VCF that doesn't declare
+    # ``##reference=`` in the header — i.e. most caller outputs
+    # (DeepVariant / DRAGEN / GIAB GRCh38 benchmark). A blank cell read
+    # as broken on the v2.2.1 battery; ``stats`` deliberately does not
+    # run build detection (that's an ``analyze`` job per the protocol),
+    # so the honest display when no header build is declared is an em
+    # dash plus the chr-prefix hint when available. The user can run
+    # ``analyze`` to get the real detected build.
+    if metadata["build"]:
+        build_display = metadata["build"]
+    elif metadata.get("chr_prefix_observed"):
+        build_display = "— (chr-prefixed contigs; run `analyze` to confirm)"
+    else:
+        build_display = "—"
+    summary.add_row("Build", build_display)
     summary.add_row("Total SNPs", f"{total:,}")
     summary.add_row("No-calls", f"{no_calls:,} ({_helpers._percent(no_calls, total)})")
     summary.add_row("Heterozygous", f"{het:,} ({_helpers._percent(het, total)})")
@@ -136,28 +151,90 @@ def extract(
     found = _try_tabix_extract(file_path, wanted, sample, data_dir)
     if found is None:
         # Sequential fallback — works for any parser.
-        found = _sequential_extract(parser, file_path, wanted)
+        found = _sequential_extract(parser, file_path, wanted, data_dir)
         _maybe_print_vcf_index_hint(file_path)
 
     _render_extract_table(file_path, wanted, found)
 
 
 def _sequential_extract(
-    parser: GenotypeParser, file_path: Path, wanted: set[str]
+    parser: GenotypeParser,
+    file_path: Path,
+    wanted: set[str],
+    data_dir: Path | None = None,
 ) -> dict[str, Variant]:
     """Stream the file once; collect Variants whose rsID is in ``wanted``.
 
     Streaming early-exit once all wanted rsIDs are found — for arrays
     that yield <1 M variants this is fast enough on any input.
+
+    GH #128: for VCF inputs the parser may emit a positional pseudo-ID
+    (``chr1:11856378:G:A``) when the row's ID column is empty — every
+    modern caller (DeepVariant, DRAGEN, GIAB GRCh38 benchmark) emits
+    these. The rsID-only fast path on the iterator misses them. To
+    cover the rsID-less VCF case, the function pre-resolves the wanted
+    set's coordinates via gnomAD (when ready) and matches variants by
+    ``(chrom, pos, ref, alt)`` whenever the rsID match misses. The
+    ``ref + alt-in-alleles`` rule matches the tabix path's correctness
+    contract and the resolver's carrier-rule disambiguation.
     """
+    from allelix.annotators.gnomad import GnomadAnnotator
+
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
     found: dict[str, Variant] = {}
+    # Pre-resolve wanted → (chrom, pos, ref, alt) → rsid via gnomAD so
+    # the iterator can cover rsID-less VCFs by coord-matching. ``data_dir``
+    # is optional only because tests construct mock parsers without a
+    # configured cache; production CLI invocations always reach
+    # ``resolve_data_dir`` (which defaults to the standard cache
+    # location when the user didn't pass ``--data-dir``). The if-test
+    # below gates only on gnomAD readiness, not on whether the user
+    # explicitly opted in.
+    coord_to_rsid: dict[tuple[str, int, str, str], str] = {}
+    try:
+        resolved_data_dir = resolve_data_dir(data_dir)
+    except (OSError, ValueError):
+        resolved_data_dir = None
+    if resolved_data_dir is not None:
+        gnomad = GnomadAnnotator(resolved_data_dir)
+        try:
+            if gnomad.is_ready():
+                coord_map = gnomad.bulk_resolve_coordinates(wanted)
+                for rsid, entries in coord_map.items():
+                    for chrom, pos, ref, alt in entries:
+                        coord_to_rsid[(chrom, pos, ref, alt)] = rsid
+        finally:
+            gnomad.close()
     try:
         for variant in parser.parse(file_path):
             if variant.rsid in wanted:
                 found[variant.rsid] = variant
                 if len(found) == len(wanted):
                     break
+                continue
+            # rsID fast path missed — try coord match for the rsID-less
+            # VCF case. Requires ref populated; non-VCF parsers (arrays)
+            # don't carry ref but always stamp rsIDs in the file, so
+            # they never reach this branch.
+            if not coord_to_rsid or variant.ref is None:
+                continue
+            matched_rsid: str | None = None
+            for alt in (variant.allele1, variant.allele2):
+                if alt in (NO_CALL_MARKER, variant.ref):
+                    continue
+                key = (variant.chromosome, variant.position, variant.ref, alt)
+                candidate = coord_to_rsid.get(key)
+                if candidate is None or candidate in found or candidate not in wanted:
+                    continue
+                matched_rsid = candidate
+                break
+            if matched_rsid is None:
+                continue
+            variant.original_rsid = variant.rsid
+            variant.rsid = matched_rsid
+            found[matched_rsid] = variant
+            if len(found) == len(wanted):
+                break
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
     return found
@@ -247,7 +324,7 @@ def _execute_tabix_extract(  # pragma: no cover
         for rsid, coords in coord_map.items():
             if rsid in found or not coords:
                 continue
-            for chrom, pos, _ref, _alt in coords:
+            for chrom, pos, ref, alt in coords:
                 # gnomAD chromosomes are bare ('1', 'X'); the VCF might
                 # use 'chr1'. Try both.
                 for chrom_candidate in (chrom, f"chr{chrom}"):
@@ -259,9 +336,31 @@ def _execute_tabix_extract(  # pragma: no cover
                         variant = _parse_data_line(row, sample_idx)
                         if variant is None:
                             continue
-                        if variant.rsid == rsid:
+                        # GH #128: match the tabix-fetched row to the
+                        # gnomAD record by (ref, alt) rather than by
+                        # rsID equality. On rsID-stamped VCFs (e.g. GIAB
+                        # GRCh37, 23andMe) the parser populates
+                        # ``variant.rsid`` with the file's ID column and
+                        # the prior equality check happened to work; on
+                        # rsID-less VCFs (DeepVariant gVCFs, GIAB GRCh38
+                        # benchmark, Sequencing.com DRAGEN output)
+                        # ``variant.rsid`` is a positional pseudo-ID and
+                        # the equality check silently discarded every
+                        # tabix-fetched row. Ref+alt match is correct on
+                        # both — that's what the gnomAD coord was
+                        # resolved against.
+                        if variant.ref == ref and alt in (
+                            variant.allele1,
+                            variant.allele2,
+                        ):
                             # _parse_data_line already normalizes chromosome;
-                            # no re-normalization needed.
+                            # no re-normalization needed. Stash + stamp
+                            # so the displayed table shows the requested
+                            # rsID rather than the pseudo-ID, with audit
+                            # preserved per Variant.original_rsid.
+                            if variant.rsid != rsid:
+                                variant.original_rsid = variant.rsid
+                                variant.rsid = rsid
                             found[rsid] = variant
                             break
                     if rsid in found:

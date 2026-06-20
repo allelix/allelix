@@ -33,6 +33,10 @@ MOCK_MULTISAMPLE = f"{FIXTURES}/mock_multisample.vcf"
 MOCK_VCF_GZ = f"{FIXTURES}/mock_vcf.vcf.gz"
 MOCK_VCF_NON_UTF8 = f"{FIXTURES}/mock_vcf_non_utf8_header.vcf"
 MOCK_VCF_NON_UTF8_GZ = f"{FIXTURES}/mock_vcf_non_utf8_header.vcf.gz"
+MOCK_VCF_BOM = f"{FIXTURES}/mock_vcf_bom.vcf"
+MOCK_VCF_BOM_GZ = f"{FIXTURES}/mock_vcf_bom.vcf.gz"
+MOCK_VCF_PREAMBLE = f"{FIXTURES}/mock_vcf_preamble.vcf"
+MOCK_VCF_BOM_PREAMBLE = f"{FIXTURES}/mock_vcf_bom_preamble.vcf"
 
 
 def _path(rel: str) -> Path:
@@ -151,6 +155,84 @@ class TestRobustInputMatrix:
         # First few bytes of a gzip stream — incomplete, will EOFError
         # on read.
         f.write_bytes(b"\x1f\x8b\x08\x00\x00\x00\x00\x00")
+        assert VcfParser().can_parse(f) is False
+
+
+class TestBomAndPreambleHardening:
+    """GH #126: Sequencing.com (DRAGEN-pipeline) VCFs were reported to
+    fail format detection. The most-plausible root cause we could
+    identify without a sample header was a leading UTF-8 BOM
+    (``\\xef\\xbb\\xbf``) before ``##fileformat=VCFv4.2`` — Windows /
+    Excel round-trips and some download flows add one silently, and
+    ``startswith("##fileformat=VCF")`` returns False on
+    ``\\ufeff##fileformat=VCFv4.2``. The defensive hardening landing
+    here is correct independent of root cause:
+
+      - ``_open_vcf`` uses ``utf-8-sig`` codec. Strips a leading
+        UTF-8 BOM transparently; identical to ``utf-8`` on BOM-less
+        input. Zero risk on pre-existing fixtures.
+
+      - ``can_parse`` scans the first ``_PREAMBLE_SCAN_LINES`` (=10)
+        non-blank lines for ``##fileformat=VCF`` rather than
+        requiring it on line 1. Covers the orthogonal failure mode
+        where some tool prepended a banner / comment / blank line
+        before the format declaration.
+
+    The full matrix:
+      {plain .vcf, .vcf.gz} x {BOM only, preamble only, BOM+preamble}
+    """
+
+    @pytest.mark.parametrize(
+        "fixture",
+        [MOCK_VCF_BOM, MOCK_VCF_BOM_GZ, MOCK_VCF_PREAMBLE, MOCK_VCF_BOM_PREAMBLE],
+    )
+    def test_can_parse_recognizes_each_shape(self, fixture: str) -> None:
+        """Every {BOM, preamble, BOM+preamble} variant — plain and
+        gzipped — must be claimed by VcfParser. Pre-fix all four of
+        these failed format detection silently."""
+        assert VcfParser().can_parse(_path(fixture)), (
+            f"{fixture} should be recognized after the BOM / preamble "
+            f"hardening; can_parse returned False"
+        )
+
+    @pytest.mark.parametrize(
+        "fixture",
+        [MOCK_VCF_BOM, MOCK_VCF_BOM_GZ, MOCK_VCF_PREAMBLE, MOCK_VCF_BOM_PREAMBLE],
+    )
+    def test_parse_yields_variants_across_bom_and_preamble_matrix(self, fixture: str) -> None:
+        """End-to-end parse: the BOM strip and preamble scan must
+        not corrupt the data-line stream. Each fixture carries the
+        same data lines as ``mock_vcf.vcf``; rs1801133 on chr1
+        must come through."""
+        variants = list(VcfParser().parse(_path(fixture)))
+        rsids = {v.rsid for v in variants}
+        assert "rs1801133" in rsids, (
+            f"{fixture} should yield rs1801133 from chr1:11796321; got: {sorted(rsids)[:5]}"
+        )
+
+    def test_preamble_scan_cap_rejects_pathological_input(self, tmp_path: Path) -> None:
+        """A file that buries ``##fileformat`` past the
+        ``_PREAMBLE_SCAN_LINES`` cap is rejected rather than
+        accepted at unbounded scan cost. Pin the contract so
+        a future bump of the cap is a conscious decision."""
+        f = tmp_path / "buried_fileformat.vcf"
+        # 20 preamble lines before the format declaration — well past
+        # the 10-line scan cap.
+        text = (
+            "\n".join(f"# preamble line {i}" for i in range(20))
+            + "\n##fileformat=VCFv4.2\n"
+            + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        )
+        f.write_text(text)
+        assert VcfParser().can_parse(f) is False
+
+    def test_chrom_header_before_fileformat_rejects(self, tmp_path: Path) -> None:
+        """A file that reaches the ``#CHROM`` data-header line without
+        having seen ``##fileformat=VCF`` is rejected immediately,
+        without consuming the full cap of scan lines. Belt-and-braces
+        against scanning into the data block of a malformed input."""
+        f = tmp_path / "chrom_before_format.vcf"
+        f.write_text("# some comment\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
         assert VcfParser().can_parse(f) is False
 
 

@@ -546,6 +546,40 @@ def run_analysis(
                     )
                     for (chrom, pos, ref, alt), rsid in resolution.items():
                         resolved_coords[rsid] = (chrom, pos, ref, alt)
+            # GH #128: second-pass resolution against gnomAD for any variant
+            # still rsidless after ClinVar's pass. ClinVar carries the
+            # clinically-curated subset of dbSNP; gnomAD's frequencies table
+            # is keyed on the full dbSNP rsID universe, so pharmacogenomic
+            # / GWAS-only / SNPedia-only rsIDs (which never make it into
+            # ClinVar) get recovered here. Same carrier-rule disambiguation
+            # as the ClinVar resolver: unique consistent (ref, alt) match
+            # against the user's allele pair, abstain on ties.
+            if gnomad is not None and gnomad.is_ready():
+                still_rsidless = [v for v in batch_buf if not v.rsid.startswith("rs")]
+                if still_rsidless:
+                    positions = {
+                        (v.chromosome, v.position)
+                        for v in still_rsidless
+                        if not v.is_no_call and v.chromosome and v.position > 0
+                    }
+                    gnomad_rows = gnomad.bulk_resolve_rsids_from_positions(positions)
+                    for v in still_rsidless:
+                        rows = gnomad_rows.get((v.chromosome, v.position))
+                        if not rows:
+                            continue
+                        user_alleles = {v.allele1, v.allele2}
+                        matches = [
+                            (ref, alt, rsid)
+                            for ref, alt, rsid in rows
+                            if ref != alt and user_alleles.issubset({ref, alt})
+                        ]
+                        if len(matches) == 1:
+                            ref, alt, rsid = matches[0]
+                            # Same audit stash as the ClinVar resolver
+                            # (clinvar.py:bulk_resolve_rsids). Debug-only.
+                            v.original_rsid = v.rsid
+                            v.rsid = rsid
+                            resolved_coords[rsid] = (v.chromosome, v.position, ref, alt)
             # ADR-0035 PR 4: populate Variant.ref for array data via gnomAD's
             # rsid → forward-REF map. VCF inputs already carry ref (PR 1).
             # Annotators downstream (ClinVar / PharmGKB strand-aware carrier

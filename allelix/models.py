@@ -47,6 +47,27 @@ class Variant:
     allele2: str
     build: str = DEFAULT_BUILD
     ref: str | None = None
+    # GH #128: pre-resolution rsID stashed when a resolver
+    # (`ClinVarAnnotator.bulk_resolve_rsids` or
+    # `GnomadAnnotator.bulk_resolve_rsids_from_positions`, both invoked
+    # in ``_pipeline._flush()``) recovers the real ``rs...`` ID for a
+    # variant that arrived without one — e.g. a DeepVariant gVCF row
+    # whose ID column is ``.``, parsed as a positional pseudo-ID like
+    # ``chr1:11856378:G:A``. The stamp rewrites ``rsid`` to the
+    # recovered value so every downstream call site that compares
+    # ``v.rsid`` against a requested set (panel coverage, high-value
+    # match, extract, PLINK ref/alt, GWAS must-include) works
+    # transparently; ``original_rsid`` holds the pre-stamp value
+    # purely for audit / debug.
+    #
+    # **DEBUG-ONLY — do not branch production logic on this field.**
+    # Reading ``original_rsid`` outside of logging, debugging, or
+    # ``__repr__``-style introspection couples production behavior to
+    # provenance metadata and turns this into an unintended API
+    # surface. The serialization-guard test in
+    # ``tests/test_original_rsid_never_serializes.py`` asserts this
+    # field never reaches JSON / HTML / ``--diff`` output.
+    original_rsid: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize allele case at construction (GH #14, ADR-0035).

@@ -127,6 +127,8 @@ CREATE TABLE IF NOT EXISTS gnomad_frequencies (
 );
 
 CREATE INDEX IF NOT EXISTS idx_gnomad_rsid ON gnomad_frequencies(rsid);
+CREATE INDEX IF NOT EXISTS idx_gnomad_position
+    ON gnomad_frequencies(chrom, pos);
 """
     + _DATABASE_VERSIONS_TABLE
 )

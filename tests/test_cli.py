@@ -67,6 +67,49 @@ class TestStatsCommand:
         assert result.exit_code != 0
         assert "Unknown parser" in result.output
 
+    def test_stats_build_column_falls_back_to_em_dash_with_hint_on_vcf(self, tmp_path):
+        """v2.2.1 battery flagged a blank ``Build`` cell on caller-output
+        VCFs (DeepVariant / DRAGEN / GIAB GRCh38 benchmark) — those
+        don't carry ``##reference=`` in the header, so the parser
+        returns ``build=""`` and the cell rendered as nothing at all,
+        reading as broken. The stats command does NOT run build
+        detection (that's an ``analyze`` job per the protocol), so the
+        honest display is an em dash plus a chr-prefix hint when the
+        contigs suggest GRCh38."""
+        runner = CliRunner(env={"COLUMNS": "200"})
+        # Minimal chr-prefixed VCF — no ##reference, so build is blank,
+        # but chr_prefix_observed is True.
+        vcf = tmp_path / "minimal_chr.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=chr1,length=249250621>\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+            "chr1\t11796321\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+        )
+        result = runner.invoke(main, ["stats", str(vcf)])
+        assert result.exit_code == 0, result.output
+        assert "chr-prefixed contigs" in result.output
+        assert "run `analyze` to confirm" in result.output
+
+    def test_stats_build_column_em_dash_only_when_no_chr_prefix(self, tmp_path):
+        """A bare VCF (no chr-prefixed contigs, no ##reference) gets
+        a plain em dash with no hint — there's nothing to suggest."""
+        runner = CliRunner(env={"COLUMNS": "200"})
+        vcf = tmp_path / "minimal_bare.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=1,length=249250621>\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+            "1\t11796321\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+        )
+        result = runner.invoke(main, ["stats", str(vcf)])
+        assert result.exit_code == 0, result.output
+        # Em dash present, hint absent.
+        assert "—" in result.output
+        assert "chr-prefixed contigs" not in result.output
+
     def test_stats_unrecognized_file_errors(self, tmp_path):
         f = tmp_path / "garbage.txt"
         f.write_text("hello world\n", encoding="utf-8")

@@ -76,6 +76,24 @@ class GnomadAnnotator(Annotator):
                     f"gnomAD cache not found at {self._db_path}. Run `allelix db update` first."
                 )
             self._conn = sqlite3.connect(self._db_path)
+            # GH #134: lazy-create the position index on caches built before
+            # the index landed (anything <= v2.2.1). The index is required
+            # for ``bulk_resolve_rsids_from_positions`` (GH #128) to perform
+            # well — without it that method scans the full 57M-row
+            # ``gnomad_frequencies`` table per query, which is the root
+            # cause of the ~2x analyze slowdown on rsID-less WGS VCFs
+            # observed at the v2.2.2 ship gate. ``CREATE INDEX IF NOT
+            # EXISTS`` is a no-op once the index is in place (microseconds
+            # to check the schema); the one-time build cost on first run
+            # against a pre-v2.2.2 cache is a few minutes against the 57M
+            # rows but only happens once per cache. Doing this here in
+            # ``_connection`` rather than as a schema migration avoids
+            # forcing every user to re-download the 2.7 GB compressed
+            # cache for what's a transparent index addition.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gnomad_position ON gnomad_frequencies(chrom, pos)"
+            )
+            self._conn.commit()
         return self._conn
 
     def setup(self) -> None:
@@ -196,6 +214,84 @@ class GnomadAnnotator(Annotator):
             ).fetchall()
             for rsid, chrom, pos, ref, alt in rows:
                 result.setdefault(rsid, []).append((chrom, pos, ref, alt))
+        return result
+
+    def bulk_resolve_rsids_from_positions(
+        self, positions: set[tuple[str, int]]
+    ) -> dict[tuple[str, int], list[tuple[str, str, str]]]:
+        """Reverse-lookup rsIDs by ``(chromosome, position)``.
+
+        Counterpart to :meth:`bulk_resolve_coordinates` for the GH #128
+        flow: a VCF variant arriving with an empty ID column (DeepVariant
+        gVCFs, GIAB GRCh38 benchmarks, anything that doesn't stamp dbSNP
+        IDs) is parsed as a positional pseudo-ID. The ClinVar resolver
+        (:meth:`allelix.annotators.clinvar.ClinVarAnnotator.bulk_resolve_rsids`)
+        recovers an rsID only for variants in ClinVar's curated subset —
+        which excludes most pharmacogenomic, GWAS-only, and SNPedia-only
+        rsIDs commonly found in wellness panels. This method fills the
+        gap by querying ``gnomad_frequencies`` (keyed on the full dbSNP
+        rsID universe with published allele frequencies).
+
+        Returns ``{(chrom, pos): [(ref, alt, rsid), ...]}``. Multi-allelic
+        positions return multiple rows; the caller is responsible for
+        applying carrier-rule disambiguation (matching the user's allele
+        pair as a subset of ``{ref, alt}`` and abstaining on ties — same
+        pattern as the ClinVar resolver).
+
+        Bare chromosomes are expected on both the input set and the
+        ``gnomad_frequencies.chrom`` column — Allelix normalizes all
+        internal chromosome identifiers to bare form
+        (:func:`allelix.parsers._helpers.normalize_chromosome`).
+        """
+        if not positions:
+            return {}
+        conn = self._connection()
+        result: dict[tuple[str, int], list[tuple[str, str, str]]] = {}
+        # GH #134: issue a single combined SQL statement per chunk
+        # using SQLite's row-value ``(chrom, pos) IN ((?, ?), ...)``
+        # form instead of grouping by chromosome and issuing one
+        # statement per (chrom, chunk) pair. On WGS input each batch
+        # touches all ~24 chromosomes; the per-chrom shape was a 24x
+        # query multiplier the new ``idx_gnomad_position`` index could
+        # not amortize away. The row-value IN form keeps the same
+        # carrier-rule contract — both ``chrom`` and ``pos`` must
+        # match the input pair simultaneously — and the
+        # ``idx_gnomad_position`` covering index on (chrom, pos)
+        # serves the lookup directly. ``_BULK_BATCH_SIZE`` here
+        # refers to (chrom, pos) PAIRS not single ints, so each
+        # chunk binds 2 * batch_size parameters.
+        #
+        # SQLite parameter-limit awareness: 2 * _BULK_BATCH_SIZE =
+        # 1800 bind parameters per chunk. The historical SQLite
+        # ``SQLITE_MAX_VARIABLE_NUMBER`` default was 999, raised to
+        # 32766 in SQLite 3.32 (2020-05-22). Every Python version
+        # Allelix supports (>= 3.11) ships with SQLite >= 3.34, so
+        # the 1800-param chunk is well within the modern limit. If a
+        # future change bumps ``_BULK_BATCH_SIZE`` toward 16000 or
+        # the project drops Python's bundled SQLite for a system
+        # ``libsqlite3`` of unknown vintage, re-check this against
+        # the runtime ``sqlite3.sqlite_version`` before assuming
+        # capacity.
+        position_list = list(positions)
+        for i in range(0, len(position_list), _BULK_BATCH_SIZE):
+            batch = position_list[i : i + _BULK_BATCH_SIZE]
+            placeholders = ",".join("(?, ?)" for _ in batch)
+            params: list[str | int] = []
+            for chrom, pos in batch:
+                params.append(chrom)
+                params.append(pos)
+            rows = conn.execute(
+                f"SELECT chrom, pos, ref, alt, rsid FROM gnomad_frequencies"
+                f" WHERE (chrom, pos) IN ({placeholders})",
+                params,
+            ).fetchall()
+            for c, p, ref, alt, rsid in rows:
+                if not rsid:
+                    continue
+                result.setdefault((c, p), []).append((ref, alt, rsid))
+        # Deterministic ordering for the carrier-rule pass.
+        for rows in result.values():
+            rows.sort()
         return result
 
     def bulk_lookup_by_alt(self, keys: set[tuple[str, str]]) -> dict[tuple[str, str], float]:

@@ -685,6 +685,12 @@ class ClinVarAnnotator(Annotator):
                 ]
                 if len(matches) == 1:
                     ref, alt, rsid = matches[0]
+                    # GH #128: stash the pre-resolution pseudo-rsID
+                    # for audit / debug before stamping. Debug-only —
+                    # see Variant.original_rsid docstring; the
+                    # serialization-guard test asserts this never
+                    # reaches public output.
+                    v.original_rsid = v.rsid
                     v.rsid = rsid
                     resolved[(v.chromosome, v.position, ref, alt)] = rsid
         return resolved
