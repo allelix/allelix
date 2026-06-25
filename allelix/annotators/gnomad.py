@@ -247,34 +247,29 @@ class GnomadAnnotator(Annotator):
             return {}
         conn = self._connection()
         result: dict[tuple[str, int], list[tuple[str, str, str]]] = {}
-        # GH #134: issue a single combined SQL statement per chunk
-        # using SQLite's row-value ``(chrom, pos) IN ((?, ?), ...)``
-        # form instead of grouping by chromosome and issuing one
-        # statement per (chrom, chunk) pair. On WGS input each batch
-        # touches all ~24 chromosomes; the per-chrom shape was a 24x
-        # query multiplier the new ``idx_gnomad_position`` index could
-        # not amortize away. The row-value IN form keeps the same
-        # carrier-rule contract — both ``chrom`` and ``pos`` must
-        # match the input pair simultaneously — and the
-        # ``idx_gnomad_position`` covering index on (chrom, pos)
-        # serves the lookup directly. ``_BULK_BATCH_SIZE`` here
-        # refers to (chrom, pos) PAIRS not single ints, so each
-        # chunk binds 2 * batch_size parameters.
+        # Issue a single combined SQL statement per chunk using SQLite's
+        # row-value ``(chrom, pos) IN ((?, ?), ...)`` form instead of
+        # grouping by chromosome and issuing one statement per
+        # (chrom, chunk) pair. On WGS input each batch touches all ~24
+        # chromosomes; the per-chrom shape was a 24x query multiplier
+        # the ``idx_gnomad_position`` index could not amortize away. The
+        # row-value IN form keeps the same carrier-rule contract — both
+        # ``chrom`` and ``pos`` must match the input pair simultaneously
+        # — and the ``idx_gnomad_position`` covering index on
+        # ``(chrom, pos)`` serves the lookup directly.
         #
-        # SQLite parameter-limit awareness: 2 * _BULK_BATCH_SIZE =
-        # 1800 bind parameters per chunk. The historical SQLite
-        # ``SQLITE_MAX_VARIABLE_NUMBER`` default was 999, raised to
-        # 32766 in SQLite 3.32 (2020-05-22). Every Python version
-        # Allelix supports (>= 3.11) ships with SQLite >= 3.34, so
-        # the 1800-param chunk is well within the modern limit. If a
-        # future change bumps ``_BULK_BATCH_SIZE`` toward 16000 or
-        # the project drops Python's bundled SQLite for a system
-        # ``libsqlite3`` of unknown vintage, re-check this against
-        # the runtime ``sqlite3.sqlite_version`` before assuming
-        # capacity.
+        # Each input pair binds 2 SQLite parameters (chrom + pos), so
+        # the chunk size is ``_BULK_BATCH_SIZE // 2`` to stay inside the
+        # 999-param convention every other annotator and gnomAD's own
+        # multi-param queries respect (``bulk_lookup_by_alt`` does the
+        # same 2-param shape with the same ``// 2``;
+        # ``bulk_lookup_by_position`` uses ``// 4`` for its 4-param
+        # shape, same convention scaled). Net effective batch size:
+        # 450 pairs x 2 = 900 params per chunk.
+        chunk_pairs = _BULK_BATCH_SIZE // 2
         position_list = list(positions)
-        for i in range(0, len(position_list), _BULK_BATCH_SIZE):
-            batch = position_list[i : i + _BULK_BATCH_SIZE]
+        for i in range(0, len(position_list), chunk_pairs):
+            batch = position_list[i : i + chunk_pairs]
             placeholders = ",".join("(?, ?)" for _ in batch)
             params: list[str | int] = []
             for chrom, pos in batch:

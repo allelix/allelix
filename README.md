@@ -151,8 +151,10 @@ disease findings. Wherever you write them via `--output <path>`,
 that's where they sit until you delete them. Allelix doesn't
 auto-clean and won't warn you when you write to `/tmp/` or any
 other shared location. Treat the files as personal data: read them,
-move them somewhere you control, or delete when you're done. A
-data-lifecycle subcommand is planned for v2.1.
+move them somewhere you control, or delete when you're done.
+`allelix db clean` (shipped in v2.2.0) handles the cache side of
+the lifecycle; output reports are still the user's responsibility
+to manage.
 
 ## Configuration
 

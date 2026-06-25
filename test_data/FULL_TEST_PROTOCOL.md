@@ -31,11 +31,12 @@ against the local cache (GH #45).
 python -m pytest tests/ -x --tb=short
 ```
 
-**Expected for v2.2.0:** **~1,672 passed, 0 skipped** (fast tier:
-`pytest -m "not slow and not integration"`) when `plink2` is
-installed locally and the GWAS Catalog auto-fetch succeeds. The
-"0 skipped" line is the goal — silent skips are forbidden as a ship-
-gate signal (GH #45). If `plink2` isn't installed, expect 1 skip on
+**Expected:** **0 skipped** (the invariant — silent skips are
+forbidden as a ship-gate signal, GH #45). Passing count should
+match the latest row of the test-count floor table below. Fast
+tier: `pytest -m "not slow and not integration"`, with `plink2`
+installed locally and the GWAS Catalog auto-fetch succeeding. If
+`plink2` isn't installed, expect 1 skip on
 `TestRoundtripWithPlink` (`@pytest.mark.integration`, external binary
 precondition); install `plink2` before tagging.
 
@@ -57,6 +58,21 @@ Test-count floor by release:
   JSON schema_version 5→6; #90/#91 runtime nudges; #79 branch
   coverage; #51/#52 methylation panel + magnitude floor; #77
   db clean / db path subcommands)
+- v2.2.1: ~1,718 (#118 CHANGELOG sanitize gate; #109 per-SCV
+  duplicate-row collapse; #116/#101 ClinVar curatorial-term
+  filter expansion; #121/#122 VCF parser robustness on
+  non-UTF-8 / binary input; #123 §19 invariant-based protocol
+  with HG002 ground-truth ride-along)
+- v2.2.2: ~1,733 (#128 rsID-less VCF coverage via gnomAD
+  second-pass resolver; #133 BOM + preamble tolerance; #135
+  gnomAD position covering index + per-batch row-value IN
+  collapse; #131 stats Build em-dash + chr-prefix hint)
+- v2.2.3: ~1,734 (#145 23andMe v5 "is generated" banner-variant
+  tuple; #139 gnomAD position resolver chunk size to //2
+  convention; #144 README data-lifecycle docs; release-content
+  discipline gate -- sanitize CI guard extended to flag
+  drift-vulnerable counts in [Unreleased] without snapshot
+  caveat)
 
 Check lint:
 
@@ -313,11 +329,14 @@ allelix analyze test_data/real/vcf/HG00187_gatkhc.g.vcf.gz \
   --build grch37 \
   --output /tmp/allelix-review/hg00187_gatk.json \
   --report-format json
-# Expected: exit 0; ~30-60 total annotations (low per-sample because
+# Expected: exit 0; non-zero total annotations (low per-sample because
 # GATK-HC raw output is rsID-less — hits come via position-based
-# ClinVar + #8 rsID-less resolution, not the rsID fast-path). Build
-# banner reads "GRCh37 (override; 0/0 known-SNP positions matched)"
-# because GATK-HC raw output is ID=. and the override pins the build.
+# ClinVar + #8 rsID-less resolution, not the rsID fast-path). Exact
+# count drifts with each ClinVar / GWAS / ClinPGx refresh; use the
+# §19 ground-truth harness for the regression-detection signal.
+# Build banner reads "GRCh37 (override; 0/0 known-SNP positions
+# matched)" because GATK-HC raw output is ID=. and the override
+# pins the build.
 
 # Multi-sample VCF (3 samples) — must fail without --sample
 allelix analyze tests/fixtures/mock_multisample.vcf 2>&1 | head -3
@@ -495,8 +514,10 @@ source data if available.
 
 **#18 stronger invariant check.** For every alt-set annotation with a
 stamped CADD score, the alt must appear directly in gnomAD's alts at
-that rsID (no complement-resolved hits). Counted across the v2.0.1
-HG002 gVCF battery: 578/578 direct, 0 via-complement.
+that rsID (no complement-resolved hits). Across the HG002 gVCF
+battery: all matches must be allele-direct; via-complement count
+must be 0. The absolute denominator drifts with each gnomAD / CADD
+refresh; the invariant is the zero on the via-complement side.
 
 **#42 ClinVar real-cache content gates.** After a `db update` against
 the v2.2 per-SCV TSV loader. **These are ship-gates** in the same
@@ -624,10 +645,12 @@ For real-data validation against the Section 19 battery, see
 `tests/utils/test_allele.py::TestStrandAwareCarrierMatch` (helper-
 level, covers palindromic / orientation / multi-allelic branches)
 and the wrong-allele safety invariant check at the end of
-Section 19 — v2.1.0 produces a larger denominator (186/186 GRCh37,
-173/173 GRCh38 vs v2.0.2's 107/107 + 113/113) because PR 2's per-
-Annotation alt threading made more rows eligible for the exact-
-`(rsid, alt)` CADD lookup. **All matches must remain 100% allele-
+Section 19 — v2.1.0 produces a larger denominator than v2.0.2
+because PR 2's per-Annotation alt threading made more rows
+eligible for the exact-`(rsid, alt)` CADD lookup. The absolute
+denominators drift with each gnomAD / CADD refresh; the invariant
+to enforce is **100% allele-direct on both builds, 0
+via-complement**. **All matches must remain 100% allele-
 direct, 0 via-complement** — that's the v2.0.1 #18 invariant
 holding against the broader denominator.
 
@@ -692,9 +715,10 @@ print(f\"GWAS rows w/ p_value: {sum(1 for a in gwas if a.get('p_value') is not N
 "
 ```
 
-**Expected:** Schema version 5 (v2.1.0; ADR-0035 Cluster B added
-`variant.ref` internally and `annotation.trait` / `.p_value` /
-`.phecode` to the JSON output). Multiple sources present. gnomAD and
+**Expected:** Schema version matches the `SCHEMA_VERSION` constant
+in `allelix/reports/json_report.py` (currently 6; bumped from 5
+at #75 panel-coverage states in v2.2.0; ADR-0033 governs schema
+bump policy). Multiple sources present. gnomAD and
 AM enrichment counts > 0. On any file with GWAS hits, the structured
 `trait` and `p_value` counts must both be > 0 — that's the v5 contract
 delivery check.
@@ -1233,9 +1257,10 @@ by DeepVariant at those positions.
 
 **Wrong-allele safety invariants (GH #18 / #23 / #42):** every CADD
 score stamped on an alt-set annotation must come from a direct
-`(ref, alt)` match in gnomAD (no complement-resolved hits). Per the
-v2.0.1 verification on the HG002 gVCF: 578/578 (100%) of attached
-CADD scores were allele-direct.
+`(ref, alt)` match in gnomAD (no complement-resolved hits). The
+invariant to enforce is 100% allele-direct, 0 via-complement —
+the absolute denominator drifts with each gnomAD / CADD refresh,
+the via-complement zero is what's load-bearing.
 
 ```bash
 # Runs against whichever real VCF output is present.

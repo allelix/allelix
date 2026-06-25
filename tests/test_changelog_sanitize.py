@@ -81,3 +81,99 @@ def test_changelog_keep_a_changelog_header_intact(changelog_text: str) -> None:
     first_lines = "\n".join(changelog_text.splitlines()[:3])
     assert "# Changelog" in first_lines
     assert "Keep a Changelog" in changelog_text
+
+
+# Drift-vulnerable count patterns. These match the three shapes that have
+# historically shipped in release content and silently rotted across DB
+# refreshes: panel-coverage ratios ("3/20 found"), timing arrows
+# ("~165s → ~133s"), and explicit before/after pairs ("went from X to Y").
+# Each is an absolute measurement against a specific DB snapshot — the same
+# code on a refreshed DB will produce different numbers, so any reader
+# (or reviewer) re-running the analysis later sees what looks like a
+# regression.
+#
+# The patterns are deliberately narrow: they flag comparison constructs
+# specifically, not bare numbers in infrastructure descriptions ("10
+# non-blank lines", "57M-row cache", "999-param convention"). The
+# harness output format (``✓ <key>: N annotations, M unique keys, all
+# invariants hold``) deliberately does not match, because that line IS
+# the drift-tolerant signal — see ``test_data/check_ground_truth.py``.
+_DRIFT_PATTERNS = (
+    re.compile(r"\d+/\d+ found"),  # "3/20 found"
+    re.compile(r"~\d+\s*s\b.*→.*~\d+\s*s\b"),  # "~165s → ~133s"
+    re.compile(r"went from \d", re.IGNORECASE),  # "went from X to Y"
+)
+
+# Caveat keywords that opt a drift-pattern line back in: if a paragraph
+# contains a comparison count AND one of these keywords nearby, the
+# author has explicitly tagged the measurement as a snapshot. The check
+# is per-section (not per-line) so a single calibration paragraph at
+# the top of an [Unreleased] block covers all measurements inside.
+_SNAPSHOT_CAVEAT_KEYWORDS = (
+    "snapshot",
+    "drift",
+    "point-in-time",
+    "harness floor",
+    "harness invariant",
+    "ground-truth harness",
+)
+
+
+def _extract_unreleased_section(text: str) -> str:
+    """Return the ``[Unreleased]`` block (without surrounding sections).
+
+    The guard scopes drift-pattern enforcement to ``[Unreleased]`` only.
+    Already-shipped release sections are immutable history; rewriting
+    them would create churn for no reader benefit (the corresponding
+    PyPI sdist and squash commit body are forever pinned regardless).
+    The discipline is forward-looking — every release shipped from this
+    commit onward gets the check.
+    """
+    marker_open = "\n## [Unreleased]"
+    if marker_open not in text:
+        return ""
+    after = text.split(marker_open, 1)[1]
+    # The block runs until the next ``## [`` heading or EOF.
+    next_section = re.search(r"\n## \[", after)
+    if next_section:
+        return after[: next_section.start()]
+    return after
+
+
+def test_changelog_unreleased_has_no_drift_vulnerable_counts(
+    changelog_text: str,
+) -> None:
+    """GH #145-era discipline: raw drift-vulnerable counts in
+    ``[Unreleased]`` must carry an explicit snapshot caveat, or the
+    measurement must be quoted via the §19 ground-truth harness output
+    format (which is drift-tolerant by design).
+
+    See ``CONTRIBUTING.md`` § Release-content discipline for the
+    rationale and the two acceptable shapes.
+    """
+    unreleased = _extract_unreleased_section(changelog_text)
+    if not unreleased.strip():
+        # Empty [Unreleased] section is fine — nothing to validate.
+        return
+    drift_hits: list[str] = []
+    for pattern in _DRIFT_PATTERNS:
+        for match in pattern.finditer(unreleased):
+            drift_hits.append(match.group(0))
+    if not drift_hits:
+        return
+    # Any drift hit requires a snapshot caveat keyword anywhere in the
+    # [Unreleased] block. One calibration paragraph at the top of the
+    # block covers all measurements inside.
+    lowered = unreleased.lower()
+    if any(kw in lowered for kw in _SNAPSHOT_CAVEAT_KEYWORDS):
+        return
+    raise AssertionError(
+        f"CHANGELOG.md [Unreleased] contains {len(drift_hits)} drift-vulnerable "
+        f"count(s) without a snapshot caveat: {drift_hits[:5]}"
+        f"{'…' if len(drift_hits) > 5 else ''}. "
+        f"Either remove the raw counts, wrap them with an explicit snapshot "
+        f"caveat (any of: {', '.join(_SNAPSHOT_CAVEAT_KEYWORDS)}), or quote "
+        f"the §19 ground-truth harness output format instead "
+        f"(`✓ <key>: N annotations, M unique keys, all invariants hold`). "
+        f"See CONTRIBUTING.md § Release-content discipline."
+    )

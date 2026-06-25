@@ -487,6 +487,63 @@ any branch via `gh workflow run ci.yml --ref <branch>` or the "Run
 workflow" button in the Actions UI. The fast suite catches everything
 CI is supposed to catch.
 
+### Release-content discipline: no drift-vulnerable counts without a snapshot caveat
+
+Raw annotation counts, timing measurements, and `N/M found` panel
+ratios drift across ClinVar / GWAS Catalog / ClinPGx refreshes.
+A figure measured on ship day will not match a figure measured
+the next week — even with byte-identical code — because the
+reference databases change underneath. A user (or reviewer)
+reading a release note and re-running the analysis on current
+DBs will see the numbers diverge and assume a regression.
+
+**Hard rule: no raw drift-vulnerable counts in any of the
+following surfaces unless wrapped with an explicit
+snapshot caveat:**
+
+- `CHANGELOG.md` entries (the `[Unreleased]` block and every
+  shipped release section)
+- Commit messages (release commit on `dev`, private squash on
+  `main`, public squash on the public mirror, annotated tag
+  body)
+- GitHub Release notes on the public repo
+
+Patterns that count as drift-vulnerable include (non-exhaustive):
+`N/M found`, `M,NNN variants`, `~NNNs → ~NNNs`, `N,NNN annotations`,
+`went from X to Y` measurements anchored to a specific data set.
+
+**Two acceptable shapes when a measurement is illustrative:**
+
+1. **Wrap with snapshot tag** — *"On the GIAB GRCh38 benchmark
+   (DB snapshot 2026-06-20): X annotations → Y after the fix.
+   Counts drift with each ClinVar / GWAS refresh; the §19
+   ground-truth harness is the canonical regression signal."*
+2. **Quote the harness output** — *"`✓ giab_grch38_benchmark:
+   N annotations, M unique keys, all invariants hold`"* — the
+   harness floor invariants in `test_data/HG002_GROUND_TRUTH.yaml`
+   are drift-tolerant by design.
+
+The deterministic signals that don't drift and can be quoted
+freely:
+
+- **Cross-parser identity**: same individual transcoded to
+  N vendor formats produces N-way identical annotation sets
+  (verified by symmetric set diff of `(source, rsid, sig)`
+  tuples — see `test_data/transcoded/`).
+- **Same-sample superset**: gVCF analyze output is a strict
+  superset of the GIAB benchmark output at default magnitude
+  filter — `0 missing` is the pass condition.
+- **Wrong-allele safety**: 0 via-complement CADD scores.
+- **Harness invariants**: vocabulary union holds, floor counts
+  cleared, spot-checks on published HG002 carriers (rs1801133 /
+  rs7412 / rs2010963 / rs6025) pass.
+
+The `tests/test_changelog_sanitize.py` CI guard enforces this on
+`CHANGELOG.md` — drift-vulnerable numeric tokens in unsnapshotted
+release sections fail the build. The commit-message and release-
+notes paths are policy-enforced (reviewer responsibility): scan
+release-content drafts before publishing.
+
 ### Coverage gate: CI is the source of truth
 
 Local `pytest` and the CI matrix can report different `--cov-branch`
