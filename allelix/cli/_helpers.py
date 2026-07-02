@@ -496,11 +496,28 @@ def _run_analysis_command(
     no_alphamissense: bool = False,
     no_cadd: bool = False,
     sample: str | None = None,
+    vcf_out: Path | None = None,
 ) -> None:
     resolved = resolve_data_dir(data_dir)
     if not no_update:
         _maybe_refresh_databases(resolved)
     parser = _resolve_parser(file_path, fmt, sample=sample)
+
+    # #150: --vcf-out preflight. Bail before any expensive setup so a
+    # user who mistyped the flag or aimed it at a 23andMe file finds
+    # out immediately, not after the analyze pipeline runs.
+    if vcf_out is not None:
+        if parser.name != "vcf":
+            raise click.ClickException(
+                f"--vcf-out requires VCF or gVCF input; got {parser.display_name} "
+                f"({parser.name!r}). Convert to VCF first, or drop --vcf-out to "
+                "produce the default report."
+            )
+        if vcf_out.exists():
+            raise click.ClickException(
+                f"--vcf-out refuses to overwrite an existing file: {vcf_out}. "
+                "Move or delete the existing file, or choose a different path."
+            )
 
     from allelix.config import load_config
 
@@ -554,6 +571,7 @@ def _run_analysis_command(
             cadd=cast("CaddAnnotator | None", cadd_annotator),
             high_value_rsids=hv_rsids,
             panel_rsids=rsids,
+            collect_vcf_write_inputs=vcf_out is not None,
         )
     finally:
         _unwire_parser_logging(counter, stderr_handler, snapshot)
@@ -649,6 +667,26 @@ def _run_analysis_command(
                 high_value_no_calls=hv_warning_lines,
             )
         console.print(f"[green]Wrote {rendered:,} annotation(s) to {output}[/green]")
+
+    if vcf_out is not None:
+        from allelix.reports.vcf import render_vcf
+
+        # Pipeline populates result.vcf_write_inputs whenever the
+        # ``collect_vcf_write_inputs`` flag is set — which the preflight
+        # above guarantees for this branch — so the None case here is
+        # a defensive assert, not a runtime path.
+        assert result.vcf_write_inputs is not None
+        stamped = render_vcf(
+            input_path=file_path,
+            output_path=vcf_out,
+            build=result.build,
+            annotators_used=result.annotators_used,
+            annotations_by_key=result.vcf_write_inputs.annotations_by_key,
+            recovered_rsids=result.vcf_write_inputs.recovered_rsids,
+        )
+        console.print(
+            f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to {vcf_out}[/green]"
+        )
 
     console.print(
         f"[dim]{len(result.annotations):,} total annotation(s) from {len(ready)} "

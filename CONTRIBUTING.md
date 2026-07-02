@@ -15,6 +15,18 @@ git config core.hooksPath .githooks
 pre-commit install --hook-type pre-commit
 ```
 
+System dependencies pulled in outside pip (all needed by the fast
+test suite; skipping them causes silent test skips rather than
+failures for the ``bcftools`` group and hard failures for ``plink``):
+
+- ``bcftools`` — annotated-VCF round-trip validation for ``--vcf-out``
+  (ADR-0036, PR 3 of #150). ``apt install bcftools`` on Debian /
+  Ubuntu, ``brew install bcftools`` on macOS. Tests skip gracefully
+  when absent locally; CI installs it unconditionally.
+- ``plink2`` — PLINK1 binary export round-trip integration test
+  (marked ``@pytest.mark.integration``, excluded from fast CI, runs
+  in the weekly slow suite).
+
 Run the test suite:
 
 ```bash
@@ -543,6 +555,40 @@ The `tests/test_changelog_sanitize.py` CI guard enforces this on
 release sections fail the build. The commit-message and release-
 notes paths are policy-enforced (reviewer responsibility): scan
 release-content drafts before publishing.
+
+### Output-contract schema bumps
+
+Allelix ships three output contracts and each one has its own
+independent schema version. A change to one contract does not
+implicitly bump the others — the schemas evolve on independent axes
+so consumers of one format aren't forced to re-validate when only
+another format churned.
+
+| Contract | Constant | Governing ADR |
+|---|---|---|
+| JSON report | `allelix.reports.json_report.SCHEMA_VERSION` | ADR-0033 |
+| Annotated VCF output | `allelix.reports.vcf.VCF_SCHEMA_VERSION` | ADR-0036 |
+
+**Hard rule.** Any PR that adds, removes, renames, or changes the
+value grammar of a field in an output contract must bump the
+corresponding schema-version constant in the same PR and note the
+change in the PR body.
+
+Field shapes that trigger a bump:
+
+- JSON report — any field emitted by `render_json` (annotations,
+  panel_coverage, license_attributions, filters, top-level metadata)
+- Annotated VCF — any Allelix-declared `##INFO=<>` field, any
+  `##ALLELIX_*` provenance line format, the `##ALLELIX_Attribution=<>`
+  grammar, or `ALLELIX_ORIGINAL_ID` semantics
+
+`VCF_SCHEMA_VERSION` is currently at `0.x` (experimental). While it
+sits at `0.x`, INFO-shape churn is approved without ceremony because
+the version conveys instability to downstream readers. The `1.0.0`
+graduation is a follow-up ADR after real user feedback per GH
+allelix-dev #150; graduation locks the contract and revokes the
+churn freedom. `SCHEMA_VERSION` is stable and every field addition
+bumps it.
 
 ### Coverage gate: CI is the source of truth
 

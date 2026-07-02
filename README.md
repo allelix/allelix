@@ -4,7 +4,7 @@
 
 **Open-source genotype analysis. Format-agnostic. Offline-first.**
 
-[Website](https://allelix.io) · [Quickstart](#quickstart) · [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md)
+[Website](https://allelix.io) · [Demo](https://analyze.allelix.io) · [Quickstart](#quickstart) · [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md)
 
 [![python](https://img.shields.io/pypi/pyversions/allelix.svg)](https://www.python.org/downloads/)
 [![pypi](https://img.shields.io/pypi/v/allelix.svg)](https://pypi.org/project/allelix/)
@@ -16,7 +16,7 @@
 
 # Allelix
 
-> **Status:** Production. Eight parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three enrichment sources (gnomAD + AlphaMissense + CADD), licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports, methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Build auto-detection from position data (ADR-0021). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
+> **Status:** Production. Eight parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three enrichment sources (gnomAD + AlphaMissense + CADD), licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports and annotated VCF output for pipeline integration (v2.3.0+), methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Build auto-detection from position data (ADR-0021). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
 
 ## Quickstart
 
@@ -41,6 +41,11 @@ allelix analyze trio.vcf.gz --sample HG002 --output report.html
 
 # Filter to a custom panel (rsIDs + gene names, one per line; '#' comments and blank lines ignored)
 allelix analyze your_genotype_file.txt --filter-file my_panel.txt --output report.html
+
+# Annotated VCF output — VCF-in / VCF-out for pipeline integration
+# Writes a valid VCF with annotations as INFO fields + full provenance in the header.
+# Refuses to overwrite; requires VCF or gVCF input.
+allelix analyze your_wgs.vcf.gz --vcf-out annotated.vcf
 ```
 
 See [Development](#development) for source installs and running tests, [Managing your data](#managing-your-data) for cache locations and cleanup, and [Troubleshooting](#troubleshooting) for common failure states.

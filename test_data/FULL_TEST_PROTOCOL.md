@@ -1299,6 +1299,208 @@ See §7 for the post-update real-cache ship-gate (per-SCV row shape
 - **After any change to** `_pipeline.py`, the VCF parser, `iter_clinvar_records`, or strand / enrichment logic.
 - **Not for routine dev work** — unit tests cover the same logic against synthetic fixtures.
 
+## 20. Annotated VCF output (v2.3.0+; ADR-0036)
+
+Verifies that `allelix analyze --vcf-out` produces a spec-conformant
+annotated VCF: preserves the input header verbatim, injects the
+provenance / attribution / `##INFO` block immediately before `#CHROM`,
+stamps INFO fields with per-allele `Number=A` semantics, and stamps
+recovered rsIDs into the ID column with the original value preserved
+under `ALLELIX_ORIGINAL_ID`.
+
+Requires `bcftools` on `$PATH` for §20.6. Skip §20.6 if unavailable
+locally; CI installs bcftools unconditionally and runs the
+round-trip test on every push and PR.
+
+### 20.1: Smoke test on a small VCF fixture
+
+    allelix analyze tests/fixtures/mock_vcf.vcf --vcf-out /tmp/mock_annotated.vcf
+
+Verify:
+
+- [ ] Exit code 0
+- [ ] `/tmp/mock_annotated.vcf` exists and is non-empty
+- [ ] Terminal prints `Wrote annotated VCF with N stamped row(s) to /tmp/mock_annotated.vcf`
+- [ ] `head -30 /tmp/mock_annotated.vcf` shows:
+  - [ ] `##fileformat=VCFv4.2` on line 1 (preserved from input)
+  - [ ] Every input `##` line preserved verbatim before `#CHROM`
+  - [ ] Injected `##INFO=<ID=ALLELIX_*,Number=A,Type=...,Description="...">`
+    declarations for every source that produced annotations
+  - [ ] Provenance block: `##ALLELIX_Version=<current version>`,
+    `##ALLELIX_VCF_SchemaVersion=0.1.0`,
+    `##ALLELIX_License=AGPL-3.0-or-later`,
+    `##ALLELIX_RunDate=<ISO 8601 UTC>`, `##ALLELIX_Build=<GRCh37|GRCh38>`
+  - [ ] `##ALLELIX_Database=<Name=X,Version=Y>` line for every entry in
+    the run's `annotators_used`
+  - [ ] `##ALLELIX_Attribution=<Name=X,License=Y,URL=Z>` line for every
+    licensed source
+
+### 20.2: Multi-allelic site preserves per-allele semantics
+
+`mock_vcf.vcf` line 8 is `1  100000  rs900000001  A  G,C  ...` — two
+ALTs. `rs900000001` is a synthetic rsID and typically has no ClinVar
+row, so the multi-allelic verification is best run against a real
+input with a known-annotated multi-allelic site (e.g. the mixed
+`ALT=A,<NON_REF>` rows in §20.3, or a chr22 gVCF where the gnomAD
+enrichment definitely hits). Locate one such stamped row and verify:
+
+- [ ] The `ALT` column is still `G,C` (or the input's ALT list
+  verbatim) — writer never rewrites ALT
+- [ ] For every stamped `ALLELIX_*` field on this row, the number
+  of comma-separated slots equals the number of ALTs (`Number=A`
+  contract). Empty slots render as `.`, e.g.
+  `ALLELIX_CLINVAR=.,clinvar_pathogenic|rs...|GENE` on a two-ALT
+  row where only the second ALT has a ClinVar row
+- [ ] `bcftools query -f '%CHROM\t%POS\t%INFO/ALLELIX_CLINVAR\n'`
+  on the row returns the comma-joined value verbatim (bcftools
+  honors `Number=A` when the header declares it)
+
+Rows where NO source annotates either ALT will have no `ALLELIX_*`
+fields at all — that's expected passthrough, not a failure.
+
+### 20.3: gVCF reference blocks and `<NON_REF>` pass through
+
+    allelix analyze tests/fixtures/mock_gvcf.g.vcf --vcf-out /tmp/mock_gvcf_annotated.g.vcf
+
+Verify:
+
+- [ ] Reference-block rows (`.  A  <NON_REF>  ...  END=<pos>`) are
+  byte-identical to the input row — no `ALLELIX_*` INFO stamped
+- [ ] Mixed rows (`ALT=A,<NON_REF>`) have per-allele INFO with `.` in
+  the symbolic-ALT slot
+- [ ] `##ALT=<ID=NON_REF,...>` header line preserved
+
+### 20.4: rsID recovery visible in ID column with `ALLELIX_ORIGINAL_ID`
+
+    allelix analyze tests/fixtures/mock_vcf_rsidless.vcf --vcf-out /tmp/mock_rsidless_annotated.vcf
+
+For at least one row where the input ID column was `.` and the pipeline
+recovered an rsID:
+
+- [ ] Output ID column carries the recovered `rs...` value
+- [ ] Output INFO column contains `ALLELIX_ORIGINAL_ID=.`
+- [ ] `##INFO=<ID=ALLELIX_ORIGINAL_ID,Number=1,Type=String,...>` present
+  in header
+
+### 20.5: Multi-sample VCF passes sample columns through verbatim
+
+    allelix analyze tests/fixtures/mock_multisample.vcf --sample SAMPLE_A --vcf-out /tmp/mock_multi_annotated.vcf
+    diff <(grep -v '^##' tests/fixtures/mock_multisample.vcf | cut -f 9-) \
+         <(grep -v '^##' /tmp/mock_multi_annotated.vcf | cut -f 9-)
+
+Note: strip ``##`` header lines on **both** sides. The bare
+``cut -f 9-`` prints tab-less lines whole (both GNU and BSD ``cut``
+behaviour), so leaving the input's ``##`` lines in the left stream
+produces a spurious diff against the output's injected provenance
+block.
+
+Verify:
+
+- [ ] Sample columns (FORMAT + every sample) are byte-identical to input
+- [ ] ``--sample SAMPLE_A`` restricts the annotation pass to that
+  sample's genotypes only; the annotated output still carries every
+  sample column (write pass is genotype-agnostic)
+
+### 20.6: `bcftools view` round-trip validates the output
+
+    bcftools view /tmp/mock_annotated.vcf > /dev/null
+
+Verify:
+
+- [ ] Exit code 0
+- [ ] No **writer-attributable** warnings on stderr. The mock fixture
+  declares only ``##contig=<ID=1,...>`` and ``##contig=<ID=22,...>``
+  but carries data on chroms 17 / 19 (and mock_gvcf on chr1 / chrX /
+  chrM), which bcftools flags with `Contig 'X' is not defined in the
+  header. (Quick workaround: index the file with tabix.)`. Those are a
+  pre-existing input-header issue, not a writer regression — the
+  writer preserves the input header verbatim. Isolate stderr into a
+  file and filter (two-step form; avoids the shell-portability gotcha
+  with `2>&1 >/dev/null | grep ...`):
+
+  ```bash
+  bcftools view /tmp/mock_annotated.vcf > /dev/null 2> /tmp/bcf_stderr.txt
+  grep -v "is not defined in the header" /tmp/bcf_stderr.txt
+  ```
+
+  should produce no output
+- [ ] `bcftools view -h /tmp/mock_annotated.vcf | grep '^##INFO=<ID=ALLELIX_'`
+  lists every declared Allelix INFO field
+- [ ] `bcftools query -f '%CHROM\t%POS\t%ID\t%INFO/ALLELIX_CLINVAR\n' /tmp/mock_annotated.vcf`
+  on a known-hit row (rs1801133 in mock_vcf) returns the value
+  the writer stamped verbatim, e.g.
+  ``1  11796321  rs1801133  clinvar_drug_response|rs1801133|MTHFR``
+
+Skip if bcftools unavailable locally; CI runs it on every merge.
+
+### 20.7: Reproducibility — headers alone should regenerate the run
+
+    grep '^##ALLELIX_' /tmp/mock_annotated.vcf
+
+Verify:
+
+- [ ] `##ALLELIX_Version` — Allelix version string
+- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version
+- [ ] One `##ALLELIX_Database=<Name=X,Version=Y>` per annotator used
+- [ ] `##ALLELIX_Build` matches `--build` if supplied, else the pipeline
+  detection
+- [ ] `##ALLELIX_RunDate` in ISO 8601 UTC (`+00:00` suffix)
+
+### 20.8 (negative case): Non-VCF input rejected
+
+    allelix analyze tests/fixtures/mock_23andme.txt --vcf-out /tmp/should_not_exist.vcf
+
+Verify:
+
+- [ ] Non-zero exit code
+- [ ] Error message names the format: `--vcf-out requires VCF or gVCF input`
+- [ ] `/tmp/should_not_exist.vcf` does NOT exist (no partial file)
+
+### 20.9 (negative case): Existing output not silently clobbered
+
+    touch /tmp/mock_annotated.vcf
+    allelix analyze tests/fixtures/mock_vcf.vcf --vcf-out /tmp/mock_annotated.vcf
+
+Verify:
+
+- [ ] Non-zero exit code
+- [ ] Error message: `refuses to overwrite`
+- [ ] File is untouched (mtime unchanged)
+
+### 20.10: `chr`-prefixed contigs stamp annotations
+
+Every real GRCh38 VCF from modern callers (GATK / DeepVariant /
+DRAGEN) uses ``chr``-prefixed contigs (``chr22`` etc.). The parser
+normalizes to bare form for the pipeline's annotation dict, so the
+writer must symmetrically normalize when reading the raw input line
+back — otherwise every stamp silently misses.
+
+    allelix analyze test_data/real/vcf/HG002_GRCh38_chr22.vcf.gz \
+        --vcf-out /tmp/hg002_chr22_annotated.vcf
+
+Verify:
+
+- [ ] Exit code 0
+- [ ] Terminal reports NON-ZERO stamped rows (real chr22 will produce
+  thousands — a "0 stamped rows" line here is the chr-prefix
+  regression, not sparse annotation)
+- [ ] `grep 'ALLELIX_CLINVAR' /tmp/hg002_chr22_annotated.vcf | grep -v '^##' | head`
+  shows real chr22 variants with stamped annotations, e.g.
+  ``chr22  <pos>  rs<N>  <REF>  <ALT>  ... ALLELIX_CLINVAR=...``
+- [ ] Output CHROM column preserves the input's ``chr22`` — writer
+  keys lookups via bare-form ``22`` but writes verbatim
+
+### 20.11: Gzip input transparently handled
+
+    allelix analyze tests/fixtures/mock_vcf.vcf.gz --vcf-out /tmp/mock_gz_annotated.vcf
+
+Verify:
+
+- [ ] Exit code 0
+- [ ] Output is plain text VCF (compressed output is a deferred non-goal
+  per ADR-0036)
+- [ ] Provenance block present in output header
+
 ## Pass criteria
 
 All of the following must be true:

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.models import Annotation, Variant
     from allelix.parsers.base import GenotypeParser
+    from allelix.reports.vcf import VcfWriteInputs
 
 
 # How many input variants to buffer while waiting for detection to
@@ -155,6 +156,12 @@ class AnalysisResult:
     # Used by the CLI to surface the GRCh38 rsID-less undercount
     # warning until #62's dbSNP resolution lands.
     rsidless_variant_count: int = 0
+    # #150: pipeline-produced inputs for the annotated VCF writer.
+    # Populated only when ``run_analysis`` is called with
+    # ``collect_vcf_write_inputs=True`` — the ``--vcf-out`` code path.
+    # None on every other analyze run (zero memory / CPU overhead on the
+    # default path). Consumed by ``allelix.reports.vcf.render_vcf``.
+    vcf_write_inputs: VcfWriteInputs | None = None
 
     def panel_coverage(
         self, filtered_annotations: list[Annotation] | None = None
@@ -439,6 +446,7 @@ def run_analysis(
     cadd: CaddAnnotator | None = None,
     high_value_rsids: set[str] | None = None,
     panel_rsids: frozenset[str] | None = None,
+    collect_vcf_write_inputs: bool = False,
 ) -> AnalysisResult:
     """Stream the file once; batch-annotate; return a fully-populated result.
 
@@ -515,6 +523,13 @@ def run_analysis(
     # back to position-keyed gnomAD / AlphaMissense lookups for resolved
     # rsIDs that don't appear in those caches' rsid index.
     resolved_coords: dict[str, tuple[str, int, str, str]] = {}
+    # #150: annotation dict keyed by (chrom, pos, ref, alt) for the
+    # annotated-VCF writer. Populated per batch inside ``_flush`` when
+    # ``collect_vcf_write_inputs`` is True. Values are references to the
+    # Annotation objects in ``annotations`` — enrichment mutations
+    # (gnomAD AF, AlphaMissense, CADD) that happen after streaming are
+    # visible through these refs without a per-annotation copy.
+    vcf_annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]] = {}
 
     with contextlib.ExitStack() as stack:
         bound = [stack.enter_context(a) for a in annotators]
@@ -617,8 +632,29 @@ def run_analysis(
             nonlocal no_ref_total, rsidless_total
             no_ref_total += sum(1 for v in batch_buf if v.ref is None)
             rsidless_total += sum(1 for v in batch_buf if not v.rsid.startswith("rs"))
+            batch_new: list[Annotation] = []
             for annotator in bound:
-                annotations.extend(annotator.batch_annotate(batch_buf))
+                batch_new.extend(annotator.batch_annotate(batch_buf))
+            annotations.extend(batch_new)
+            # #150: collect writer inputs for this batch. Only touches
+            # variants whose ``ref`` is populated (VCF inputs; array
+            # data with ref=None can't produce a well-formed VCF key).
+            # Skips annotations with empty ``alt`` — GWAS rows keyed by
+            # rsID alone can't be VCF-stamped without allele context.
+            if collect_vcf_write_inputs:
+                rsid_to_coords: dict[str, tuple[str, int, str]] = {
+                    v.rsid: (v.chromosome, v.position, v.ref)
+                    for v in batch_buf
+                    if v.ref is not None
+                }
+                for a in batch_new:
+                    if not a.alt:
+                        continue
+                    coords = rsid_to_coords.get(a.rsid)
+                    if coords is None:
+                        continue
+                    chrom, pos, ref = coords
+                    vcf_annotations_by_key.setdefault((chrom, pos, ref, a.alt), []).append(a)
             batch_buf.clear()
 
         def _accept(v: Variant) -> None:
@@ -733,6 +769,21 @@ def run_analysis(
         result_annotated = None
         result_genotypes = None
 
+    vcf_write_inputs: VcfWriteInputs | None = None
+    if collect_vcf_write_inputs:
+        # Import here to avoid a top-level cycle with allelix.reports.vcf
+        # (which reaches into the annotator registry for attribution).
+        from allelix.reports.vcf import VcfWriteInputs as _VcfWriteInputs
+
+        vcf_recovered_rsids = {
+            (chrom, pos, ref, alt): rsid
+            for rsid, (chrom, pos, ref, alt) in resolved_coords.items()
+        }
+        vcf_write_inputs = _VcfWriteInputs(
+            annotations_by_key=vcf_annotations_by_key,
+            recovered_rsids=vcf_recovered_rsids,
+        )
+
     return AnalysisResult(
         file_path=file_path,
         parser_name=parser.name,
@@ -751,6 +802,7 @@ def run_analysis(
         panel_genotypes=result_genotypes,
         no_ref_variant_count=no_ref_total,
         rsidless_variant_count=rsidless_total,
+        vcf_write_inputs=vcf_write_inputs,
     )
 
 

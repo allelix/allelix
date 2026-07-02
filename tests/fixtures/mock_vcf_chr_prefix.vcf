@@ -1,0 +1,11 @@
+##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=chr1,length=248956422,assembly=GRCh38>
+##contig=<ID=chr22,length=50818468,assembly=GRCh38>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA12878
+chr1	11796321	rs1801133	G	A	100	PASS	DP=30	GT:DP	0/1:30
+chr1	11854476	rs1801131	T	G	100	PASS	DP=28	GT:DP	1/1:28
+chr22	19963748	rs4680	G	A	100	PASS	DP=32	GT:DP	1/1:32

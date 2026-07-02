@@ -29,6 +29,7 @@ from allelix.cli._options import (
     _REPORT_FORMAT_OPT,
     _SAMPLE_OPT,
     _SNPEDIA_MIN_MAG_OPT,
+    _VCF_OUT_OPT,
 )
 
 if TYPE_CHECKING:
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
 @_NO_ALPHAMISSENSE_OPT
 @_NO_CADD_OPT
 @_SAMPLE_OPT
+@_VCF_OUT_OPT
 def analyze(
     file_path: Path,
     fmt: str | None,
@@ -82,6 +84,7 @@ def analyze(
     no_alphamissense: bool,
     no_cadd: bool,
     sample: str | None,
+    vcf_out: Path | None,
 ) -> None:
     """Annotate a genotype file against all ready reference databases."""
     filter_genes: frozenset[str] | None = None
@@ -113,4 +116,5 @@ def analyze(
         no_alphamissense=no_alphamissense,
         no_cadd=no_cadd,
         sample=sample,
+        vcf_out=vcf_out,
     )

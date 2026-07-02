@@ -169,3 +169,17 @@ _SAMPLE_OPT = click.option(
         "or any plain VCF tool to list available samples."
     ),
 )
+# #150: annotated VCF output. Requires VCF/gVCF input (any other format
+# errors out early). Existing output paths are refused (no clobber, no
+# --force in v2.3.0). See ADR-0036 for the output contract.
+_VCF_OUT_OPT = click.option(
+    "--vcf-out",
+    "vcf_out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Write an annotated VCF at this path (v2.3.0+; experimental output "
+        "contract, ADR-0036). Requires VCF or gVCF input. Refuses to "
+        "overwrite an existing file."
+    ),
+)

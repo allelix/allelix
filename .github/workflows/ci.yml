@@ -28,6 +28,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install bcftools (annotated-VCF round-trip gate, #150 PR 3)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bcftools
+
       - name: Install
         run: |
           python -m pip install --upgrade pip

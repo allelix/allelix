@@ -2,6 +2,83 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-07-02
+
+### Added
+
+- **Annotated VCF output (`allelix analyze --vcf-out PATH`).** New
+  output mode alongside the HTML and JSON reports: analyze a VCF/gVCF
+  input as usual, and write the annotated form back out with
+  annotations stamped as INFO fields and full provenance in the
+  header. Positions Allelix as a lightweight, deterministic drop-in
+  alternative to heavier annotation tools that pipeline users have
+  been asking for. Every input header line is preserved verbatim;
+  the injected block declares `##INFO=<>` fields for every source
+  that produced an annotation, a provenance block (`##ALLELIX_Version`,
+  `##ALLELIX_VCF_SchemaVersion`, `##ALLELIX_License`,
+  `##ALLELIX_RunDate`, `##ALLELIX_Build`), per-database version pins
+  (`##ALLELIX_Database=<Name=,Version=>`), and per-source attribution
+  (`##ALLELIX_Attribution=<Name=,License=,URL=>`) mirroring the
+  `license_attributions` block from the HTML/JSON renderers.
+  Multi-allelic sites use per-allele `Number=A` semantics with
+  comma-joined values in ALT-column order. Recovered rsIDs
+  (`.` → `rs<N>` via ClinVar or gnomAD) land in the ID column with
+  the pre-recovery value stashed under `ALLELIX_ORIGINAL_ID`. The
+  output contract is versioned separately from the JSON report
+  contract (`VCF_SCHEMA_VERSION="0.1.0"`, experimental — see
+  ADR-0036); INFO-field churn during the 0.x window does not
+  require the JSON `SCHEMA_VERSION` bump. Non-VCF input errors
+  early; existing output paths are refused (no clobber, no `--force`
+  in v2.3.0). Gzip-compressed input (`.vcf.gz`) is transparently
+  handled, matching the parser. BCF binary output, `.vcf.gz`
+  compressed output, consequence annotation coupling, and full
+  VCF 4.3 §1.6 percent-encoding of INFO values are explicit non-goals
+  for v2.3.0 and tracked as follow-ups.
+
+- **README:** hosted-demo link (`[Demo](https://analyze.allelix.io)`)
+  in the header navigation strip so a first-time reader can try the
+  tool without a local install before deciding to `pip install`.
+
+### Documentation
+
+- **ADR-0036: Annotated VCF Output Contract.** Captures the two-pass
+  writer architecture (pipeline builds the annotation dict; writer
+  re-reads the input and stamps INFO — parser and `AnalysisResult`
+  untouched), the per-allele `Number=A` decision (silent multi-allelic
+  data loss the writer cannot afford), the schema-version namespace
+  decision (independent from the JSON `SCHEMA_VERSION` governed by
+  ADR-0033), and the explicit v2.3.0 non-goals.
+
+- **`CONTRIBUTING.md` § Output-contract schema bumps.** New subsection
+  under Release-content discipline cross-referencing both output
+  contracts (JSON → ADR-0033, annotated VCF → ADR-0036) with the hard
+  rule that any PR changing an output-contract field shape bumps the
+  corresponding schema-version constant in the same PR. While
+  `VCF_SCHEMA_VERSION` sits at `0.x`, INFO-shape churn is approved
+  without ceremony; graduation to `1.0.0` waits for a follow-up ADR
+  after real user feedback.
+
+- **`test_data/FULL_TEST_PROTOCOL.md` § 20.** Manual verification
+  battery for the annotated VCF output — smoke test, multi-allelic
+  per-allele semantics, gVCF reference-block passthrough, rsID
+  recovery visibility, multi-sample preservation, `bcftools view`
+  round-trip, reproducibility from headers alone, non-VCF rejection,
+  existing-output refusal, and gzip input handling.
+
+### Infrastructure
+
+- **CI: `bcftools view` gate.** The `lint-and-test` job now installs
+  `bcftools` (~5 MB apt package) and runs three subprocess tests
+  that validate `--vcf-out` output round-trips through a real VCF
+  parser: (1) `bcftools view` accepts the annotated file with no
+  writer-attributable warnings, (2) `bcftools view -h` lists every
+  declared `##INFO=<ID=ALLELIX_*>` line plus the provenance block,
+  (3) `bcftools query %INFO/ALLELIX_CLINVAR` extracts the value the
+  writer stamped on a known-hit row (proves bcftools honors our
+  `Number=A` declaration end-to-end). Any regression in the INFO
+  syntax, provenance header format, or record-line structure now
+  fails at PR time rather than at real-user integration.
+
 ## [2.2.3] - 2026-06-25
 
 ### Fixed
