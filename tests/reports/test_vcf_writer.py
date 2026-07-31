@@ -63,7 +63,35 @@ def _split_header_and_body(text: str) -> tuple[list[str], list[str]]:
     return header, body
 
 
+def _declared_contigs(text: str) -> list[str]:
+    """Extract raw IDs from VCF ``##contig`` declarations."""
+    prefix = "##contig=<ID="
+    return [
+        line[len(prefix) :].split(",", 1)[0].split(">", 1)[0]
+        for line in text.splitlines()
+        if line.startswith(prefix)
+    ]
+
+
+def _emitted_contigs(text: str) -> list[str]:
+    """Return unique raw CHROM values in first-data-line order."""
+    result: list[str] = []
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        contig = line.split("\t", 1)[0]
+        if contig not in result:
+            result.append(contig)
+    return result
+
+
 class TestHeaderPreservation:
+    def test_mock_fixture_itself_contains_mixed_undeclared_contigs(self) -> None:
+        """The undeclared-contig case originates in the fixture, not writer normalization."""
+        text = _read(FIXTURES / "mock_vcf.vcf")
+        assert _emitted_contigs(text) == ["1", "22", "19", "17", "chr1", "chrX", "chrM"]
+        assert _declared_contigs(text) == ["1", "22"]
+
     def test_input_meta_lines_preserved_verbatim(self, tmp_path: Path) -> None:
         out = tmp_path / "out.vcf"
         render_vcf(
@@ -79,6 +107,27 @@ class TestHeaderPreservation:
         assert '##FILTER=<ID=PASS,Description="All filters passed">' in text
         assert "##contig=<ID=1,length=249250621,assembly=GRCh38>" in text
         assert '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">' in text
+
+    def test_missing_emitted_contigs_receive_minimal_declarations(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.vcf"
+        render_vcf(
+            input_path=FIXTURES / "mock_vcf.vcf",
+            output_path=out,
+            build="GRCh38",
+            annotators_used=[("clinvar", "20260101")],
+            annotations_by_key={},
+            run_date=_fixed_date(),
+        )
+        text = _read(out)
+        declared = _declared_contigs(text)
+        emitted = _emitted_contigs(text)
+
+        assert set(emitted) <= set(declared)
+        assert declared == ["1", "22", "19", "17", "chr1", "chrX", "chrM"]
+        assert declared.count("1") == 1
+        assert declared.count("22") == 1
+        for contig in ("17", "19", "chr1", "chrM", "chrX"):
+            assert f"##contig=<ID={contig}>" in text
 
     def test_chrom_line_preserved_and_appears_after_injected_block(self, tmp_path: Path) -> None:
         out = tmp_path / "out.vcf"

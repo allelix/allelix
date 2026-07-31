@@ -16,6 +16,7 @@ from allelix.annotators.gwas import (
     _MUST_INCLUDE_RSIDS,
     _UNKNOWN_RISK_ALLELE_MAG_CAP,
     GWASCatalogAnnotator,
+    _ci_identifies_odds_ratio,
     _magnitude,
 )
 from allelix.databases.gwas_loader import (
@@ -107,19 +108,104 @@ class TestMagnitudeScoring:
         assert _magnitude(None, None) == 2.0
 
     def test_high_or_adds_one(self) -> None:
-        assert _magnitude(1e-10, 3.5) == 7.0
+        assert _magnitude(1e-10, 3.5, "[3.0-4.1]") == 7.0
 
     def test_moderate_or_adds_half(self) -> None:
-        assert _magnitude(1e-10, 2.5) == 6.5
+        assert _magnitude(1e-10, 2.5, "[2.1-3.0]") == 6.5
 
     def test_or_capped_at_nine(self) -> None:
-        assert _magnitude(1e-150, 5.0) == 9.0
+        assert _magnitude(1e-150, 5.0, "[3.5-7.1]") == 9.0
 
     def test_protective_or_adds_one(self) -> None:
-        assert _magnitude(1e-10, 0.2) == 7.0
+        assert _magnitude(1e-10, 0.2, "[0.1-0.3]") == 7.0
 
     def test_protective_moderate_adds_half(self) -> None:
-        assert _magnitude(1e-10, 0.4) == 6.5
+        assert _magnitude(1e-10, 0.4, "[0.3-0.5]") == 6.5
+
+    @pytest.mark.parametrize(
+        ("or_beta", "ci_text"),
+        [
+            (0.02, "[0.01-0.03] unit increase"),
+            (0.02, "unit increase"),
+            (7320.0, "unit decrease"),
+            (2.0, "[1.5-2.5] cm increase"),
+            (-0.2, "[-0.3--0.1]"),
+            (0.2, None),
+            (0.2, ""),
+        ],
+    )
+    def test_beta_or_ambiguous_effect_gets_no_modifier(
+        self,
+        or_beta: float,
+        ci_text: str | None,
+    ) -> None:
+        assert _magnitude(1e-30, or_beta, ci_text) == 7.0
+
+    @pytest.mark.parametrize(
+        "ci_text",
+        [
+            "[0.95-1.05]",
+            "[1e-2-3E-1]",
+        ],
+    )
+    def test_bare_positive_interval_identifies_odds_ratio(self, ci_text: str) -> None:
+        assert _ci_identifies_odds_ratio(ci_text)
+
+    @pytest.mark.parametrize(
+        "ci_text",
+        [
+            None,
+            "",
+            "[0.01-0.03] unit increase",
+            "unit decrease",
+            "[-0.2-0.4]",
+            "[0.1-0.2] log odds increase",
+        ],
+    )
+    def test_descriptive_or_ambiguous_interval_is_not_odds_ratio(
+        self,
+        ci_text: str | None,
+    ) -> None:
+        assert not _ci_identifies_odds_ratio(ci_text)
+
+    def test_beta_row_not_promoted_in_annotate_or_batch(self, gwas_data_dir: Path) -> None:
+        """The SQL paths must carry ci_text into scoring, not just unit tests."""
+        db_path = gwas_data_dir / GWAS_DB_FILENAME
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO gwas_associations"
+                " (rsid, risk_allele, trait, p_value, or_beta, ci_text, gene,"
+                "  study_accession, pubmed_id, trait_category)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "rs160000001",
+                    "A",
+                    "Quantitative beta regression",
+                    1e-150,
+                    0.02,
+                    "[0.01-0.03] unit increase",
+                    "TEST",
+                    "GCST160",
+                    "160",
+                    "disease",
+                ),
+            )
+            conn.commit()
+
+        variant = Variant(
+            rsid="rs160000001",
+            chromosome="1",
+            position=160,
+            allele1="G",
+            allele2="A",
+            build="GRCh38",
+        )
+        with GWASCatalogAnnotator(gwas_data_dir, filter_traits=False) as annotator:
+            direct = annotator.annotate(variant)
+            batched = list(annotator.batch_annotate([variant]))
+
+        assert [a.magnitude for a in direct] == [8.0]
+        assert [a.magnitude for a in batched] == [8.0]
 
     def test_exact_genome_wide_significance_boundary(self) -> None:
         """GH #17: p == 5e-8 is the canonical genome-wide significance

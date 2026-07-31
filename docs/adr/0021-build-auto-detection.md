@@ -1,7 +1,7 @@
 # ADR-0021: Genome build is detected from position data, not file headers
 
 - **Date:** 2026-05-14
-- **Status:** Accepted
+- **Status:** Superseded in part by ADR-0037 (confidence threshold only)
 
 ## Context
 

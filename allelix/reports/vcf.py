@@ -161,6 +161,7 @@ _PRIMARY_SOURCES: frozenset[str] = frozenset({"clinvar", "gwas", "pharmgkb", "sn
 _ENRICHMENT_SOURCES: frozenset[str] = frozenset({"alphamissense", "cadd", "gnomad"})
 
 _ORIGINAL_ID_FIELD = "ALLELIX_ORIGINAL_ID"
+_CONTIG_DECLARATION_PREFIX = "##contig=<ID="
 
 # Chars reserved by the VCF INFO grammar: ``;`` separates fields, ``,``
 # separates per-allele values, ``=`` separates key from value, and
@@ -359,6 +360,48 @@ def _emit_info_declarations(sources_used: set[str], *, include_original_id: bool
     return lines
 
 
+def _declared_contig_id(raw_line: str) -> str | None:
+    """Return the raw contig ID from a ``##contig`` declaration."""
+    if not raw_line.startswith(_CONTIG_DECLARATION_PREFIX):
+        return None
+    remainder = raw_line[len(_CONTIG_DECLARATION_PREFIX) :]
+    contig_id = remainder.split(",", 1)[0].split(">", 1)[0]
+    return contig_id or None
+
+
+def _missing_contig_ids(input_path: Path) -> list[str]:
+    """Return emitted contig IDs absent from the input header.
+
+    IDs are compared and returned exactly as written in the VCF. The
+    parser-normalized chromosome name is appropriate for annotation lookup,
+    but a synthesized declaration must match the raw CHROM column consumed
+    by downstream VCF tools. Missing IDs retain first-data-line order for
+    deterministic output.
+    """
+    declared: set[str] = set()
+    emitted: list[str] = []
+    seen_emitted: set[str] = set()
+    body_started = False
+
+    with _open_vcf(input_path) as fin:
+        for raw_line in fin:
+            if not body_started:
+                declared_id = _declared_contig_id(raw_line)
+                if declared_id is not None:
+                    declared.add(declared_id)
+                if raw_line.startswith("#CHROM"):
+                    body_started = True
+                continue
+            if not raw_line.strip() or raw_line.startswith("#"):
+                continue
+            contig_id = raw_line.split("\t", 1)[0]
+            if contig_id and contig_id not in seen_emitted:
+                emitted.append(contig_id)
+                seen_emitted.add(contig_id)
+
+    return [contig_id for contig_id in emitted if contig_id not in declared]
+
+
 def _is_symbolic(alt: str) -> bool:
     """VCF symbolic ALT (``<NON_REF>``, ``<DEL>``, ``<*>``, …).
 
@@ -423,9 +466,12 @@ def render_vcf(
     skip annotation lookup and preserve their column position.
 
     Header behaviour: every input ``##`` and blank line passes through
-    verbatim; injected ``##INFO`` declarations and the provenance /
-    attribution block are inserted immediately before the ``#CHROM``
-    line. Sample columns and FORMAT fields pass through unchanged.
+    verbatim. If the input omitted declarations for contigs present in its
+    own data rows, minimal ``##contig=<ID=...>`` declarations are synthesized
+    using the raw CHROM spelling. Those lines, injected ``##INFO``
+    declarations, and the provenance / attribution block are inserted
+    immediately before ``#CHROM``. Sample columns and FORMAT fields pass
+    through unchanged.
 
     Returns the number of data lines stamped with at least one Allelix
     INFO field (either an annotation source or ``ALLELIX_ORIGINAL_ID``).
@@ -437,6 +483,7 @@ def render_vcf(
 
     sources_used = _sources_used(annotations_by_key)
     include_original_id = bool(recovered_rsids)
+    missing_contig_ids = _missing_contig_ids(input_path)
 
     stamped = 0
     header_written = False
@@ -450,6 +497,8 @@ def render_vcf(
                 fout.write(raw_line)
                 continue
             if not header_written and raw_line.startswith("#CHROM"):
+                for contig_id in missing_contig_ids:
+                    fout.write(f"##contig=<ID={contig_id}>\n")
                 for h in _emit_info_declarations(
                     sources_used, include_original_id=include_original_id
                 ):

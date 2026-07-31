@@ -73,6 +73,10 @@ Test-count floor by release:
   discipline gate -- sanitize CI guard extended to flag
   drift-vulnerable counts in [Unreleased] without snapshot
   caveat)
+- v2.3.1: 1,831 collected (v2.3.0 annotated-VCF coverage plus
+  cross-build enrichment guards, GWAS effect-type disambiguation,
+  conservative build confidence, SNPedia orientation, strict ClinVar
+  drift execution, and complete VCF contig declarations)
 
 Check lint:
 
@@ -84,7 +88,13 @@ ruff check . && ruff format --check .
 
 ## 3. Download all databases
 
+Use an empty release-candidate data directory so this gate proves fresh
+cache construction instead of reusing a developer cache. Keep this export
+in the same shell for the rest of the protocol:
+
 ```bash
+export ALLELIX_DATA_DIR="$(mktemp -d)"
+echo "RC data directory: $ALLELIX_DATA_DIR"
 allelix db update
 ```
 
@@ -94,9 +104,10 @@ the upstream rebranded in 2026; `pharmgkb.org` 301-redirects to
 internally for backward compatibility), GWAS Catalog, gnomAD
 (~2.7 GB compressed download, ~6 GB on-disk SQLite cache),
 AlphaMissense (~1.8 GB compressed, ~8 GB on-disk), and SNPedia from
-HuggingFace. CADD is opt-in and not included here — see step 11.
+HuggingFace. CADD is opt-in and not included here — step 7 installs
+and enables it before the wrong-allele safety gate.
 Total on-disk footprint after this step: roughly **16 GB**
-(CADD adds another ~5.8 GB if you opt in at step 11, bringing the
+(CADD adds another ~5.8 GB at step 7, bringing the
 full install to ~22 GB).
 
 **Expected:** All enabled annotators show green checkmarks. No errors.
@@ -109,6 +120,20 @@ allelix db status
 
 **Expected:** All annotators show "yes" in the Ready column with
 version strings and record counts. SNPedia should show ~104K records.
+
+The real `db update` above is the fresh-cache release gate for both GWAS
+Catalog and SNPedia. Also run their isolated loader/parser regression
+suites; every test receives a new `tmp_path` database:
+
+```bash
+python -m pytest tests/databases/test_gwas_loader.py \
+  tests/databases/test_snpedia_parser.py --no-cov
+```
+
+**Expected:** All tests pass. The SNPedia cache version includes parser
+format 7 and an `orientation` column; an older parser tag must be rejected
+as stale. The GWAS loader must build from the current association archive
+without reusing a pre-existing SQLite cache.
 
 ## 4. Fetch real test data
 
@@ -254,9 +279,11 @@ Run analysis on each format against the live-downloaded databases.
 allelix analyze test_data/real/23andme/user1190_v5.txt --output /tmp/allelix-review/user1190_23andme.json
 ```
 
-**Expected:** Exit code 0. JSON report written. Should contain ClinVar,
-ClinPGx, GWAS, SNPedia, gnomAD, and AlphaMissense annotations. Check
-that annotation count is in the hundreds (varies by database version).
+**Expected:** Exit code 0. JSON report written. This GRCh37 consumer
+array contains ClinVar, ClinPGx, GWAS, and SNPedia findings. gnomAD,
+AlphaMissense, and CADD are GRCh38-only enrichment sources and must
+contribute zero values and no provenance on this input. Check that the
+annotation count is in the hundreds (varies by database version).
 
 ### 5b. MHG / Tempus
 
@@ -313,7 +340,19 @@ allelix analyze tests/fixtures/mock_ftdna_illumina.txt --output /tmp/allelix-rev
 FTDNA file shape (tab-delimited, `RSID/CHROMOSOME/POSITION/RESULT`
 header), distinct from the CSV variant tested in 5d.
 
-### 5h. VCF / gVCF (committed fixtures + bundled real-scale files)
+### 5h. FTDNA FamFinder (separate allele columns)
+
+```bash
+allelix analyze tests/fixtures/mock_ftdna_famfinder.txt \
+  --output /tmp/allelix-review/ftdna_famfinder.json
+```
+
+**Expected:** Exit code 0. JSON report written. This is the third
+FTDNA file shape: tab-delimited with separate `ALLELE1` / `ALLELE2`
+columns and a FamFinder header. It must select the FamFinder parser,
+not the Illumina or CSV parser.
+
+### 5i. VCF / gVCF (committed fixtures + bundled real-scale files)
 
 ```bash
 # Plain single-sample synthetic VCF
@@ -362,7 +401,7 @@ all exit 0. Multi-sample without `--sample` raises MultiSampleError
 in both cases; the 1000G file demonstrates the "... and N more"
 truncation tail.
 
-### 5i. rsID-less VCF resolution (GH #8 — the flagship feature)
+### 5j. rsID-less VCF resolution (GH #8 — the flagship feature)
 
 Real VCFs from variant callers (GATK HaplotypeCaller, DeepVariant)
 emit `ID=.` — no rsID. Without resolution, every rsID-keyed annotator
@@ -386,7 +425,7 @@ print('rs1801133 resolved from chr1:11856378 ID=.')
 **Expected:** Non-zero annotation count. rs1801133 present in
 annotations. Pre-v2.0.0 this would have produced 0 annotations.
 
-### 5j. Build auto-detection: blind fallback + chr-prefix inference (GH #38)
+### 5k. Build auto-detection: fallback, inference, and confidence
 
 Two paths in this step. Run both.
 
@@ -446,6 +485,26 @@ for both shapes, which would mis-annotate a GRCh38 file. v2.0.2 #38
 closes the chr-prefix case; the blind-default path stays as the last
 resort when no signal is available.
 
+**(c) Position-confidence rule** — a modern-build winner must have at
+least three matching seed SNPs and at least 80% of inspected seeds.
+Run the focused detector and pipeline matrix:
+
+```bash
+python -m pytest \
+  tests/utils/test_build_detect.py::TestDetectBuild::test_four_of_five_majority_is_confident \
+  tests/utils/test_build_detect.py::TestDetectBuild::test_three_of_four_majority_is_below_confidence_ratio \
+  tests/utils/test_build_detect.py::TestDetectBuild::test_two_of_two_remains_below_minimum_match_count \
+  tests/reports/test_pipeline.py::TestBuildDetectionMajority -v
+```
+
+**Expected:** All five tests pass. A 4/5 GRCh38 signal can override a
+disagreeing header; 3/4 and 2/2 GRCh37/38 signals remain tentative and
+retain the header or fallback. ADR-0025 separately keeps a tentative
+GRCh36 winner on GRCh36 so no modern position cache is queried. If a
+tentative modern-build winner happens to equal the fallback, the
+terminal banner must still say `position signal below confidence`, not
+`detected`.
+
 ## 6. Cross-parser identity check
 
 The user1190 genotype exists in 6 format representations. All should
@@ -498,26 +557,97 @@ number could attach to an annotation:
   multi-SCV variants.
 
 ```bash
-allelix analyze test_data/real/23andme/user1190_v5.txt --output /tmp/allelix-review/enrichment_check.json
-python3 -c "
+# Download the optional cache and enable it persistently for the remainder
+# of this isolated RC run. `db update --cadd` alone does not mutate config.
+allelix db update --cadd
+allelix config set sources.cadd true
+allelix db status | grep -i cadd
+# Expected: CADD ready, sources.cadd = true.
+
+allelix analyze test_data/real/vcf/HG002_GRCh38_benchmark.vcf.gz \
+  --build grch38 \
+  --output /tmp/allelix-review/enrichment_check.json
+allelix analyze test_data/real/23andme/user1190_v5.txt \
+  --output /tmp/allelix-review/grch37_enrichment_gate.json
+
+python - <<'PY'
+import contextlib
 import json
-data = json.load(open('/tmp/allelix-review/enrichment_check.json'))
-for a in data['annotations']:
-    if a.get('am_pathogenicity') is not None and a.get('alt'):
-        print(f\"{a['rsid']} alt={a['alt']} am={a['am_pathogenicity']:.3f} {a['am_class']}\")
-" | head -20
+import os
+import sqlite3
+
+grch38 = json.load(open('/tmp/allelix-review/enrichment_check.json'))
+annotations = grch38['annotations']
+annotators = {a['name'] for a in grch38['annotators']}
+expected = {'clinvar', 'pharmgkb', 'gwas', 'snpedia', 'gnomad', 'alphamissense', 'cadd'}
+assert expected <= annotators, f'missing GRCh38 annotators: {sorted(expected - annotators)}'
+
+counts = {
+    'gnomAD': sum(a.get('allele_frequency') is not None for a in annotations),
+    'AlphaMissense': sum(a.get('am_pathogenicity') is not None for a in annotations),
+    'CADD': sum(a.get('cadd_phred') is not None for a in annotations),
+}
+assert all(count > 0 for count in counts.values()), f'vacuous GRCh38 enrichment gate: {counts}'
+
+altless_enriched = [
+    a['rsid']
+    for a in annotations
+    if not a.get('alt')
+    and any(a.get(field) is not None for field in ('allele_frequency', 'am_pathogenicity', 'cadd_phred'))
+]
+assert not altless_enriched, f'alt-less rows received enrichment: {altless_enriched[:10]}'
+
+cadd_rows = [a for a in annotations if a.get('cadd_phred') is not None]
+direct = 0
+with contextlib.closing(
+    sqlite3.connect(os.path.join(os.environ['ALLELIX_DATA_DIR'], 'gnomad.sqlite'))
+) as conn:
+    for annotation in cadd_rows:
+        alts = {
+            row[0]
+            for row in conn.execute(
+                'SELECT alt FROM gnomad_frequencies WHERE rsid=?',
+                (annotation['rsid'],),
+            )
+        }
+        assert annotation['alt'] in alts, (
+            f"CADD alt is not a direct gnomAD match: {annotation['rsid']} "
+            f"alt={annotation['alt']} available={sorted(alts)}"
+        )
+        direct += 1
+assert direct > 0, 'CADD direct-match denominator is zero'
+
+grch37 = json.load(open('/tmp/allelix-review/grch37_enrichment_gate.json'))
+assert grch37['input']['build'] == 'GRCh37'
+grch37_annotations = grch37['annotations']
+for field in ('allele_frequency', 'am_pathogenicity', 'cadd_phred'):
+    assert sum(a.get(field) is not None for a in grch37_annotations) == 0, field
+grch37_annotators = {a['name'] for a in grch37['annotators']}
+assert {'gnomad', 'alphamissense', 'cadd'}.isdisjoint(grch37_annotators)
+
+print(f'GRCh38 enrichment counts: {counts}; direct CADD matches: {direct}')
+print('GRCh37 consumer-array gate: zero GRCh38-only enrichment, as required')
+for annotation in annotations:
+    if annotation.get('am_pathogenicity') is not None and annotation.get('alt'):
+        print(
+            f"{annotation['rsid']} alt={annotation['alt']} "
+            f"am={annotation['am_pathogenicity']:.3f} {annotation['am_class']}"
+        )
+PY
 ```
 
-**Expected:** AM scores correspond to the user's specific alt allele,
-not the site-wide MAX. Spot-check a few rsIDs against the AlphaMissense
-source data if available.
+**Expected:** All seven annotators participate in the GRCh38 report;
+gnomAD, AlphaMissense, and CADD counts are each non-zero; every CADD
+score has a direct gnomAD `(rsID, alt)` match; and no alt-less row is
+enriched. The real GRCh37 consumer report must contain zero values and
+no provenance for the three GRCh38-only enrichment sources. AM scores
+correspond to the user's specific alt allele, not the site-wide MAX.
 
-**#18 stronger invariant check.** For every alt-set annotation with a
-stamped CADD score, the alt must appear directly in gnomAD's alts at
-that rsID (no complement-resolved hits). Across the HG002 gVCF
-battery: all matches must be allele-direct; via-complement count
-must be 0. The absolute denominator drifts with each gnomAD / CADD
-refresh; the invariant is the zero on the via-complement side.
+**#18 stronger invariant check.** For every GRCh38 alt-set annotation
+with a stamped CADD score, the alt must appear directly in gnomAD's
+alts at that rsID (no complement-resolved hits). The GRCh38 denominator
+must be non-zero and every match allele-direct. GRCh37 must instead
+produce zero CADD scores under the cross-build guard.
 
 **#42 ClinVar real-cache content gates.** After a `db update` against
 the v2.2 per-SCV TSV loader. **These are ship-gates** in the same
@@ -532,7 +662,7 @@ rsID, each carrying a single SCV's condition exactly as the submitter
 recorded it:
 
 ```bash
-allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
+sqlite3 "$ALLELIX_DATA_DIR/clinvar.GRCh38.sqlite" \
   "SELECT rsid, COUNT(*) FROM clinvar_variants \
    WHERE rsid IN ('rs1800896', 'rs1063192') GROUP BY rsid;"
 # Expected: ≥1 row per rsID. Multi-SCV variants will show >1 row
@@ -571,7 +701,7 @@ handles correctly (e.g. `"not provided"` maps to 2.0, harmless).
 # _magnitude()'s _normalize_clnsig normalization); a case-sensitive
 # scan would show false-green if ClinVar emits a placeholder with
 # different casing than the canonical form.
-allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
+sqlite3 "$ALLELIX_DATA_DIR/clinvar.GRCh38.sqlite" \
   "SELECT clinical_significance, COUNT(*) FROM clinvar_variants \
    WHERE LOWER(clinical_significance) IN \
      ('-', '', 'not specified', 'no classification provided', \
@@ -583,7 +713,7 @@ allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
 # databases/manager.py.
 
 # Spot-check a known-affected rsID:
-allelix-dev$ sqlite3 ~/.local/share/allelix/clinvar.GRCh38.sqlite \
+sqlite3 "$ALLELIX_DATA_DIR/clinvar.GRCh38.sqlite" \
   "SELECT rsid, clinical_significance FROM clinvar_variants WHERE rsid = 'rs137854557';"
 # Expected: real classifications (e.g. Pathogenic / Likely pathogenic).
 # Never a placeholder.
@@ -648,11 +778,12 @@ and the wrong-allele safety invariant check at the end of
 Section 19 — v2.1.0 produces a larger denominator than v2.0.2
 because PR 2's per-Annotation alt threading made more rows
 eligible for the exact-`(rsid, alt)` CADD lookup. The absolute
-denominators drift with each gnomAD / CADD refresh; the invariant
-to enforce is **100% allele-direct on both builds, 0
-via-complement**. **All matches must remain 100% allele-
-direct, 0 via-complement** — that's the v2.0.1 #18 invariant
-holding against the broader denominator.
+denominator drifts with each gnomAD / CADD refresh; the invariant is
+**a non-zero, 100% allele-direct GRCh38 denominator and zero GRCh37
+enrichment**. All GRCh38 matches must remain direct with zero
+complement-resolved scores — that's the v2.0.1 #18 invariant holding
+against the broader denominator while the cross-build guard prevents
+coincidence.
 
 ## 8. Report formats
 
@@ -668,12 +799,14 @@ Open `/tmp/allelix-review/report.html` in a browser. Verify:
 - rsID column is sticky when scrolling
 - Columns are sortable (click headers)
 - Review Status column appears for ClinVar rows
-- Pop. Freq column shows gnomAD frequencies
-- AM column shows AlphaMissense scores
+- Pop. Freq and AM columns are present but empty on this GRCh37 input;
+  their non-zero GRCh38 rendering is exercised by `enrichment_check.json`
+- CADD column is present but empty on this GRCh37 input
 - ClinPGx AM scores show dimmed caveat indicator
 - Row borders are color-coded (red = pathogenic, green = benign)
 - Zygosity column shows Heterozygous / Homozygous for each row
-- CADD column scores are color-coded (red ≥30, orange ≥20, gray <20) with tooltips
+- On a GRCh38 enrichment report, CADD scores are color-coded (red ≥30,
+  orange ≥20, gray <20) with tooltips
 - "Reading This Report" section is present
 - Regulatory notice is present
 
@@ -718,8 +851,11 @@ print(f\"GWAS rows w/ p_value: {sum(1 for a in gwas if a.get('p_value') is not N
 **Expected:** Schema version matches the `SCHEMA_VERSION` constant
 in `allelix/reports/json_report.py` (currently 6; bumped from 5
 at #75 panel-coverage states in v2.2.0; ADR-0033 governs schema
-bump policy). Multiple sources present. gnomAD and
-AM enrichment counts > 0. On any file with GWAS hits, the structured
+bump policy). This is the GRCh38 `enrichment_check.json` produced in
+§7: multiple sources are present and gnomAD and AM enrichment counts
+are both > 0. The paired GRCh37 assertion in §7 proves those fields and
+their provenance are absent by design on consumer arrays. On any file
+with GWAS hits, the structured
 `trait` and `p_value` counts must both be > 0 — that's the v5 contract
 delivery check.
 
@@ -754,8 +890,29 @@ allelix pharmacogenomics test_data/real/23andme/user1190_v5.txt
 allelix compare test_data/real/23andme/user1190_v5.txt test_data/real/myheritage/user1190.csv
 ```
 
-**Expected:** Per-chromosome concordance table. Coverage overlap stats.
-High concordance expected (same biology, different format).
+**Expected:** Per-chromosome concordance table, coverage overlap stats, and
+the following summary for these same-biology user1190 transcodes:
+
+```text
+Concordant                 941,911   98.05%
+Strand-flip match                0    0.00%
+Discordant                       0    0.00%
+Strand-ambiguous                 0    0.00%
+No-call (either file)       18,702    1.95%
+```
+
+The headline 98.05% uses all 960,613 overlapping variants as its denominator,
+including the 18,702 variants where either file is a no-call. It therefore
+tracks the input no-call rate as well as genotype agreement and is **not** the
+pass criterion. The called-genotype denominator is `Concordant +
+Strand-flip match + Discordant + Strand-ambiguous = 941,911`; the observed
+concordance among called genotypes is `941,911 / 941,911 = 100.0000%`.
+
+**Pass/fail rule:** `Discordant = 0` **and** `Strand-flip match = 0`. Any
+non-zero value in either row fails this same-biology cross-format comparison,
+regardless of the headline percentage. A lower headline can be caused by
+no-calls or by genuine disagreement, so never infer pass or fail from that
+percentage; read the `Discordant` and `Strand-flip match` rows directly.
 
 ## 10. Config system
 
@@ -772,28 +929,29 @@ allelix config show
 from analysis automatically. After setting back to `false`, SNPedia
 is included again.
 
-## 11. CADD opt-in flow
+## 11. CADD opt-in and commercial gating
 
-CADD is disabled by default. Verify the opt-in path:
+CADD is disabled by default. Step 7 exercised the complete opt-in path:
+the download flag produced the license prompt and installed the cache,
+then `sources.cadd = true` enabled it for analysis. Verify that state and
+the resulting enrichment:
 
 ```bash
 allelix config show | grep cadd
-# Expected: sources.cadd = false
-
-allelix db update --cadd
-# Expected: CADD license confirmation prompt. Accept to download CADD cache.
+# Expected: sources.cadd = true
 
 allelix db status | grep -i cadd
 # Expected: CADD shows "yes" in Ready column with version "v1.7"
 
-allelix analyze test_data/real/23andme/user1190_v5.txt --output /tmp/allelix-review/cadd_check.json
+allelix analyze test_data/real/vcf/HG002_GRCh38_benchmark.vcf.gz \
+  --build grch38 --output /tmp/allelix-review/cadd_check.json
 python3 -c "
 import json
 data = json.load(open('/tmp/allelix-review/cadd_check.json'))
 has_cadd = sum(1 for a in data['annotations'] if a.get('cadd_phred') is not None)
 print(f'With CADD score: {has_cadd}')
 "
-# Expected: Non-zero CADD enrichment count.
+# Expected: Non-zero CADD enrichment count on the GRCh38 benchmark.
 ```
 
 Verify commercial mode gates CADD:
@@ -873,6 +1031,23 @@ A silent skip here is a ship-gate defect (GH #45 policy): either the
 auto-fetch failed and was logged as `OSError`, or the test was
 deselected. Investigate, do not tag.
 
+Run the v2.3.1 effect-type and SNPedia-orientation boundary tests
+explicitly as named release gates:
+
+```bash
+python -m pytest tests/annotators/test_gwas.py::TestMagnitudeScoring \
+  tests/annotators/test_snpedia.py::TestAnnotateGenotype::test_minus_orientation_normalizes_genotype_and_alt \
+  tests/annotators/test_snpedia.py::TestAnnotateGenotype::test_unknown_orientation_palindrome_abstains_for_homozygote \
+  tests/annotators/test_snpedia.py::TestAnnotateGenotype::test_known_minus_orientation_resolves_palindromic_homozygote \
+  --no-cov -v
+```
+
+**Expected:** All tests pass. Only a bare positive confidence interval
+identifies an odds ratio and permits its magnitude modifier; beta,
+unit-bearing, missing, ambiguous, or non-positive effects abstain.
+Known SNPedia minus orientation normalizes both genotype and ALT, while
+unknown palindromic orientation abstains.
+
 ## 15. Edge case files
 
 ```bash
@@ -890,7 +1065,8 @@ allelix stats test_data/edge_cases/23andme_format_from_genes_for_good_service.tx
 
 # GRCh36 FTDNA file (analyze detects build from positions; stats shows parser default)
 allelix analyze test_data/edge_cases/ftdna_grch36_positions.csv 2>&1 | grep -i "grch36\|build"
-# Expected: GRCh36 detected. ClinVar skipped (no GRCh36 cache).
+# Expected: position data tentatively favors GRCh36 (3/4); ADR-0025's
+# GRCh36 fail-safe uses GRCh36. ClinVar and GRCh38 enrichment are skipped.
 
 # Unsupported formats
 allelix stats test_data/edge_cases/unsupported_decodeme.txt 2>&1
@@ -965,66 +1141,38 @@ plink2 --bfile /tmp/allelix-review/user1190 --freq --out /tmp/allelix-review/fre
 **Expected:** plink2 reads the files without error. Frequency report
 produced.
 
-## 17. Cleanup
+## 17. Preserve RC artifacts until verification is complete
+
+Do not clean the temporary reports or `$ALLELIX_DATA_DIR` yet. Sections
+18–20 reuse them, and the final review needs the exact logs and outputs
+from this RC commit. Cleanup commands appear after the pass criteria.
+
+## 18. v2.3.0 → v2.3.1 cache-upgrade verification
+
+SNPedia is the only v2.3.1 cache migration. Parser format 7 adds the
+source-orientation column and tag. A v2.3.0 cache with raw pages must be
+recognized as stale, reparsed in place, deduplicated, and stamped
+`pv:7`. The GWAS odds-ratio/beta change is runtime scoring, so the GWAS
+cache does not rebuild. ClinVar, ClinPGx, gnomAD, AlphaMissense, and CADD
+also have no cache-schema bump.
+
+Run the deterministic upgrade matrix against isolated temporary caches:
 
 ```bash
-rm -rf /tmp/allelix-review
+python -m pytest \
+  tests/databases/test_snpedia_parser.py::TestParseRawPages::test_reparse_migrates_old_structured_schema \
+  tests/databases/test_snpedia_parser.py::TestParseRawPages::test_reparse_clears_old_data \
+  tests/databases/test_snpedia_parser.py::TestParserVersionStamp::test_parser_is_current_false_old_version \
+  tests/databases/test_snpedia_parser.py::TestParserVersionStamp::test_parse_stamps_version \
+  --no-cov -v
 ```
 
-Optionally remove downloaded databases to free ~16 GB (≈22 GB if you
-also completed the CADD opt-in in Step 11):
+**Expected:** All four tests pass. The migrated table contains
+orientation, old structured rows do not survive a reparse, an old tag
+is rejected, and the rebuilt cache carries `pv:7`. The fresh real-cache
+construction in step 3 separately proves the current download path.
 
-```bash
-rm -rf ~/.local/share/allelix/
-```
-
-(Default install is ~16 GB on disk: alphamissense ~7.8 GB +
-gnomad ~6.1 GB + clinvar ~1.0 GB + gwas_catalog ~0.7 GB +
-snpedia/gwas/pharmgkb ~0.6 GB. CADD adds ~5.8 GB on top.)
-
-## 18. Upgrade-path verification (v2.0.1+ caches, GH #22 / #42)
-
-When a user upgrades from an older minor (v2.0.0 → v2.0.2, or
-v2.0.2 → v2.1.0), the next `allelix db update` should auto-invalidate
-exactly the caches whose interpreter or schema version bumped at any
-step in the upgrade window, and leave the rest signal-skipped.
-
-```bash
-# Pre-condition: a v2.0.0 cache already on disk
-allelix db status
-# Expected: ClinVar = "no" (CLINVAR_INTERPRETER_VERSION bumped 1 → 2 in v2.0.1)
-#   if a v2.0.0 ClinVar cache predated the bump
-
-allelix db update
-# Expected:
-#   clinvar: downloading…  ✓ clinvar ready
-#   pharmgkb / gwas / snpedia / gnomad / alphamissense / cadd: already current
-```
-
-**Expected:** only ClinVar re-downloads (because v2.0.1 bumped
-`CLINVAR_INTERPRETER_VERSION` to invalidate v2.0.0 caches so the
-post-#42 loader runs). Other annotators are signal-matched and
-skipped — no spurious re-downloads of the multi-GB gnomAD
-(~2.7 GB compressed, ~6 GB on disk) or AlphaMissense (~1.8 GB
-compressed, ~8 GB on disk) prebuilts.
-
-**v2.0.2 specifics:** no new interpreter / schema bumps. The HF URL
-move (#37, v2.0.1) is invisible — HF redirects from `dial481/...` to
-`allelix/...`; existing pinned installs continue to fetch.
-
-**v2.1.0 specifics:** no new interpreter / schema bumps in the cache
-layer. `CLINVAR_INTERPRETER_VERSION` stays at 2 (v2.0.1 bump);
-PharmGKB / gnomAD / AlphaMissense / CADD interpreter / schema
-versions all unchanged. The ADR-0035 Cluster B work changed query
-semantics, not loader output — `pharmgkb.sqlite` / `clinvar.*.sqlite`
-content is byte-identical. JSON report `schema_version` bumped 4 → 5
-at the cluster's first PR; the new fields (`annotation.trait`,
-`annotation.p_value`, `annotation.phecode`) are additive and v4
-consumers reading v5 output continue to succeed. Existing v2.0.2
-caches stay current on upgrade — `allelix db update` will signal-skip
-all annotators.
-
-## 19. Gold-standard real-data VCF battery (~1.5 GB, optional but recommended)
+## 19. Gold-standard real-data VCF battery (~1.5 GB, required)
 
 The strongest end-to-end check is the **chain-of-trust** workflow
 the v2.0.1 ship used: run an analysis against the NIST GIAB truth
@@ -1256,30 +1404,42 @@ reflecting each caller's view; the variants simply weren't called
 by DeepVariant at those positions.
 
 **Wrong-allele safety invariants (GH #18 / #23 / #42):** every CADD
-score stamped on an alt-set annotation must come from a direct
-`(ref, alt)` match in gnomAD (no complement-resolved hits). The
-invariant to enforce is 100% allele-direct, 0 via-complement —
-the absolute denominator drifts with each gnomAD / CADD refresh,
-the via-complement zero is what's load-bearing.
+score stamped on a GRCh38 alt-set annotation must come from a direct
+`(ref, alt)` match in gnomAD (no complement-resolved hits), and the
+GRCh38 denominator must be non-zero. GRCh37 reports must contain zero
+CADD enrichment by the cross-build enrichment gate. This deliberately checks both
+sides: positive allele-direct enrichment where the cache is compatible,
+and complete abstention where it is not.
 
 ```bash
 # Runs against whichever real VCF output is present.
-python3 -c "
+python -c "
 import json, os, sqlite3, contextlib, sys
+saw_positive_grch38 = False
 for name in ['hg002_gvcf', 'hg00187_gatk', 'giab_grch37', 'giab_grch38']:
     p = f'/tmp/allelix-review/{name}.json'
     if not os.path.exists(p): continue
     rows_all = json.load(open(p))['annotations']
-    direct = no_direct = 0
-    with contextlib.closing(sqlite3.connect(os.path.expanduser('~/.local/share/allelix/gnomad.sqlite'))) as conn:
+    scored = direct = no_direct = unresolved = 0
+    with contextlib.closing(sqlite3.connect(os.path.join(os.environ['ALLELIX_DATA_DIR'], 'gnomad.sqlite'))) as conn:
         for a in rows_all:
             if not a.get('alt') or a.get('cadd_phred') is None: continue
+            scored += 1
             rows = conn.execute('SELECT alt FROM gnomad_frequencies WHERE rsid=?', (a['rsid'],)).fetchall()
-            if not rows: continue
+            if not rows:
+                unresolved += 1
+                continue
             if a['alt'] in {r[0] for r in rows}: direct += 1
             else: no_direct += 1
-    print(f'{name}: allele-direct CADD={direct}, via-complement={no_direct}')
+    print(f'{name}: scored={scored}, allele-direct={direct}, non-direct={no_direct}, unresolved={unresolved}')
     assert no_direct == 0, f'BUG in {name} — {no_direct} via-complement CADD scores'
+    assert unresolved == 0, f'BUG in {name} — {unresolved} CADD scores lack a gnomAD allele row'
+    if name in {'hg00187_gatk', 'giab_grch37'}:
+        assert scored == 0, f'BUG in {name} — GRCh37 received {scored} CADD scores'
+    else:
+        assert direct > 0, f'VACUOUS in {name} — no direct GRCh38 CADD matches'
+        saw_positive_grch38 = True
+assert saw_positive_grch38, 'No GRCh38 CADD output was available for the safety gate'
 "
 ```
 
@@ -1302,8 +1462,9 @@ See §7 for the post-update real-cache ship-gate (per-SCV row shape
 ## 20. Annotated VCF output (v2.3.0+; ADR-0036)
 
 Verifies that `allelix analyze --vcf-out` produces a spec-conformant
-annotated VCF: preserves the input header verbatim, injects the
-provenance / attribution / `##INFO` block immediately before `#CHROM`,
+annotated VCF: preserves every existing input header line verbatim,
+synthesizes declarations for emitted contigs that the input omitted,
+injects the provenance / attribution / `##INFO` block immediately before `#CHROM`,
 stamps INFO fields with per-allele `Number=A` semantics, and stamps
 recovered rsIDs into the ID column with the original value preserved
 under `ALLELIX_ORIGINAL_ID`.
@@ -1324,6 +1485,9 @@ Verify:
 - [ ] `head -30 /tmp/mock_annotated.vcf` shows:
   - [ ] `##fileformat=VCFv4.2` on line 1 (preserved from input)
   - [ ] Every input `##` line preserved verbatim before `#CHROM`
+  - [ ] Every CHROM value emitted by the fixture has a corresponding
+    `##contig=<ID=...>` declaration; declarations missing from the input
+    are synthesized without renaming bare or `chr`-prefixed contigs
   - [ ] Injected `##INFO=<ID=ALLELIX_*,Number=A,Type=...,Description="...">`
     declarations for every source that produced annotations
   - [ ] Provenance block: `##ALLELIX_Version=<current version>`,
@@ -1408,22 +1572,18 @@ Verify:
 Verify:
 
 - [ ] Exit code 0
-- [ ] No **writer-attributable** warnings on stderr. The mock fixture
-  declares only ``##contig=<ID=1,...>`` and ``##contig=<ID=22,...>``
-  but carries data on chroms 17 / 19 (and mock_gvcf on chr1 / chrX /
-  chrM), which bcftools flags with `Contig 'X' is not defined in the
-  header. (Quick workaround: index the file with tabix.)`. Those are a
-  pre-existing input-header issue, not a writer regression — the
-  writer preserves the input header verbatim. Isolate stderr into a
-  file and filter (two-step form; avoids the shell-portability gotcha
-  with `2>&1 >/dev/null | grep ...`):
+- [ ] No warnings on stderr. The mock fixture declares only
+  ``##contig=<ID=1,...>`` and ``##contig=<ID=22,...>`` but emits records
+  on `1`, `22`, `19`, `17`, `chr1`, `chrX`, and `chrM`. The writer must
+  synthesize declarations for all five missing raw names without
+  normalizing or collapsing the mixed naming styles. Capture stderr:
 
   ```bash
   bcftools view /tmp/mock_annotated.vcf > /dev/null 2> /tmp/bcf_stderr.txt
-  grep -v "is not defined in the header" /tmp/bcf_stderr.txt
+  test ! -s /tmp/bcf_stderr.txt
   ```
 
-  should produce no output
+  and require exit code 0
 - [ ] `bcftools view -h /tmp/mock_annotated.vcf | grep '^##INFO=<ID=ALLELIX_'`
   lists every declared Allelix INFO field
 - [ ] `bcftools query -f '%CHROM\t%POS\t%ID\t%INFO/ALLELIX_CLINVAR\n' /tmp/mock_annotated.vcf`
@@ -1505,31 +1665,71 @@ Verify:
 
 All of the following must be true:
 
-- [ ] Unit test suite: **1,576 passed, 0 skipped** (v2.1.0 floor with
-      `plink2` installed and GWAS auto-fetch succeeding). Skips are a
+- [ ] Unit test suite: **1,831 passed, 0 skipped** for the v2.3.1 RC
+      (matching the latest test-count row, with `bcftools` and `plink2`
+      installed and real-data prerequisites available). Skips are a
       ship-gate defect — investigate, don't ignore.
 - [ ] Ruff lint + format: zero warnings (`ruff check .` and `ruff format --check .` both clean)
 - [ ] `db update` downloads all enabled annotators without errors
+- [ ] Fresh-cache gates pass for GWAS Catalog and SNPedia: real `db update`
+      started from the empty RC data directory, both isolated loader/parser
+      suites pass, and SNPedia parser format 7 stores orientation
 - [ ] `db status` shows all annotators ready with version and record count; ClinPGx row labeled "ClinPGx" (not "PharmGKB")
-- [ ] All 8 parser formats produce successful analysis (23andMe, AncestryDNA, FTDNA, MyHeritage, MHG / Tempus, Living DNA, FTDNA Illumina raw, VCF/gVCF)
+- [ ] All 9 parser formats produce successful analysis (23andMe, AncestryDNA, FTDNA CSV, FTDNA FamFinder, FTDNA Illumina raw, MyHeritage, MHG / Tempus, Living DNA, VCF/gVCF)
 - [ ] Cross-parser identity: same annotation count across all user1190 representations (6 array-based formats; VCF doesn't have a user1190 representation)
-- [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations via ClinPGx resolution (step 5i); multi-sample VCF requires `--sample` (step 5h)
-- [ ] Build auto-detection: warning fires when no rsID + no header signal (step 5j); **chr-prefix contigs auto-infer GRCh38 without `--build` (GH #38)**
-- [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: every alt-set CADD score has its alt directly in gnomAD's alts at that rsID; alt-less (raw GWAS) rows only get enrichment via the safe position-fallback path; ClinVar emits one row per (variant, SCV submission) — the per-SCV pairing structurally retires the Frankenstein-pair hazard the original audit raised (v2.2 per-SCV TSV loader)
+- [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations after build-scoped coordinate resolution (step 5j); multi-sample VCF requires `--sample` (step 5i)
+- [ ] Build auto-detection (step 5k): warning fires when no rsID + no header signal; **chr-prefix contigs auto-infer GRCh38 without `--build` (GH #38)**; 4/5 is confident while 3/4 and 2/2 remain tentative
+- [ ] **Wrong-allele safety invariants (GH #18, #23, #42)**: the GRCh38 GIAB battery has a non-zero CADD denominator and every score has its alt directly in gnomAD's alts at that rsID; the real GRCh37 consumer report has zero gnomAD / AM / CADD enrichment and omits their provenance; alt-less rows receive no enrichment; ClinVar emits one row per (variant, SCV submission) — the per-SCV pairing structurally retires the Frankenstein-pair hazard the original audit raised (v2.2 per-SCV TSV loader)
 - [ ] **ClinVar significance-sentinel ship-gate (Defect 5 / §7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided', 'other', 'association', 'association not found')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). v2.2.1 (#116) added the three non-classification curatorial terms. Denylist form is reactive; durable allowlist form lives in R-4 (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report (GH #9)**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
-- [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) all present
-- [ ] JSON report has schema version 6 with gnomAD + AM + CADD enrichment; structured GWAS fields populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` object appears when `--filter-file` is used (GH #75); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) are present, with the GRCh38-only enrichment cells empty on GRCh37 input by design
+- [ ] JSON report has schema version 6; the GRCh38 `enrichment_check.json` has non-zero gnomAD + AM + CADD enrichment, while the paired GRCh37 consumer report has zero values and no provenance for those sources; structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used (GH #75); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
 - [ ] **Strand-aware carrier matching (GH #14 strand-half / R-1 / ADR-0035 PR 4)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
 - [ ] Config system correctly gates SNPedia on `license.commercial`
-- [ ] CADD opt-in: `--cadd` downloads cache, license prompt shown, scores enriched
+- [ ] GWAS effect-type gate: only positively identified bare odds ratios
+      receive a modifier; beta, unit-bearing, missing, ambiguous, and
+      non-positive effects abstain
+- [ ] SNPedia orientation gate: known minus rows normalize genotype + ALT;
+      unknown palindromic rows abstain; known palindromic minus rows resolve
+- [ ] CADD opt-in: `db update --cadd` downloads the cache and shows the
+      license prompt; `sources.cadd = true` or analyze `--cadd` enables
+      enrichment; GRCh38 scores are non-zero
 - [ ] CADD commercial gate: `license.commercial = true` excludes CADD
 - [ ] Edge case files produce expected behavior
 - [ ] `db update` (second run) skips already-current databases
-- [ ] **Upgrade path (GH #22 / #42)**: upgrading from v2.0.0 to v2.0.2 against an existing cache re-downloads only ClinVar (interpreter-version invalidation from v2.0.1); upgrading from v2.0.2 to v2.1.0 against an existing cache signal-skips all annotators (no new interpreter / schema bumps in the ADR-0035 Cluster B work)
+- [ ] **v2.3.0 upgrade path:** all four step-18 migration tests pass;
+      SNPedia reparses to parser format 7 with orientation, while the
+      other source caches require no schema rebuild
 - [ ] GWAS Catalog slow tests pass (auto-fetch the fixture — silent skip is forbidden, GH #45)
-- [ ] `methylation`, `pharmacogenomics`, `compare` subcommands produce output (pharmacogenomics --help says "ClinPGx-style sources")
+- [ ] Manual `workflow_dispatch` of `.github/workflows/slow.yml` is green
+      against the exact RC commit under review. The `Assert drift sentinel
+      executed` step parses the generated JUnit XML and confirms
+      `test_no_new_clnsig_values_in_live_cache` executed and passed,
+      never skipped or merely absent; require that step to be green.
+- [ ] `methylation`, `pharmacogenomics`, and `compare` subcommands produce
+      output (`pharmacogenomics --help` says "ClinPGx-style sources"); the
+      user1190 cross-format comparison has zero `Discordant` and zero
+      `Strand-flip match` rows. Its headline percentage includes no-calls and
+      is not the pass criterion.
 - [ ] PLINK export produces valid .bed/.bim/.fam with correct magic and alignment
 - [ ] PLINK export resolves ref/alt from gnomAD when available
 - [ ] `allelix --version` reports the actual pyproject version even from a bare source checkout (GH #34)
-- [ ] **Gold-standard VCF battery (step 19)**: GIAB benchmark + DeepVariant gVCF + GATK-HC GRCh37 all analyze cleanly; `check_ground_truth.py` exits 0 on all three battery files (`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`) — enforces floor counts, published HG002 spot-checks at rs1801133 / rs7412 / rs2010963 / rs6025, the significance vocabulary union, and per-row universal invariants; gVCF is a strict superset of the benchmark at production filter (0 missing); allele-direct CADD invariant holds (0 via-complement); ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the pre-#42 shape
+- [ ] **Gold-standard VCF battery (step 19)**: the bundled GIAB GRCh38 benchmark, GIAB GRCh37 benchmark, and HG00187 GATK-HC GRCh37 gVCF all analyze cleanly; `check_ground_truth.py` exits 0 on all three (`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`) — enforces floor counts, published HG002 spot-checks at rs1801133 / rs7412 / rs2010963 / rs6025, the significance vocabulary union, and per-row universal invariants; the optional same-sample HG002 DeepVariant gVCF is a strict superset of the benchmark at production filter when staged; the GRCh38 CADD denominator is non-zero and 100% allele-direct while GRCh37 CADD enrichment is zero; ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the pre-#42 shape
+
+## Cleanup after verification is posted
+
+Keep the RC artifacts until the reviewer has posted the protocol result
+on the release PR. Then reclaim the isolated cache and report directory:
+
+```bash
+allelix db clean --yes
+rm -f "$ALLELIX_DATA_DIR/config.toml"
+rmdir "$ALLELIX_DATA_DIR"
+rm -rf /tmp/allelix-review
+```
+
+`ALLELIX_DATA_DIR` was created by `mktemp -d` in step 3, so these commands
+cannot target the user's normal Allelix cache. `db clean` preserves the
+config file intentionally; the explicit file removal lets `rmdir` remove
+the now-empty temporary directory. A default cache occupies ~16 GB, or
+~22 GB after the optional CADD step.

@@ -1088,10 +1088,11 @@ def render_html(
     build_warn = ""
     diag = result.build_diagnostics
     if diag is not None and diag.mismatch:
+        position_verb = "indicates" if diag.position_confident else "tentatively favors"
         build_warn = (
             '<div class="notice-warn"><strong>Build mismatch.</strong> '
             f"File header claims {_escape(diag.header_build or '')} but position data "
-            f"indicates {_escape(diag.detected_build or '')}. "
+            f"{position_verb} {_escape(diag.detected_build or '')}. "
             f"This report uses {_escape(diag.effective_build)}. "
             "Your provider may have mislabeled the genome build.</div>"
         )

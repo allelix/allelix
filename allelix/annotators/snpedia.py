@@ -29,7 +29,7 @@ from allelix.databases.snpedia_loader import (
     install_prebuilt_cache,
 )
 from allelix.models import Annotation
-from allelix.utils.allele import derive_alt_from_diploid
+from allelix.utils.allele import complement, derive_alt_from_diploid
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -57,6 +57,50 @@ _SUMMARY_SUPPRESS_SUBSTRINGS: tuple[str, ...] = (
     "wrong strand",
     "orientation uncertain",
 )
+
+_PALINDROMIC_SITE_ALLELES: frozenset[frozenset[str]] = frozenset(
+    {frozenset({"A", "T"}), frozenset({"C", "G"})}
+)
+
+
+def _site_is_palindromic(rows: list[tuple]) -> bool:
+    """Return whether all genotype rows identify an A/T or C/G SNP."""
+    alleles = {
+        allele
+        for row in rows
+        for allele in row[:2]
+        if len(allele) == 1 and allele in {"A", "C", "G", "T"}
+    }
+    return frozenset(alleles) in _PALINDROMIC_SITE_ALLELES
+
+
+def _forward_genotype(
+    allele1: str,
+    allele2: str,
+    orientation: str | None,
+) -> tuple[str, str]:
+    """Return a SNPedia genotype normalized to the reference-forward strand."""
+    if orientation == "minus":
+        allele1, allele2 = complement(allele1), complement(allele2)
+    return (allele1, allele2) if allele1 <= allele2 else (allele2, allele1)
+
+
+def _matching_forward_genotype(
+    sorted_user_alleles: tuple[str, str],
+    allele1: str,
+    allele2: str,
+    orientation: str | None,
+    *,
+    site_is_palindromic: bool,
+) -> tuple[str, str] | None:
+    """Return the normalized genotype if this SNPedia row safely matches."""
+    normalized_orientation = (orientation or "").strip().lower()
+    if normalized_orientation not in {"plus", "minus"}:
+        if site_is_palindromic:
+            return None
+        normalized_orientation = "plus"
+    forward = _forward_genotype(allele1, allele2, normalized_orientation)
+    return forward if forward == sorted_user_alleles else None
 
 
 class SNPediaAnnotator(Annotator):
@@ -237,14 +281,24 @@ class SNPediaAnnotator(Annotator):
 
         conn = self._connection()
         rows = conn.execute(
-            "SELECT allele1, allele2, magnitude, repute, summary, gene "
+            "SELECT allele1, allele2, magnitude, repute, summary, gene, orientation "
             "FROM snpedia_genotypes "
-            "WHERE rsid = ? AND allele1 = ? AND allele2 = ?",
-            (snp_id, sorted_alleles[0], sorted_alleles[1]),
+            "WHERE rsid = ?",
+            (snp_id,),
         ).fetchall()
+        site_is_palindromic = _site_is_palindromic(rows)
 
         annotations: list[Annotation] = []
-        for allele1, allele2, magnitude, repute, summary, gene in rows:
+        for allele1, allele2, magnitude, repute, summary, gene, orientation in rows:
+            forward_genotype = _matching_forward_genotype(
+                sorted_alleles,
+                allele1,
+                allele2,
+                orientation,
+                site_is_palindromic=site_is_palindromic,
+            )
+            if forward_genotype is None:
+                continue
             if not summary:
                 continue
 
@@ -259,7 +313,8 @@ class SNPediaAnnotator(Annotator):
             category = _REPUTE_CATEGORY.get(repute_lower, "trait")
 
             description = f"SNPedia: {summary}"
-            genotype_match = f"{allele1}{allele2}"
+            forward_allele1, forward_allele2 = forward_genotype
+            genotype_match = f"{forward_allele1}{forward_allele2}"
 
             annotations.append(
                 Annotation(
@@ -273,7 +328,11 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(variant.ref, allele1, allele2),
+                    alt=derive_alt_from_diploid(
+                        variant.ref,
+                        forward_allele1,
+                        forward_allele2,
+                    ),
                 )
             )
 
@@ -322,7 +381,8 @@ class SNPediaAnnotator(Annotator):
             chunk = rsids[start : start + _BATCH_CHUNK]
             placeholders = ",".join("?" * len(chunk))
             cursor = conn.execute(
-                f"SELECT rsid, allele1, allele2, magnitude, repute, summary, gene "
+                f"SELECT rsid, allele1, allele2, magnitude, repute, summary, gene, "
+                f"orientation "
                 f"FROM snpedia_genotypes WHERE rsid IN ({placeholders})",
                 chunk,
             )
@@ -333,8 +393,16 @@ class SNPediaAnnotator(Annotator):
             rows = rows_by_rsid.get(snp_id)
             if not rows:
                 continue
-            for allele1, allele2, magnitude, repute, summary, gene in rows:
-                if (allele1, allele2) != sorted_alleles:
+            site_is_palindromic = _site_is_palindromic(rows)
+            for allele1, allele2, magnitude, repute, summary, gene, orientation in rows:
+                forward_genotype = _matching_forward_genotype(
+                    sorted_alleles,
+                    allele1,
+                    allele2,
+                    orientation,
+                    site_is_palindromic=site_is_palindromic,
+                )
+                if forward_genotype is None:
                     continue
                 if not summary:
                     continue
@@ -346,7 +414,8 @@ class SNPediaAnnotator(Annotator):
                 repute_lower = (repute or "").strip().lower()
                 category = _REPUTE_CATEGORY.get(repute_lower, "trait")
                 description = f"SNPedia: {summary}"
-                genotype_match = f"{allele1}{allele2}"
+                forward_allele1, forward_allele2 = forward_genotype
+                genotype_match = f"{forward_allele1}{forward_allele2}"
                 yield Annotation(
                     source=self.name,
                     rsid=variant.rsid,
@@ -358,5 +427,9 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(variant.ref, allele1, allele2),
+                    alt=derive_alt_from_diploid(
+                        variant.ref,
+                        forward_allele1,
+                        forward_allele2,
+                    ),
                 )

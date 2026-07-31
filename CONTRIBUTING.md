@@ -250,6 +250,7 @@ Create `tests/parsers/test_vendorname.py`:
 ```python
 from allelix.parsers.vendorname import VendorNameParser
 
+
 class TestCanParse:
     def test_recognizes_vendor_format(self, tmp_path):
         f = tmp_path / "sample.txt"
@@ -260,6 +261,7 @@ class TestCanParse:
         f = tmp_path / "other.txt"
         f.write_text("# OtherVendor\ndata\n")
         assert not VendorNameParser().can_parse(f)
+
 
 class TestParse:
     def test_yields_variants(self, tmp_path):
@@ -343,8 +345,7 @@ class MyDBAnnotator(Annotator):
             return []
         conn = self._connection()
         rows = conn.execute(
-            "SELECT alt, significance, condition, gene "
-            "FROM mydb_variants WHERE rsid = ?",
+            "SELECT alt, significance, condition, gene FROM mydb_variants WHERE rsid = ?",
             (variant.rsid,),
         ).fetchall()
 
@@ -373,8 +374,7 @@ class MyDBAnnotator(Annotator):
         db_path = self.data_dir / "mydb.sqlite"
         return db_path.exists()
 
-    def version(self) -> str | None:
-        ...
+    def version(self) -> str | None: ...
 
     def close(self) -> None:
         if self._conn is not None:
@@ -446,8 +446,10 @@ ruff check allelix/annotators/mydb.py tests/annotators/test_mydb.py
   (`clinvar_pathogenic`, not `pathogenic`).
 - Reports never assert significance directly. They attribute: "ClinVar
   classifies this as pathogenic", not "this is pathogenic."
-- The `data/` directory at project root is the local database cache.
-  It is gitignored and populated by `allelix db update`.
+- The resolved user data directory (default
+  `~/.local/share/allelix/`) holds the local database caches and
+  `config.toml`. It is populated by `allelix db update`; tests use
+  isolated temporary data directories.
 
 ## Hooks and CI
 
@@ -467,37 +469,40 @@ CI (`.github/workflows/ci.yml`) fires on:
 CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
 fixtures only) on a Python 3.11 / 3.12 matrix. `@slow` and
 `@integration`-marked tests auto-skip in CI because the runner doesn't
-have the ~1.5 GB real-genotype fixture set or the ~15 GB annotator
+have the ~1.5 GB real-genotype fixture set or the ~16 GB default annotator
 database cache — fetching either would push CI runtime past 45 minutes
 per push and burn GitHub Actions minutes that the local-run discipline
 already covers.
 
 ### Where the slow / real-data battery actually runs
 
-**Locally, at ship time, by the developer.** `GITHUB_WORKFLOW.md` Phase
-0c (the pre-Phase-1 gate) requires the full pytest suite + the real-data
-battery from `test_data/FULL_TEST_PROTOCOL.md` to pass against the dev
-tree before any squash. The reviewer asks for that report at ship time
-and blocks the release without it. That's the gate that catches real-data
-regressions; CI runs the fast checks, the ship procedure runs the
-expensive ones.
+The complete battery runs locally at ship time against the exact RC
+commit, following `test_data/FULL_TEST_PROTOCOL.md`. It includes the
+full pytest suite, fresh caches, both genome builds, all parser formats,
+and the GIAB / 1000 Genomes corpus. The reviewer posts the verification
+on the release PR and blocks the release without it.
 
-### Why we don't put the slow battery in CI
+`.github/workflows/slow.yml` also runs every Monday and by manual
+`workflow_dispatch`. It downloads a current ClinVar cache, executes the
+CLNSIG drift sentinel by exact node ID, emits JUnit XML, and fails unless
+that named test is present and passed; it then runs the slow + integration
+marker set. Every RC requires a manual dispatch against the same commit
+the local battery verified. An absent or skipped drift testcase is a
+release failure, not a green result.
 
-- The slow tests don't change on every commit. They only matter when
-  parser / annotator / exporter code changes or before a ship — both
-  cases are already covered by the local-run discipline.
-- A 45-minute CI run per push-to-main would burn ~225 minutes/month for
-  zero new signal beyond what the ship gate already produces.
-- The two failure modes CI-on-slow-tests would defend against —
-  developer forgets to run locally, or a mid-cycle regression goes
-  unnoticed until ship — are both caught at Phase 0c, which is enforced
-  by the reviewer.
+### Why the complete real-data battery is not in per-push CI
 
-When in doubt, you can manually fire the existing CI workflow against
-any branch via `gh workflow run ci.yml --ref <branch>` or the "Run
-workflow" button in the Actions UI. The fast suite catches everything
-CI is supposed to catch.
+- The large public-genome corpus and all production-size caches exceed
+  a practical per-push Actions budget.
+- Weekly/on-demand `slow.yml` catches live-source drift and integration
+  regressions between releases.
+- The local RC protocol supplies the larger, build-paired end-to-end
+  signal and is reviewer-enforced before tagging.
+
+To fire the release slow gate, run
+`gh workflow run slow.yml --ref <release-branch>` and confirm the
+resulting run's `headSha` equals the RC commit. The ordinary fast gate
+can still be dispatched with `gh workflow run ci.yml --ref <branch>`.
 
 ### Release-content discipline: no drift-vulnerable counts without a snapshot caveat
 
@@ -545,7 +550,9 @@ freely:
 - **Same-sample superset**: gVCF analyze output is a strict
   superset of the GIAB benchmark output at default magnitude
   filter — `0 missing` is the pass condition.
-- **Wrong-allele safety**: 0 via-complement CADD scores.
+- **Wrong-allele safety**: a non-zero GRCh38 direct-match CADD
+  denominator, 0 non-direct CADD scores, and 0 gnomAD /
+  AlphaMissense / CADD values on GRCh37 input.
 - **Harness invariants**: vocabulary union holds, floor counts
   cleared, spot-checks on published HG002 carriers (rs1801133 /
   rs7412 / rs2010963 / rs6025) pass.
@@ -558,7 +565,7 @@ release-content drafts before publishing.
 
 ### Output-contract schema bumps
 
-Allelix ships three output contracts and each one has its own
+Allelix ships two versioned output contracts and each one has its own
 independent schema version. A change to one contract does not
 implicitly bump the others — the schemas evolve on independent axes
 so consumers of one format aren't forced to re-validate when only

@@ -33,6 +33,7 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 repute TEXT,
                 summary TEXT,
                 gene TEXT,
+                orientation TEXT,
                 scraped_at TEXT
             );
             CREATE INDEX idx_snpedia_rsid_alleles
@@ -56,6 +57,7 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 "Good",
                 "Common genotype: normal homocysteine levels",
                 "MTHFR",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
             (
@@ -66,6 +68,7 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 "Bad",
                 "1 copy of C677T allele of MTHFR",
                 "MTHFR",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
             (
@@ -76,6 +79,7 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 "Bad",
                 "homozygous C677T of MTHFR",
                 "MTHFR",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
             (
@@ -86,9 +90,20 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 None,
                 "Intermediate dopamine levels",
                 "COMT",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
-            ("rs9999999", "A", "A", 0.0, "Good", None, None, "2026-05-20T00:00:00"),
+            (
+                "rs9999999",
+                "A",
+                "A",
+                0.0,
+                "Good",
+                None,
+                None,
+                "plus",
+                "2026-05-20T00:00:00",
+            ),
             (
                 "rs52820871",
                 "G",
@@ -97,6 +112,7 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 "Good",
                 "common genotype",
                 "TNFRSF13B",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
             (
@@ -107,14 +123,26 @@ def snpedia_data_dir(tmp_path: Path) -> Path:
                 "Bad",
                 "TACI variant",
                 "TNFRSF13B",
+                "plus",
                 "2026-05-20T00:00:00",
             ),
-            ("i3000001", "A", "G", 4.0, "Bad", "CF carrier", "CFTR", "2026-05-20T00:00:00"),
+            (
+                "i3000001",
+                "A",
+                "G",
+                4.0,
+                "Bad",
+                "CF carrier",
+                "CFTR",
+                "plus",
+                "2026-05-20T00:00:00",
+            ),
         ]
         conn.executemany(
             "INSERT INTO snpedia_genotypes "
-            "(rsid, allele1, allele2, magnitude, repute, summary, gene, scraped_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(rsid, allele1, allele2, magnitude, repute, summary, gene, "
+            "orientation, scraped_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             genotypes,
         )
         conn.execute(
@@ -416,6 +444,118 @@ class TestAnnotateGenotype:
         assert results[0].genotype_match == "CT"
         ann.close()
 
+    def test_minus_orientation_normalizes_genotype_and_alt(self, snpedia_data_dir: Path) -> None:
+        """rs1801133 is stored by SNPedia on minus; forward G/A must match C/T."""
+        db_path = snpedia_data_dir / "snpedia.sqlite"
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE snpedia_genotypes SET orientation = 'minus' WHERE rsid = 'rs1801133'"
+            )
+            conn.commit()
+        ann = SNPediaAnnotator(snpedia_data_dir)
+        v = Variant(
+            rsid="rs1801133",
+            chromosome="1",
+            position=11796321,
+            allele1="A",
+            allele2="G",
+            ref="G",
+        )
+        results = ann.annotate(v)
+        assert len(results) == 1
+        assert results[0].description == "SNPedia: 1 copy of C677T allele of MTHFR"
+        assert results[0].genotype_match == "AG"
+        assert results[0].alt == "A"
+        assert list(ann.batch_annotate([v])) == results
+        ann.close()
+
+    def test_unknown_orientation_palindrome_abstains_for_homozygote(
+        self, snpedia_data_dir: Path
+    ) -> None:
+        """Unknown A/T orientation cannot distinguish source AA from forward TT."""
+        db_path = snpedia_data_dir / "snpedia.sqlite"
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.executemany(
+                "INSERT INTO snpedia_genotypes "
+                "(rsid, allele1, allele2, magnitude, repute, summary, gene, "
+                "orientation, scraped_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        "rs10127939",
+                        "A",
+                        "A",
+                        1.0,
+                        "Bad",
+                        "source AA",
+                        None,
+                        None,
+                        "2026-05-20T00:00:00",
+                    ),
+                    (
+                        "rs10127939",
+                        "T",
+                        "T",
+                        2.0,
+                        "Bad",
+                        "source TT",
+                        None,
+                        None,
+                        "2026-05-20T00:00:00",
+                    ),
+                ],
+            )
+            conn.commit()
+        ann = SNPediaAnnotator(snpedia_data_dir)
+        v = Variant("rs10127939", "9", 1, "A", "A")
+        assert ann.annotate(v) == []
+        assert list(ann.batch_annotate([v])) == []
+        ann.close()
+
+    def test_known_minus_orientation_resolves_palindromic_homozygote(
+        self, snpedia_data_dir: Path
+    ) -> None:
+        """Explicit minus metadata safely maps source TT to forward AA."""
+        db_path = snpedia_data_dir / "snpedia.sqlite"
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.executemany(
+                "INSERT INTO snpedia_genotypes "
+                "(rsid, allele1, allele2, magnitude, repute, summary, gene, "
+                "orientation, scraped_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        "rs10127939",
+                        "A",
+                        "A",
+                        1.0,
+                        "Bad",
+                        "source AA",
+                        None,
+                        "minus",
+                        "2026-05-20T00:00:00",
+                    ),
+                    (
+                        "rs10127939",
+                        "T",
+                        "T",
+                        2.0,
+                        "Bad",
+                        "source TT",
+                        None,
+                        "minus",
+                        "2026-05-20T00:00:00",
+                    ),
+                ],
+            )
+            conn.commit()
+        ann = SNPediaAnnotator(snpedia_data_dir)
+        v = Variant("rs10127939", "9", 1, "A", "A")
+        results = ann.annotate(v)
+        assert len(results) == 1
+        assert results[0].description == "SNPedia: source TT"
+        assert results[0].genotype_match == "AA"
+        assert list(ann.batch_annotate([v])) == results
+        ann.close()
+
 
 class TestADR0023HomRefSuppression:
     """ADR-0023: suppress SNPedia disease claims when user is hom-ref per ClinVar."""
@@ -481,7 +621,7 @@ class TestSummarySuppressionFilter:
         db_path = snpedia_data_dir / "snpedia.sqlite"
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
-                "INSERT INTO snpedia_genotypes VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO snpedia_genotypes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "rs1064651",
                     "C",
@@ -490,6 +630,7 @@ class TestSummarySuppressionFilter:
                     "Bad",
                     "Gaucher disease, but more likely a mis-oriented interpretation",
                     "GBA",
+                    "plus",
                     "2026-05-20T00:00:00",
                 ),
             )

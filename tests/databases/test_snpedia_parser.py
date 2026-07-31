@@ -132,7 +132,12 @@ class TestParseRawPages:
             parse_raw_pages(str(db))
 
     def test_parse_basic_genotype(self, tmp_path):
-        snp_pages = [("Rs1801133", "{{rsnum\n|Gene=MTHFR\n}}")]
+        snp_pages = [
+            (
+                "Rs1801133",
+                "{{rsnum\n|Gene=MTHFR\n|Orientation=plus\n|StabilizedOrientation=minus\n}}",
+            )
+        ]
         genotype_pages = [
             (
                 "Rs1801133(C;T)",
@@ -146,7 +151,7 @@ class TestParseRawPages:
 
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             row = conn.execute("SELECT * FROM snpedia_genotypes").fetchone()
-            rsid, a1, a2, mag, repute, summary, gene, _ = row
+            rsid, a1, a2, mag, repute, summary, gene, orientation, _ = row
             assert rsid == "rs1801133"
             assert a1 == "C"
             assert a2 == "T"
@@ -154,6 +159,46 @@ class TestParseRawPages:
             assert repute == "Bad"
             assert summary == "1 copy of C677T"
             assert gene == "MTHFR"
+            assert orientation == "minus"
+
+    def test_orientation_falls_back_and_normalizes(self, tmp_path):
+        snp_pages = [("Rs100", "{{rsnum|Orientation= PLUS }}")]
+        genotype_pages = [
+            ("Rs100(A;G)", "{{Genotype|allele1=A|allele2=G|summary=test}}"),
+        ]
+        db_path = _make_db(tmp_path, snp_pages=snp_pages, genotype_pages=genotype_pages)
+        parse_raw_pages(db_path)
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            assert (
+                conn.execute("SELECT orientation FROM snpedia_genotypes").fetchone()[0] == "plus"
+            )
+
+    def test_unknown_orientation_stored_as_null(self, tmp_path):
+        snp_pages = [("Rs100", "{{rsnum|StabilizedOrientation=unknown}}")]
+        genotype_pages = [
+            ("Rs100(A;G)", "{{Genotype|allele1=A|allele2=G|summary=test}}"),
+        ]
+        db_path = _make_db(tmp_path, snp_pages=snp_pages, genotype_pages=genotype_pages)
+        parse_raw_pages(db_path)
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            assert conn.execute("SELECT orientation FROM snpedia_genotypes").fetchone()[0] is None
+
+    def test_reparse_migrates_old_structured_schema(self, tmp_path):
+        genotype_pages = [
+            ("Rs100(A;G)", "{{Genotype|allele1=A|allele2=G|summary=test}}"),
+        ]
+        db_path = _make_db(tmp_path, genotype_pages=genotype_pages)
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE snpedia_genotypes "
+                "(rsid TEXT, allele1 TEXT, allele2 TEXT, magnitude REAL, "
+                "repute TEXT, summary TEXT, gene TEXT, scraped_at TEXT)"
+            )
+            conn.commit()
+        assert parse_raw_pages(db_path) == 1
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(snpedia_genotypes)")}
+            assert "orientation" in columns
 
     def test_allele_sorting(self, tmp_path):
         genotype_pages = [

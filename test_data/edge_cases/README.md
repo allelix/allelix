@@ -39,17 +39,17 @@ what it tests, and the expected parser behavior.
 - **What it is:** An FTDNA file with chromosomal positions on the GRCh36
   reference, not GRCh37. FTDNA files don't carry a build declaration in any
   header, so the parser has no in-band signal to distinguish builds.
-- **What it tests:** A known limitation tracked as roadmap item R-12.
-  FTDNA's `build_detect` probe table has GRCh37/38 entries but the v1.1.0
-  P-B GRCh36 addition isn't wired into the FTDNA path (FTDNA has no header
-  at all). Until R-12 lands, this file is silently labeled as GRCh37 even
-  though its positions are GRCh36.
-- **Expected behavior (current):** `allelix stats` reports `Build: GRCh37`
-  (incorrect but documented). Annotations work for rsID-only sources
-  (PharmGKB/GWAS/SNPedia) but ClinVar dispatches by build and produces
-  zero rows.
-- **Expected behavior (post-R-12):** `Build: GRCh36` detected from
-  positions, with the GRCh36 unsupported-database warning fired.
+- **What it tests:** The analysis pipeline's position detector recognizes
+  GRCh36 even though the parser itself has only its GRCh37 default. It also
+  pins the unsupported-modern-cache warning path.
+- **Expected behavior:** The file's 3/4 GRCh36 vote is below the 80%
+  confidence threshold, so `allelix analyze` reports that the position data
+  tentatively favors GRCh36. ADR-0025's safety exception nevertheless uses
+  GRCh36 and warns that ClinVar and the GRCh38-only enrichment sources
+  (gnomAD, AlphaMissense, CADD) are unavailable. rsID-keyed ClinPGx, GWAS
+  Catalog, and SNPedia annotations can still fire. `allelix stats` continues
+  to show the parser default because it does not run position-based build
+  detection.
 
 ### `unsupported_decodeme.txt`
 - **Source:** openSNP user3400, file 2218. Provenance: CC0.
@@ -68,11 +68,11 @@ what it tests, and the expected parser behavior.
 - **License:** Released CC-BY by the family (2013); described as CC0 in
   the 2015 paper. Attributed here to satisfy CC-BY.
 - **What it is:** Whole-exome variant calls (~115k variants) from a
-  GATK HaplotypeCaller pipeline. VCF format, not supported by Allelix
-  v1.x (VCF is on the v2 roadmap).
-- **What it tests:** Unsupported format rejected cleanly even when the
-  filename suggests it might be 23andMe.
-- **Expected behavior:** `allelix stats` returns `Error: No parser recognized`.
+  GATK HaplotypeCaller pipeline. The `unsupported_` prefix records its v1.x
+  history; VCF support shipped later and the fixture name remains stable.
+- **What it tests:** Content-based VCF recognition even when the filename
+  misleadingly suggests a 23andMe text export.
+- **Expected behavior:** `allelix stats` recognizes VCF and prints statistics.
 - **Note:** This is the only named-individual dataset in the repo. The
   Corpas family deliberately released their genomic data to the public.
   Replacement with a synthetic or fully anonymous exome VCF is tracked

@@ -12,8 +12,9 @@ The detection table holds authoritative (chromosome, 1-based position)
 pairs for all three builds (GRCh36, GRCh37, GRCh38) across ~10 SNPs
 spread over chromosomes 1, 10, 11, 12, 17, 19, and 22. Each entry's positions
 differ by tens of thousands to millions of bases — there is no
-ambiguity. A single matched rsID identifies the build; multiple are
-confirmatory.
+coordinate ambiguity. A single matched rsID identifies a candidate build,
+but ADR-0037 requires three concordant seeds before that candidate may
+override other build signals.
 
 Position data is normative; headers are not.
 """
@@ -110,6 +111,7 @@ KNOWN_SNP_POSITIONS: dict[str, dict[str, tuple[str, int]]] = {
 
 
 _MIN_CONFIDENT_MATCHES = 3
+_MIN_CONFIDENT_RATIO = 0.8
 
 
 class BuildDetectionResult(NamedTuple):
@@ -121,7 +123,8 @@ class BuildDetectionResult(NamedTuple):
     found in the input (regardless of which build their positions
     matched). When `matched < inspected` the file is internally
     inconsistent (e.g., one rsID matches GRCh37, another matches
-    GRCh38) — surface a warning but pick the majority.
+    GRCh38). The majority is authoritative only when ``is_confident``;
+    otherwise callers surface diagnostics and retain their fallback build.
     """
 
     build: str | None
@@ -130,14 +133,18 @@ class BuildDetectionResult(NamedTuple):
 
     @property
     def is_confident(self) -> bool:
-        """True iff enough rsIDs matched and all matches agreed.
+        """True iff enough rsIDs matched and the winning ratio is at least 80%.
 
         Requires at least ``_MIN_CONFIDENT_MATCHES`` (3) concordant
-        positions before declaring confident. A single-SNP match
-        could be a table error; three concordant matches across
-        different chromosomes eliminates that risk.
+        positions before declaring confident. ``_MIN_CONFIDENT_RATIO``
+        tolerates one stale or repositioned seed once the majority is
+        strong enough, while a 3/4 vote remains below threshold.
         """
-        return self.matched >= _MIN_CONFIDENT_MATCHES and self.matched == self.inspected
+        return (
+            self.inspected > 0
+            and self.matched >= _MIN_CONFIDENT_MATCHES
+            and self.matched / self.inspected >= _MIN_CONFIDENT_RATIO
+        )
 
 
 def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:

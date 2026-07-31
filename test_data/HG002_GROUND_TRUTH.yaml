@@ -128,6 +128,7 @@ analyze:
     allowed_significance_patterns:
       - "^clinvar_[a-z_]+$"
       - "^pharmgkb_loe_[0-9a-z]+$"
+      - "^snpedia_bad$"
     must_have_condition: true
     note: "MTHFR C677T is in both ClinVar (drug response — methotrexate) and PharmGKB (multiple LoE annotations). Multi-row by design. HG002 is a het carrier, so the variant appears as a non-ref call in both benchmarks and surfaces in both."
 
@@ -229,11 +230,11 @@ floors:
     file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
     build: grch37
     total_annotations_mag_0_min: 8        # observed 11; tight floor on tiny dataset
-    written_annotations_mag_0_min: 4      # observed 6
-    unique_dedup_keys_min: 4              # observed 6
+    written_annotations_mag_0_min: 1      # observed 1 after cross-build guard removed false positives
+    unique_dedup_keys_min: 1              # observed 1; the sole correctly anchored GRCh37 hit
     default_filter_written_min: 3         # observed 5
     expected_build_detection: "GRCh37 (override)"
-    note: "Tiny dataset — totals are in single/double digits. A drop below floor on this file is a serious signal; do not ratchet down without root-cause classification."
+    note: "Tiny dataset. The v2.3.1 recalibration classified all three removed rsIDs as GRCh38-coordinate coincidences in this GRCh37 file; rs2280789 is the sole correctly anchored hit. Do not lower again without equivalent coordinate-level classification."
 
 # Cross-cutting invariants on every analyze output.
 universal:

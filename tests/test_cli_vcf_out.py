@@ -211,12 +211,10 @@ class TestBcftoolsRoundTrip:
         """``bcftools view`` on the annotated output exits 0 with no
         errors on stderr and no warnings caused by the writer.
 
-        Pre-existing fixture noise (mock_vcf.vcf declares only
-        ``##contig=1,22`` but carries data on chroms 17 / 19) surfaces
-        as ``Contig 'X' is not defined in the header`` warnings from
-        bcftools — those are an input-header issue, not a writer
-        regression, and are filtered here so this test catches only
-        writer-introduced warnings.
+        The input fixture deliberately carries raw data on more contigs
+        than it declares, including mixed bare / ``chr`` spellings. The
+        writer must synthesize declarations for every emitted raw CHROM
+        value so bcftools accepts the output without warnings.
         """
         out = tmp_path / "annotated.vcf"
         runner = CliRunner(env={"COLUMNS": "200"})
@@ -237,11 +235,7 @@ class TestBcftoolsRoundTrip:
             f"bcftools view exited {proc.returncode}\n"
             f"stderr: {proc.stderr}\nstdout head: {proc.stdout[:400]}"
         )
-        significant_lines = [
-            line
-            for line in proc.stderr.splitlines()
-            if line.strip() and "is not defined in the header" not in line
-        ]
+        significant_lines = [line for line in proc.stderr.splitlines() if line.strip()]
         assert not significant_lines, (
             f"bcftools view emitted writer-attributable issues: {significant_lines}"
         )

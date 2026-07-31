@@ -22,7 +22,8 @@ verification.
   canonical-header tightening, P-B GRCh36 position detection, MHG/Tempus
   build-mismatch warning, unsupported formats). Documented in
   `edge_cases/README.md`.
-- **`databases/`** — Pinned annotator databases. **Gitignored** (~15 GB).
+- **`databases/`** — Pinned annotator databases. **Gitignored** (~16 GB
+  without the optional CADD cache; ~22 GB with it).
   Restore via `allelix db update --data-dir test_data/databases`.
 
 ## Directory layout
@@ -59,9 +60,10 @@ formats.
 | Corpas family exome VCF (edge_cases/unsupported_23andme_exome_vcf.txt) | CC-BY / CC0 (see [Corpas et al. 2015](https://doi.org/10.1186/s12864-015-1973-7)) | Deliberately public-released by subjects. Attributed to satisfy CC-BY. |
 | ClinVar (in databases/) | NCBI public domain | Restore via `allelix db update`. |
 | GWAS Catalog (in databases/) | NCBI/EBI public domain | Same. |
-| PharmGKB (in databases/) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) | Attribution required if reports are redistributed. |
-| gnomAD (in databases/) | [ODbL](https://opendatacommons.org/licenses/odbl/1-0/) | Attribution required. |
-| AlphaMissense (in databases/) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Attribution required. |
+| ClinPGx (formerly PharmGKB; in databases/) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) | Attribution required if reports are redistributed. |
+| gnomAD (in databases/) | [ODbL](https://opendatacommons.org/licenses/odbl/1-0/) | Attribution required. GRCh38-only enrichment. |
+| AlphaMissense (in databases/) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Attribution required. GRCh38-only enrichment. |
+| CADD (optional; in databases/) | [CADD license](https://cadd.gs.washington.edu/license) | Non-commercial by default; GRCh38-only enrichment. Not part of the default pinned set. |
 | SNPedia (in databases/) | [CC BY-NC-SA 3.0 US](https://creativecommons.org/licenses/by-nc-sa/3.0/us/) | Non-commercial only. Baselines here are generated with `--exclude-snpedia` so no SNPedia content reaches `baselines/`. |
 
 ## Pinned database versions (for regression testing)
@@ -69,7 +71,7 @@ formats.
 ```
 clinvar.GRCh37.sqlite   2026-05-30
 clinvar.GRCh38.sqlite   2026-05-30
-pharmgkb.sqlite         2026-06-05
+pharmgkb.sqlite         2026-06-05  (ClinPGx; legacy cache filename)
 gwas.sqlite             2026-06-05
 gnomad.sqlite           2026-06-05
 alphamissense.sqlite    2026-06-05
@@ -98,6 +100,8 @@ allelix analyze $TD/real/23andme/user1190_v5.txt  --data-dir $DB --exclude-snped
 allelix analyze $TD/real/livingdna/user1190.csv   --data-dir $DB --exclude-snpedia --output $B/user1190_livingdna_analyze.json
 allelix analyze $TD/real/myheritage/user1190.csv  --data-dir $DB --exclude-snpedia --output $B/user1190_myheritage_analyze.json
 allelix analyze $TD/real/mhg/user1190.txt         --data-dir $DB --exclude-snpedia --output $B/user1190_mhg_analyze.json
+allelix analyze $TD/transcoded/user1190_as_ancestrydna.txt --data-dir $DB --exclude-snpedia --output $B/user1190_ancestrydna_analyze.json
+allelix analyze $TD/transcoded/user1190_as_ftdna.csv       --data-dir $DB --exclude-snpedia --output $B/user1190_ftdna_analyze.json
 allelix stats   $TD/real/mhg/user1190.txt                                                          > $B/user1190_mhg_stats.txt
 ```
 
@@ -110,7 +114,9 @@ regression set. Diff the full output, not a cherry-picked list.
 
 user1190 exists in 6 representations across `real/` and `transcoded/`. All
 six must produce identical annotation sets with the pinned databases
-(currently 358 annotations each with `--exclude-snpedia`).
+(209 annotations each with `--exclude-snpedia` on v2.3.1 correctness code,
+using the 2026-07-23 GWAS Catalog snapshot). The exact count may move with a
+new pinned database snapshot; cross-format identity is the invariant.
 
 ### Edge cases
 
@@ -124,11 +130,14 @@ six must produce identical annotation sets with the pinned databases
   Good service exports in 23andMe format. Auto-detect correctly identifies
   it as 23andMe.
 - `edge_cases/ftdna_grch36_positions.csv` — FTDNA file with GRCh36
-  coordinates. The FTDNA parser has no in-band build signal, so the file is
-  silently labeled GRCh37 (tracked as roadmap item R-12).
+  coordinates. Its 3/4 vote is tentative, but `allelix analyze` uses the
+  GRCh36 fail-safe and warns that modern position-keyed caches are
+  unavailable; `allelix stats` reports the parser's GRCh37 default because
+  it does not run the analysis pipeline's position detector.
 - `edge_cases/unsupported_decodeme.txt` and `unsupported_23andme_exome_vcf.txt`
-  — files in formats Allelix does not support. Auto-detect should return
-  "no parser recognized" cleanly.
+  — deCODEme remains unsupported. The historically named 23andMe exome file
+  is now recognized as VCF; its filename predates VCF support and is retained
+  for fixture continuity.
 
 ## Adding new files
 

@@ -137,6 +137,54 @@ class TestDetectBuild:
         assert result.build == BUILD_GRCH36
         assert result.matched == 3
         assert result.inspected == 4
+        assert not result.is_confident
+
+    def test_four_of_five_majority_is_confident(self):
+        """One noisy seed is tolerated once the winning ratio reaches 80%."""
+        rsids = list(KNOWN_SNP_POSITIONS)
+        variants = [_v(rsid, *KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH38]) for rsid in rsids[:4]]
+        noisy_rsid = rsids[4]
+        variants.append(
+            _v(
+                noisy_rsid,
+                KNOWN_SNP_POSITIONS[noisy_rsid][BUILD_GRCH38][0],
+                99_999_999,
+            )
+        )
+        result = detect_build(variants)
+        assert result.build == BUILD_GRCH38
+        assert result.matched == 4
+        assert result.inspected == 5
+        assert result.is_confident
+
+    def test_three_of_four_majority_is_below_confidence_ratio(self):
+        """Three matches meet the count floor but 75% is below threshold."""
+        rsids = list(KNOWN_SNP_POSITIONS)
+        variants = [_v(rsid, *KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH38]) for rsid in rsids[:3]]
+        noisy_rsid = rsids[3]
+        variants.append(
+            _v(
+                noisy_rsid,
+                KNOWN_SNP_POSITIONS[noisy_rsid][BUILD_GRCH38][0],
+                99_999_999,
+            )
+        )
+        result = detect_build(variants)
+        assert result.build == BUILD_GRCH38
+        assert result.matched == 3
+        assert result.inspected == 4
+        assert not result.is_confident
+
+    def test_two_of_two_remains_below_minimum_match_count(self):
+        """A unanimous two-seed sample must not override other build signals."""
+        variants = [
+            _v(rsid, *KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH38])
+            for rsid in list(KNOWN_SNP_POSITIONS)[:2]
+        ]
+        result = detect_build(variants)
+        assert result.build == BUILD_GRCH38
+        assert result.matched == result.inspected == 2
+        assert not result.is_confident
 
 
 class TestNormalizeBuildLabel:

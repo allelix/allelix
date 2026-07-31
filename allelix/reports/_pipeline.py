@@ -66,8 +66,9 @@ class BuildDiagnostics:
     to GRCh37/GRCh38 via `normalize_build_label`; may be None if the
     header doesn't say or uses an unrecognized label).
 
-    `detected_build` is what position data says (None if no known SNPs
-    appeared in the input).
+    `detected_build` is the leading position-data signal (None if no
+    known SNPs appeared in the input). It may be tentative; consult
+    `position_confident` before describing it as authoritative.
 
     `effective_build` is what was actually used for annotation — either
     a CLI `--build` override, the detected build, or a fallback. Always
@@ -82,6 +83,10 @@ class BuildDiagnostics:
     build chose the answer, or when no chr-prefix signal was seen.
     Lets the CLI surface "inferred from chr-prefix" instead of the
     blind-default warning text.
+
+    `position_confident` records whether the position signal cleared
+    ADR-0037's minimum-match and winning-ratio thresholds. It is internal
+    pipeline provenance, not part of the versioned JSON report schema.
     """
 
     header_build: str | None
@@ -91,6 +96,7 @@ class BuildDiagnostics:
     matched_count: int
     inspected_count: int
     chr_prefix_inferred: bool = False
+    position_confident: bool = False
 
     @property
     def mismatch(self) -> bool:
@@ -570,7 +576,9 @@ def run_analysis(
             # as the ClinVar resolver: unique consistent (ref, alt) match
             # against the user's allele pair, abstain on ties.
             if gnomad is not None and gnomad.is_ready():
-                still_rsidless = [v for v in batch_buf if not v.rsid.startswith("rs")]
+                still_rsidless = [
+                    v for v in batch_buf if v.build == BUILD_GRCH38 and not v.rsid.startswith("rs")
+                ]
                 if still_rsidless:
                     positions = {
                         (v.chromosome, v.position)
@@ -603,11 +611,15 @@ def run_analysis(
             # whose rsID isn't in gnomAD keep ref=None and degrade
             # gracefully — direct-match-only with no strand-flip.
             if gnomad is not None and gnomad.is_ready():
-                need_ref = {v.rsid for v in batch_buf if v.ref is None and v.rsid.startswith("rs")}
+                need_ref = {
+                    v.rsid
+                    for v in batch_buf
+                    if v.build == BUILD_GRCH38 and v.ref is None and v.rsid.startswith("rs")
+                }
                 if need_ref:
                     coord_map = gnomad.bulk_resolve_coordinates(need_ref)
                     for v in batch_buf:
-                        if v.ref is None and v.rsid in coord_map:
+                        if v.build == BUILD_GRCH38 and v.ref is None and v.rsid in coord_map:
                             entries = coord_map[v.rsid]
                             # All multi-allelic rows at a position share the
                             # same REF; first entry's REF is canonical.
@@ -690,7 +702,7 @@ def run_analysis(
     # Annotation so GWAS rows can take the exact-alt path too — is
     # architectural and tracked for v2.1 (Variant.ref / per-annotation
     # allele tracking).
-    if gnomad is not None and gnomad.is_ready():
+    if diag.effective_build == BUILD_GRCH38 and gnomad is not None and gnomad.is_ready():
         exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
         exact_freq = gnomad.bulk_lookup_by_alt(exact_keys)
         for a in annotations:
@@ -713,7 +725,11 @@ def run_analysis(
                     if a.allele_frequency is None and a.rsid in resolved_coords:
                         a.allele_frequency = pos_freq.get(resolved_coords[a.rsid])
 
-    if alphamissense is not None and alphamissense.is_ready():
+    if (
+        diag.effective_build == BUILD_GRCH38
+        and alphamissense is not None
+        and alphamissense.is_ready()
+    ):
         exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
         exact_am = alphamissense.bulk_lookup_by_alt(exact_keys)
         for a in annotations:
@@ -737,21 +753,24 @@ def run_analysis(
                             a.am_pathogenicity, a.am_class = hit
 
     if cadd is not None and cadd.is_ready() and gnomad is not None and gnomad.is_ready():
-        if getattr(cadd, "_full_mode", False) and diag.effective_build != BUILD_GRCH38:
+        if diag.effective_build != BUILD_GRCH38:
             logging.getLogger(__name__).warning(
-                "CADD full mode requires GRCh38 coordinates; "
-                "detected %s — skipping CADD enrichment",
+                "CADD requires GRCh38 coordinates; detected %s — skipping CADD enrichment",
                 diag.effective_build,
             )
         else:
             _enrich_cadd(annotations, gnomad, cadd, resolved_coords=resolved_coords or None)
 
     annotators_used = [(a.name, a.version()) for a in annotators]
-    if gnomad is not None and gnomad.is_ready():
+    if diag.effective_build == BUILD_GRCH38 and gnomad is not None and gnomad.is_ready():
         annotators_used.append((gnomad.name, gnomad.version()))
-    if alphamissense is not None and alphamissense.is_ready():
+    if (
+        diag.effective_build == BUILD_GRCH38
+        and alphamissense is not None
+        and alphamissense.is_ready()
+    ):
         annotators_used.append((alphamissense.name, alphamissense.version()))
-    if cadd is not None and cadd.is_ready():
+    if diag.effective_build == BUILD_GRCH38 and cadd is not None and cadd.is_ready():
         annotators_used.append((cadd.name, cadd.version()))
 
     # GH #75: panel coverage derives genotyped rsIDs above (state 2+3
@@ -835,6 +854,7 @@ class _BuildDetectionState:
         # Effective build: starts as override (if given), else None until detection runs.
         self.effective: str | None = override
         self.detected: str | None = None
+        self.position_confident = False
         self.matched_count = 0
         self.inspected_count = 0
         self._buffer: list[Variant] = []
@@ -868,6 +888,7 @@ class _BuildDetectionState:
             if result.is_confident:
                 assert result.build is not None  # is_confident ⇒ build set
                 self.detected = result.build
+                self.position_confident = True
                 self.matched_count = result.matched
                 self.inspected_count = result.inspected
                 self.effective = result.build
@@ -882,7 +903,11 @@ class _BuildDetectionState:
                 self.detected = result.build
             self.matched_count = result.matched
             self.inspected_count = result.inspected
-            if result.build == BUILD_GRCH36:
+            self.position_confident = result.is_confident
+            if result.is_confident:
+                assert result.build is not None
+                self.effective = result.build
+            elif result.build == BUILD_GRCH36:
                 self.effective = BUILD_GRCH36
             else:
                 # Fallback priority matches `effective_build` property:
@@ -901,6 +926,7 @@ class _BuildDetectionState:
         # Detection never converged. Re-run on the full buffer to capture
         # partial counts even if not confident.
         result = detect_build(self._buffer)
+        self.position_confident = result.is_confident
         if result.is_confident:
             self.detected = result.build
             self.effective = result.build
@@ -934,7 +960,7 @@ class _BuildDetectionState:
         # ``effective_build`` property.
         chr_prefix_inferred = (
             self.override is None
-            and self.detected is None
+            and not self.position_confident
             and self.header_build is None
             and self.chr_prefix_observed
             and self.effective_build == BUILD_GRCH38
@@ -947,6 +973,7 @@ class _BuildDetectionState:
             matched_count=self.matched_count,
             inspected_count=self.inspected_count,
             chr_prefix_inferred=chr_prefix_inferred,
+            position_confident=self.position_confident,
         )
 
 

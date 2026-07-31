@@ -321,6 +321,66 @@ class TestRunAnalysis:
         assert ann._conns == {}
 
 
+class TestBuildDetectionMajority:
+    """ADR-0021 noise tolerance must control the effective build."""
+
+    @staticmethod
+    def _variant(rsid: str, build: str, *, noisy: bool = False) -> Variant:
+        chrom, pos = KNOWN_SNP_POSITIONS[rsid][build]
+        return Variant(
+            rsid=rsid,
+            chromosome=chrom,
+            position=99_999_999 if noisy else pos,
+            allele1="A",
+            allele2="A",
+        )
+
+    def test_four_of_five_overrides_disagreeing_header(self):
+        rsids = list(KNOWN_SNP_POSITIONS)
+        variants = [
+            self._variant(rsids[0], "GRCh38"),
+            self._variant(rsids[1], "GRCh38"),
+            self._variant(rsids[2], "GRCh38", noisy=True),
+            self._variant(rsids[3], "GRCh38"),
+            self._variant(rsids[4], "GRCh38"),
+        ]
+        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
+        emitted = []
+        for variant in variants:
+            ready, batch = state.feed(variant)
+            if ready:
+                emitted.extend(batch)
+        emitted.extend(state.flush())
+
+        assert state.effective_build == "GRCh38"
+        diagnostics = state.diagnostics()
+        assert diagnostics.position_confident is True
+        assert diagnostics.matched_count == 4
+        assert diagnostics.inspected_count == 5
+        assert {variant.build for variant in emitted} == {"GRCh38"}
+
+    def test_three_of_four_falls_back_to_header(self):
+        rsids = list(KNOWN_SNP_POSITIONS)
+        variants = [
+            self._variant(rsids[0], "GRCh38"),
+            self._variant(rsids[1], "GRCh38"),
+            self._variant(rsids[2], "GRCh38", noisy=True),
+            self._variant(rsids[3], "GRCh38"),
+        ]
+        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
+        for variant in variants:
+            state.feed(variant)
+        emitted = state.flush()
+
+        diagnostics = state.diagnostics()
+        assert diagnostics.detected_build == "GRCh38"
+        assert diagnostics.effective_build == BUILD_GRCH37
+        assert diagnostics.position_confident is False
+        assert diagnostics.matched_count == 3
+        assert diagnostics.inspected_count == 4
+        assert {variant.build for variant in emitted} == {BUILD_GRCH37}
+
+
 class TestGRCh36FlushFailSafe:
     """GRCh36 non-confident detection must use GRCh36 as effective build.
 
@@ -602,6 +662,163 @@ class TestGnomadEnrichment:
         result = run_analysis(mock_mhg_path, parser, [clinvar])
         assert all(a.allele_frequency is None for a in result.annotations)
         assert all(name != "gnomad" for name, _ in result.annotators_used)
+
+
+class TestGrch38OnlyEnrichmentGuards:
+    """GRCh38-only caches must never receive GRCh37 coordinates or alleles."""
+
+    def test_grch37_skips_all_enrichment_paths(self, tmp_path, monkeypatch) -> None:
+        """A real cross-build collision must not rewrite or enrich GRCh37 input.
+
+        In the production caches, GRCh37 chr6:26093236 G/A is rs1800758,
+        while that same numeric coordinate in GRCh38 is rs2113764416 A/G.
+        Before the cross-build guard, the gnomAD reverse resolver could rewrite an array probe
+        at the GRCh37 locus to the unrelated GRCh38 rsID. The second variant
+        pins the symmetric rsID→GRCh38-REF hazard used by strand matching.
+        """
+        from allelix.models import Variant
+
+        class StaticGrch37Parser:
+            name = "static-grch37"
+            display_name = "Static GRCh37"
+
+            def get_metadata(self, _file_path):
+                return {
+                    "format": self.name,
+                    "sample_id": "cross-build",
+                    "build": "GRCh37",
+                }
+
+            def parse(self, _file_path):
+                yield Variant(
+                    rsid="i-cross-build-probe",
+                    chromosome="6",
+                    position=26093236,
+                    allele1="G",
+                    allele2="A",
+                )
+                yield Variant(
+                    rsid="rs74315323",
+                    chromosome="1",
+                    position=145416614,
+                    allele1="G",
+                    allele2="T",
+                )
+
+        class SpyGnomad:
+            name = "gnomad"
+
+            def __init__(self):
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def is_ready(self):
+                return True
+
+            def version(self):
+                return "4.1"
+
+            def bulk_resolve_rsids_from_positions(self, positions):
+                self.calls.append(("reverse", positions))
+                return {
+                    ("6", 26093236): [
+                        ("A", "G", "rs2113764416"),
+                    ]
+                }
+
+            def bulk_resolve_coordinates(self, rsids):
+                self.calls.append(("coordinates", rsids))
+                return {
+                    "rs74315323": [
+                        ("1", 146018399, "C", "A"),
+                    ]
+                }
+
+            def bulk_lookup_by_alt(self, keys):
+                self.calls.append(("alt", keys))
+                return {}
+
+            def bulk_lookup_by_position(self, keys):
+                self.calls.append(("position", keys))
+                return {}
+
+        class SpyAlphaMissense:
+            name = "alphamissense"
+
+            def __init__(self):
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def is_ready(self):
+                return True
+
+            def version(self):
+                return "2023.2"
+
+            def bulk_lookup_by_alt(self, keys):
+                self.calls.append(("alt", keys))
+                return {}
+
+            def bulk_lookup_by_position(self, keys):
+                self.calls.append(("position", keys))
+                return {}
+
+        class SpyCadd:
+            name = "cadd"
+            _full_mode = False
+
+            def __init__(self):
+                self.calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def is_ready(self):
+                return True
+
+            def version(self):
+                return "v1.7"
+
+        cadd_enrichment_calls = []
+        monkeypatch.setattr(
+            "allelix.reports._pipeline._enrich_cadd",
+            lambda *_args, **_kwargs: cadd_enrichment_calls.append(True),
+        )
+
+        gnomad = SpyGnomad()
+        alphamissense = SpyAlphaMissense()
+        cadd = SpyCadd()
+        result = run_analysis(
+            tmp_path / "unused.txt",
+            StaticGrch37Parser(),
+            [],
+            gnomad=gnomad,
+            alphamissense=alphamissense,
+            cadd=cadd,
+            high_value_rsids={"rs2113764416"},
+        )
+
+        assert result.build == "GRCh37"
+        assert result.hv_variants == []
+        assert gnomad.calls == []
+        assert alphamissense.calls == []
+        assert cadd_enrichment_calls == []
+        assert {name for name, _version in result.annotators_used}.isdisjoint(
+            {"gnomad", "alphamissense", "cadd"}
+        )
 
 
 class TestAlphaMissenseEnrichment:

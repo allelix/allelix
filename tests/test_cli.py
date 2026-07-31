@@ -452,6 +452,53 @@ class TestDbCommands:
         # 13 records per build x 2 builds = 26 composite total.
         assert "26" in result.output
 
+    def test_db_update_only_clinvar_skips_every_other_source(self, tmp_path, monkeypatch):
+        """The slow sentinel can refresh ClinVar without pulling enrichment caches."""
+
+        class FakeAnnotator:
+            requires_download = True
+            server_driven_freshness = True
+
+            def __init__(self, name):
+                self.name = name
+                self.setup_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+            def is_ready(self):
+                return False
+
+            def setup(self):
+                self.setup_called = True
+
+            def version(self):
+                return "test"
+
+            def cached_remote_signal(self):
+                return None
+
+        clinvar = FakeAnnotator("clinvar")
+        gnomad = FakeAnnotator("gnomad")
+        monkeypatch.setattr(
+            "allelix.cli.db.get_annotators",
+            lambda *_args, **_kwargs: [clinvar, gnomad],
+        )
+
+        result = CliRunner().invoke(
+            main,
+            ["db", "update", "--data-dir", str(tmp_path), "--only", "clinvar"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert clinvar.setup_called is True
+        assert gnomad.setup_called is False
+        assert "clinvar ready" in result.output
+        assert "gnomad" not in result.output
+
     def test_db_update_with_file_url(
         self,
         tmp_path: Path,
@@ -2843,6 +2890,75 @@ class TestBuildDiagnosticsFallback:
 
         assert "Could not auto-detect" not in buf.getvalue()
 
+    def test_below_threshold_mismatch_reports_header_as_effective(self) -> None:
+        """A tentative position majority must not claim detection won."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from allelix.cli import _helpers
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        diag = BuildDiagnostics(
+            header_build="GRCh37",
+            detected_build="GRCh38",
+            effective_build="GRCh37",
+            override=False,
+            matched_count=3,
+            inspected_count=4,
+        )
+
+        class _R:
+            build_diagnostics = diag
+
+        buf = StringIO()
+        original = _helpers.console
+        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        try:
+            _helpers._emit_build_diagnostics(_R())
+        finally:
+            _helpers.console = original
+
+        output = " ".join(buf.getvalue().split())
+        assert "Build: GRCh37 (header (position signal below confidence)" in output
+        assert "position data tentatively favors GRCh38" in output
+        assert "Using GRCh37" in output
+        assert "Using GRCh38" not in output
+
+    def test_tentative_signal_matching_fallback_is_not_called_detected(self) -> None:
+        """A 2/2 signal may coincide with GRCh37 fallback without choosing it."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from allelix.cli import _helpers
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        diag = BuildDiagnostics(
+            header_build=None,
+            detected_build="GRCh37",
+            effective_build="GRCh37",
+            override=False,
+            matched_count=2,
+            inspected_count=2,
+            position_confident=False,
+        )
+
+        class _R:
+            build_diagnostics = diag
+
+        buf = StringIO()
+        original = _helpers.console
+        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        try:
+            _helpers._emit_build_diagnostics(_R())
+        finally:
+            _helpers.console = original
+
+        output = " ".join(buf.getvalue().split())
+        assert "fallback (position signal below confidence)" in output
+        assert "(detected;" not in output
+
     def test_tied_position_data_with_header_fires_inconclusive_warning(self) -> None:
         """GH #15: tie or no-winner in position detection with a header set
         must fire a yellow warning, not silently route through header_build.
@@ -2959,6 +3075,7 @@ class TestRuntimeNudges:
                 override=False,
                 matched_count=10,
                 inspected_count=10,
+                position_confident=True,
             ),
         )
         defaults.update(overrides)
@@ -2973,12 +3090,32 @@ class TestRuntimeNudges:
 
     # ---- GH #90 strand-aware inactive ----
 
-    def test_array_input_all_ref_none_fires_strand_warning(self):
-        """23andMe-style input with every variant ref=None →
-        strand-aware-inactive info line."""
+    def test_grch37_array_explains_reference_context_is_unavailable(self):
+        """GRCh37 arrays must not recommend a download that cannot help."""
         result = self._result(no_ref_variant_count=1000)
         out = self._capture(result)
+        assert "intentionally unavailable for GRCh37" in out
+        assert "`allelix db update` will not change this" in out
+
+    def test_grch38_array_without_ref_keeps_actionable_download_hint(self):
+        """A GRCh38 array can still gain reference context from gnomAD."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            no_ref_variant_count=1000,
+            build_diagnostics=BuildDiagnostics(
+                header_build="GRCh38",
+                detected_build="GRCh38",
+                effective_build="GRCh38",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+                position_confident=True,
+            ),
+        )
+        out = self._capture(result)
         assert "strand-aware matching inactive" in out
+        assert "run `allelix db update`" in out
 
     def test_array_input_with_ref_populated_quiet(self):
         """Same input but gnomAD ref-resolution succeeded → no notice."""
@@ -3017,6 +3154,7 @@ class TestRuntimeNudges:
                 override=False,
                 matched_count=10,
                 inspected_count=10,
+                position_confident=True,
             ),
         )
         out = self._capture(result)
@@ -3039,6 +3177,7 @@ class TestRuntimeNudges:
                 override=False,
                 matched_count=10,
                 inspected_count=10,
+                position_confident=True,
             ),
         )
         out = self._capture(result)
@@ -3072,6 +3211,7 @@ class TestRuntimeNudges:
                 override=False,
                 matched_count=10,
                 inspected_count=10,
+                position_confident=True,
             ),
         )
         out = self._capture(result)

@@ -237,6 +237,7 @@ class TestBuildMismatchBanner:
             override=False,
             matched_count=5,
             inspected_count=5,
+            position_confident=True,
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
@@ -251,6 +252,7 @@ class TestBuildMismatchBanner:
             override=False,
             matched_count=5,
             inspected_count=5,
+            position_confident=True,
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
@@ -259,6 +261,23 @@ class TestBuildMismatchBanner:
         assert "GRCh37" in body
         assert "GRCh38" in body
         assert "notice-warn" in body
+
+    def test_tentative_mismatch_is_not_described_as_authoritative(self, tmp_path: Path):
+        r = _result([_ann()])
+        r.build_diagnostics = BuildDiagnostics(
+            header_build="GRCh37",
+            detected_build="GRCh38",
+            effective_build="GRCh37",
+            override=False,
+            matched_count=2,
+            inspected_count=2,
+            position_confident=False,
+        )
+        out = tmp_path / "report.html"
+        render_html(r, output_path=out)
+        body = out.read_text()
+        assert "position data tentatively favors GRCh38" in body
+        assert "position data indicates GRCh38" not in body
 
     def test_no_banner_with_override(self, tmp_path: Path):
         r = _result([_ann()])
@@ -269,6 +288,7 @@ class TestBuildMismatchBanner:
             override=True,
             matched_count=5,
             inspected_count=5,
+            position_confident=True,
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)

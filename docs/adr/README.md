@@ -26,10 +26,10 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0018: PharmGKB per-allele function via CPIC template extraction](0018-cpic-template-allele-function-extraction.md) — superseded by ADR-0020
 - ADR-0019 was reserved during drafting and not used.
 - [ADR-0020: CPIC API is the structured per-allele function source](0020-cpic-api-allele-function.md) — superseded as primary filter by ADR-0023
-- [ADR-0021: Genome build is detected from position data, not file headers](0021-build-auto-detection.md)
+- [ADR-0021: Genome build is detected from position data, not file headers](0021-build-auto-detection.md) — confidence threshold superseded in part by ADR-0037
 - [ADR-0022: PharmGKB reference-genotype annotations on non-CPIC genes are documented, not filtered](0022-pharmgkb-non-cpic-reference-annotations-are-documented-not-filtered.md) — scope reduced by ADR-0023
 - [ADR-0023: ClinVar REF allele is the primary PharmGKB non-finding filter](0023-clinvar-ref-as-primary-pharmgkb-filter.md)
-- [ADR-0024: GWAS Catalog magnitude scoring from p-value + effect size](0024-gwas-magnitude-scoring.md)
+- [ADR-0024: GWAS Catalog magnitude scoring from p-value + effect size](0024-gwas-magnitude-scoring.md) — effect-size modifier superseded in part by ADR-0038
 - [ADR-0025: GRCh36 graceful degradation (no full build support)](0025-grch36-graceful-degradation.md)
 - [ADR-0026: gnomAD exome frequency cache](0026-gnomad-exome-frequency-cache.md)
 - [ADR-0027: AlphaMissense pathogenicity cache](0027-alphamissense-pathogenicity-cache.md)
@@ -41,6 +41,9 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0033: Schema version bump policy](0033-schema-version-bump-policy.md) — supersedes ADR-0032's schema-version stance
 - [ADR-0034: Magnitude scoring scale and ceiling](0034-magnitude-scoring-scale.md)
 - [ADR-0035: `Variant.ref`, per-Annotation alt threading, and structured GWAS fields](0035-variant-ref-and-coordinated-annotation-model.md) — partially supersedes ADR-0033's strict-per-field schema-version bump policy via the cluster carve-out
+- [ADR-0036: Annotated VCF output contract](0036-annotated-vcf-output-contract.md)
+- [ADR-0037: Build detection requires a three-seed, 80% majority](0037-build-detection-confidence-threshold.md) — supersedes ADR-0021's confidence threshold
+- [ADR-0038: GWAS magnitude modifiers require odds-ratio evidence](0038-gwas-odds-ratio-magnitude-modifier.md) — supersedes ADR-0024's effect-size modifier
 
 ## Writing a new ADR
 

@@ -1,7 +1,7 @@
 # ADR-0024: GWAS Catalog magnitude scoring from p-value + effect size
 
 - **Date:** 2026-05-19
-- **Status:** Accepted
+- **Status:** Superseded in part by ADR-0038 (effect-size modifier only)
 - **Precedent:** ADR-0008 (each source-to-magnitude mapping documented here)
 
 ## Table of contents

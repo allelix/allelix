@@ -2,6 +2,69 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.3.1] - 2026-07-31
+
+### Fixed
+
+- **Cross-build enrichment is now fail-closed.** gnomAD v4.1 exome
+  frequencies and coordinate resolution, AlphaMissense, and CADD are
+  GRCh38-only in the current cache model. GRCh37 and GRCh36 analyses
+  now skip all three sources and omit their provenance instead of
+  allowing an rsID or coordinate collision to attach a valid GRCh38
+  value to the wrong assembly or allele. ClinVar continues to dispatch
+  to its build-specific GRCh37 or GRCh38 cache.
+
+- **GWAS odds ratios are no longer confused with beta coefficients.**
+  The effect-size magnitude modifier is applied only when the
+  confidence-interval field positively identifies a bare odds ratio.
+  Beta coefficients, unit-bearing values, missing or ambiguous effect
+  types, and non-positive effects now receive no modifier. On the
+  user1190 genome with the 2026-07-23 GWAS Catalog snapshot, this
+  changes the default-filter GWAS output from 94 rows to 11; counts
+  drift with future database snapshots, while the effect-type rule is
+  the stable regression invariant. Beta-specific thresholds remain
+  deliberately deferred until effect units can be modeled safely.
+
+- **Position-based build detection requires meaningful evidence.** A
+  detected build is authoritative only with at least three concordant
+  seed-SNP matches and an 80% winning ratio. A 4/5 signal is confident;
+  3/4 and 2/2 signals are tentative. The CLI and HTML report distinguish
+  tentative evidence from a real detection even when the fallback build
+  happens to be the same value. The existing GRCh36 fail-safe remains:
+  a tentative GRCh36 winner stays on GRCh36 so no modern position cache
+  is queried, while the diagnostics still label the evidence tentative.
+
+- **SNPedia genotype matching honors source orientation.** Cache parser
+  format 7 carries SNPedia's plus, minus, or unknown orientation into
+  runtime matching. Known minus-strand rows are complemented to forward
+  orientation. Unknown-orientation palindromic A/T and C/G genotypes
+  abstain rather than risk a false match. Rebuild the SNPedia cache with
+  `allelix db update` after upgrading. GWAS risk-allele strand
+  normalization remains deferred pending a forward-strand data model.
+
+- **Slow-suite ClinVar drift checks can no longer pass by skipping.** The
+  workflow downloads the ClinVar cache explicitly, requires it in CI,
+  selects the drift test by its exact node ID, emits JUnit XML, and fails
+  unless the named drift test appears as executed and passed.
+
+- **Annotated VCF output declares every emitted contig.** Before writing,
+  Allelix scans the input records and synthesizes a missing
+  `##contig=<ID=...>` declaration for each raw CHROM value. Existing
+  declarations and record chromosome names remain unchanged, including
+  mixed bare and `chr`-prefixed names, so `bcftools view` no longer warns
+  about undeclared contigs created by an incomplete input header.
+
+### Documentation
+
+- Synchronized the README, security policy, example-report notes,
+  GRCh36 guidance, test-data catalog, edge-case expectations, and full
+  release protocol with v2.3.1 behavior. The real-data wrong-allele gate
+  now requires a non-zero GRCh38 direct-match denominator and separately
+  asserts that GRCh37 enrichment is zero. The protocol covers all nine
+  parser formats and treats any release-gate skip as a failure.
+
 ## [2.3.0] - 2026-07-02
 
 ### Added

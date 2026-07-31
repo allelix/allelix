@@ -24,6 +24,7 @@ it drifts, the remediation is documented in the YAML header.
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -103,7 +104,7 @@ def _existing_clinvar_caches() -> list[Path]:
 
 
 @pytest.mark.slow
-class TestLiveClnsigDrift:
+class TestClinvarClnsigDrift:
     """Drift check against an installed ClinVar SQLite cache.
 
     Skipped when no cache is present (``allelix db update`` not run).
@@ -118,6 +119,8 @@ class TestLiveClnsigDrift:
     def test_no_new_clnsig_values_in_live_cache(self):
         caches = _existing_clinvar_caches()
         if not caches:
+            if os.environ.get("ALLELIX_CI_REQUIRE_CACHE") == "1":
+                pytest.fail("Required ClinVar cache is absent under ALLELIX_CI_REQUIRE_CACHE=1")
             pytest.skip("No ClinVar cache installed; run `allelix db update` first")
 
         snapshot = _load_snapshot()
@@ -144,3 +147,12 @@ class TestLiveClnsigDrift:
             f"ClinVar terms (not malformed rows), and decide whether they "
             f"need scoring rules in _CLNSIG_MAGNITUDE."
         )
+
+
+def test_ci_cache_requirement_converts_missing_cache_to_failure(monkeypatch):
+    """The workflow flag must turn the local convenience skip into a hard failure."""
+    monkeypatch.setenv("ALLELIX_CI_REQUIRE_CACHE", "1")
+    monkeypatch.setitem(globals(), "_existing_clinvar_caches", lambda: [])
+
+    with pytest.raises(pytest.fail.Exception, match="Required ClinVar cache is absent"):
+        TestClinvarClnsigDrift().test_no_new_clnsig_values_in_live_cache()

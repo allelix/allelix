@@ -64,6 +64,10 @@ _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 # ``Annotation.trait``; ``description`` is rebuilt below from the structured
 # parts so display surfaces still show the PheCode label.
 _PHECODE_SUFFIX_RE = re.compile(r"\s*\(PheCode\s+([\d.]+)\)\s*$")
+_POSITIVE_CI_NUMBER = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?"
+_ODDS_RATIO_CI_RE = re.compile(
+    rf"^\[\s*{_POSITIVE_CI_NUMBER}\s*(?:-|\u2013)\s*{_POSITIVE_CI_NUMBER}\s*\]$"
+)
 
 
 def _split_trait_and_phecode(raw_trait: str) -> tuple[str, str]:
@@ -79,14 +83,36 @@ def _split_trait_and_phecode(raw_trait: str) -> tuple[str, str]:
     return raw_trait[: m.start()].rstrip(), m.group(1)
 
 
-def _magnitude(p_value: float | None, or_beta: float | None) -> float:
-    """Derive magnitude from p-value and optional effect size.
+def _ci_identifies_odds_ratio(ci_text: str | None) -> bool:
+    """True only for GWAS Catalog's bare positive ratio-interval shape.
+
+    ``OR or BETA`` combines two incompatible measures. The adjacent
+    ``95% CI (TEXT)`` column is the only discriminator the Catalog export
+    provides: odds ratios use a bare positive interval such as
+    ``[0.95-1.05]``; beta rows carry units or direction text such as
+    ``[0.01-0.03] unit increase``. Missing, descriptive, negative, and
+    otherwise ambiguous intervals abstain so beta values never receive
+    odds-ratio thresholds.
+    """
+    return ci_text is not None and _ODDS_RATIO_CI_RE.fullmatch(ci_text.strip()) is not None
+
+
+def _magnitude(
+    p_value: float | None,
+    or_beta: float | None,
+    ci_text: str | None = None,
+) -> float:
+    """Derive magnitude from p-value and a confirmed odds ratio.
 
     GH #17: boundary comparisons are inclusive (``<=``) so the canonical
     genome-wide-significance threshold ``p = 5e-8`` lands inside the
     significant bucket rather than the suggestive bucket below it.
     Strict ``<`` made the exact threshold value fall a full magnitude
     below a barely-significant hit.
+
+    ``or_beta`` is not interpreted as an odds ratio unless
+    ``ci_text`` positively identifies the Catalog's ratio-interval shape.
+    Beta coefficients are unit-dependent and receive no modifier.
     """
     if p_value is None:
         base = 2.0
@@ -103,7 +129,7 @@ def _magnitude(p_value: float | None, or_beta: float | None) -> float:
     else:
         base = 2.0
 
-    if or_beta is not None and or_beta > 0:
+    if _ci_identifies_odds_ratio(ci_text) and or_beta is not None and or_beta > 0:
         if or_beta >= 3.0 or or_beta <= 0.33:
             base = min(base + 1.0, 9.0)
         elif or_beta >= 2.0 or or_beta <= 0.5:
@@ -274,7 +300,7 @@ class GWASCatalogAnnotator(Annotator):
             return []
 
         sql = (
-            "SELECT risk_allele, trait, p_value, or_beta, gene, "
+            "SELECT risk_allele, trait, p_value, or_beta, ci_text, gene, "
             "study_accession, pubmed_id, trait_category "
             "FROM gwas_associations WHERE rsid = ?"
         )
@@ -288,6 +314,7 @@ class GWASCatalogAnnotator(Annotator):
                 trait,
                 p_value,
                 or_beta,
+                ci_text,
                 gene,
                 study_accession,
                 pubmed_id,
@@ -300,14 +327,17 @@ class GWASCatalogAnnotator(Annotator):
             if risk_allele is not None:
                 if variant.allele1 != risk_allele and variant.allele2 != risk_allele:
                     continue
-                mag = _magnitude(p_value, or_beta)
+                mag = _magnitude(p_value, or_beta, ci_text)
                 risk_note = ""
             else:
                 # ADR-0024: unknown risk allele fires on rsID match alone
                 # but capped at 3.0 so it doesn't pass typical --min-magnitude
                 # thresholds. Without knowing which allele is the risk allele,
                 # we can't apply the carrier rule (ADR-0007).
-                mag = min(_magnitude(p_value, or_beta), _UNKNOWN_RISK_ALLELE_MAG_CAP)
+                mag = min(
+                    _magnitude(p_value, or_beta, ci_text),
+                    _UNKNOWN_RISK_ALLELE_MAG_CAP,
+                )
                 risk_note = " (risk allele not specified in study)"
 
             clean_trait, phecode = _split_trait_and_phecode(trait)
@@ -370,7 +400,7 @@ class GWASCatalogAnnotator(Annotator):
             chunk = rsids[start : start + _BATCH_CHUNK]
             placeholders = ",".join("?" * len(chunk))
             cursor = conn.execute(
-                f"SELECT rsid, risk_allele, trait, p_value, or_beta, gene, "
+                f"SELECT rsid, risk_allele, trait, p_value, or_beta, ci_text, gene, "
                 f"study_accession, pubmed_id, trait_category "
                 f"FROM gwas_associations WHERE rsid IN ({placeholders})",
                 chunk,
@@ -389,6 +419,7 @@ class GWASCatalogAnnotator(Annotator):
                     trait,
                     p_value,
                     or_beta,
+                    ci_text,
                     gene,
                     study_accession,
                     pubmed_id,
@@ -401,10 +432,13 @@ class GWASCatalogAnnotator(Annotator):
                 if risk_allele is not None:
                     if variant.allele1 != risk_allele and variant.allele2 != risk_allele:
                         continue
-                    mag = _magnitude(p_value, or_beta)
+                    mag = _magnitude(p_value, or_beta, ci_text)
                     risk_note = ""
                 else:
-                    mag = min(_magnitude(p_value, or_beta), _UNKNOWN_RISK_ALLELE_MAG_CAP)
+                    mag = min(
+                        _magnitude(p_value, or_beta, ci_text),
+                        _UNKNOWN_RISK_ALLELE_MAG_CAP,
+                    )
                     risk_note = " (risk allele not specified in study)"
 
                 clean_trait, phecode = _split_trait_and_phecode(trait)

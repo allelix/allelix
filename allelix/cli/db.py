@@ -82,6 +82,13 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
         "save bandwidth."
     ),
 )
+@click.option(
+    "--only",
+    "only_source",
+    type=click.Choice(["clinvar"], case_sensitive=False),
+    default=None,
+    help="Update only the named database (currently supported: clinvar).",
+)
 def db_update(
     data_dir: Path | None,
     force: bool,
@@ -89,6 +96,7 @@ def db_update(
     no_alphamissense: bool,
     include_cadd: bool,
     build: str,
+    only_source: str | None,
 ) -> None:
     """Download or refresh reference databases.
 
@@ -116,6 +124,8 @@ def db_update(
         resolved, clinvar_builds=clinvar_builds, cadd_full=cfg.cadd_full
     ):
         with annotator:
+            if only_source is not None and annotator.name != only_source:
+                continue
             if no_gnomad and annotator.name == "gnomad":
                 console.print(f"  [dim]{annotator.name}: skipped (--no-gnomad)[/dim]")
                 continue

@@ -335,10 +335,18 @@ def _emit_build_diagnostics(result: object) -> None:
     matched = f"{diag.matched_count}/{diag.inspected_count}" if diag.inspected_count else "0/0"
     if diag.override:
         source = "override"
-    elif diag.detected_build:
+    elif (
+        diag.position_confident
+        and diag.detected_build
+        and diag.effective_build == diag.detected_build
+    ):
         source = "detected"
-    elif diag.header_build:
-        source = "header (no position confirmation)"
+    elif diag.header_build and diag.effective_build == diag.header_build:
+        source = (
+            "header (position signal below confidence)"
+            if diag.detected_build
+            else "header (no position confirmation)"
+        )
     elif diag.chr_prefix_inferred:
         # GH #38: chr-prefixed contig names ("chr1", "chrX", ...) reliably
         # indicate GRCh38 in modern caller output. We DID detect a build;
@@ -346,15 +354,24 @@ def _emit_build_diagnostics(result: object) -> None:
         # a blind default.
         source = "inferred from chr-prefixed contig names"
     else:
-        source = "fallback (no known SNPs matched)"
+        source = (
+            "fallback (position signal below confidence)"
+            if diag.detected_build
+            else "fallback (no known SNPs matched)"
+        )
     console.print(
         f"[dim]Build: {diag.effective_build} ({source}; "
         f"{matched} known-SNP positions matched)[/dim]"
     )
     if diag.mismatch:
+        position_signal = (
+            f"position data is {diag.detected_build}"
+            if diag.position_confident
+            else f"position data tentatively favors {diag.detected_build}"
+        )
         console.print(
             f"[yellow]Build mismatch: file header claims {diag.header_build} but "
-            f"position data is {diag.detected_build}. Using {diag.detected_build}. "
+            f"{position_signal}. Using {diag.effective_build}. "
             f"This is a real-world data-quality issue — your provider may have "
             f"mislabeled the build (see ADR-0021).[/yellow]"
         )
@@ -424,14 +441,14 @@ def _emit_runtime_nudges(result: object) -> None:
     intent is transparency for cases where the silent default behavior
     used to leave the user uncertain about WHY their count looked low.
 
-    - **GH #90: strand-aware matching inactive.** When carrier/genotype
-      matching ran with ``Variant.ref`` unavailable across the input —
-      typically array data with ``--no-gnomad`` or no gnomAD cache —
-      the strand-flip path in ``utils/allele.py`` falls back to the
-      v2.0.x direct-match-only behavior. Behavior is correct (forward-
-      normalized array data matches the direct path regardless), just
-      degraded relative to v2.1+'s contract. VCF inputs always carry
-      REF from the file, so this never fires for them.
+    - **GH #90: strand-aware matching inactive or limited.** When
+      carrier/genotype matching ran with ``Variant.ref`` unavailable
+      across the input, the strand-flip path in ``utils/allele.py``
+      falls back to the v2.0.x direct-match-only behavior. On GRCh38
+      arrays this typically means ``--no-gnomad`` or a missing cache;
+      on GRCh37 it is expected because the available enrichment cache
+      is GRCh38-only. VCF inputs always carry REF from the file, so this
+      never fires for them.
     - **GH #91: GRCh38 rsID-less undercount.** When the effective
       build is GRCh38 AND most variants entered the pipeline without
       rsIDs (the variant-caller ``ID=.`` case), annotation coverage
@@ -448,16 +465,24 @@ def _emit_runtime_nudges(result: object) -> None:
     effective_build = diag.effective_build if diag is not None else None
 
     # GH #90: array inputs (everything except the VCF parser) running
-    # without a usable gnomAD cache leave every variant ref=None. Gate
+    # without compatible gnomAD reference context leave every variant
+    # ref=None. Gate
     # on "the whole input lacked ref" rather than "any variant lacked
     # ref" so a hybrid file (e.g. a few ref-less rows in an otherwise
     # populated VCF) doesn't flap the message on.
     if parser_name != "vcf" and total > 0 and no_ref == total:
-        console.print(
-            "[dim]strand-aware matching inactive — no reference context "
-            "(run `allelix db update` for gnomAD-backed ref resolution, "
-            "or this is expected with `--no-gnomad`)[/dim]"
-        )
+        if effective_build == "GRCh37":
+            console.print(
+                "[dim]strand-aware matching limited — GRCh38-only gnomAD "
+                "reference context is intentionally unavailable for GRCh37 "
+                "input; `allelix db update` will not change this[/dim]"
+            )
+        else:
+            console.print(
+                "[dim]strand-aware matching inactive — no reference context "
+                "(run `allelix db update` for gnomAD-backed ref resolution, "
+                "or this is expected with `--no-gnomad`)[/dim]"
+            )
 
     # GH #91: GRCh38 + a high rsID-less fraction. The threshold (>50%)
     # distinguishes a variant-caller VCF (mostly ID=. — fires) from a

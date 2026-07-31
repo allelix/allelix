@@ -18,7 +18,7 @@ import mwparserfromhell
 
 logger = logging.getLogger(__name__)
 
-_PARSER_VERSION = 6
+_PARSER_VERSION = 7
 
 
 def _parse_title_prefix(title: str) -> tuple[str, str] | None:
@@ -68,6 +68,14 @@ def _tmpl_param(tmpl: object, name: str) -> str:
     return ""
 
 
+def _normalize_orientation(value: str) -> str | None:
+    """Normalize a SNPedia orientation value to ``plus`` or ``minus``."""
+    normalized = value.strip().lower()
+    if normalized in {"plus", "minus"}:
+        return normalized
+    return None
+
+
 _STRUCTURED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS snpedia_genotypes (
     rsid TEXT NOT NULL,
@@ -77,6 +85,7 @@ CREATE TABLE IF NOT EXISTS snpedia_genotypes (
     repute TEXT,
     summary TEXT,
     gene TEXT,
+    orientation TEXT,
     scraped_at TEXT
 );
 
@@ -217,10 +226,14 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
             logger.info("Backfill dedupe: removed %d duplicate row(s)", deduped)
 
     conn.executescript(_STRUCTURED_SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(snpedia_genotypes)").fetchall()}
+    if "orientation" not in columns:
+        conn.execute("ALTER TABLE snpedia_genotypes ADD COLUMN orientation TEXT")
     conn.execute("DELETE FROM snpedia_genotypes")
 
-    # Build gene map from SNP pages
+    # Build gene and orientation maps from SNP pages
     gene_map: dict[str, str] = {}
+    orientation_map: dict[str, str] = {}
     snp_rows = conn.execute(
         f"SELECT title, content FROM {raw_table} WHERE category = 'snp'"
     ).fetchall()
@@ -239,17 +252,31 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
                     gene = _tmpl_param(template, "Gene")
                     if gene:
                         gene_map[snp_key] = gene
+                    orientation = _normalize_orientation(
+                        _tmpl_param(template, "StabilizedOrientation")
+                    ) or _normalize_orientation(_tmpl_param(template, "Orientation"))
+                    if orientation:
+                        orientation_map[snp_key] = orientation
                     break
                 if tname == "23andme snp":
                     gene = _tmpl_param(template, "Gene_s")
                     if gene:
                         gene_map[snp_key] = gene
+                    orientation = _normalize_orientation(
+                        _tmpl_param(template, "StabilizedOrientation")
+                    ) or _normalize_orientation(_tmpl_param(template, "Orientation"))
+                    if orientation:
+                        orientation_map[snp_key] = orientation
                     break
         except Exception:
             logger.debug("Failed to parse SNP page %s", title, exc_info=True)
             continue
 
-    print(f"  Gene map: {len(gene_map)} mappings built.", flush=True)
+    print(
+        f"  SNP metadata: {len(gene_map)} gene and "
+        f"{len(orientation_map)} orientation mappings built.",
+        flush=True,
+    )
 
     # Parse genotype pages
     genotype_rows = conn.execute(
@@ -257,7 +284,19 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
     ).fetchall()
     print(f"  Parsing {len(genotype_rows)} genotype pages...", flush=True)
 
-    batch: list[tuple[str, str, str, float | None, str | None, str | None, str | None, str]] = []
+    batch: list[
+        tuple[
+            str,
+            str,
+            str,
+            float | None,
+            str | None,
+            str | None,
+            str | None,
+            str | None,
+            str,
+        ]
+    ] = []
 
     for title, content, scraped_at in genotype_rows:
         parsed_prefix = _parse_title_prefix(title)
@@ -305,14 +344,28 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
         repute = _tmpl_param(tmpl, "repute") or None
         summary = _tmpl_param(tmpl, "summary") or None
         snp_gene = gene_map.get(snp_id) or None
+        orientation = orientation_map.get(snp_id)
 
-        batch.append((snp_id, allele1, allele2, magnitude, repute, summary, snp_gene, scraped_at))
+        batch.append(
+            (
+                snp_id,
+                allele1,
+                allele2,
+                magnitude,
+                repute,
+                summary,
+                snp_gene,
+                orientation,
+                scraped_at,
+            )
+        )
 
         if len(batch) >= 1000:
             conn.executemany(
                 "INSERT OR IGNORE INTO snpedia_genotypes "
-                "(rsid, allele1, allele2, magnitude, repute, summary, gene, scraped_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(rsid, allele1, allele2, magnitude, repute, summary, gene, "
+                "orientation, scraped_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 batch,
             )
             batch.clear()
@@ -320,8 +373,9 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
     if batch:
         conn.executemany(
             "INSERT OR IGNORE INTO snpedia_genotypes "
-            "(rsid, allele1, allele2, magnitude, repute, summary, gene, scraped_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(rsid, allele1, allele2, magnitude, repute, summary, gene, "
+            "orientation, scraped_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             batch,
         )
 

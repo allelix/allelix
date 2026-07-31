@@ -33,5 +33,48 @@ jobs:
       - name: Generate test fixture
         run: python tests/generate_mock_data.py
 
+      - name: Download current ClinVar caches
+        run: allelix db update --only clinvar
+
+      - name: Run ClinVar CLNSIG drift sentinel
+        env:
+          ALLELIX_CI_REQUIRE_CACHE: "1"
+        run: >-
+          pytest
+          tests/databases/test_clinvar_clnsig_drift.py::TestClinvarClnsigDrift::test_no_new_clnsig_values_in_live_cache
+          --junitxml=drift-results.xml
+          --no-cov
+
+      - name: Assert drift sentinel executed
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = pathlib.Path("drift-results.xml")
+          if not path.is_file():
+              sys.exit("drift-results.xml was not produced")
+
+          cases = [
+              case
+              for case in ET.parse(path).findall(".//testcase")
+              if case.get("name") == "test_no_new_clnsig_values_in_live_cache"
+          ]
+          if len(cases) != 1:
+              sys.exit(f"expected exactly one drift testcase, found {len(cases)}")
+
+          bad_children = [
+              child.tag
+              for child in cases[0]
+              if child.tag in {"skipped", "failure", "error"}
+          ]
+          if bad_children:
+              sys.exit(f"drift testcase did not pass cleanly: {bad_children}")
+
+          print("ClinVar drift sentinel executed and passed.")
+          PY
+
       - name: Pytest (slow + integration only)
         run: pytest -v --tb=short -m "slow or integration" --no-cov

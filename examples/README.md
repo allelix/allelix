@@ -1,8 +1,10 @@
 # Allelix Example Reports
 
-Pre-generated sample reports demonstrating Allelix output. The reports here
-let you see exactly what `allelix analyze` produces without needing your own
-genotype file or downloaded databases.
+Pre-generated sample reports demonstrating Allelix output. The committed
+reports are a historical v1.8.2 snapshot generated on 2026-06-12; they let
+you inspect a self-contained output without your own genotype file or
+downloaded databases, but current v2.3.1 output differs as schemas, source
+names, database snapshots, and correctness rules have evolved.
 
 ## Quick Start
 
@@ -42,7 +44,7 @@ examples/
 
 A 10,000-variant subset of a publicly donated genotype from openSNP user
 1190. The subset preserves every rsID that produced a database annotation
-(ClinVar, PharmGKB, or GWAS Catalog), then pads with random variants from
+(ClinVar, ClinPGx, or GWAS Catalog), then pads with random variants from
 the source file to a realistic chip-scale per-chromosome distribution.
 
 The file is structurally identical to a full 23andMe export — same delimiters,
@@ -56,9 +58,12 @@ same subset.
 ### `sample_reports/demo_report.html`
 
 Self-contained HTML report. Inline CSS, no external dependencies, opens
-in any browser. Shows 358 annotations across ClinVar (239), PharmGKB (26),
-and GWAS Catalog (93) — including pathogenic clinical variants, drug
-response associations, and well-replicated genetic associations.
+in any browser. The committed v1.8.2 / 2026-06-12 snapshot contains 358
+annotations across ClinVar (239), the then-named PharmGKB source (26), and
+GWAS Catalog (93). These point-in-time counts drift with database updates;
+v2.3.1 also suppresses ambiguous GWAS effect modifiers and all GRCh38-only
+gnomAD / AlphaMissense / CADD enrichment on this GRCh37 input. Run
+`./regenerate.sh` for current output.
 
 ### `sample_reports/demo_report.json`
 
@@ -80,15 +85,16 @@ redistributable under AGPL-3.0-or-later. Constituent data sources:
 | Genotype data (openSNP user1190 subset) | [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) | Public domain donation from a real openSNP volunteer. |
 | ClinVar annotations | [Public domain (NCBI / NLM)](https://www.ncbi.nlm.nih.gov/clinvar/) | No restrictions. |
 | GWAS Catalog annotations | [Public domain (NHGRI-EBI)](https://www.ebi.ac.uk/gwas/) | No restrictions. |
-| PharmGKB annotations | [CC BY-SA 4.0 (Stanford University)](https://creativecommons.org/licenses/by-sa/4.0/) | **Attribution required.** PharmGKB content used and redistributed under CC BY-SA 4.0; downstream reuse must retain attribution. |
+| ClinPGx annotations (named PharmGKB in this historical snapshot) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) | **Attribution required.** Downstream reuse must retain attribution. |
 | SNPedia | [CC BY-NC-SA 3.0 US](https://creativecommons.org/licenses/by-nc-sa/3.0/us/) | **Excluded.** SNPedia is non-commercial-only. The reports here were generated with `--exclude-snpedia` to ensure no SNPedia content is redistributed. |
 
-### PharmGKB attribution
+### ClinPGx attribution
 
-PharmGKB content appears in the sample reports under CC BY-SA 4.0. Pharmacogenomic
-annotations in any derivative work must attribute PharmGKB and preserve the
-same license. The Allelix HTML report template surfaces attribution next to
-each PharmGKB-sourced row.
+The upstream source now operates as ClinPGx; the committed v1.8.2 reports use
+its former PharmGKB display name. Pharmacogenomic annotations appear under
+CC BY-SA 4.0, so derivative works must retain attribution and the same
+license. Current Allelix reports display ClinPGx while the internal cache
+filename remains `pharmgkb.sqlite` for compatibility.
 
 ## Regenerating the input subset
 
