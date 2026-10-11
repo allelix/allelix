@@ -1,0 +1,20 @@
+##fileformat=VCFv4.2
+##fileDate=July-28-2026 at 02:21 UTC
+##source=Sequencing.com (30x WGS)
+##dataSourceType=WGS
+##dataAnalysisProvider=Sequencing.com
+##ALT=<ID=DEL,Description="Deletion">
+##ALT=<ID=DUP,Description="Duplication">
+##ALT=<ID=INV,Description="Inversion">
+##ALT=<ID=INS,Description="Insertion">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="Length of structural variant">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE1
+chr1	1000000	SV0001	N	<DEL>	50	PASS	END=1002500;SVTYPE=DEL;SVLEN=-2500	GT	0/1
+chr2	2000000	SV0002	N	<DUP>	50	PASS	END=2010000;SVTYPE=DUP;SVLEN=10000	GT	0/1
+chr3	3000000	SV0003	N	<INV>	50	PASS	END=3004000;SVTYPE=INV;SVLEN=4000	GT	0/1
+chr4	4000000	SV0004	N	<INS>	50	PASS	END=4000000;SVTYPE=INS;SVLEN=300	GT	1/1
+chr5	5000000	SV0005	N	<DEL>	50	MaxDepth	END=5001200;SVTYPE=DEL;SVLEN=-1200	GT	0/1
+chr6	6000000	SV0006	G	G]chr7:7000000]	50	PASS	SVTYPE=BND	GT	0/1

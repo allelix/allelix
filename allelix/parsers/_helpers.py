@@ -16,7 +16,7 @@ from allelix.models import NO_CALL_MARKER
 logger = logging.getLogger(__name__)
 
 
-def split_csv_line(line: str) -> list[str]:
+def split_csv_line(line: str, columns: int | None = None) -> list[str]:
     """Split a comma-delimited line and strip surrounding quotes from each field.
 
     Implementation is ``line.split(",")`` followed by a per-field
@@ -35,8 +35,30 @@ def split_csv_line(line: str) -> list[str]:
     double-double-quote variant some MyHeritage exports produce
     (``""rs1""``) — the latter via two iterations of the trailing
     ``strip('"')``.
+
+    ``columns``: the format's column count. Trailing empty fields beyond
+    it are dropped: a spreadsheet re-save pads every row to the widest
+    column count (``"rs1","1","82154","AA",,,``), which would otherwise
+    read as seven columns and be skipped. Fields up to ``columns`` are
+    kept even when empty, so an empty genotype stays a no-call.
     """
-    return [field.strip().strip('"') for field in line.split(",")]
+    fields = [field.strip().strip('"') for field in line.split(",")]
+    return fields if columns is None else strip_trailing_empty(fields, keep=columns)
+
+
+def strip_trailing_empty(fields: list[str], keep: int = 0) -> list[str]:
+    """Drop trailing empty fields (spreadsheet padding such as 'a,b,,,' -> ['a','b']).
+
+    Never shortens the list below ``keep`` fields.
+    """
+    while len(fields) > keep and fields[-1] == "":
+        fields.pop()
+    return fields
+
+
+def is_padding_only(line: str) -> bool:
+    """True for a row of nothing but delimiters (``,,,``): an emptied spreadsheet row."""
+    return not line.replace(",", "").replace("\t", "").replace('"', "").strip()
 
 
 def split_genotype(genotype: str) -> tuple[str, str]:

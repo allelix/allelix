@@ -29,7 +29,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import split_csv_line, split_genotype
+from allelix.parsers._helpers import is_padding_only, split_csv_line, split_genotype
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
 
 if TYPE_CHECKING:
@@ -41,8 +41,12 @@ logger = logging.getLogger(__name__)
 SNIFF_LINE_LIMIT = 50
 EXPECTED_COLUMNS = 4
 HEADER_CANONICAL = "RSID,CHROMOSOME,POSITION,RESULT"
+# Lines before the column header that are neither comments nor the header
+# (a spreadsheet re-save drops the leading '#') are warned about, but only
+# the first few, so a long padded preamble does not flood the log.
+PREAMBLE_WARNING_LIMIT = 5
 
-# GH #26: FTDNA and MyHeritage files share the same data shape and
+# FTDNA and MyHeritage files share the same data shape and
 # header line. Without an explicit exclusion, both `can_parse`
 # implementations accept MyHeritage files and the routing was masked
 # only by registry order (MyHeritage listed first in parsers/__init__.py).
@@ -52,8 +56,12 @@ _MYHERITAGE_SIGNATURE = "MyHeritage"
 
 
 def _is_header_line(line: str) -> bool:
-    """True if *line* is the FTDNA column header (quoted or unquoted)."""
-    stripped = line.replace('"', "").replace("'", "").strip()
+    """True if *line* is the FTDNA column header (quoted or unquoted).
+
+    Trailing commas from a spreadsheet re-save (``RSID,...,RESULT,,,``)
+    are ignored.
+    """
+    stripped = line.replace('"', "").replace("'", "").strip().rstrip(",")
     return stripped.upper() == HEADER_CANONICAL
 
 
@@ -68,7 +76,7 @@ class FTDNAParser(GenotypeParser):
     def can_parse(self, file_path: Path) -> bool:
         """Recognize the file by its ``RSID,CHROMOSOME,POSITION,RESULT`` header.
 
-        GH #26: rejects files carrying the MyHeritage signature comment.
+        rejects files carrying the MyHeritage signature comment.
         Both formats are byte-identical past the first comment line, so
         the discriminator must be checked explicitly — otherwise FTDNA
         also claims MyHeritage files and routing depends on registry
@@ -94,22 +102,25 @@ class FTDNAParser(GenotypeParser):
         """Stream Variant objects, skipping comments and malformed lines."""
         with file_path.open("r", encoding="utf-8") as fh:
             header_seen = False
+            preamble_warnings = 0
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or is_padding_only(line):
                     continue
                 if not header_seen:
                     if _is_header_line(line):
                         header_seen = True
                         continue
-                    logger.warning(
-                        "Line %d: expected FTDNA header, got %r — skipping",
-                        lineno,
-                        line,
-                    )
+                    preamble_warnings += 1
+                    if preamble_warnings <= PREAMBLE_WARNING_LIMIT:
+                        logger.warning(
+                            "Line %d: expected FTDNA header, got %r — skipping",
+                            lineno,
+                            line,
+                        )
                     continue
 
-                parts = split_csv_line(line)
+                parts = split_csv_line(line, EXPECTED_COLUMNS)
                 if len(parts) != EXPECTED_COLUMNS:
                     logger.warning(
                         "Line %d: expected %d columns, got %d — skipping",

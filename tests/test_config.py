@@ -289,7 +289,7 @@ class TestAllelixConfig:
             assert perm is Permission.ALLOW, f"{cls.name} should be ALLOW in non-commercial mode"
 
     def test_permission_for_returns_three_state(self):
-        """GH #28 item 3: permission_for is the single resolver shared by
+        """item 3: permission_for is the single resolver shared by
         is_enabled (which collapses to bool) and `config show` (which
         renders different table cells per state). All three states are
         reachable through this entry point."""

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""GH #128 regression tests — rsID-less VCF coverage on the analyze
+"""regression tests — rsID-less VCF coverage on the analyze
 panel-coverage and extract paths.
 
 Background: DeepVariant / DRAGEN / GIAB GRCh38-benchmark VCFs leave
@@ -78,7 +78,7 @@ def rsidless_vcf(tmp_path: Path) -> Path:
 def data_dir_with_clinvar_and_gnomad(all_annotators_data_dir: Path) -> Path:
     """Reuse the ClinVar/ClinPGx/GWAS fixture and add the mock gnomAD on top.
 
-    ``all_annotators_data_dir`` lacks gnomAD by default. The new GH #128
+    ``all_annotators_data_dir`` lacks gnomAD by default. The new
     resolution path requires it, so this fixture stitches the mock cache
     in alongside.
     """
@@ -150,7 +150,7 @@ class TestGnomadReverseResolver:
 
 
 class TestPanelCoverageOnRsidlessVcf:
-    """The user's reported symptom on #128 — panel coverage on a
+    """The user's reported symptom — panel coverage on a
     rsID-less VCF should classify panel rsIDs by what the resolver
     recovers, not by what the file's ID column originally said."""
 

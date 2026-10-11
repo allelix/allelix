@@ -14,7 +14,12 @@ ADR-0010 documents the design.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from allelix.models import NO_CALL_MARKER
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _COMPLEMENT: dict[str, str] = {"A": "T", "T": "A", "C": "G", "G": "C"}
 
@@ -51,7 +56,7 @@ def resolve_strand(user_allele: str, gnomad_ref: str, gnomad_alt: str) -> str | 
     using gnomAD's ref/alt as the ground truth. If the user allele
     matches ref or alt directly, it's already forward and is returned.
 
-    GH #18: previously, when the user allele did NOT directly match
+    previously, when the user allele did NOT directly match
     ref or alt, this function fell back to a complement check
     (``complement(user_allele) ∈ {ref, alt}`` → return the complement)
     on the assumption that the array was read on the minus strand. At
@@ -85,7 +90,7 @@ def strand_aware_carrier_match(
 ) -> bool:
     """Return True if the user carries ``source_alt`` directly or via strand-flip.
 
-    Multi-allelic safety (the v2.0.1 #18 audit): only fires strand-flip when the
+    Multi-allelic safety (the v2.0.1 audit): only fires strand-flip when the
     ``variant_ref`` context confirms the user is reverse-stranded relative to the
     source's ref. Without that context — ``variant_ref`` is None, or it agrees
     with ``source_ref`` (forward) — strand-flip never fires and the carrier
@@ -133,11 +138,74 @@ def strand_aware_carrier_match(
     return False
 
 
+def carried_in_source_orientation(allele1: str, allele2: str, source_alt: str) -> tuple[str, str]:
+    """Return the user's alleles in the orientation of ``source_alt``.
+
+    Called after ``strand_aware_carrier_match`` accepted a row: either the
+    user carries ``source_alt`` directly (forward reading, alleles returned
+    unchanged) or the match fired through the strand-flip path, in which
+    case the complemented pair is the user's call on the source's strand.
+    Feeds ``Annotation.carried_alleles`` for the zero-carried-copies
+    invariant.
+    """
+    if source_alt in (allele1, allele2):
+        return allele1, allele2
+    return flip_genotype(allele1, allele2)
+
+
+def resolve_rsid_at_locus(
+    variant_ref: str | None,
+    allele1: str,
+    allele2: str,
+    rows: Iterable[tuple[str, str, str]],
+) -> tuple[str, tuple[str, str] | None] | None:
+    """Pick the rsID for an rsID-less call from the ``(ref, alt, rsid)`` rows at its locus.
+
+    Shared by every position resolver (ClinVar, gnomAD) so they apply one
+    rule. A row is consistent with the call when it is not a
+    reference-allele record (REF != ALT), its REF equals ``variant_ref``
+    when that is known, and the user carries its ALT. The call resolves
+    when those rows:
+
+    - explain every allele the user carries under exactly one REF (the
+      REF itself or one of that REF's ALTs). This picks the right anchor
+      between co-located indels (``CA>C`` vs ``CAG>C``) even when
+      ``variant_ref`` is unknown, and lets a ``1/2`` call carrying two
+      alts resolve when both alts belong to the same rsID, and
+    - name exactly one rsID. Duplicate rows (per-SCV submissions repeat
+      ``(ref, alt, rsid)``) are one rsID, not an ambiguity.
+
+    Returns ``(rsid, (ref, alt))`` when the user carries exactly one alt,
+    ``(rsid, None)`` when they carry two, or ``None`` to abstain.
+    """
+    user = {allele1, allele2}
+    by_ref: dict[str, set[tuple[str, str]]] = {}
+    for ref, alt, rsid in rows:
+        if rsid and ref != alt and alt in user and (variant_ref is None or ref == variant_ref):
+            by_ref.setdefault(ref, set()).add((alt, rsid))
+    explaining = [
+        (ref, entries)
+        for ref, entries in by_ref.items()
+        if user <= {alt for alt, _rsid in entries} | {ref}
+    ]
+    if len(explaining) != 1:
+        return None
+    ref, entries = explaining[0]
+    rsids = {rsid for _alt, rsid in entries}
+    if len(rsids) != 1:
+        return None
+    alts = {alt for alt, _rsid in entries}
+    pair = (ref, next(iter(alts))) if len(alts) == 1 else None
+    return rsids.pop(), pair
+
+
 def strand_aware_genotype_match(
     allele1: str,
     allele2: str,
     source_geno: str,
     variant_ref: str | None,
+    *,
+    site_palindromic: bool = False,
 ) -> bool:
     """Per-genotype carrier match with strand-flip support for ClinPGx / SNPedia.
 
@@ -153,6 +221,11 @@ def strand_aware_genotype_match(
         source_geno: Source row's sorted diploid string (e.g. ``"AG"``).
         variant_ref: User's claimed REF at this locus. ``None`` means no
             reference context; strand-flip is skipped (direct match only).
+        site_palindromic: The identity table flags the site palindromic
+            (its full allele set equals its own complement, e.g. a
+            multi-allelic site carrying all four bases). The strand cannot
+            be told from sequence there, so the complement path is skipped;
+            a direct match still counts.
 
     Returns:
         True when the user matches ``source_geno`` directly or via a
@@ -172,6 +245,8 @@ def strand_aware_genotype_match(
         return True
     if variant_ref is None:
         return False
+    if site_palindromic:
+        return False
     user_complement_pair = sorted((complement(allele1), complement(allele2)))
     if "".join(user_complement_pair) != source_geno:
         return False
@@ -179,8 +254,12 @@ def strand_aware_genotype_match(
         return False
     if complement(variant_ref) not in source_geno:
         return False
-    distinct = set(source_geno)
-    return distinct != {"A", "T"} and distinct != {"C", "G"}
+    # Site-level palindrome guard: include variant_ref so homozygous
+    # genotypes at palindromic sites are correctly caught.  set("GG") =
+    # {"G"} missed the C/G palindrome; {"G"} | {"C"} = {"C","G"} catches
+    # it.  Fixes .
+    site_alleles = set(source_geno) | {variant_ref}
+    return site_alleles != {"A", "T"} and site_alleles != {"C", "G"}
 
 
 def derive_alt_from_diploid(ref: str | None, allele1: str, allele2: str) -> str:
@@ -199,7 +278,7 @@ def derive_alt_from_diploid(ref: str | None, allele1: str, allele2: str) -> str:
       alleles disagree with the reference (rare for SNPs); conservatively
       skip rather than guess.
 
-    Conservative-on-uncertainty mirrors the v2.0.1 #23 suppress-half: when
+    Conservative-on-uncertainty mirrors the v2.0.1 suppress-half: when
     the alt can't be cleanly identified, return "" rather than a guess that
     could stamp the wrong allele's gnomAD / AlphaMissense / CADD value.
     """

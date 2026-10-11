@@ -101,19 +101,19 @@ filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
-# GH allelix-dev #31: coverage gate now measures BOTH line and branch
-# coverage. Pre-#31 the gate was line-only — a line counted as covered
+# : coverage gate now measures BOTH line and branch
+# coverage. Previously, the gate was line-only — a line counted as covered
 # the moment any input crossed it, which is how the v2.0.x carrier-match
 # case/strand and download-truncation correctness bugs shipped green.
 #
 # Floor history (CI numbers, NOT local):
-#   - #31 (v2.1.2):  92.0   line-only → 92.44 with branch enabled
-#   - #79 (v2.2):    92.4   after the missing-branch test batches landed
+#   - (v2.1.2):  92.0   line-only → 92.44 with branch enabled
+#   - (v2.2):    92.4   after the missing-branch test batches landed
 #     (carrier-match case norm + download truncation + clinvar stamp
 #     migration + cadd_loader facade). CI on 3.11 / 3.12 reports 92.47;
 #     local on 3.14 reports 92.62. The 0.15pp delta is Python-version-
 #     dependent (~8 lines that run on 3.14 don't run on 3.11/3.12).
-#   - #52 (v2.2):    92.5   after _check_gnomad_version warning-path
+#   - (v2.2):    92.5   after _check_gnomad_version warning-path
 #     tests landed in PR 7. CI now clears the 92.5 bar honestly instead
 #     of relying on the 0.07pp margin under it.
 #
@@ -133,7 +133,7 @@ branch = true
 precision = 2
 fail_under = 92.50
 
-# GH allelix-dev #33: backs the py.typed promise with a real type checker.
+# : backs the py.typed promise with a real type checker.
 # The starting baseline is intentionally permissive (no strict mode, no
 # disallow_untyped_defs) so we get the gate in CI immediately instead of
 # negotiating dozens of remediation PRs. Ratchet later by tightening the

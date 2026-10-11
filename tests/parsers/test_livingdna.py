@@ -256,7 +256,7 @@ class TestMetadata:
     def test_date_comment_does_not_override_build(
         self, parser: LivingDNAParser, tmp_path: Path
     ) -> None:
-        """GH #16: a `2038-…` download-date comment must not silently
+        """a `2038-…` download-date comment must not silently
         retag the file as GRCh38. Only build-marker lines (containing
         ``build``, ``reference``, or ``genome``) are inspected, and the
         normalizer rejects digits inside year strings via word
@@ -272,7 +272,7 @@ class TestMetadata:
         assert meta["build"] == "GRCh37"
 
     def test_first_build_marker_line_wins(self, parser: LivingDNAParser, tmp_path: Path) -> None:
-        """GH #16: previously the LAST normalize-match won (no break),
+        """previously the LAST normalize-match won (no break),
         so a stray later comment could overwrite the real header. Now
         the first valid build-marker line wins."""
         f = _write(

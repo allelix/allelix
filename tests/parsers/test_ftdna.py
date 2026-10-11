@@ -67,7 +67,7 @@ class TestCanParse:
     def test_rejects_myheritage_file(
         self, parser: FTDNAParser, mock_myheritage_path: Path
     ) -> None:
-        """GH #26: FTDNA and MyHeritage share the same data shape and
+        """FTDNA and MyHeritage share the same data shape and
         header. Without an explicit exclusion both `can_parse`s claim
         the file and routing depends on registry order. FTDNA must
         reject files carrying the MyHeritage signature comment so

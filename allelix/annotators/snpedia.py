@@ -18,7 +18,7 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref
+from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref, variant_locus
 from allelix.databases.manager import (
     download,
     verify_file_hash,
@@ -333,6 +333,9 @@ class SNPediaAnnotator(Annotator):
                         forward_allele1,
                         forward_allele2,
                     ),
+                    locus_ref=variant.ref,
+                    carried_alleles=(forward_allele1, forward_allele2),
+                    locus=variant_locus(variant),
                 )
             )
 
@@ -432,4 +435,7 @@ class SNPediaAnnotator(Annotator):
                         forward_allele1,
                         forward_allele2,
                     ),
+                    locus_ref=variant.ref,
+                    carried_alleles=(forward_allele1, forward_allele2),
+                    locus=variant_locus(variant),
                 )

@@ -118,7 +118,7 @@ class TestParseRawPages:
         assert parse_raw_pages(str(db)) == 0
 
     def test_unexpected_raw_table_name_raises(self, tmp_path, monkeypatch):
-        """GH #12: identifier-allowlist guard rejects any name outside
+        """identifier-allowlist guard rejects any name outside
         the documented set, so a future drift in ``detect_raw_table``
         can't silently flow into the f-string-interpolated SQL queries.
         """

@@ -130,7 +130,7 @@ class TestAnalysisResultFilter:
 
 
 class TestPanelCoverage:
-    """GH #75: panel coverage distinguishes "not on chip" (state 3) from
+    """panel coverage distinguishes "not on chip" (state 3) from
     "genotyped but no findings" (state 2) from "genotyped with findings"
     (state 1)."""
 
@@ -219,7 +219,7 @@ class TestPanelCoverage:
         assert "rs999999999" not in cov["no_findings"]
 
     def test_sub_floor_panel_rsid_lands_in_no_findings_not_limbo(self):
-        """GH #106 patch: when ``filtered_annotations`` is supplied
+        """patch: when ``filtered_annotations`` is supplied
         the "annotated" set is derived from THAT list (post-magnitude-
         filter) instead of the raw pre-filter set.
 
@@ -227,14 +227,14 @@ class TestPanelCoverage:
         annotation in the cache (so it's in
         ``panel_annotated_rsids``), but the annotation's magnitude is
         below the analyze display floor, so the renderer's
-        ``filter()`` drops it. Pre-#106, the rsid:
+        ``filter()`` drops it. Previously, the rsid:
           - counted as "found" (because panel_annotated_rsids has it)
           - dropped from the annotation table (below floor)
           - NOT in no_findings (because the pipeline thought it had
             annotations)
         Pure limbo.
 
-        Post-#106, threading the filtered list in makes "annotated"
+        After the fix, threading the filtered list in makes "annotated"
         equal "actually rendered" — the sub-floor rsid lands in
         no_findings honestly.
 
@@ -264,14 +264,14 @@ class TestPanelCoverage:
         filtered = r.filter(min_magnitude=5.0)
         assert [a.rsid for a in filtered] == ["rs_displayed"]
 
-        # Pre-#106 (back-compat path): the limbo bug — rs_subfloor
+        # Previously (back-compat path): the limbo bug — rs_subfloor
         # counted as "found" but rendered nowhere.
         legacy_cov = r.panel_coverage()
         assert legacy_cov is not None
         assert legacy_cov["found"] == 2
         assert "rs_subfloor" not in legacy_cov["no_findings"]
 
-        # Post-#106: thread the filtered list. rs_subfloor falls into
+        # After the fix, thread the filtered list. rs_subfloor falls into
         # no_findings; `found` still means "in input file" (genotyped
         # count) — same v6 contract.
         cov = r.panel_coverage(filtered)
@@ -384,7 +384,7 @@ class TestBuildDetectionMajority:
 class TestGRCh36FlushFailSafe:
     """GRCh36 non-confident detection must use GRCh36 as effective build.
 
-    Issue #6: when detection points to GRCh36 but isn't confident
+    When detection points to GRCh36 but isn't confident
     (matched < inspected), the pipeline was falling back to header_build
     or GRCh37. This bypassed the ClinVar safety guard (no GRCh36 cache)
     and silently annotated GRCh36 data against GRCh37 coordinates.
@@ -472,7 +472,7 @@ class TestGRCh36FlushFailSafe:
 
 
 class TestChrPrefixBuildDetection:
-    """GH #38: chr-prefix on contigs as a tertiary build-detection signal.
+    """chr-prefix on contigs as a tertiary build-detection signal.
 
     GRCh38 callers (DeepVariant, DRAGEN, GATK HC) use ``chr1`` /
     ``chrX``; GRCh37 uses bare ``1`` / ``X``. When rsID matching and
@@ -520,7 +520,7 @@ class TestChrPrefixBuildDetection:
         assert state.effective_build == "GRCh37"
 
     def test_grch36_detected_still_wins(self) -> None:
-        """GH #38 doesn't break the GRCh36 safety guard. Detected GRCh36
+        """doesn't break the GRCh36 safety guard. Detected GRCh36
         from position data takes priority over the chr-prefix tertiary
         signal — wrong build assignment from chr-prefix bypassing the
         guard would silently mis-annotate."""
@@ -544,7 +544,7 @@ class TestChrPrefixBuildDetection:
         assert state.effective_build == BUILD_GRCH36
 
     def test_diagnostics_flag_set_when_chr_prefix_picked_build(self) -> None:
-        """GH #38: chr_prefix_inferred is True exactly when the chr-prefix
+        """chr_prefix_inferred is True exactly when the chr-prefix
         signal is what picked the effective build — no override, no rsID
         detection, no header build, and the signal flipped the fallback
         from GRCh37 to GRCh38. The CLI uses this to print "Inferred
@@ -667,12 +667,15 @@ class TestGnomadEnrichment:
 class TestGrch38OnlyEnrichmentGuards:
     """GRCh38-only caches must never receive GRCh37 coordinates or alleles."""
 
-    def test_grch37_skips_all_enrichment_paths(self, tmp_path, monkeypatch) -> None:
+    def test_grch37_skips_all_enrichment_paths(self, tmp_path) -> None:
         """A real cross-build collision must not rewrite or enrich GRCh37 input.
+
+        Without the cross-build identity table (ADR-0040) GRCh37 input has no
+        way to reach GRCh38 coordinates, so nothing is enriched at all.
 
         In the production caches, GRCh37 chr6:26093236 G/A is rs1800758,
         while that same numeric coordinate in GRCh38 is rs2113764416 A/G.
-        Before the cross-build guard, the gnomAD reverse resolver could rewrite an array probe
+        Previously, the gnomAD reverse resolver could rewrite an array probe
         at the GRCh37 locus to the unrelated GRCh38 rsID. The second variant
         pins the symmetric rsID→GRCh38-REF hazard used by strand matching.
         """
@@ -792,11 +795,9 @@ class TestGrch38OnlyEnrichmentGuards:
             def version(self):
                 return "v1.7"
 
-        cadd_enrichment_calls = []
-        monkeypatch.setattr(
-            "allelix.reports._pipeline._enrich_cadd",
-            lambda *_args, **_kwargs: cadd_enrichment_calls.append(True),
-        )
+            def bulk_lookup(self, keys):
+                self.calls.append(("cadd", keys))
+                return {}
 
         gnomad = SpyGnomad()
         alphamissense = SpyAlphaMissense()
@@ -815,7 +816,7 @@ class TestGrch38OnlyEnrichmentGuards:
         assert result.hv_variants == []
         assert gnomad.calls == []
         assert alphamissense.calls == []
-        assert cadd_enrichment_calls == []
+        assert cadd.calls == []
         assert {name for name, _version in result.annotators_used}.isdisjoint(
             {"gnomad", "alphamissense", "cadd"}
         )
@@ -850,7 +851,7 @@ class TestAlphaMissenseEnrichment:
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "1",
-                    11856378,
+                    11796321,  # GRCh38: the MHG fixture is GRCh38
                     "G",
                     "A",
                     "rs1801133",
@@ -947,7 +948,7 @@ class TestEnrichmentExactVsFallback:
         from allelix.databases.gwas_loader import load_gwas_tsv
         from allelix.databases.schema import GWAS_SCHEMA
 
-        # GH #45: these were previously `pytest.skip(...)` guards. The
+        # these were previously `pytest.skip(...)` guards. The
         # mock fixture is committed (so the path-exists check should
         # never fail); is_ready() is exercised immediately after a
         # successful load (so it should never report not-ready). Silent
@@ -1117,88 +1118,90 @@ class TestCaddEnrichment:
 
 
 class TestCaddMultiAllelic:
-    """CADD enrichment at multi-allelic sites must use the user's allele, not max."""
+    """Enrichment at multi-allelic sites is keyed by the user's allele, never MAX.
+
+    Since release 2.4 (ADR-0040) every annotation is enriched through one
+    GRCh38 ``(chrom, pos, ref, alt)`` key built from its own locus, so the
+    safety properties are pinned on ``_enrichment_keys`` and
+    ``_enrich``.
+    """
+
+    @staticmethod
+    def _annotation(alt: str, carried: tuple[str, str], ref: str = "A", pos: int = 100):
+        from allelix.models import Annotation
+
+        return Annotation(
+            source="clinvar" if alt else "gwas",
+            rsid="rs999",
+            significance="clinvar_pathogenic" if alt else "gwas_association",
+            category="clinical",
+            magnitude=9.0,
+            description="test",
+            attribution="ClinVar",
+            genotype_match="".join(sorted(carried)),
+            alt=alt,
+            locus_ref=ref,
+            carried_alleles=carried,
+            locus=("1", pos),
+        )
+
+    @staticmethod
+    def _cadd(scores):
+        class MockCadd:
+            name = "cadd"
+
+            def is_ready(self):
+                return True
+
+            def bulk_lookup(self, keys):
+                return {k: v for k, v in scores.items() if k in keys}
+
+        return MockCadd()
+
+    def _run(self, annotations, scores):
+        from allelix.reports._pipeline import _enrich, _enrichment_keys
+
+        keyed = _enrichment_keys(annotations, "GRCh38", None)
+        _enrich(keyed, None, None, self._cadd(scores))
 
     def test_multiallelic_uses_user_allele_not_max(self) -> None:
         """At a multi-allelic site, CADD score must match the user's allele."""
-        from allelix.reports._pipeline import _lookup_user_allele
+        ann = self._annotation("C", ("A", "C"))
+        self._run([ann], {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0})
+        assert ann.cadd_phred == pytest.approx(5.0)
 
-        coords = [("1", 100, "A", "C"), ("1", 100, "A", "G")]
-        scores = {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0}
+    def test_alt_less_row_uses_the_single_carried_allele(self) -> None:
+        """an alt-less row (GWAS without a reported risk allele) is
+        enriched only through the allele the user actually carries, never
+        the MAX across alts. Carrying one non-reference allele, that is
+        unambiguous."""
+        ann = self._annotation("", ("A", "C"))
+        self._run([ann], {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0})
+        assert ann.cadd_phred == pytest.approx(5.0)
 
-        result = _lookup_user_allele("C", coords, scores)
-        assert result == pytest.approx(5.0)
-
-    def test_multiallelic_no_alt_skips_enrichment(self) -> None:
-        """GH #23 (suppress-half): annotations without an explicit alt
-        (raw GWAS rows; SNPedia drug-response rows in some shapes) used
-        to take a ``MAX(phred)`` fallback across all alts at the
-        position. At multi-allelic sites that stamps the highest-CADD
-        alt next to the annotation as if it described the user's
-        variant. Same wrong-allele hazard as the strand path fixed in
-        #18. Now: skip enrichment, leave ``cadd_phred=None``. The full
-        fix (carrying the user's alt onto every Annotation so GWAS rows
-        take the exact-alt path) is tracked for v2.1."""
-        from allelix.models import Annotation
-        from allelix.reports._pipeline import _enrich_cadd
-
-        coords = [("1", 100, "A", "C"), ("1", 100, "A", "G")]
-        scores = {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0}
-
-        ann = Annotation(
-            source="gwas",
-            rsid="rs999",
-            significance="gwas_association",
-            category="trait",
-            magnitude=9.0,
-            description="test",
-            attribution="GWAS Catalog",
-            genotype_match="AC",
-            alt="",  # GWAS rows always have alt=""
-        )
-
-        class MockGnomad:
-            def bulk_resolve_coordinates(self, rsids):
-                return {"rs999": coords}
-
-        class MockCadd:
-            def bulk_lookup(self, keys):
-                return scores
-
-        _enrich_cadd([ann], MockGnomad(), MockCadd())
-        # Was 30.0 (the MAX at this position). Now None — we don't know
-        # which alt the user carries, so we don't claim to.
+    def test_alt_less_row_with_two_carried_alts_skips_enrichment(self) -> None:
+        ann = self._annotation("", ("C", "G"))
+        self._run([ann], {("1", 100, "A", "C"): 5.0, ("1", 100, "A", "G"): 30.0})
         assert ann.cadd_phred is None
 
     def test_no_direct_match_returns_none(self) -> None:
-        """GH #18: complement-fallback removed. An allele that doesn't
-        directly match any alt at this position returns None — the
-        previous behavior accepted ``complement(user_alt) == alt`` and
-        coincidentally stamped a wrong-allele CADD score at multi-allelic
-        sites."""
-        from allelix.reports._pipeline import _lookup_user_allele
-
-        coords = [("1", 200, "C", "A")]
-        scores = {("1", 200, "C", "A"): 12.5}
-
-        # "T" does not match alt "A" directly; under the old code,
-        # complement("T") = "A" would have returned 12.5. Now: None.
-        result = _lookup_user_allele("T", coords, scores)
-        assert result is None
+        """no complement fallback. ``T`` is not ``A``; under the old
+        code complement("T") = "A" would have stamped 12.5."""
+        ann = self._annotation("T", ("C", "T"), ref="C", pos=200)
+        self._run([ann], {("1", 200, "C", "A"): 12.5})
+        assert ann.cadd_phred is None
 
     def test_audit_reproduction_skips_enrichment(self) -> None:
-        """GH #18 reproduction: a single-alt site (C → T) with the user
-        carrying "A". complement("A") = "T" coincidentally matches the
-        alt under the old code, stamping the C→T CADD score onto an
-        annotation describing the user's "A" carrier. The fix returns
-        None so the score is not stamped."""
-        from allelix.reports._pipeline import _lookup_user_allele
+        """reproduction: single-alt site C>T, user carries A."""
+        ann = self._annotation("A", ("C", "A"), ref="C", pos=300)
+        self._run([ann], {("1", 300, "C", "T"): 25.0})
+        assert ann.cadd_phred is None
 
-        coords = [("1", 300, "C", "T")]
-        scores = {("1", 300, "C", "T"): 25.0}
-
-        result = _lookup_user_allele("A", coords, scores)
-        assert result is None
+    def test_unknown_reference_skips_enrichment(self) -> None:
+        ann = self._annotation("C", ("A", "C"))
+        ann.locus_ref = None
+        self._run([ann], {("1", 100, "A", "C"): 5.0})
+        assert ann.cadd_phred is None
 
 
 class TestBatchedPipeline:
@@ -1357,7 +1360,7 @@ class TestBatchedPipeline:
 
 
 class TestRsidlessVcfResolution:
-    """End-to-end: rsID-less VCFs from variant callers get annotated. GH #8.
+    """End-to-end: rsID-less VCFs from variant callers get annotated. .
 
     Real VCFs from GATK HaplotypeCaller, DeepVariant, etc. write `.` to the
     ID column. Before the resolver landed, every annotator returned zero
@@ -1438,7 +1441,7 @@ class TestRsidlessVcfResolution:
         The ID column is non-empty so a naive ``if not v.rsid`` filter would
         skip resolution, but those IDs are not real rsIDs — no rsID-keyed
         annotator can match them. The filter pivots on "doesn't start with
-        rs" instead. GH #8.
+        rs" instead. .
         """
         from pathlib import Path
 
@@ -1473,7 +1476,7 @@ class TestRsidlessVcfResolution:
         the input VCF has the variant as ``ID=.`` at chr1:11856378 (resolves to
         rs1801133), and ``hv_variants`` ends up empty because the legacy
         per-variant match in ``_accept`` ran with ``v.rsid == ""`` before
-        resolution had a chance to mutate it. GH #11. The hv_set check runs at
+        resolution had a chance to mutate it. . The hv_set check runs at
         the tail of ``_flush()`` instead, after ``bulk_resolve_rsids`` has
         settled v.rsid for the whole batch.
         """

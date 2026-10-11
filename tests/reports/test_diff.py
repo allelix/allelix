@@ -123,7 +123,7 @@ class TestComputeDiff:
         assert diff.changed[0].previous_magnitude == 9.0
 
     def test_magnitude_representation_noise_not_flagged(self) -> None:
-        """GH #25: exact float `!=` flagged JSON round-trip noise as
+        """exact float `!=` flagged JSON round-trip noise as
         changed (7.5 vs 7.499999999999999). Use `math.isclose` so only
         meaningful magnitude differences surface."""
         current = [_ann(magnitude=7.5)]
@@ -132,7 +132,7 @@ class TestComputeDiff:
         assert diff.changed == []
 
     def test_missing_previous_magnitude_not_flagged_against_zero(self) -> None:
-        """GH #25: a baseline entry without a magnitude key used to be
+        """a baseline entry without a magnitude key used to be
         treated as previous_magnitude=0.0, so any current magnitude
         looked like a change. Now an absent previous magnitude (and
         unchanged significance) is NOT flagged."""
@@ -288,7 +288,7 @@ class TestLoadPreviousReport:
         assert data["schema_version"] == "5"
 
     def test_accepts_v6_baseline(self, tmp_path: Path) -> None:
-        """GH #75 bump: v6 baselines (with panel_coverage) load without error."""
+        """bump: v6 baselines (with panel_coverage) load without error."""
         report = {
             "schema_version": "6",
             "generated_at": "2026-06-18T00:00:00",
@@ -315,7 +315,7 @@ class TestLoadPreviousReport:
             load_previous_report(path)
 
     def test_annotations_not_a_list_raises_value_error(self, tmp_path: Path) -> None:
-        """GH #25: a baseline with `annotations` as a dict (e.g. someone
+        """a baseline with `annotations` as a dict (e.g. someone
         edited the JSON by hand) used to flow through to `compute_diff`
         and raise a less helpful TypeError on iteration. Now caught at
         load with a ValueError."""
@@ -326,7 +326,7 @@ class TestLoadPreviousReport:
             load_previous_report(path)
 
     def test_annotation_entry_missing_source_raises_value_error(self, tmp_path: Path) -> None:
-        """GH #25: previously `compute_diff` indexed `d['source']`
+        """previously `compute_diff` indexed `d['source']`
         unguarded and raised KeyError. Now caught at load."""
         ann = _ann_dict()
         del ann["source"]

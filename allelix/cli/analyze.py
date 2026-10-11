@@ -20,6 +20,8 @@ from allelix.cli._options import (
     _GWAS_ALL_OPT,
     _GWAS_MIN_MAG_OPT,
     _INCLUDE_BENIGN_OPT,
+    _KEEP_FILTERED_OPT,
+    _MIN_GQ_OPT,
     _MIN_MAG_OPT,
     _NO_ALPHAMISSENSE_OPT,
     _NO_CADD_OPT,
@@ -62,6 +64,8 @@ if TYPE_CHECKING:
 @_NO_ALPHAMISSENSE_OPT
 @_NO_CADD_OPT
 @_SAMPLE_OPT
+@_KEEP_FILTERED_OPT
+@_MIN_GQ_OPT
 @_VCF_OUT_OPT
 def analyze(
     file_path: Path,
@@ -84,6 +88,8 @@ def analyze(
     no_alphamissense: bool,
     no_cadd: bool,
     sample: str | None,
+    keep_filtered: bool,
+    min_gq: int,
     vcf_out: Path | None,
 ) -> None:
     """Annotate a genotype file against all ready reference databases."""
@@ -116,5 +122,7 @@ def analyze(
         no_alphamissense=no_alphamissense,
         no_cadd=no_cadd,
         sample=sample,
+        keep_filtered=keep_filtered,
+        min_gq=min_gq,
         vcf_out=vcf_out,
     )

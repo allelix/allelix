@@ -18,7 +18,7 @@ import re
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor
+from allelix.annotators.base import Annotator, LicenseDescriptor, variant_locus
 from allelix.databases import manager as _manager_module
 from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.manager import (
@@ -30,7 +30,12 @@ from allelix.databases.manager import (
     verify_file_hash,
 )
 from allelix.models import Annotation
-from allelix.utils.allele import strand_aware_carrier_match
+from allelix.utils.allele import (
+    carried_in_source_orientation,
+    complement,
+    resolve_rsid_at_locus,
+    strand_aware_carrier_match,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -44,7 +49,7 @@ CLINVAR_SUPPORTED_BUILDS: tuple[str, ...] = ("GRCh37", "GRCh38")
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
-# GH #21: a remote .md5 endpoint can return an HTML error page on a
+# a remote .md5 endpoint can return an HTML error page on a
 # transient blip. The first whitespace-separated token of the body is
 # what we treat as the hash, so without this gate `<!DOCTYPE` would be
 # accepted as the "signal" and later passed to `verify_file_hash`, which
@@ -92,7 +97,7 @@ def _magnitude(clnsig: str) -> float:
     return _CLNSIG_MAGNITUDE.get(_normalize_clnsig(clnsig), 5.0)
 
 
-# GH #109: ClinVar review-status ranking — lower index = stronger
+# ClinVar review-status ranking — lower index = stronger
 # evidence per ClinVar's star-rating documentation. Used to pick the
 # winning row when N SCVs with identical (significance, condition,
 # gene) tuples collapse during per-SCV dedup; the surviving Annotation
@@ -133,7 +138,7 @@ def _review_status_rank(status: str) -> int:
 
 
 def _collapse_identical_scvs(annotations: list[Annotation]) -> list[Annotation]:
-    """Collapse identical per-SCV rows from the #42 TSV loader (GH #109).
+    """Collapse identical per-SCV rows from the TSV loader.
 
     Two Annotations are identical for dedup purposes if they share
     (rsid, significance, condition, gene, alt). The surviving row carries:
@@ -144,21 +149,21 @@ def _collapse_identical_scvs(annotations: list[Annotation]) -> list[Annotation]:
         (preserving first-seen order — never silently drops provenance)
 
     Distinct (significance, condition) pairs on the same variant are
-    preserved as separate rows — that's exactly what #42 was built to
+    preserved as separate rows — that's exactly what the per-SCV loader was built to
     surface, and collapsing them would be the Frankenstein-pair
-    regression #42 retired.
+    regression the per-SCV loader retired.
 
-    GH #109 cross-PR review (Finding 1): ``alt`` is in the key for the
-    #18 wrong-allele safety invariant. Two SCVs at a multi-allelic site
+    cross-PR review (Finding 1): ``alt`` is in the key for the
+    wrong-allele safety invariant. Two SCVs at a multi-allelic site
     can share (significance, condition, gene) but differ in alt — e.g.
     rs1065852 (G→A drug_response/Codeine_response + G→C drug_response/
     Codeine_response would be a hypothetical). Collapsing across alts
     would (a) drop a distinct-allele annotation and (b) mis-attach the
     surviving row's ``alt`` field to the merged result, breaking the
     downstream exact-(rsid, alt) lookup that gnomAD / AlphaMissense /
-    CADD use for allele-specific enrichment. The pre-#109 v2.2.0 code
+    CADD use for allele-specific enrichment. The previous v2.2.0 code
     emitted one Annotation per cache row, so this case was always
-    handled correctly; the post-#109 dedup must preserve that property.
+    handled correctly; the current dedup must preserve that property.
 
     Input order is preserved for the kept rows: each group is replaced
     by its winner at the position of the group's first occurrence.
@@ -278,7 +283,7 @@ class ClinVarAnnotator(Annotator):
     def setup(self) -> None:
         """Download the per-SCV TSV pair once and ingest both builds from it.
 
-        v2.2 #42 stage B: the VCF-per-build path is replaced by the
+        v2.2 stage B: the VCF-per-build path is replaced by the
         variant_summary + submission_summary TSV pair. variant_summary
         carries per-(VariationID, Assembly) rows so the same downloaded
         file populates both GRCh37 and GRCh38 caches with no second
@@ -440,7 +445,7 @@ class ClinVarAnnotator(Annotator):
         # may have BOTH SNV and indel rows for the same rsid; the WHERE
         # filters those out so we keep only the SNV REF.
         #
-        # GH #28 item 1: iterate the cursor directly instead of fetchall()
+        # item 1: iterate the cursor directly instead of fetchall()
         # so peak memory is one row + the dict, not the entire result set
         # twice.
         cursor = conn.execute(
@@ -458,7 +463,7 @@ class ClinVarAnnotator(Annotator):
     def fetch_remote_signal(self) -> str | None:
         r"""Freshness signal derived from the per-SCV submission_summary md5.
 
-        v2.2 #42 stage B: pre-stage-B this returned a composite VCF-md5
+        v2.2 stage B: pre-stage-B this returned a composite VCF-md5
         per build. After stage B, the cache is built from a build-agnostic
         TSV pair, and submission_summary's md5 endpoint is the change
         cadence we want to track (per-SCV submissions land daily; the
@@ -521,33 +526,213 @@ class ClinVarAnnotator(Annotator):
         return signals.pop()
 
     def annotate(self, variant: Variant) -> list[Annotation]:
-        """Return ClinVar annotations whose REF/ALT matches the user's genotype.
+        """Return ClinVar annotations for the alleles the user carries.
 
-        ADR-0007 carrier rule: an entry triggers only if `variant.allele1`
-        or `variant.allele2` equals the entry's ALT allele.
-        ADR-0011 indel-anchor protection: array-based parsers report
-        single-base genotypes; ClinVar's anchor-base indel encoding
-        does not match those by string equality.
-        ADR-0021: dispatch by `variant.build`. If the matching cache is
-        absent, the variant is skipped silently — the user already saw
-        the analyze-time build warning.
+        Rows are selected by locus, never by rsID alone:
+        the cache is queried at ``(chromosome, position)`` and a row
+        annotates only when its REF agrees with ``variant.ref`` (when
+        known) and the user carries its ALT. See ``_annotations_for``.
+
+        ADR-0007 carrier rule, ADR-0011 indel-anchor protection and
+        ADR-0035 strand-aware matching apply per row. ADR-0021: dispatch
+        by ``variant.build``; a missing cache yields no annotations (the
+        analyze-time build warning already told the user).
         """
         if variant.is_no_call:
             return []
         conn = self._connection(variant.build)
         if conn is None:
             return []
-        rows = conn.execute(
-            "SELECT chromosome, position, ref, alt, clinical_significance, "
-            "condition, gene, review_status, allele_id "
-            "FROM clinvar_variants WHERE rsid = ?",
-            (variant.rsid,),
-        ).fetchall()
-        annotations: list[Annotation] = []
+        rows = self._rows_at_loci(conn, [variant]).get(variant_locus(variant), [])
+        known = self._loci_of_rsids(conn, [variant])
+        return self._annotations_for(variant, rows, known.get(variant.rsid))
+
+    def bulk_resolve_rsids(self, variants: list[Variant]) -> dict[tuple[str, int, str, str], str]:
+        """Resolve rsIDs by locus for variants with no usable ID.
+
+        Real-world VCFs from variant callers (GATK HaplotypeCaller,
+        DeepVariant) emit ``ID=.``. This queries ClinVar at
+        ``(chromosome, position)`` and stamps ``variant.rsid`` in place
+        when ``resolve_rsid_at_locus`` finds exactly one rsID whose rows
+        explain every allele the user carries (duplicate
+        per-SCV rows and ``1/2`` calls carrying two alts both resolve).
+
+        Groups by ``variant.build`` and dispatches per-build (ADR-0021).
+
+        The returned ``{(chrom, pos, ref, alt): rsid}`` mapping carries
+        the resolved coordinates so the pipeline's enrichment phase can
+        do position-keyed gnomAD / AlphaMissense lookups. Only variants
+        carrying a single alt contribute an entry: a ``1/2`` call has no
+        single allele to stand for the rsID.
+        """
+        by_build: dict[str, list[Variant]] = {}
+        for v in variants:
+            if v.is_no_call or not v.chromosome or v.position <= 0:
+                continue
+            if v.ref is None:
+                # A call with neither an rsID nor a reference allele (array
+                # vendor probes such as 23andMe ``i5000123``) has nothing to
+                # confirm that the ClinVar row at its position is the same
+                # variant; stay silent rather than guess.
+                continue
+            by_build.setdefault(v.build, []).append(v)
+
+        resolved: dict[tuple[str, int, str, str], str] = {}
+        for build, build_variants in by_build.items():
+            conn = self._connection(build)
+            if conn is None:
+                continue
+            rows_at = self._rows_at_loci(conn, build_variants)
+            for v in build_variants:
+                rows = rows_at.get(variant_locus(v))
+                if not rows:
+                    continue
+                hit = resolve_rsid_at_locus(
+                    v.ref,
+                    v.allele1,
+                    v.allele2,
+                    [(row[_R_REF], row[_R_ALT], row[_R_RSID]) for row in rows],
+                )
+                if hit is None:
+                    continue
+                rsid, pair = hit
+                # stash the pre-resolution pseudo-rsID for audit /
+                # debug before stamping. Debug-only — see
+                # Variant.original_rsid docstring; the serialization-guard
+                # test asserts this never reaches public output.
+                v.original_rsid = v.rsid
+                v.rsid = rsid
+                if pair is not None:
+                    resolved[(v.chromosome, v.position, *pair)] = rsid
+        return resolved
+
+    def batch_annotate(self, variants: Iterable[Variant]) -> Iterator[Annotation]:
+        """Bulk-annotate via chunked locus queries per build.
+
+        ClinVar holds one SQLite cache per build (ADR-0021). Variants are
+        grouped by ``variant.build`` and each group's loci are fetched
+        with chunked ``WHERE chromosome = ? AND position IN (...)``
+        queries. Per-row filtering is shared with ``annotate`` through
+        ``_annotations_for``, so the two paths cannot diverge.
+
+        Variants whose build has no cache loaded are skipped silently —
+        the build warning was already emitted at analyze time.
+        """
+        by_build: dict[str, list[Variant]] = {}
+        for v in variants:
+            if not v.is_no_call:
+                by_build.setdefault(v.build, []).append(v)
+        for build, build_variants in by_build.items():
+            conn = self._connection(build)
+            if conn is None:
+                continue
+            rows_at = self._rows_at_loci(conn, build_variants)
+            known = self._loci_of_rsids(conn, build_variants)
+            for variant in build_variants:
+                rows = rows_at.get(variant_locus(variant))
+                if rows:
+                    yield from self._annotations_for(variant, rows, known.get(variant.rsid))
+
+    def _rows_at_loci(
+        self, conn: sqlite3.Connection, variants: Iterable[Variant]
+    ) -> dict[tuple[str, int], list[tuple]]:
+        """Fetch every cache row at the variants' loci, keyed by ``(chrom, pos)``.
+
+        Rows come back in insertion order (``ORDER BY id``) so the per-SCV
+        collapse and the resolver see a deterministic sequence regardless
+        of SQLite's physical row order.
+        """
+        by_chrom: dict[str, set[int]] = {}
+        for v in variants:
+            if v.chromosome and v.position > 0:
+                chrom, pos = variant_locus(v)
+                by_chrom.setdefault(chrom, set()).add(pos)
+        out: dict[tuple[str, int], list[tuple]] = {}
+        for chrom, positions in by_chrom.items():
+            position_list = sorted(positions)
+            for start in range(0, len(position_list), _BATCH_CHUNK):
+                chunk = position_list[start : start + _BATCH_CHUNK]
+                placeholders = ",".join("?" * len(chunk))
+                cursor = conn.execute(
+                    f"SELECT chromosome, position, ref, alt, clinical_significance, "
+                    f"condition, gene, review_status, allele_id, rsid "
+                    f"FROM clinvar_variants "
+                    f"WHERE chromosome = ? AND position IN ({placeholders}) ORDER BY id",
+                    (chrom, *chunk),
+                )
+                for row in cursor:
+                    out.setdefault((row[0], row[1]), []).append(row)
+        return out
+
+    def _loci_of_rsids(
+        self, conn: sqlite3.Connection, variants: Iterable[Variant]
+    ) -> dict[str, set[tuple[str, int]]]:
+        """Where ClinVar places each input rsID on this build, keyed by rsID."""
+        rsids = sorted({v.rsid for v in variants if v.rsid.startswith("rs")})
+        out: dict[str, set[tuple[str, int]]] = {}
+        for start in range(0, len(rsids), _BATCH_CHUNK):
+            chunk = rsids[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, chrom, pos in conn.execute(
+                f"SELECT DISTINCT rsid, chromosome, position FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders})",
+                chunk,
+            ):
+                out.setdefault(rsid, set()).add((chrom, pos))
+        return out
+
+    def _annotations_for(
+        self,
+        variant: Variant,
+        rows: list[tuple],
+        rsid_loci: set[tuple[str, int]] | None = None,
+    ) -> list[Annotation]:
+        """Turn the cache rows at a variant's locus into Annotations.
+
+        A row annotates only when all of these hold:
+
+        - REF != ALT. ClinVar's reference-allele records (HGVS ``=``,
+          e.g. ``c.1601=``) carry REF == ALT; they describe the reference
+          allele, never a variant the user carries.
+        - The row's REF agrees with ``variant.ref`` when the input supplies
+          one (directly, or as the complement for a reverse-stranded
+          input). Together with the locus this identifies the variant by
+          ``(chrom, pos, ref, alt)`` rather than by rsID.
+        - ADR-0011: ClinVar indels never match single-base array calls.
+        - ADR-0035 PR 4 / ADR-0007: the user carries the ALT, directly or
+          via a confirmed strand flip.
+        - Benign rows are suppressed unless ``include_benign``.
+
+        Two guards decide whether the locus may be matched at all:
+
+        - A call with no reference allele and no rsID (array vendor probes
+          such as 23andMe ``i5000123``) is never locus-matched: nothing
+          confirms that the row at its position describes the same
+          variant. The pipeline never infers a REF for such a call from
+          position (the identity table fills REF only for rsID-carrying
+          calls), so a no-rsID call with a REF is a VCF record whose REF
+          came from the file, and the REF check applies to it.
+        - When the input carries an rsID that ClinVar places elsewhere
+          (``rsid_loci``, every position ClinVar records for that rsID on
+          this build) and not at the input's locus, the rows at the locus
+          belong to a different variant and are not reported under the
+          input's rsID. An rsID ClinVar does not hold at all (a retired or
+          merged ID) still matches by locus.
+
+        The Annotation's rsID is the input's when it has one, otherwise
+        the matching row's. identical per-SCV rows collapse.
+        """
+        if variant.is_no_call:
+            return []
+        if variant.ref is None and not variant.rsid.startswith("rs"):
+            return []
+        if rsid_loci and variant_locus(variant) not in rsid_loci:
+            return []
         user_is_multibase = len(variant.allele1) > 1 or len(variant.allele2) > 1
         # ADR-0023: report the user's actual diploid call consistently
         # across annotators, not the matched ALT base alone.
         user_diploid = _user_diploid(variant)
+        annotations: list[Annotation] = []
         for row in rows:
             (
                 _chrom,
@@ -559,15 +744,15 @@ class ClinVarAnnotator(Annotator):
                 gene,
                 review_status,
                 allele_id,
+                row_rsid,
             ) = row
+            if ref == alt:
+                continue
+            if variant.ref is not None and variant.ref not in (ref, complement(ref)):
+                continue
             clinvar_is_indel = len(ref) > 1 or len(alt) > 1
             if clinvar_is_indel and not user_is_multibase:
                 continue
-            # ADR-0035 PR 4: strand-aware carrier match. Direct {ref, alt}
-            # membership still covers forward-stranded inputs; the
-            # complement-fallback path fires only when Variant.ref confirms
-            # reverse orientation AND the site isn't palindromic — preserving
-            # the v2.0.1 #18 multi-allelic safety invariant.
             if not strand_aware_carrier_match(
                 variant.ref, variant.allele1, variant.allele2, ref, alt
             ):
@@ -583,7 +768,7 @@ class ClinVarAnnotator(Annotator):
             annotations.append(
                 Annotation(
                     source=self.name,
-                    rsid=variant.rsid,
+                    rsid=variant.rsid if variant.rsid.startswith("rs") else row_rsid,
                     significance=f"clinvar_{sig_label}",
                     category="clinical",
                     magnitude=_magnitude(clnsig),
@@ -595,205 +780,20 @@ class ClinVarAnnotator(Annotator):
                     gene=gene or "",
                     review_status=review_status or "",
                     alt=alt,
+                    locus_ref=ref,
+                    carried_alleles=carried_in_source_orientation(
+                        variant.allele1, variant.allele2, alt
+                    ),
+                    locus=variant_locus(variant),
                 )
             )
-        # GH #109: collapse identical per-SCV rows from the #42 TSV loader.
-        # Without this, a variant with N identical Pathogenic submissions
-        # emits N identical Annotation objects (visible duplicates on every
-        # surface). Distinct (significance, condition) pairs survive.
         return _collapse_identical_scvs(annotations)
 
-    def bulk_resolve_rsids(self, variants: list[Variant]) -> dict[tuple[str, int, str, str], str]:
-        """Resolve rsIDs by (chromosome, position) for variants with no ID.
 
-        Real-world VCFs from variant callers (GATK HaplotypeCaller,
-        DeepVariant) emit ``ID=.`` — no rsID. The annotation pipeline is
-        rsID-keyed, so without resolution every annotator returns zero
-        hits. This method queries ClinVar by ``(chromosome, position)``,
-        disambiguates multi-allelic rows by matching ClinVar's ALT
-        against the user's carrier alleles (ADR-0007 carrier rule),
-        and mutates each input variant's ``rsid`` field in-place when
-        a match is found.
-
-        Groups by ``variant.build`` and dispatches per-build (ADR-0021).
-        Variants not in ClinVar are left with empty ``rsid`` —
-        downstream rsID-keyed annotators (ClinPGx, GWAS, SNPedia)
-        correctly skip them.
-
-        The returned ``{(chrom, pos, ref, alt): rsid}`` mapping carries
-        the resolved coordinates so callers (e.g. the pipeline's
-        enrichment phase) can do position-based gnomAD / AlphaMissense
-        lookups for variants whose rsID-keyed enrichment misses.
-        """
-        by_build: dict[str, list[Variant]] = {}
-        for v in variants:
-            if v.is_no_call or not v.chromosome or v.position <= 0:
-                continue
-            by_build.setdefault(v.build, []).append(v)
-
-        resolved: dict[tuple[str, int, str, str], str] = {}
-        for build, build_variants in by_build.items():
-            conn = self._connection(build)
-            if conn is None:
-                continue
-            by_chrom: dict[str, set[int]] = {}
-            for v in build_variants:
-                by_chrom.setdefault(v.chromosome, set()).add(v.position)
-            clinvar_rows: dict[tuple[str, int], list[tuple[str, str, str]]] = {}
-            for chrom, positions in by_chrom.items():
-                position_list = list(positions)
-                for start in range(0, len(position_list), _BATCH_CHUNK):
-                    chunk = position_list[start : start + _BATCH_CHUNK]
-                    placeholders = ",".join("?" * len(chunk))
-                    cursor = conn.execute(
-                        f"SELECT chromosome, position, ref, alt, rsid "
-                        f"FROM clinvar_variants "
-                        f"WHERE chromosome = ? AND position IN ({placeholders})",
-                        (chrom, *chunk),
-                    )
-                    for c, p, ref, alt, rsid in cursor:
-                        if not rsid:
-                            continue
-                        clinvar_rows.setdefault((c, p), []).append((ref, alt, rsid))
-            # Sort each position's rows for deterministic carrier-match
-            # selection. Without this, the row iteration order depends on
-            # SQLite's physical row order, which can change after VACUUM,
-            # version upgrades, or even per-run cache loads. Tuple sort is
-            # lexicographic over (ref, alt, rsid) — stable across runs.
-            for rows in clinvar_rows.values():
-                rows.sort()
-            for v in build_variants:
-                pos_rows = clinvar_rows.get((v.chromosome, v.position))
-                if not pos_rows:
-                    continue
-                rows = pos_rows
-                user_alleles = {v.allele1, v.allele2}
-                # Stamp only on a UNIQUE consistent match. Multiple matches
-                # mean the Variant model can't distinguish them (the 1/1
-                # hom-alt case at a shared-anchor position is the canonical
-                # example — both rows pass the subset check and there's no
-                # REF info in the Variant to break the tie). Abstaining is
-                # safer than picking by sort order: the variant just
-                # doesn't get rsid-keyed annotations rather than getting
-                # the wrong ones. Zero matches → abstain. Single match →
-                # stamp. Two+ → abstain. A future Variant.ref field (v2.1+)
-                # would let the resolver disambiguate the ambiguous cases.
-                matches = [
-                    (ref, alt, rsid)
-                    for ref, alt, rsid in rows
-                    if ref != alt and user_alleles.issubset({ref, alt})
-                ]
-                if len(matches) == 1:
-                    ref, alt, rsid = matches[0]
-                    # GH #128: stash the pre-resolution pseudo-rsID
-                    # for audit / debug before stamping. Debug-only —
-                    # see Variant.original_rsid docstring; the
-                    # serialization-guard test asserts this never
-                    # reaches public output.
-                    v.original_rsid = v.rsid
-                    v.rsid = rsid
-                    resolved[(v.chromosome, v.position, ref, alt)] = rsid
-        return resolved
-
-    def batch_annotate(self, variants: Iterable[Variant]) -> Iterator[Annotation]:
-        """Bulk-annotate via chunked ``WHERE rsid IN (...)`` queries per build.
-
-        ClinVar holds one SQLite cache per build (ADR-0021). Variants
-        are grouped by ``variant.build`` and each group queried against
-        its own connection. Per-variant filters (no-call rejection,
-        carrier-allele match, indel-anchor protection per ADR-0011,
-        benign suppression) match ``annotate`` exactly.
-
-        Variants whose build has no cache loaded are skipped silently —
-        the build warning was already emitted at analyze time.
-        """
-        variants_list = [v for v in variants if not v.is_no_call]
-        if not variants_list:
-            return
-
-        # Group by build; ClinVar dispatches by build per ADR-0021
-        by_build: dict[str, list[Variant]] = {}
-        for v in variants_list:
-            by_build.setdefault(v.build, []).append(v)
-
-        # Per-build chunked SQL — collect rsid → rows per build
-        rows_by_build_rsid: dict[tuple[str, str], list[tuple]] = {}
-        for build, build_variants in by_build.items():
-            conn = self._connection(build)
-            if conn is None:
-                continue
-            rsids = list({v.rsid for v in build_variants})
-            for start in range(0, len(rsids), _BATCH_CHUNK):
-                chunk = rsids[start : start + _BATCH_CHUNK]
-                placeholders = ",".join("?" * len(chunk))
-                cursor = conn.execute(
-                    f"SELECT rsid, chromosome, position, ref, alt, clinical_significance, "
-                    f"condition, gene, review_status, allele_id "
-                    f"FROM clinvar_variants WHERE rsid IN ({placeholders})",
-                    chunk,
-                )
-                for row in cursor:
-                    rows_by_build_rsid.setdefault((build, row[0]), []).append(row[1:])
-
-        for variant in variants_list:
-            rows = rows_by_build_rsid.get((variant.build, variant.rsid))
-            if not rows:
-                continue
-            user_is_multibase = len(variant.allele1) > 1 or len(variant.allele2) > 1
-            user_diploid = _user_diploid(variant)
-            # GH #109: collect per-variant Annotations and dedup before
-            # yielding, mirroring the annotate() collapse. Without this,
-            # bulk callers (the analyze pipeline goes through
-            # batch_annotate) leak the same per-SCV duplicates the
-            # single-variant path used to.
-            variant_annotations: list[Annotation] = []
-            for row in rows:
-                (
-                    _chrom,
-                    _pos,
-                    ref,
-                    alt,
-                    clnsig,
-                    condition,
-                    gene,
-                    review_status,
-                    allele_id,
-                ) = row
-                clinvar_is_indel = len(ref) > 1 or len(alt) > 1
-                if clinvar_is_indel and not user_is_multibase:
-                    continue
-                # ADR-0035 PR 4: strand-aware carrier match. See annotate() for
-                # the safety rationale (#18 multi-allelic invariant preserved).
-                if not strand_aware_carrier_match(
-                    variant.ref, variant.allele1, variant.allele2, ref, alt
-                ):
-                    continue
-                sig_label = _normalize_clnsig(clnsig) if clnsig else "unknown"
-                if not self._include_benign and sig_label in _BENIGN_CLNSIGS:
-                    continue
-                description = (
-                    f"ClinVar classifies this allele as "
-                    f"{clnsig.replace('_', ' ') if clnsig else 'unknown significance'}"
-                )
-                references = [f"clinvar:allele/{allele_id}"] if allele_id else []
-                variant_annotations.append(
-                    Annotation(
-                        source=self.name,
-                        rsid=variant.rsid,
-                        significance=f"clinvar_{sig_label}",
-                        category="clinical",
-                        magnitude=_magnitude(clnsig),
-                        description=description,
-                        attribution=self.attribution,
-                        genotype_match=user_diploid,
-                        references=references,
-                        condition="" if not condition or condition == "." else condition,
-                        gene=gene or "",
-                        review_status=review_status or "",
-                        alt=alt,
-                    )
-                )
-            yield from _collapse_identical_scvs(variant_annotations)
+# Column positions in ``_rows_at_loci`` rows used outside the unpacking.
+_R_REF = 2
+_R_ALT = 3
+_R_RSID = 9
 
 
 def _user_diploid(variant: Variant) -> str:

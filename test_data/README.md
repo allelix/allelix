@@ -22,8 +22,8 @@ verification.
   canonical-header tightening, P-B GRCh36 position detection, MHG/Tempus
   build-mismatch warning, unsupported formats). Documented in
   `edge_cases/README.md`.
-- **`databases/`** — Pinned annotator databases. **Gitignored** (~16 GB
-  without the optional CADD cache; ~22 GB with it).
+- **`databases/`** — Pinned annotator databases. **Gitignored** (~17 GB
+  without the optional CADD cache; ~23 GB with it).
   Restore via `allelix db update --data-dir test_data/databases`.
 
 ## Directory layout

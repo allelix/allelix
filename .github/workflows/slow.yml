@@ -2,7 +2,7 @@ name: Slow suite
 
 # Real-data / network / binary-dependent tests. Excluded from PR CI (they run
 # locally pre-commit per CONTRIBUTING.md). Run here on a weekly schedule so
-# upstream drift — notably ClinVar CLNSIG vocabulary changes (R-4) — is still
+# upstream drift — notably ClinVar CLNSIG vocabulary changes — is still
 # caught in CI, plus on demand via the Actions tab.
 on:
   schedule:

@@ -20,8 +20,15 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from allelix import __version__
-from allelix.reports import REGULATORY_NOTICE, atomic_write_text
+from allelix.reports import (
+    REGULATORY_NOTICE,
+    atomic_write_text,
+    input_method_label,
+    is_imputed,
+    vcf_quality_lines,
+)
 from allelix.reports._pipeline import rollup_gwas_duplicates
+from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS, most_severe
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -260,6 +267,9 @@ tbody tr.selected {
   font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
 }
+.plaus { margin-left: 6px; cursor: help; font-family: sans-serif; }
+.plaus-implausible { color: var(--notice-warn-border); }
+.plaus-suspicious  { color: var(--notice-border); }
 .sum-cell {
   overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 0;
@@ -368,6 +378,35 @@ footer {
 }
 """
 
+# The array caveat in "Reading This Report", and its replacement for input
+# whose genotypes are imputed (MyHeritage low-pass WGS).
+_PSEUDOGENE_NOTE = """\
+<h3>Pseudogene cross-hybridization</h3>
+<p>Some genes have known pseudogenes with high sequence similarity
+(e.g., PKD1 has six pseudogenes sharing &gt;97% identity). Array-based
+genotyping probes can cross-hybridize, producing false genotype calls.
+If a result seems inconsistent with your health history, confirmatory
+testing by a different method is recommended.</p>
+"""
+
+_IMPUTATION_NOTE = """\
+<h3>Imputed genotypes</h3>
+<p>This file comes from low-pass whole genome sequencing: each position was
+read only about twice, and most genotypes were filled in (imputed) from a
+reference panel of other people. Imputation is accurate for common variants
+and least reliable for rare ones, which are the variants most findings in this
+report are about. Confirm any finding by direct genotyping before acting on
+it.</p>
+"""
+
+
+def _education_section(input_method: str) -> str:
+    """The "Reading This Report" section, with the caveat that fits the input."""
+    if is_imputed(input_method):
+        return _EDUCATION_SECTION.replace(_PSEUDOGENE_NOTE, _IMPUTATION_NOTE)
+    return _EDUCATION_SECTION
+
+
 _EDUCATION_SECTION = """\
 <details class="education">
 <summary><strong>Reading This Report</strong></summary>
@@ -475,6 +514,31 @@ missense variants. Score 0&ndash;1; higher = more likely pathogenic.</p>
 # ---------------------------------------------------------------------------
 
 
+def _input_method_banner(method: str) -> str:
+    """The input's declared genotyping method, e.g. MyHeritage low-pass WGS."""
+    label = input_method_label(method)
+    if not label:
+        return ""
+    caution = (
+        " Rare variants are the least reliable imputed calls; confirm any finding by"
+        " direct genotyping."
+        if is_imputed(method)
+        else ""
+    )
+    return (
+        '<div class="notice"><strong>Input method.</strong> '
+        f"{_escape(label[0].upper() + label[1:])}.{_escape(caution)}</div>"
+    )
+
+
+def _vcf_quality_banner(lines: list[str]) -> str:
+    """Rows the variant caller filtered and low-quality calls."""
+    if not lines:
+        return ""
+    items = "".join(f"<li>{_escape(line)}</li>" for line in lines)
+    return f'<div class="notice"><strong>Input quality.</strong><ul>{items}</ul></div>'
+
+
 def _hv_nocall_banner(warnings: list[str] | None) -> str:
     if not warnings:
         return ""
@@ -491,7 +555,7 @@ def _panel_coverage_section(
     panel_genotypes: dict[str, str] | None = None,
     parser_name: str = "",
 ) -> str:
-    """GH #75 / #120 / #128: render the Panel Coverage section.
+    """Render the Panel Coverage section.
 
     Quiet when no panel was supplied. Otherwise show the requested/found
     counts plus a table of rsIDs that weren't in the input (state 3)
@@ -499,16 +563,16 @@ def _panel_coverage_section(
     State 1 hits render in the main annotation table as before, so
     this section is purely a "what's NOT in the table" summary.
 
-    GH #120: when ``panel_genotypes`` is supplied (the rsid → "A/G"
+    when ``panel_genotypes`` is supplied (the rsid → "A/G"
     map collected during run_analysis), a GT column is added between
     rsID and Note. Genotyped rsIDs (state 2 + no-call) render their
     literal call — including "-/-" for full no-calls and "A/-" for
     half no-calls so the dash is visually obvious even though the v6
     accounting still folds no-calls into ``no_findings`` (the
-    dedicated ``no_call`` MECE state is #115's job in v2.3). Rows
+    dedicated ``no_call`` MECE state is the job in v2.3). Rows
     that aren't in the input (state 3) show "—" (em dash).
 
-    GH #128: state-3 wording is format-aware. Array inputs (23andMe,
+    state-3 wording is format-aware. Array inputs (23andMe,
     AncestryDNA, FTDNA, etc.) test a fixed set of positions, so
     "not genotyped on this chip/platform" is the accurate framing —
     a missing rsID truly wasn't on the user's chip. VCF / gVCF inputs
@@ -533,7 +597,7 @@ def _panel_coverage_section(
     show_gt = panel_genotypes is not None
 
     def _gt(rsid: str, in_input: bool) -> str:
-        """Render the GT column cell (GH #120).
+        """Render the GT column cell.
 
         State-3 rows (not_on_chip) show em dash; state-2 rows show
         the literal Variant.genotype (e.g. "A/G", "-/-", "A/-").
@@ -543,7 +607,7 @@ def _panel_coverage_section(
         gt = (panel_genotypes or {}).get(rsid, "—")
         return f"<td><code>{_escape(gt)}</code></td>"
 
-    # GH #128: VCF / gVCF inputs use a format-aware label; array inputs
+    # VCF / gVCF inputs use a format-aware label; array inputs
     # keep the historical "chip/platform" framing.
     is_vcf = parser_name.lower() in {"vcf", "gvcf", "vcf parser"}
     missing_label = (
@@ -572,7 +636,7 @@ def _panel_coverage_section(
             f"<tr><th>rsID</th>{gt_th}<th>Note</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table>"
         )
-    # GH #128: parallel format-aware framing in the summary header.
+    # parallel format-aware framing in the summary header.
     missing_summary = "reference or no call" if is_vcf else "not on chip"
     return (
         '<div class="notice"><strong>Panel coverage.</strong> '
@@ -662,6 +726,7 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             "gene": display.gene or "",
             "genotype": display.genotype_match,
             "zygosity": display.zygosity,
+            "plausibility": most_severe([a.plausibility for a in group]),
             "annotations": [],
         }
         for ann in sorted(group, key=lambda a: -a.magnitude):
@@ -712,6 +777,7 @@ def _build_search_text(group: list[Annotation]) -> str:
             display.gene,
             display.genotype_match,
             display.zygosity,
+            most_severe([a.plausibility for a in group]),
         ]
     )
     for ann in group:
@@ -739,12 +805,35 @@ def _summary_text(group: list[Annotation]) -> str:
     return f"{prefix} {text}"
 
 
+# ADR-0041: hover text for the warning icon beside a flagged genotype.
+_PLAUSIBILITY_TITLES: dict[str, str] = {
+    IMPLAUSIBLE: (
+        "Implausible call: homozygous for an allele that is very rare in gnomAD. "
+        "Often a genotyping artifact; confirm before relying on it."
+    ),
+    SUSPICIOUS: (
+        "Suspicious call: gnomAD reports no carriers of this allele. Confirm before relying on it."
+    ),
+}
+
+
+def _plausibility_icon(plausibility: str) -> str:
+    title = _PLAUSIBILITY_TITLES.get(plausibility)
+    if title is None:
+        return ""
+    return (
+        f'<span class="plaus plaus-{plausibility}" title="{_escape(title)}"'
+        f' aria-label="{_escape(title)}">⚠</span>'
+    )
+
+
 def _row_html(group: list[Annotation], row_id: int) -> str:
     """Render a single variant group as an HTML table row."""
     display = max(group, key=lambda a: a.magnitude)
     repute = _get_repute(display)
     mag = max(a.magnitude for a in group)
     search_text = _build_search_text(group)
+    plausibility = most_severe([a.plausibility for a in group])
 
     return (
         f'<tr data-row-id="{row_id}"'
@@ -752,11 +841,13 @@ def _row_html(group: list[Annotation], row_id: int) -> str:
         f' data-gene="{_escape(display.gene)}"'
         f' data-genotype="{_escape(display.genotype_match)}"'
         f' data-repute="{_escape(repute)}"'
+        f' data-plausibility="{_escape(plausibility)}"'
         f' data-search-text="{_escape(search_text)}">'
         f'<td class="mag-cell">'
         f'<span class="badge badge-{repute}">{int(mag)}</span></td>'
         f'<td class="gene-cell">{_escape(display.gene) or "—"}</td>'
-        f'<td class="gt-cell">{_escape(display.genotype_match)}</td>'
+        f'<td class="gt-cell">{_escape(display.genotype_match)}'
+        f"{_plausibility_icon(plausibility)}</td>"
         f'<td class="repute-cell">'
         f'<span class="pill pill-{repute}">{repute.capitalize()}</span></td>'
         f'<td class="sum-cell">{_summary_text(group)}</td>'
@@ -884,6 +975,13 @@ document.addEventListener("DOMContentLoaded", function() {
 
     h += fieldRow("Genotype", v.genotype);
     h += fieldRow("Zygosity", v.zygosity);
+    if (v.plausibility === "implausible")
+      h += fieldRow("Plausibility",
+        "\u26a0 Implausible: homozygous for an allele that is very rare " +
+        "in gnomAD; often a genotyping artifact");
+    else if (v.plausibility === "suspicious")
+      h += fieldRow("Plausibility",
+        "\u26a0 Suspicious: gnomAD reports no carriers of this allele");
 
     var hasMetrics = v.allele_frequency != null ||
                      v.am_pathogenicity != null || v.cadd_phred != null;
@@ -1241,9 +1339,11 @@ def render_html(
         '<div class="notice"><strong>Informational only.</strong> '
         f"{_escape(REGULATORY_NOTICE)}</div>"
         f"{build_warn}"
+        f"{_input_method_banner(result.input_method)}"
+        f"{_vcf_quality_banner(vcf_quality_lines(result.vcf_quality))}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
         f"{_panel_coverage_section(result.panel_coverage(filtered), result.panel_genotypes, result.parser_name)}"  # noqa: E501
-        f"{_EDUCATION_SECTION}"
+        f"{_education_section(result.input_method)}"
         f"{_MAGNITUDE_LEGEND}"
         f"{diff_banner}"
         f'<div class="summary">{summary_cards}</div>'

@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SNIFF_LINE_LIMIT = 50
+_MYHERITAGE_SIGNATURE = "MyHeritage"
 EXPECTED_COLUMNS = 4
 HEADER_COLUMNS = ("RSID", "CHROMOSOME", "POSITION", "RESULT")
 
@@ -68,7 +69,12 @@ class FTDNAIlluminaParser(GenotypeParser):
     url: ClassVar[str] = "https://www.familytreedna.com"
 
     def can_parse(self, file_path: Path) -> bool:
-        """Recognize by tab-delimited ``RSID/CHROMOSOME/POSITION/RESULT`` header."""
+        """Recognize by tab-delimited ``RSID/CHROMOSOME/POSITION/RESULT`` header.
+
+        Rejects files carrying the MyHeritage signature before the header,
+        as the FTDNA CSV parser does: a MyHeritage export re-saved as
+        tab-delimited text has the same header.
+        """
         try:
             with file_path.open("r", encoding="utf-8") as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
@@ -76,6 +82,8 @@ class FTDNAIlluminaParser(GenotypeParser):
                     if not line:
                         return False
                     stripped = line.rstrip("\r\n")
+                    if _MYHERITAGE_SIGNATURE in stripped:
+                        return False
                     if not stripped or stripped.startswith("#"):
                         continue
                     return _is_header_line(stripped)

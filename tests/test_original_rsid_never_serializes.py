@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Serialization-guard test for ``Variant.original_rsid`` (GH #128).
+"""Serialization-guard test for ``Variant.original_rsid``.
 
 ``original_rsid`` is a debug-only audit field stamped by the rsID-less
 resolver paths in ``_pipeline._flush()`` and ``cli.utility``. It must
@@ -73,7 +73,7 @@ def _result_with_sentinel(file_path: Path) -> AnalysisResult:
         significance="clinvar_drug_response",
         category="clinical",
         magnitude=6.5,
-        description="Test annotation for the GH #128 serialization guard.",
+        description="Test annotation for the serialization guard.",
         attribution="ClinVar",
         genotype_match="AG",
         condition="MTHFR deficiency",
@@ -125,7 +125,7 @@ class TestOriginalRsidDoesNotLeak:
         json.loads(as_text)
         assert "original_rsid" not in as_text, (
             "JSON report exposes original_rsid — production logic could now "
-            "branch on a debug-only audit field (GH #128)."
+            "branch on a debug-only audit field."
         )
         assert _SENTINEL not in as_text, (
             "JSON report leaks the sentinel originally stashed in "
@@ -140,7 +140,7 @@ class TestOriginalRsidDoesNotLeak:
         as_text = out.read_text()
         assert "original_rsid" not in as_text, (
             "HTML report exposes original_rsid in markup — debug-only field "
-            "leaked into user-visible output (GH #128)."
+            "leaked into user-visible output."
         )
         assert _SENTINEL not in as_text, (
             "HTML report leaks the sentinel originally stashed in "
@@ -173,7 +173,7 @@ class TestOriginalRsidDoesNotLeak:
             significance=current_result.annotations[0].significance,
             category=current_result.annotations[0].category,
             magnitude=current_result.annotations[0].magnitude,
-            description="Test annotation -- modified for diff (GH #128 guard).",
+            description="Test annotation -- modified for diff (guard).",
             attribution=current_result.annotations[0].attribution,
             genotype_match=current_result.annotations[0].genotype_match,
             condition=current_result.annotations[0].condition,
@@ -189,7 +189,7 @@ class TestOriginalRsidDoesNotLeak:
         as_text = current_path.read_text()
         assert "original_rsid" not in as_text, (
             "Diff output exposes original_rsid — a debug-only field is now "
-            "visible as a tracked change between report runs (GH #128)."
+            "visible as a tracked change between report runs."
         )
         assert _SENTINEL not in as_text, (
             "Diff output leaks the sentinel stashed in Variant.original_rsid."
@@ -217,7 +217,7 @@ class TestOriginalRsidDoesNotLeak:
         as_text = console.export_text()
         assert "original_rsid" not in as_text, (
             "Terminal report exposes original_rsid — debug-only audit "
-            "field reached user-visible CLI output (GH #128)."
+            "field reached user-visible CLI output."
         )
         assert _SENTINEL not in as_text, (
             "Terminal report leaks the sentinel originally stashed in "
@@ -274,7 +274,7 @@ class TestOriginalRsidDoesNotLeak:
         assert "original_rsid" not in as_text, (
             "Extract table renderer surfaces original_rsid — the debug-"
             "only field stamped by _sequential_extract / "
-            "_execute_tabix_extract is now visible in CLI output (GH #128)."
+            "_execute_tabix_extract is now visible in CLI output."
         )
         assert _SENTINEL not in as_text, (
             "Extract table leaks the sentinel stashed in "

@@ -89,7 +89,7 @@ values:
   - not_provided
   - no_classification_for_the_single_variant
   - no_classifications_from_unflagged_records
-  # `no_classification_provided` was here. Removed: as of PR #101,
+  # `no_classification_provided` was here. Removed: as of ,
   # the loader filters it via _CLINVAR_PLACEHOLDER_CLNSIGS (it's
   # not in _CLNSIG_MAGNITUDE, so it'd fall through to the 5.0
   # default — same family of bug as "-" and "not specified"). The

@@ -153,9 +153,9 @@ class TestEndToEndAgainstMockGenerators:
         A alleles → no annotation.
 
         Pinning the dispatch contract: same MHG, same user genotype,
-        forcing --build grch37 would reproduce the OLD wrong behavior.
-        That branch is exercised by
-        `test_nipa1_grch37_dispatch_reproduces_legacy_false_positive`.
+        forcing --build grch37 reproduced the OLD wrong behavior until
+        ClinVar rows were selected by locus. That branch is exercised by
+        `test_nipa1_forced_grch37_no_cross_build_false_positive`.
         """
         result = _analyze(mock_mhg_path, all_annotators_data_dir)
         nipa1_hits = [
@@ -173,17 +173,21 @@ class TestEndToEndAgainstMockGenerators:
         assert result.build_diagnostics is not None
         assert result.build_diagnostics.effective_build == "GRCh38"
 
-    def test_nipa1_grch37_dispatch_reproduces_legacy_false_positive(
+    def test_nipa1_forced_grch37_no_cross_build_false_positive(
         self, mock_mhg_path: Path, all_annotators_data_dir: Path
     ):
         """Pinning the OTHER direction of the dispatch contract.
 
         With `--build grch37` forced on the (actually GRCh38) MHG file,
-        the annotator dispatches to the GRCh37 ClinVar cache which has
-        rs104894490 REF=C ALT=G. The user's G/G matches ALT=G → the
-        pathogenic annotation DOES emit. This is the OLD wrong behavior;
-        it's pinned here so a future "let's always default to GRCh37"
-        regression would visibly flip this assertion.
+        the annotator still dispatches to the GRCh37 ClinVar cache, which
+        has rs104894490 REF=C ALT=G at GRCh37 15:23060816. Before release
+        2.4 the rows were selected by rsID alone, so the user's G/G (read
+        at GRCh38 15:22812251) matched ALT=G and the legacy false positive
+        emitted. ClinVar rows are now selected by locus: the
+        GRCh38 position has no GRCh37 row, so the forced wrong build yields
+        no NIPA1 annotation. The diagnostics still record the GRCh37
+        override, so a "let's always default to GRCh37" regression would
+        flip the effective-build assertions here and in the sibling test.
         """
         from contextlib import ExitStack
 
@@ -204,15 +208,25 @@ class TestEndToEndAgainstMockGenerators:
         nipa1_hits = [
             a for a in result.annotations if a.source == "clinvar" and a.rsid == "rs104894490"
         ]
-        assert nipa1_hits, (
-            "NIPA1 rs104894490 G/G under --build grch37 should reproduce the "
-            "legacy cross-build false positive (REF=C ALT=G in GRCh37; user's "
-            "G matches ALT=G). This pin guards against accidentally changing "
-            "the per-build dispatch contract."
+        assert not nipa1_hits, (
+            "NIPA1 rs104894490 G/G at a GRCh38 position must not match the GRCh37 "
+            f"ClinVar row by rsID alone; got {nipa1_hits!r}"
         )
         assert result.build_diagnostics is not None
         assert result.build_diagnostics.effective_build == "GRCh37"
         assert result.build_diagnostics.override is True
+
+    def test_nipa1_grch37_cache_still_dispatched_per_build(self, all_annotators_data_dir: Path):
+        """The GRCh37 cache's strand-inverted NIPA1 row (REF=C ALT=G) still
+        annotates a G carrier at the GRCh37 locus: per-build dispatch is
+        unchanged, only rsID-alone selection is gone."""
+        from allelix.annotators.clinvar import ClinVarAnnotator
+        from allelix.models import Variant
+
+        with ClinVarAnnotator(all_annotators_data_dir) as clinvar:
+            v = Variant("rs104894490", "15", 23060816, "C", "G", build="GRCh37")
+            hits = clinvar.annotate(v)
+        assert [(a.alt, a.gene) for a in hits] == [("G", "NIPA1")]
 
     def test_annotation_count_snapshot(self, mock_mhg_path: Path, all_annotators_data_dir: Path):
         """Snapshot the exact count of emitted annotations.
@@ -438,7 +452,7 @@ _REAL_GWAS_URL = (
 class TestRealDataGwasSanity:
     """Sanity checks against the real GWAS Catalog (test_data/, gitignored).
 
-    GH #45: the fixture is auto-fetched on first use and cached locally so
+    the fixture is auto-fetched on first use and cached locally so
     the tests run on every machine. The previous ``pytest.skip`` on missing
     fixture silently let a ship gate pass without exercising these
     real-data invariants.

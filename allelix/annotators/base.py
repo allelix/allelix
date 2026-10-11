@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, ClassVar
 
+from allelix.parsers._helpers import normalize_chromosome
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
@@ -71,6 +73,15 @@ def permission(
     if license_held:
         return Permission.ALLOW
     return Permission.BLOCK_PURCHASABLE
+
+
+def variant_locus(variant: Variant) -> tuple[str, int]:
+    """The variant's ``(chromosome, position)`` with the chromosome in bare form.
+
+    Normalized here rather than trusted from each parser, so an input that
+    writes ``chrX`` or ``M`` still meets the caches' ``X`` / ``MT`` keys.
+    """
+    return normalize_chromosome(variant.chromosome), variant.position
 
 
 def is_clinvar_homref(

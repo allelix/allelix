@@ -11,7 +11,7 @@ import sqlite3
 import zipfile
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor
+from allelix.annotators.base import Annotator, LicenseDescriptor, variant_locus
 from allelix.databases.gwas_loader import (
     _CATEGORIZER_VERSION,
     _REQUIRED_GWAS_COLUMNS,
@@ -104,7 +104,7 @@ def _magnitude(
 ) -> float:
     """Derive magnitude from p-value and a confirmed odds ratio.
 
-    GH #17: boundary comparisons are inclusive (``<=``) so the canonical
+    boundary comparisons are inclusive (``<=``) so the canonical
     genome-wide-significance threshold ``p = 5e-8`` lands inside the
     significant bucket rather than the suggestive bucket below it.
     Strict ``<`` made the exact threshold value fall a full magnitude
@@ -369,6 +369,9 @@ class GWASCatalogAnnotator(Annotator):
                     condition=clean_trait,
                     gene=gene or "",
                     alt=risk_allele or "",
+                    locus_ref=variant.ref,
+                    carried_alleles=(variant.allele1, variant.allele2),
+                    locus=variant_locus(variant),
                     is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
                     trait=clean_trait,
                     p_value=p_value,
@@ -469,6 +472,9 @@ class GWASCatalogAnnotator(Annotator):
                     condition=clean_trait,
                     gene=gene or "",
                     alt=risk_allele or "",
+                    locus_ref=variant.ref,
+                    carried_alleles=(variant.allele1, variant.allele2),
+                    locus=variant_locus(variant),
                     is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
                     trait=clean_trait,
                     p_value=p_value,

@@ -1,0 +1,6 @@
+# MyHeritage DNA raw data.
+# The genotype is reported on the forward (+) strand with respect to the human reference build 37.
+RSID	CHROMOSOME	POSITION	RESULT
+"rs4477212"	"1"	"82154"	"AA"
+"rs3094315"	"1"	"752566"	"AG"
+"rs9001001"	"1"	"100000"	"--"

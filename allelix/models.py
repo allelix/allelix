@@ -47,7 +47,7 @@ class Variant:
     allele2: str
     build: str = DEFAULT_BUILD
     ref: str | None = None
-    # GH #128: pre-resolution rsID stashed when a resolver
+    # pre-resolution rsID stashed when a resolver
     # (`ClinVarAnnotator.bulk_resolve_rsids` or
     # `GnomadAnnotator.bulk_resolve_rsids_from_positions`, both invoked
     # in ``_pipeline._flush()``) recovers the real ``rs...`` ID for a
@@ -70,7 +70,7 @@ class Variant:
     original_rsid: str | None = None
 
     def __post_init__(self) -> None:
-        """Normalize allele case at construction (GH #14, ADR-0035).
+        """Normalize allele case at construction (, ADR-0035).
 
         Reference databases (ClinVar, gnomAD, ClinPGx, etc.) all ship
         uppercase alleles, and carrier matching is raw set membership
@@ -119,6 +119,16 @@ class Variant:
         return f"{self.allele1}/{self.allele2}"
 
 
+class AnnotationInvariantError(ValueError):
+    """An Annotation was constructed in violation of an allele-identity invariant."""
+
+
+# Sources whose ``Annotation.alt`` names a non-reference allele the user
+# carries. GWAS is deliberately absent: its ``alt`` is the effect (risk)
+# allele reported by the study, which may be the reference allele.
+ALT_IS_NON_REFERENCE_SOURCES: frozenset[str] = frozenset({"clinvar", "pharmgkb", "snpedia"})
+
+
 @dataclass
 class Annotation:
     """A claim about a variant sourced from a specific reference database.
@@ -143,7 +153,15 @@ class Annotation:
         condition: Disease or condition name, if applicable.
         gene: Gene symbol, if known.
         review_status: ClinVar review status (CLNREVSTAT), empty for non-ClinVar.
+        alt: The allele the annotation is about. For ClinVar, ClinPGx and
+            SNPedia this is a non-reference allele the user carries. For the
+            GWAS Catalog it is the study's effect (risk) allele, which may be
+            the reference allele; empty when the study does not report one.
         is_must_include: Internal flag for GWAS rollup; excluded from public output.
+        plausibility: Quality-control flag from the call's zygosity and the
+            allele's gnomAD frequency (ADR-0041): "plausible", "suspicious",
+            "implausible", or empty when not assessed. Never suppresses the
+            annotation.
     """
 
     source: str
@@ -168,6 +186,7 @@ class Annotation:
     am_pathogenicity: float | None = None
     am_class: str = ""
     cadd_phred: float | None = None
+    plausibility: str = ""
     # ADR-0035 cluster manifest (PR 3): structured GWAS fields promoted out of
     # the rendered ``description`` prose. `description` still carries the same
     # rendered text for HTML / terminal display, but downstream code (rollup,
@@ -177,6 +196,52 @@ class Annotation:
     trait: str = ""
     p_value: float | None = None
     phecode: str = ""
+    # Internal allele-identity context for the construction invariants
+    # below. Excluded from every public serialization via
+    # ``_INTERNAL_ANNOTATION_FIELDS`` and from equality / repr, so two
+    # Annotations with the same public content still compare equal.
+    #
+    # ``locus_ref``: forward-strand reference allele at the locus, when the
+    #   annotator knows it (the ClinVar row's REF, or ``Variant.ref``).
+    # ``carried_alleles``: the user's two alleles in the same orientation
+    #   as ``alt`` (complemented when a strand-flipped match fired).
+    locus_ref: str | None = field(default=None, compare=False, repr=False)
+    carried_alleles: tuple[str, ...] = field(default=(), compare=False, repr=False)
+    # ``locus``: the input variant's ``(chromosome, position)`` on the
+    #   analysis build, chromosome in Allelix's bare form. Lets enrichment
+    #   key every annotation by position rather than by rsID (ADR-0040).
+    locus: tuple[str, int] | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Enforce the allele-identity invariants.
+
+        1. An Annotation whose ``alt`` is set never names an allele the user
+           carries zero copies of. Applies to every source. Checked when
+           the annotator supplied ``carried_alleles``.
+        2. For sources whose ``alt`` means a non-reference allele
+           (``ALT_IS_NON_REFERENCE_SOURCES``), ``alt`` is never the
+           reference base. GWAS is exempt: its ``alt`` is the study's
+           effect (risk) allele, which is often the reference allele.
+           Checked when ``locus_ref`` is known.
+
+        Annotators filter offending source rows before construction; a
+        violation here is a programming error, not a data condition.
+        """
+        if self.alt and self.carried_alleles and self.alt not in self.carried_alleles:
+            raise AnnotationInvariantError(
+                f"{self.source} annotation for {self.rsid}: alt {self.alt!r} is not "
+                f"carried (user alleles {self.carried_alleles!r})"
+            )
+        if (
+            self.source in ALT_IS_NON_REFERENCE_SOURCES
+            and self.alt
+            and self.locus_ref is not None
+            and self.alt == self.locus_ref
+        ):
+            raise AnnotationInvariantError(
+                f"{self.source} annotation for {self.rsid}: alt {self.alt!r} is the "
+                "reference allele"
+            )
 
     @property
     def zygosity(self) -> str:
@@ -195,13 +260,15 @@ class Annotation:
 # and every existing serializer picks up the exclusion automatically — no
 # new "remember to strip the field" obligation across N call sites.
 #
-# GH allelix-dev #3 (the v2.1.1 "is_must_include leak by omission risk"
+# (the v2.1.1 "is_must_include leak by omission risk"
 # cleanup) eliminated the three duplicated inline filters that previously
 # carried this rule. If you find yourself writing
 # ``{k: v for k, v in asdict(a).items() if k != "<some_field>"}`` in a
 # new public-output path, you're re-introducing the bug — add the field
 # here and use ``annotation_to_public_dict`` instead.
-_INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset({"is_must_include"})
+_INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset(
+    {"is_must_include", "locus_ref", "carried_alleles", "locus"}
+)
 
 
 def annotation_to_public_dict(a: Annotation) -> dict:

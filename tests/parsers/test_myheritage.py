@@ -277,7 +277,7 @@ class TestAutoDetection:
         assert parser.name == "ftdna"
 
     def test_myheritage_detected_and_ftdna_rejects(self, mock_myheritage_path: Path) -> None:
-        """GH #26: FTDNA and MyHeritage share the same column header, so
+        """FTDNA and MyHeritage share the same column header, so
         the registry used to depend on its own ordering to route
         correctly. FTDNA now rejects files carrying the MyHeritage
         signature comment, making detection mutually exclusive —

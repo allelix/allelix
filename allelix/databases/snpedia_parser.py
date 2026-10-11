@@ -158,7 +158,7 @@ def _dedupe_existing(conn: sqlite3.Connection) -> int:
     return before - after
 
 
-# GH #12: identifier allowlist for the raw_table f-string interpolation
+# identifier allowlist for the raw_table f-string interpolation
 # below. The interpolation cannot be parameterized (SQLite doesn't support
 # bind variables for identifiers); the allowlist gives a programmatic
 # guarantee that only these two literals can reach the SQL.
@@ -201,7 +201,7 @@ def _parse_raw_pages_inner(conn: sqlite3.Connection, *, verbose: bool = False) -
     raw_table = detect_raw_table(conn)
     if raw_table is None:
         return 0
-    # GH #12: `raw_table` flows into three SQL queries via f-string
+    # `raw_table` flows into three SQL queries via f-string
     # interpolation because SQLite doesn't support parameterized
     # identifiers. Today it's safe — `detect_raw_table` only ever returns
     # one of two literals or None — but the function's `str | None` return

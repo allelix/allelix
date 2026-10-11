@@ -259,7 +259,7 @@ class TestStampExistingClinvarCache:
         assert row[1] == "md5:abc|iv:1"
 
     def test_legacy_iv_in_remote_signal_migrated(self, tmp_path: Path):
-        """#79 missing-branch coverage: an old-format cache has the
+        """Missing-branch coverage: an old-format cache has the
         interpreter tag baked into remote_signal as ``...|iv:N``. The
         migration path moves the tag into local_version_tag and cleans
         the remote_signal."""
@@ -299,7 +299,7 @@ class TestStampExistingClinvarCache:
         assert row[1] == "md5:abcdef"  # the |iv:N suffix was scrubbed
 
     def test_already_current_tag_is_idempotent(self, tmp_path: Path):
-        """#79 missing-branch coverage: a cache already stamped with the
+        """Missing-branch coverage: a cache already stamped with the
         current interpreter tag is a no-op success — return True without
         writing."""
         from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION

@@ -190,17 +190,17 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
         "criteria_provided,_single_submitter",
         100021,
     ),
-    # GH #111 fixtures: multi-SCV variants needed to pin #42's read-side
-    # behavior. Pre-#42 each variant was one row; post-#42 (per-SCV TSV
-    # loader) each SCV submission gets its own row, so these mirror the
+    # fixtures: multi-SCV variants needed to pin the read-side
+    # behavior. Previously each variant was one row; with the current per-SCV TSV
+    # loader each SCV submission gets its own row, so these mirror the
     # real cache shape and exercise the per-SCV semantics fast-tier
     # tests previously couldn't reach (root-cause coverage gap behind
-    # #106 and #109).
+    # earlier fixes).
     #
     # rs999000111 — three identical SCV rows for the same (variant,
     # sig, condition, gene) quadruple. On today's dev tip the
-    # annotator emits three identical Annotation objects (the #109
-    # regression — visible in terminal/HTML/JSON). The #109 fix
+    # annotator emits three identical Annotation objects (the dedup
+    # regression — visible in terminal/HTML/JSON). The fix
     # collapses to one Annotation while preserving the strongest
     # review_status and the union of references.
     (
@@ -240,8 +240,8 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
         100032,
     ),
     # rs999000222 — two SCV rows for the same variant with distinct
-    # (significance, condition) pairs. #109's dedup MUST preserve
-    # both rows (this is exactly what #42 was built to surface;
+    # (significance, condition) pairs. The dedup MUST preserve
+    # both rows (this is exactly what the per-SCV loader was built to surface;
     # collapsing them would be a Frankenstein-pair regression).
     (
         "rs999000222",
@@ -270,8 +270,8 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     # rs999000333 — sub-floor: the only annotation maps to magnitude
     # 2.0 (Likely_benign), below the 5.0 analyze floor. On today's
     # dev tip this rsid lands in panel_coverage.found and vanishes
-    # from every rendered surface — the #106 accounting lie. The
-    # #106 patch reroutes it to no_findings.
+    # from every rendered surface — the accounting lie. The
+    # fix reroutes it to no_findings.
     (
         "rs999000333",
         "1",
@@ -286,7 +286,7 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     ),
     # rs999000444 — unmapped CLNSIG long-tail. "protective" is a
     # real ClinVar term but is NOT in _CLNSIG_MAGNITUDE → falls to
-    # the 5.0 default. Pinned here for #108 (v2.3) to retire the
+    # the 5.0 default. Pinned here for v2.3 to retire the
     # silent 5.0-default surface; not actionable in v2.2.1.
     (
         "rs999000444",
@@ -302,13 +302,13 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     ),
     # rs999000555 — multi-allelic site with two SCV rows that share
     # (significance, condition, gene) but differ ONLY on alt. Pinned
-    # for #109 Finding 1: the dedup key MUST include alt or these
+    # for Finding 1: the dedup key MUST include alt or these
     # rows collapse and the surviving annotation mis-attaches its
     # `alt` field downstream — breaking the exact-(rsid, alt) lookup
     # gnomAD / AlphaMissense / CADD use for allele-specific
     # enrichment. Carrier biology: a het user (A/C) at this site
     # carries both alts and should receive two distinct annotations,
-    # one per alt — the #18 wrong-allele safety case applied to dedup.
+    # one per alt — the wrong-allele safety case applied to dedup.
     (
         "rs999000555",
         "1",
@@ -494,7 +494,7 @@ _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
         "criteria_provided,_single_submitter",
         100021,
     ),
-    # GH #111 fixtures (mirror of GRCh37 set above — see those rows
+    # fixtures (mirror of GRCh37 set above — see those rows
     # for the rationale per variant). Same synthetic chr1 coordinates
     # for cross-build symmetry; the per-SCV semantics being pinned
     # are build-independent.
@@ -618,7 +618,7 @@ def _build_synthetic_clinvar_cache(
 ) -> None:
     """Build a per-build ClinVar SQLite cache from the synthetic rows above.
 
-    Stage C (#42) removed load_clinvar_vcf; this helper replaces it for
+    Stage C removed load_clinvar_vcf; this helper replaces it for
     tests that just need a populated cache. The rows are identical to
     what the prior mock_clinvar_grch{37,38}.vcf fixtures parsed into.
     Stamps the current CLINVAR_INTERPRETER_VERSION so the annotator's
@@ -655,7 +655,7 @@ def _build_synthetic_clinvar_cache(
 def build_synthetic_clinvar_cache():
     """Provide the synthetic ClinVar cache builder to tests outside conftest.
 
-    Stage C (#42) replaced the VCF loader with a TSV loader; production
+    Stage C replaced the VCF loader with a TSV loader; production
     tests that previously called `load_clinvar_vcf(...)` against a VCF
     to pre-populate a cache for unit tests now request this fixture and
     call it as `build_synthetic_clinvar_cache(db_path, build)`. Same
@@ -667,7 +667,7 @@ def build_synthetic_clinvar_cache():
 
 @pytest.fixture(autouse=True)
 def _bypass_loader_row_floors(monkeypatch):
-    """GH #19: production loaders enforce a row-count floor against truncated
+    """production loaders enforce a row-count floor against truncated
     downloads (``GWAS_MIN_ROWS``, ``PHARMGKB_MIN_ROWS``). Mock fixtures only
     have a handful of rows, so every test that runs an annotator ``setup()``
     or auto-reingest path against mock data would trip the floor. Patch both
@@ -959,7 +959,7 @@ def cm_stack():
             gnomad  = cm_stack.enter_context(GnomadAnnotator(clinvar_data_dir))
             result = run_analysis(...)
 
-    Why this exists (GH allelix-dev #78, blocks #36): the pipeline's own
+    Why this exists: the pipeline's own
     ``ExitStack`` closes annotators it receives, but the test still holds the
     closed-instance reference. When ``Annotator.__del__`` is the safety net,
     GC of the test-local reference fires ``__del__`` → ``close()`` again

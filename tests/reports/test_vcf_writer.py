@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Tests for the annotated VCF output writer (#150 PR 1).
+"""Tests for the annotated VCF output writer.
 
 Writer is invoked directly with hand-built annotation dicts — no
 pipeline coupling in PR 1. Fixture files under ``tests/fixtures/``
@@ -87,7 +87,7 @@ def _emitted_contigs(text: str) -> list[str]:
 
 class TestHeaderPreservation:
     def test_mock_fixture_itself_contains_mixed_undeclared_contigs(self) -> None:
-        """The undeclared-contig case originates in the fixture, not writer normalization."""
+        """Originates in the fixture, not writer normalization."""
         text = _read(FIXTURES / "mock_vcf.vcf")
         assert _emitted_contigs(text) == ["1", "22", "19", "17", "chr1", "chrX", "chrM"]
         assert _declared_contigs(text) == ["1", "22"]
@@ -578,7 +578,7 @@ class TestChrPrefixNormalization:
 
 class TestBomAndEncoding:
     def test_bom_input_produces_bom_free_output(self, tmp_path: Path) -> None:
-        """GH #126/#133: real Sequencing.com and DRAGEN VCFs ship with a
+        """Real Sequencing.com and DRAGEN VCFs ship with a
         UTF-8 BOM (``\\xef\\xbb\\xbf``). The parser strips it via
         ``utf-8-sig``; the writer must do the same so the output starts
         with a clean ``##fileformat`` and downstream tools that check
@@ -601,7 +601,7 @@ class TestBomAndEncoding:
         assert raw_bytes.startswith(b"##fileformat=VCFv4.2")
 
     def test_non_utf8_byte_in_header_does_not_raise(self, tmp_path: Path) -> None:
-        """GH #121: real VCFs commonly carry non-UTF-8 bytes in tool
+        """real VCFs commonly carry non-UTF-8 bytes in tool
         headers (a latin-1 ``\\xa9`` copyright in ``##CL=`` from GATK /
         DeepVariant / bcftools). The parser uses ``errors="replace"``
         to degrade gracefully; the writer must too, otherwise the

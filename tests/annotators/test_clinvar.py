@@ -70,7 +70,7 @@ class TestSignalGuard:
 
 
 class TestStageBWiring:
-    """#42 stage B: ClinVarAnnotator.setup() drives the per-SCV TSV loader."""
+    """Stage B: ClinVarAnnotator.setup() drives the per-SCV TSV loader."""
 
     def _stub_downloads_and_loader(self, tmp_path: Path, monkeypatch):
         """Wire a complete fake setup path:
@@ -193,7 +193,7 @@ class TestStageBWiring:
 
     def test_interpreter_version_current(self):
         """Stage B bumped CLINVAR_INTERPRETER_VERSION 2 → 3 so iv:2
-        VCF-era caches auto-reingest. PR #101 (evaluator defect 5)
+        VCF-era caches auto-reingest. (evaluator defect 5)
         bumped iv:3 → iv:4 because the per-SCV TSV loader was
         landing placeholder CLNSIG values ("-", "not specified",
         etc.) in the cache; without the bump, existing iv:3 caches
@@ -214,7 +214,7 @@ class TestStageBWiring:
         is_ready() so db update triggers a reingest.
 
         - ``iv:2`` is the pre-stage-B VCF-era cache.
-        - ``iv:3`` is the broken-loader cache from before PR #101's
+        - ``iv:3`` is the broken-loader cache from before 's
           placeholder-CLNSIG fix; bumping to iv:4 was the whole point
           of forcing existing caches to rebuild against the fixed
           loader.
@@ -332,7 +332,7 @@ class TestGenotypeMatching:
 
     def test_heterozygous_carrier_triggers(self, annotator: ClinVarAnnotator):
         # mock ClinVar: rs1801133, REF=G, ALT=A, Pathogenic
-        v = Variant("rs1801133", "1", 11796321, "G", "A")
+        v = Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38")
         results = annotator.annotate(v)
         assert len(results) == 1
         a = results[0]
@@ -348,7 +348,7 @@ class TestGenotypeMatching:
 
     def test_homozygous_alt_triggers(self, annotator: ClinVarAnnotator):
         # mock ClinVar: rs4680, REF=G, ALT=A, Drug_response
-        v = Variant("rs4680", "22", 19963748, "A", "A")
+        v = Variant("rs4680", "22", 19963748, "A", "A", build="GRCh38")
         results = annotator.annotate(v)
         assert len(results) == 1
         assert results[0].significance == "clinvar_drug_response"
@@ -360,7 +360,7 @@ class TestGenotypeMatching:
         assert annotator.annotate(v) == []
 
     def test_no_call_does_not_trigger(self, annotator: ClinVarAnnotator):
-        v = Variant("rs1801133", "1", 11796321, "-", "-")
+        v = Variant("rs1801133", "1", 11796321, "-", "-", build="GRCh38")
         assert annotator.annotate(v) == []
 
     def test_asymmetric_no_call_does_not_trigger(self, annotator: ClinVarAnnotator):
@@ -369,13 +369,13 @@ class TestGenotypeMatching:
         Catches mutations like `if variant.is_no_call` → `if variant.allele1 == "-"`
         that pass the both-no-call test but leak through here.
         """
-        v_left = Variant("rs1801133", "1", 11796321, "-", "A")
-        v_right = Variant("rs1801133", "1", 11796321, "A", "-")
+        v_left = Variant("rs1801133", "1", 11796321, "-", "A", build="GRCh38")
+        v_right = Variant("rs1801133", "1", 11796321, "A", "-", build="GRCh38")
         assert annotator.annotate(v_left) == []
         assert annotator.annotate(v_right) == []
 
     def test_unknown_rsid_does_not_trigger(self, annotator: ClinVarAnnotator):
-        # rs999000111 was the old sentinel here; GH #111 fixtures
+        # rs999000111 was the old sentinel here; fixtures
         # claimed it for the multi-SCV-agreement variant. Pick a rsid
         # we're certain isn't in the fixture set.
         v = Variant("rs888888888", "1", 1000, "A", "T")
@@ -388,7 +388,7 @@ class TestStrandAwareCarrierMatch:
     A clinical lab reports a SNP on the coding strand; the array reports the
     same position on the forward reference strand. Complementary genotypes
     are the same biological result and must produce the same set of
-    annotations. The v2.0.1 #18 multi-allelic safety invariant is preserved
+    annotations. The v2.0.1 multi-allelic safety invariant is preserved
     via the variant.ref orientation guard.
     """
 
@@ -400,8 +400,8 @@ class TestStrandAwareCarrierMatch:
         and coding G/G both producing zero annotations) using the fixture
         rsid we ship.
         """
-        forward = Variant("rs1801133", "1", 11796321, "G", "G", ref="G")
-        coding = Variant("rs1801133", "1", 11796321, "C", "C", ref="C")
+        forward = Variant("rs1801133", "1", 11796321, "G", "G", ref="G", build="GRCh38")
+        coding = Variant("rs1801133", "1", 11796321, "C", "C", ref="C", build="GRCh38")
         assert annotator.annotate(forward) == []
         assert annotator.annotate(coding) == []
 
@@ -410,8 +410,8 @@ class TestStrandAwareCarrierMatch:
         C/T are the same biological result and must produce the same set
         of ClinVar annotations.
         """
-        forward = Variant("rs1801133", "1", 11796321, "G", "A", ref="G")
-        coding = Variant("rs1801133", "1", 11796321, "C", "T", ref="C")
+        forward = Variant("rs1801133", "1", 11796321, "G", "A", ref="G", build="GRCh38")
+        coding = Variant("rs1801133", "1", 11796321, "C", "T", ref="C", build="GRCh38")
         forward_results = annotator.annotate(forward)
         coding_results = annotator.annotate(coding)
         assert len(forward_results) == 1
@@ -427,12 +427,12 @@ class TestStrandAwareCarrierMatch:
 
     def test_audit_18_multi_allelic_safety_preserved(self, annotator: ClinVarAnnotator):
         """Variant.ref disagreement (neither matches source ref nor its
-        complement) → no strand-flip fires. Preserves the v2.0.1 #18
+        complement) → no strand-flip fires. Preserves the v2.0.1
         wrong-allele invariant.
         """
         # User claims variant.ref=A; ClinVar's row has ref=G. A is not G,
         # not complement(G)=C. variant.ref is inconsistent → abstain.
-        v = Variant("rs1801133", "1", 11796321, "T", "T", ref="A")
+        v = Variant("rs1801133", "1", 11796321, "T", "T", ref="A", build="GRCh38")
         results = annotator.annotate(v)
         # Direct check: A not in {T, T}; the strand-flip path is blocked
         # because variant.ref doesn't fit the forward/reverse pair.
@@ -443,7 +443,7 @@ class TestAttribution:
     """ADR-0003: Significance and attribution must be source-prefixed."""
 
     def test_all_annotations_attribute_to_clinvar(self, annotator: ClinVarAnnotator):
-        v = Variant("rs1801133", "1", 11796321, "G", "A")
+        v = Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38")
         results = annotator.annotate(v)
         for a in results:
             assert a.attribution == "ClinVar"
@@ -451,13 +451,13 @@ class TestAttribution:
             assert a.category == "clinical"
 
     def test_description_attributes_to_clinvar(self, annotator: ClinVarAnnotator):
-        v = Variant("rs1801133", "1", 11796321, "G", "A")
+        v = Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38")
         results = annotator.annotate(v)
         assert results[0].description.startswith("ClinVar classifies")
 
     def test_review_status_populated(self, annotator: ClinVarAnnotator):
         """CLNREVSTAT is surfaced on the Annotation."""
-        v = Variant("rs1801133", "1", 11796321, "G", "A")
+        v = Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38")
         results = annotator.annotate(v)
         assert len(results) >= 1
         assert results[0].review_status == "criteria_provided,_single_submitter"
@@ -579,7 +579,7 @@ class TestRemoteSignal:
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_html_error_page(self, annotator: ClinVarAnnotator, monkeypatch):
-        """GH #21: a CDN 503 returning HTML must not be accepted as a hash.
+        """a CDN 503 returning HTML must not be accepted as a hash.
 
         Before the fix the first whitespace-separated token of the body
         was treated as the md5, so ``<!DOCTYPE`` would become the
@@ -596,7 +596,7 @@ class TestRemoteSignal:
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_short_hex(self, annotator: ClinVarAnnotator, monkeypatch):
-        """GH #21: tokens that are hex but the wrong length are rejected."""
+        """tokens that are hex but the wrong length are rejected."""
         from allelix.annotators import clinvar as clinvar_module
 
         monkeypatch.setattr(
@@ -607,7 +607,7 @@ class TestRemoteSignal:
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_non_hex_token(self, annotator: ClinVarAnnotator, monkeypatch):
-        """GH #21: 32-char-long but non-hex tokens are rejected."""
+        """32-char-long but non-hex tokens are rejected."""
         from allelix.annotators import clinvar as clinvar_module
 
         monkeypatch.setattr(
@@ -658,7 +658,7 @@ class TestCloseable:
 
     def test_close_releases_connection(self, annotator: ClinVarAnnotator):
         # Touch the connection
-        annotator.annotate(Variant("rs1801133", "1", 11796321, "G", "A"))
+        annotator.annotate(Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"))
         assert annotator._conns, "expected at least one open per-build connection"
         annotator.close()
         assert annotator._conns == {}
@@ -671,7 +671,7 @@ class TestCloseable:
         ann = ClinVarAnnotator(clinvar_data_dir)
         with ann as bound:
             assert bound is ann
-            ann.annotate(Variant("rs1801133", "1", 11796321, "G", "A"))
+            ann.annotate(Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"))
             assert ann._conns
         assert ann._conns == {}
 
@@ -685,11 +685,13 @@ class TestBatchAnnotateParity:
 
     def test_parity_mixed_carriers_and_non_carriers(self, annotator: ClinVarAnnotator):
         variants = [
-            Variant("rs1801133", "1", 11796321, "G", "A"),  # carrier (het, pathogenic)
-            Variant("rs4680", "22", 19963748, "A", "A"),  # carrier (homo alt)
+            Variant(
+                "rs1801133", "1", 11796321, "G", "A", build="GRCh38"
+            ),  # carrier (het, pathogenic)
+            Variant("rs4680", "22", 19963748, "A", "A", build="GRCh38"),  # carrier (homo alt)
             Variant("rs121918506", "17", 7577538, "G", "G"),  # homo ref, no trigger
             Variant("rs999000111", "1", 1000, "A", "T"),  # unknown rsid
-            Variant("rs1801133", "1", 11796321, "-", "-"),  # no-call
+            Variant("rs1801133", "1", 11796321, "-", "-", build="GRCh38"),  # no-call
         ]
         per_variant = [a for v in variants for a in annotator.annotate(v)]
         batched = list(annotator.batch_annotate(variants))
@@ -700,8 +702,8 @@ class TestBatchAnnotateParity:
 
     def test_parity_all_no_calls(self, annotator: ClinVarAnnotator):
         variants = [
-            Variant("rs1801133", "1", 11796321, "-", "-"),
-            Variant("rs4680", "22", 19963748, "-", "-"),
+            Variant("rs1801133", "1", 11796321, "-", "-", build="GRCh38"),
+            Variant("rs4680", "22", 19963748, "-", "-", build="GRCh38"),
         ]
         per_variant = [a for v in variants for a in annotator.annotate(v)]
         batched = list(annotator.batch_annotate(variants))
@@ -710,9 +712,11 @@ class TestBatchAnnotateParity:
     def test_parity_duplicate_rsids(self, annotator: ClinVarAnnotator):
         """Same rsid appearing twice in input yields the right per-occurrence results."""
         variants = [
-            Variant("rs1801133", "1", 11796321, "G", "A"),
-            Variant("rs1801133", "1", 11796321, "G", "A"),
-            Variant("rs1801133", "1", 11796321, "G", "G"),  # different genotype, no trigger
+            Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"),
+            Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"),
+            Variant(
+                "rs1801133", "1", 11796321, "G", "G", build="GRCh38"
+            ),  # different genotype, no trigger
         ]
         per_variant = [a for v in variants for a in annotator.annotate(v)]
         batched = list(annotator.batch_annotate(variants))
@@ -726,14 +730,20 @@ class TestBatchAnnotateParity:
         its dedicated connection.
         """
         variants = [
-            Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh37"),
-            Variant("rs4680", "22", 19963748, "A", "A", build="GRCh37"),
+            Variant("rs1801133", "1", 11856378, "G", "A", build="GRCh37"),
+            Variant("rs4680", "22", 19951271, "A", "A", build="GRCh37"),
             Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"),
             Variant("rs4680", "22", 19963748, "A", "A", build="GRCh38"),
         ]
         per_variant = [a for v in variants for a in annotator.annotate(v)]
         batched = list(annotator.batch_annotate(variants))
         assert per_variant == batched
+        assert sorted(a.rsid for a in batched) == [
+            "rs1801133",
+            "rs1801133",
+            "rs4680",
+            "rs4680",
+        ]
 
     def test_chunk_boundary_500_and_501_resolve(self, annotator: ClinVarAnnotator):
         """Position chunking at the _BATCH_CHUNK boundary stays correct.
@@ -742,9 +752,11 @@ class TestBatchAnnotateParity:
         500 → one query; 501 → two. Both must surface the real matches.
         """
         # 498 filler positions that won't match + 2 real
-        boundary_500 = [Variant("", "1", 50_000_000 + i, "A", "T") for i in range(498)] + [
-            Variant("", "1", 11856378, "G", "A"),
-            Variant("", "22", 19951271, "G", "A"),
+        boundary_500 = [
+            Variant("", "1", 50_000_000 + i, "A", "T", ref="A") for i in range(498)
+        ] + [
+            Variant("", "1", 11856378, "G", "A", ref="G"),
+            Variant("", "22", 19951271, "G", "A", ref="G"),
         ]
         assert len(boundary_500) == 500
         resolved_500 = annotator.bulk_resolve_rsids(boundary_500)
@@ -753,7 +765,7 @@ class TestBatchAnnotateParity:
         assert ("1", 11856378, "G", "A") in resolved_500
         assert ("22", 19951271, "G", "A") in resolved_500
 
-        boundary_501 = [*boundary_500, Variant("", "1", 50_000_999, "C", "G")]
+        boundary_501 = [*boundary_500, Variant("", "1", 50_000_999, "C", "G", ref="C")]
         assert len(boundary_501) == 501
         resolved_501 = annotator.bulk_resolve_rsids(boundary_501)
         assert ("1", 11856378, "G", "A") in resolved_501
@@ -771,8 +783,8 @@ class TestBatchAnnotateParity:
         boundary_variants_500 = [
             Variant(f"rs90{i:07d}", "1", 1000 + i, "A", "T") for i in range(498)
         ] + [
-            Variant("rs1801133", "1", 11796321, "G", "A"),
-            Variant("rs4680", "22", 19963748, "A", "A"),
+            Variant("rs1801133", "1", 11796321, "G", "A", build="GRCh38"),
+            Variant("rs4680", "22", 19963748, "A", "A", build="GRCh38"),
         ]
         assert len(boundary_variants_500) == 500
         boundary_variants_501 = [
@@ -791,7 +803,7 @@ class TestBatchAnnotateParity:
 
 
 class TestBulkResolveRsids:
-    """Resolves rsIDs by (chrom, pos) for VCFs from callers that emit ID=. (GH #8).
+    """Resolves rsIDs by (chrom, pos) for VCFs from callers that emit ID=..
 
     Variant callers like GATK HaplotypeCaller and DeepVariant write `.` to the
     ID column. The annotation pipeline is rsID-keyed, so without resolution
@@ -802,21 +814,21 @@ class TestBulkResolveRsids:
 
     def test_single_variant_resolves(self, annotator: ClinVarAnnotator):
         """rsID-less variant at a known ClinVar position gets its rsid stamped."""
-        v = Variant("", "1", 11856378, "G", "A", build="GRCh37")
+        v = Variant("", "1", 11856378, "G", "A", build="GRCh37", ref="G")
         resolved = annotator.bulk_resolve_rsids([v])
         assert resolved == {("1", 11856378, "G", "A"): "rs1801133"}
         assert v.rsid == "rs1801133"
 
     def test_unknown_position_unchanged(self, annotator: ClinVarAnnotator):
         """Position not in ClinVar leaves the variant's rsid empty."""
-        v = Variant("", "1", 99_999_999, "A", "T", build="GRCh37")
+        v = Variant("", "1", 99_999_999, "A", "T", build="GRCh37", ref="A")
         resolved = annotator.bulk_resolve_rsids([v])
         assert resolved == {}
         assert v.rsid == ""
 
     def test_no_call_skipped(self, annotator: ClinVarAnnotator):
         """No-call variants don't participate in resolution."""
-        v = Variant("", "1", 11856378, "-", "-", build="GRCh37")
+        v = Variant("", "1", 11856378, "-", "-", build="GRCh37", ref="G")
         resolved = annotator.bulk_resolve_rsids([v])
         assert resolved == {}
         assert v.rsid == ""
@@ -831,7 +843,7 @@ class TestBulkResolveRsids:
         ClinVar at 1:11856378 has REF=G, ALT=A. A user carrying G/C at that
         position is not the same variant and must NOT pick up rs1801133.
         """
-        v = Variant("", "1", 11856378, "G", "C", build="GRCh37")
+        v = Variant("", "1", 11856378, "G", "C", build="GRCh37", ref="G")
         resolved = annotator.bulk_resolve_rsids([v])
         assert resolved == {}
         assert v.rsid == ""
@@ -844,7 +856,7 @@ class TestBulkResolveRsids:
         the A-row, not the C-row. Both rows share rsid in the synthetic data,
         so the test asserts on the (ref, alt) key shape.
         """
-        v = Variant("", "22", 42526694, "G", "A", build="GRCh37")
+        v = Variant("", "22", 42526694, "G", "A", build="GRCh37", ref="G")
         resolved = annotator.bulk_resolve_rsids([v])
         assert ("22", 42526694, "G", "A") in resolved
         assert v.rsid != ""
@@ -858,10 +870,10 @@ class TestBulkResolveRsids:
         """
         variants = [
             # GRCh37 coordinates for rs1801133 and rs4680
-            Variant("", "1", 11856378, "G", "A", build="GRCh37"),
+            Variant("", "1", 11856378, "G", "A", build="GRCh37", ref="G"),
             # GRCh38 coordinates for the same two rsIDs (lifted over)
-            Variant("", "1", 11796321, "G", "A", build="GRCh38"),
-            Variant("", "22", 19963748, "G", "A", build="GRCh38"),
+            Variant("", "1", 11796321, "G", "A", build="GRCh38", ref="G"),
+            Variant("", "22", 19963748, "G", "A", build="GRCh38", ref="G"),
         ]
         resolved = annotator.bulk_resolve_rsids(variants)
         assert variants[0].rsid == "rs1801133"
@@ -874,29 +886,33 @@ class TestBulkResolveRsids:
     def test_empty_chromosome_skipped(self, annotator: ClinVarAnnotator):
         """Variants with empty chrom or non-positive position are skipped."""
         variants = [
-            Variant("", "", 11856378, "G", "A", build="GRCh37"),
-            Variant("", "1", 0, "G", "A", build="GRCh37"),
+            Variant("", "", 11856378, "G", "A", build="GRCh37", ref="G"),
+            Variant("", "1", 0, "G", "A", build="GRCh37", ref="G"),
         ]
         resolved = annotator.bulk_resolve_rsids(variants)
         assert resolved == {}
         assert variants[0].rsid == ""
         assert variants[1].rsid == ""
 
-    def test_post_resolution_batch_annotate_yields_hits(self, annotator: ClinVarAnnotator):
-        """Once rsIDs are stamped, the existing batch_annotate path produces hits.
+    def test_rsidless_call_annotated_before_and_after_resolution(
+        self, annotator: ClinVarAnnotator
+    ):
+        """ClinVar annotates an rsID-less call by locus; resolution stamps the rsID.
 
-        End-to-end pin: this is the contract the pipeline depends on for
-        rsID-less VCFs. Resolution must mutate variants such that the
-        unchanged downstream annotators see real rsIDs.
+        Resolution still matters for the rsID-keyed annotators (ClinPGx,
+        GWAS, SNPedia) and for panel / high-value matching; ClinVar itself
+        no longer depends on it.
         """
-        v = Variant("", "1", 11856378, "G", "A", build="GRCh37")
-        # Before resolution: no annotations
-        assert list(annotator.batch_annotate([v])) == []
+        v = Variant("", "1", 11856378, "G", "A", build="GRCh37", ref="G")
+        # ClinVar selects rows by locus, so the rsID-less call
+        # is annotated even before resolution, under the row's rsID.
+        before = list(annotator.batch_annotate([v]))
+        assert before
+        assert all(a.rsid == "rs1801133" for a in before)
         annotator.bulk_resolve_rsids([v])
-        # After resolution: annotations appear via the resolved rsid
-        annotations = list(annotator.batch_annotate([v]))
-        assert annotations
-        assert all(a.rsid == "rs1801133" for a in annotations)
+        assert v.rsid == "rs1801133"
+        after = list(annotator.batch_annotate([v]))
+        assert after == before
 
     def test_position_index_self_heals_existing_caches(self, annotator: ClinVarAnnotator):
         """First `_connection()` call creates idx_clinvar_position if missing.
@@ -965,7 +981,7 @@ class TestBulkResolveRsids:
             # The correct rsid is rs_DEL_AG (Pathogenic), NOT rs_DEL_A
             # (Benign) — even though rs_DEL_A sorts first lexicographically
             # and shares the ALT "C".
-            v = Variant("", "1", 5000, "CAG", "C", build="GRCh37")
+            v = Variant("", "1", 5000, "CAG", "C", build="GRCh37", ref="CAG")
             ann.bulk_resolve_rsids([v])
             assert v.rsid == "rs_DEL_AG", (
                 f"expected rs_DEL_AG (REF=CAG matches user), got {v.rsid!r}"
@@ -974,7 +990,7 @@ class TestBulkResolveRsids:
             # Re-run with a fresh open to confirm idempotence and that the
             # REF-aware match doesn't depend on SQLite row order.
             ann.close()
-            v2 = Variant("", "1", 5000, "CAG", "C", build="GRCh37")
+            v2 = Variant("", "1", 5000, "CAG", "C", build="GRCh37", ref="CAG")
             ann.bulk_resolve_rsids([v2])
             assert v2.rsid == "rs_DEL_AG"
         finally:
@@ -1082,7 +1098,7 @@ class TestBulkResolveRsids:
         ann = ClinVarAnnotator(tmp_path, builds=("GRCh37",))
         try:
             # VCF: REF=A, ALT=G,T, GT=1/2 → parser yields (G, T).
-            v = Variant("", "1", 7000, "G", "T", build="GRCh37")
+            v = Variant("", "1", 7000, "G", "T", build="GRCh37", ref="A")
             ann.bulk_resolve_rsids([v])
             assert v.rsid == "", (
                 f"1/2 multi-allelic at multi-rsid position should not resolve "
@@ -1093,23 +1109,23 @@ class TestBulkResolveRsids:
 
 
 class TestMultiScvSemantics:
-    """GH #111: pin the per-SCV cache semantics that #42 introduced and the
+    """pin the per-SCV cache semantics that the TSV loader introduced and the
     fast suite was previously blind to.
 
-    Every test in this class MUST FAIL on dev tip (the pre-#109,
-    pre-#106-patch state). They pin the CORRECT post-#109 / post-#106
+    Every test in this class MUST FAIL on dev tip (the previous,
+    pre-patch state). They pin the CORRECT current
     behavior. The whole point is that the fast tier now catches the
-    regressions #42 silently enabled.
+    regressions the per-SCV loader silently enabled.
     """
 
     def test_three_identical_scvs_collapse_to_one_annotation(self, annotator: ClinVarAnnotator):
-        """GH #109: a variant with N identical (significance, condition,
+        """a variant with N identical (significance, condition,
         gene) SCV rows in the cache must emit exactly ONE Annotation —
         not N copies. On dev tip the annotator emits 3 identical
         Annotation objects (3-way duplicate), which is the user-visible
-        regression #109 fixes.
+        regression the dedup patch fixes.
 
-        Fixture (#111): rs999000111 on chr1 pos 200000, REF=A ALT=T,
+        Fixture: rs999000111 on chr1 pos 200000, REF=A ALT=T,
         three SCV rows all Pathogenic / Cystic_fibrosis_test /
         MULTI_SCV_AGREE — only review_status differs (one
         multiple_submitters, two single_submitter).
@@ -1118,7 +1134,7 @@ class TestMultiScvSemantics:
         results = annotator.annotate(v)
         assert len(results) == 1, (
             f"3 identical SCV rows must collapse to 1 Annotation; "
-            f"got {len(results)} duplicate(s). This is the #109 "
+            f"got {len(results)} duplicate(s). This is the dedup "
             f"regression — visible on every ClinVar report surface."
         )
         a = results[0]
@@ -1126,7 +1142,7 @@ class TestMultiScvSemantics:
         assert a.significance == "clinvar_pathogenic"
 
     def test_collapsed_annotation_keeps_strongest_review_status(self, annotator: ClinVarAnnotator):
-        """GH #109 acceptance criterion: when N SCVs collapse, the
+        """acceptance criterion: when N SCVs collapse, the
         surviving Annotation must carry the strongest review_status
         across the collapsed SCVs (not silently drop provenance).
 
@@ -1143,19 +1159,19 @@ class TestMultiScvSemantics:
         # consensus is the ClinVar ranking) wins the collapse.
         assert "multiple_submitters" in results[0].review_status, (
             f"Collapsed annotation lost the strongest review_status; "
-            f"got {results[0].review_status!r}. #109's acceptance "
+            f"got {results[0].review_status!r}. The acceptance "
             f"criterion: collapse preserves the strongest provenance."
         )
 
     def test_distinct_significance_condition_pairs_survive_dedup(
         self, annotator: ClinVarAnnotator
     ):
-        """GH #109 acceptance criterion: distinct (significance,
+        """acceptance criterion: distinct (significance,
         condition) pairs for one variant must remain separate
         Annotations after dedup — collapsing them would be the
-        Frankenstein-pair regression #42 was BUILT to retire.
+        Frankenstein-pair regression the per-SCV loader was BUILT to retire.
 
-        Fixture (#111): rs999000222 on chr1 pos 200100, REF=C ALT=G,
+        Fixture: rs999000222 on chr1 pos 200100, REF=C ALT=G,
         with two SCV rows that have genuinely distinct
         (significance, condition) pairs — Pathogenic / Disease_A
         and Likely_benign / Disease_B (both with include_benign so
@@ -1174,7 +1190,7 @@ class TestMultiScvSemantics:
                 f"Distinct (significance, condition) pairs on one variant "
                 f"must survive dedup as 2 Annotations; got {len(results)}. "
                 f"Collapsing them would be the Frankenstein-pair "
-                f"regression #42 was built to retire."
+                f"regression the per-SCV loader was built to retire."
             )
             sigs = {a.significance for a in results}
             assert sigs == {"clinvar_pathogenic", "clinvar_likely_benign"}
@@ -1188,16 +1204,16 @@ class TestMultiScvSemantics:
             ann.close()
 
     def test_sub_floor_variant_present_in_cache_but_below_floor(self, annotator: ClinVarAnnotator):
-        """GH #106 setup: pin that the sub-floor fixture exists in the
+        """setup: pin that the sub-floor fixture exists in the
         cache and emits an Annotation, but its magnitude is below the
         analyze 5.0 floor.
 
-        Fixture (#111): rs999000333 on chr1 pos 200200, REF=T ALT=C,
+        Fixture: rs999000333 on chr1 pos 200200, REF=T ALT=C,
         single Likely_benign SCV row → magnitude 2.0 (sub-floor).
         On dev tip this annotation is correctly produced; the bug is
-        downstream in panel_coverage (#106) which counts it as "found"
+        downstream in panel_coverage which counts it as "found"
         but the renderer filters it out — pure limbo. This test pins
-        the cache-side reality so #106's downstream test can build on
+        the cache-side reality so the downstream test can build on
         a known-good fact.
 
         include_benign=True is required because Likely_benign is
@@ -1218,26 +1234,26 @@ class TestMultiScvSemantics:
             ann.close()
 
     def test_unmapped_clnsig_falls_to_default_magnitude(self, annotator: ClinVarAnnotator):
-        """GH #108 (v2.3) pin: this fixture exists so #108 can land
+        """(v2.3) pin: this fixture exists so the fix can land
         the allowlist drift-guard against a known unmapped term.
 
-        Fixture (#111): rs999000444 on chr1 pos 200300, REF=G ALT=A,
+        Fixture: rs999000444 on chr1 pos 200300, REF=G ALT=A,
         single SCV with clinical_significance="protective" — a real
         ClinVar term NOT in _CLNSIG_MAGNITUDE. The dict's 5.0 default
         applies, equal to the analyze display floor — so the annotation
         surfaces at exactly the floor without a real magnitude rule.
-        This test pins the silent fallback so #108's future fix has a
+        This test pins the silent fallback so the future fix has a
         regression target.
         """
         v = Variant("rs999000444", "1", 200300, "G", "A", build="GRCh37")
         results = annotator.annotate(v)
         assert len(results) == 1
         a = results[0]
-        assert a.magnitude == 5.0  # default — feed this to #108 in v2.3
+        assert a.magnitude == 5.0  # default — feed this to the allowlist fix in v2.3
         assert a.gene == "UNMAPPED_CLNSIG"
 
     def test_multi_allelic_distinct_alts_survive_dedup(self, annotator: ClinVarAnnotator):
-        """GH #109 cross-PR review Finding 1: two SCVs at a multi-
+        """cross-PR review Finding 1: two SCVs at a multi-
         allelic site that share (rsid, significance, condition, gene)
         but DIFFER on alt must survive dedup as separate Annotations.
 
@@ -1247,10 +1263,10 @@ class TestMultiScvSemantics:
         that should describe the other allele. Downstream exact-
         (rsid, alt) lookups for gnomAD / AlphaMissense / CADD would
         then attach the wrong allele's frequency / pathogenicity /
-        CADD score — the same wrong-allele family of bug v2.0.1's #18
+        CADD score — the same wrong-allele family of bug v2.0.1's fix
         retired in the enrichment path.
 
-        Fixture (#111 + Finding 1 addendum): rs999000555 has two
+        Fixture: rs999000555 has two
         Pathogenic / Multi_alt_test / MULTI_ALT_DEDUP rows differing
         only in alt (T→A vs T→C). A het user A/C carries both alts
         and must receive two distinct Annotations.

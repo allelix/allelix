@@ -7,7 +7,7 @@ are exercised end-to-end by their respective annotator tests, so the
 shared loader_utils body sees real input under tests. cadd_loader is the
 exception — every cadd test fakes `install_prebuilt_cache`, so the
 facade body itself never runs (cadd_loader.py line 42 missed in
-coverage, audit #79 batch 2).
+coverage, audit batch 2).
 
 This file exercises the cadd_loader facade directly, end-to-end:
 construct a synthetic gzipped SQLite cache, point install_prebuilt_cache
@@ -17,7 +17,7 @@ tag and (when supplied) remote_signal.
 Naming note: `test_cadd_loader.py` (this file) tests the cadd_loader
 module. `test_build_cadd_cache.py` (separate, pre-existing) tests
 `scripts/build_cadd_cache.py` — the standalone cache-builder script.
-The two are different layers and the audit (#79) flagged the naming
+The two are different layers and the audit flagged the naming
 collision as misleading; this file establishes the explicit
 `test_<loader>.py` convention for future loader tests.
 """

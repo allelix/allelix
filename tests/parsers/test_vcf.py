@@ -24,7 +24,7 @@ FIXTURES = "tests/fixtures"
 MOCK_VCF = f"{FIXTURES}/mock_vcf.vcf"
 MOCK_GVCF = f"{FIXTURES}/mock_gvcf.g.vcf"
 MOCK_MULTISAMPLE = f"{FIXTURES}/mock_multisample.vcf"
-# GH #121: full matrix of committed VCF fixtures — the v2.2.0 evaluator's
+# full matrix of committed VCF fixtures — the v2.2.0 evaluator's
 # real-data battery exposed that gzipped + non-UTF-8 inputs crashed
 # can_parse with a raw Python traceback because the test suite only ever
 # carried plain ASCII .vcf files. CI now exercises the four-way matrix:
@@ -76,7 +76,7 @@ class TestCanParse:
 
 
 class TestRobustInputMatrix:
-    """GH #121: full matrix of committed-fixture inputs the v2.2.0
+    """full matrix of committed-fixture inputs the v2.2.0
     evaluator's real-data battery showed crashed the parser before this
     fix. Every combination of {plain .vcf, .vcf.gz} x {UTF-8 only,
     non-UTF-8 header byte} must:
@@ -86,7 +86,7 @@ class TestRobustInputMatrix:
          mid-iteration; non-UTF-8 bytes substituted in the header
          stream don't poison the data lines).
 
-    Pre-#121 the parser opened files in strict UTF-8 text mode and
+    Previously, the parser opened files in strict UTF-8 text mode and
     ``can_parse`` only caught ``OSError``, so a single non-UTF-8 byte
     anywhere in the header (typical in GATK / DeepVariant / bcftools
     output — they emit ``©``/``0xa9`` in ``##CL=`` lines) leaked a
@@ -97,7 +97,7 @@ class TestRobustInputMatrix:
 
     def test_can_parse_plain_utf8_vcf(self) -> None:
         """Baseline: pristine ASCII .vcf — the only shape the test
-        suite covered pre-#121."""
+        suite covered previously."""
         assert VcfParser().can_parse(_path(MOCK_VCF))
 
     def test_can_parse_plain_non_utf8_vcf(self) -> None:
@@ -159,7 +159,7 @@ class TestRobustInputMatrix:
 
 
 class TestBomAndPreambleHardening:
-    """GH #126: Sequencing.com (DRAGEN-pipeline) VCFs were reported to
+    """Sequencing.com (DRAGEN-pipeline) VCFs were reported to
     fail format detection. The most-plausible root cause we could
     identify without a sample header was a leading UTF-8 BOM
     (``\\xef\\xbb\\xbf``) before ``##fileformat=VCFv4.2`` — Windows /
@@ -306,7 +306,7 @@ class TestGetMetadata:
         assert VcfParser().get_metadata(f)["build"] == "GRCh37"
 
     def test_chr_prefix_observed_chr1(self, tmp_path: Path) -> None:
-        """GH #38: chr1 contig signals GRCh38 convention."""
+        """chr1 contig signals GRCh38 convention."""
         f = tmp_path / "chr1.vcf"
         f.write_text(
             "##fileformat=VCFv4.2\n"
@@ -316,7 +316,7 @@ class TestGetMetadata:
         assert VcfParser().get_metadata(f)["chr_prefix_observed"] is True
 
     def test_chr_prefix_observed_chr_only_after_chr1(self, tmp_path: Path) -> None:
-        """GH #38 widening: per-chromosome VCFs that omit chr1 still get
+        """widening: per-chromosome VCFs that omit chr1 still get
         detected (the previous regex only matched chr1 / chrX)."""
         for cid in ("chr2", "chr22", "chr10", "chrY", "chrM", "chrMT"):
             f = tmp_path / f"{cid}.vcf"
@@ -330,7 +330,7 @@ class TestGetMetadata:
             )
 
     def test_chr_prefix_not_observed_for_alt_contigs(self, tmp_path: Path) -> None:
-        """GH #38: alt contigs and decoys must NOT flip the signal — they
+        """alt contigs and decoys must NOT flip the signal — they
         don't disambiguate the build the same way as standard
         chromosomes do."""
         f = tmp_path / "decoys.vcf"
@@ -348,7 +348,7 @@ class TestGetMetadata:
         assert VcfParser().get_metadata(f)["chr_prefix_observed"] is False
 
     def test_chr_prefix_not_observed_bare_chromosomes(self, tmp_path: Path) -> None:
-        """GH #38: bare numeric / X / MT chromosomes do NOT signal chr-prefix."""
+        """bare numeric / X / MT chromosomes do NOT signal chr-prefix."""
         f = tmp_path / "bare.vcf"
         f.write_text(
             "##fileformat=VCFv4.2\n"
@@ -435,7 +435,7 @@ class TestParsePlainVcf:
         Matches the array-parser convention: parsers yield no-call
         variants and the annotator pipeline checks ``is_no_call``.
         Keeping the variant in the stream means high-value-SNP no-call
-        detection can pick it up downstream (R-2).
+        detection can pick it up downstream.
         """
         by_rsid = {v.rsid: v for v in VcfParser().parse(_path(MOCK_VCF))}
         v = by_rsid["rs121918506"]
@@ -890,7 +890,7 @@ class TestCanonicalRsid:
 
         The variant is then routed through ClinVar position-keyed
         resolution rather than carrying a meaningless string in its
-        rsid field. GH #8.
+        rsid field.
         """
         from allelix.parsers.vcf import _canonical_rsid
 

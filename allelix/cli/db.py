@@ -120,6 +120,7 @@ def db_update(
     cfg = load_config(resolved)
 
     clinvar_builds = _helpers._resolve_clinvar_builds(build)
+    failed: list[str] = []
     for annotator in get_annotators(
         resolved, clinvar_builds=clinvar_builds, cadd_full=cfg.cadd_full
     ):
@@ -162,6 +163,8 @@ def db_update(
                         f"  [green]✓ {annotator.name} ready[/green] "
                         f"(version {annotator.version() or '(unknown)'})"
                     )
+                else:
+                    failed.append(annotator.name)
                 continue
 
             if force:
@@ -171,6 +174,8 @@ def db_update(
                         f"  [green]✓ {annotator.name} refreshed[/green] "
                         f"(version {annotator.version() or '(unknown)'})"
                     )
+                else:
+                    failed.append(annotator.name)
                 continue
 
             # Code-driven sources (commit-pinned HF caches) are updated
@@ -200,7 +205,7 @@ def db_update(
                 continue
 
             if cached is None:
-                # GH #20: a cache with no stored freshness signal almost
+                # a cache with no stored freshness signal almost
                 # always predates the signal mechanism — i.e., it is old.
                 # The previous behavior was to stamp the live remote signal
                 # onto the cache and call it current, which permanently
@@ -219,6 +224,14 @@ def db_update(
                     f"  [green]✓ {annotator.name} refreshed[/green] "
                     f"(version {annotator.version() or '(unknown)'})"
                 )
+            else:
+                failed.append(annotator.name)
+
+    if failed:
+        import sys
+
+        console.print(f"[red]Failed to install or refresh: {', '.join(failed)}[/red]")
+        sys.exit(1)
 
 
 # Cache items considered part of the CADD opt-in footprint. Matched by
@@ -233,7 +246,7 @@ _CADD_PREFIXES: tuple[str, ...] = ("cadd",)
 # snpedia.sqlite-bak, the PharmGKB raw zip `clinicalAnnotations.zip`) are
 # all caught.
 #
-# GH #112 (v2.2.1): `config.toml` is intentionally NOT a marker here.
+# (v2.2.1): `config.toml` is intentionally NOT a marker here.
 # It used to be — on the reasoning that any allelix data dir likely
 # carries one — but `config.toml` is a generic filename (Rust projects,
 # Hugo, Rocket, etc. all use it). A typo'd `--data-dir ~/my-rust-project`

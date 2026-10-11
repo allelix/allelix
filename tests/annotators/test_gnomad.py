@@ -94,7 +94,7 @@ class TestSetupAndStatus:
         assert not annotator.is_ready()
 
     def test_tagless_cache_is_not_ready(self, tmp_path: Path) -> None:
-        """GH #22: a cache with no ``local_version_tag`` must not be
+        """a cache with no ``local_version_tag`` must not be
         accepted as ready. Previously the ``or not tag`` escape passed
         tagless caches, which defeated ``GNOMAD_SCHEMA_VERSION``
         invalidation — any legacy cache would silently pass as the new
@@ -118,7 +118,7 @@ class TestSetupAndStatus:
         assert not annotator.is_ready()
 
     def test_stale_schema_tag_is_not_ready(self, tmp_path: Path) -> None:
-        """GH #22: a cache stamped with an older schema version is rejected."""
+        """a cache stamped with an older schema version is rejected."""
         db_path = tmp_path / GNOMAD_DB_FILENAME
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             for stmt in GNOMAD_SCHEMA.split(";"):
@@ -557,7 +557,7 @@ class TestBulkResolveCoordinates:
 class TestBulkLookupByPosition:
     """Position-keyed fallback for rsIDs whose gnomAD rsid index is sparse.
 
-    Resolution by ClinVar (GH #8) populates a variant's rsid, but gnomAD's
+    Resolution by ClinVar populates a variant's rsid, but gnomAD's
     rsid index may not include that rsid even when the (chrom, pos, ref, alt)
     primary key matches. bulk_lookup_by_position lets the pipeline recover
     the AF via PK lookup as a second pass after the rsid-keyed enrichment.

@@ -223,7 +223,7 @@ class TestNormalizeBuildLabel:
 
 
 class TestNormalizeBuildLabelTokenBoundaries:
-    """GH #16: anchored tokenization, ambiguity rejection.
+    """anchored tokenization, ambiguity rejection.
 
     The previous implementation was first-substring-wins over a bare
     `"3X" in s` chain. A date like `2038-01-01` would match `38` and

@@ -8,22 +8,22 @@ field additions; clusters defined in an ADR share a single bump on first PR.
 
 ## Context
 
-v2.0.1 shipped three "suppress-half" fixes (GH allelix-dev #14, #23, #24) and
+v2.0.1 shipped three "suppress-half" fixes and
 deferred the matching structural-halves to v2.1. The four open v2.1 issues —
-#14 (carrier match case + strand), #23 (per-Annotation alt threading for
-non-ClinVar sources), #24 (structured GWAS trait / p-value / PheCode fields),
-and #50 (R-1 annotator-level strand-aware carrier matching) — share one
+carrier-match case + strand, per-Annotation alt threading for
+non-ClinVar sources, structured GWAS trait / p-value / PheCode fields,
+and R-1 annotator-level strand-aware carrier matching — share one
 underlying model deficiency:
 
 - **No reference allele on `Variant`.** Strand-aware carrier matching requires
   knowing which side of the user's pair is the risk allele. Today the carrier
   rule (ADR-0007) tests set membership against `{allele1, allele2}` and the
   pipeline never carries REF through the model.
-- **Per-Annotation `alt` carried for ClinVar only.** v1.4.1's #25 added the
-  field but only ClinVar populates it. v2.0.1 #23 suppress-half left a gap:
+- **Per-Annotation `alt` carried for ClinVar only.** v1.4.1's fix added the
+  field but only ClinVar populates it. v2.0.1 suppress-half left a gap:
   rsID-bearing GWAS / SNPedia / ClinPGx rows skip allele-specific gnomAD /
   AlphaMissense / CADD enrichment because their alt is unknown.
-- **GWAS trait / p-value / PheCode live in `description` prose.** v2.0.1 #24's
+- **GWAS trait / p-value / PheCode live in `description` prose.** v2.0.1's
   suppress-half promoted `_PHECODE_DELIM` to a shared constant; the deeper fix
   is to carry the values as structured fields and stop re-parsing prose for
   rollup / diff / display.
@@ -52,7 +52,7 @@ continue to behave identically.
 
 ### 2. Per-Annotation `alt` threading
 
-`Annotation.alt` already exists (v1.4.1 #25). Coverage extends to non-ClinVar
+`Annotation.alt` already exists (v1.4.1). Coverage extends to non-ClinVar
 sources:
 
 - **GWAS Catalog loader** carries the EFO-mapped effect allele as `alt` per row
@@ -63,11 +63,11 @@ sources:
 - **Pipeline enrichment** (`_pipeline.run_analysis` gnomAD / AlphaMissense /
   CADD attachment) uses per-Annotation `alt` for direct `(ref, alt)` lookup on
   rsID-bearing inputs. The position-fallback path (resolved-rsID on rsID-less
-  inputs) keeps the v2.0.1 #23 suppress-half exactly as documented — that path
+  inputs) keeps the v2.0.1 suppress-half exactly as documented — that path
   is allele-specific via the user's actual carried alt at the resolved position.
 
 This restores allele-specific enrichment on rsID-bearing input VCFs without
-re-opening the wrong-allele safety hole #23 closed.
+re-opening the wrong-allele safety hole the suppress-half closed.
 
 ### 3. Structured GWAS fields on `Annotation`
 
@@ -84,7 +84,7 @@ fields, not the source of truth.
 
 Existing rollup readers (`_gwas_base_trait`, `_gwas_phecode_parent`) consume the
 structured fields directly. The `_PHECODE_DELIM` shared constant introduced in
-v2.0.1 #24 becomes dead code at the third PR and is removed.
+v2.0.1 becomes dead code at the third PR and is removed.
 
 ### 4. Schema-version bump: cluster amendment to ADR-0033
 
@@ -140,7 +140,7 @@ others.
 - No behavior change at downstream consumers — they opt in field-by-field as
   PRs 2-4 land.
 
-**Closes part of #49** (this ADR + PR 1 = #49 done). Tests add fixtures
+**Partial resolution** (this ADR + PR 1 done). Tests add fixtures
 covering `ref`-populated paths.
 
 ### PR 2 — Per-Annotation `alt` threading
@@ -152,7 +152,7 @@ covering `ref`-populated paths.
 - Position-fallback path for resolved rsIDs unchanged.
 - Wrong-allele safety regression tests pin both paths.
 
-**Closes #23 structural-half.**
+**Closes structural-half.**
 
 ### PR 3 — Structured GWAS fields
 
@@ -163,7 +163,7 @@ covering `ref`-populated paths.
   truth.
 - `_PHECODE_DELIM` removed.
 
-**Closes #24 structural-half.**
+**Closes structural-half.**
 
 ### PR 4 — Strand-aware carrier matching
 
@@ -175,7 +175,7 @@ covering `ref`-populated paths.
 - Mandatory test fixture: rs5742904 forward C/C and coding G/G produce the
   same set of annotations (per CLAUDE.md R-1 spec).
 
-**Closes #14 strand-half and #50 (R-1).**
+**Closes strand-half.**
 
 ## Consequences
 
@@ -186,10 +186,9 @@ covering `ref`-populated paths.
 - Annotation tests gain new fixtures covering `ref`-populated paths, structured
   GWAS fields, and strand-aware carrier matching.
 - ADR-0033's per-field policy stays in effect for non-clustered field
-  additions. Future cluster ADRs (e.g., JSON v3 in v2.3 — see GH allelix-dev
-  #53) follow the same pattern: cluster manifest in the ADR, single bump on
-  first PR.
-- `Annotator.__del__` removal (#36) is independent of this ADR and can land in
+  additions. Future cluster ADRs (e.g., JSON v3 in v2.3) follow the same
+  pattern: cluster manifest in the ADR, single bump on first PR.
+- `Annotator.__del__` removal is independent of this ADR and can land in
   parallel without merge conflicts.
 
 ## References
@@ -201,5 +200,5 @@ covering `ref`-populated paths.
 - ADR-0024 (GWAS magnitude scoring — interacts with PR 2: unknown-risk-allele
   cap at 3.0 still fires when `alt` is empty)
 - ADR-0033 (schema version bump policy — cluster carve-out documented above)
-- GH allelix-dev #14, #23, #24, #50 (the four implementation issues)
+- The four implementation issues listed in Context above
 - CLAUDE.md "Feature R-1" (strand-aware carrier matching spec)

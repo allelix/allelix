@@ -102,7 +102,7 @@ class TestRenderJson:
 
 
 class TestPanelCoverageJson:
-    """GH #75: panel_coverage object in JSON when --filter-file used."""
+    """panel_coverage object in JSON when --filter-file used."""
 
     def test_no_panel_omits_section(self, tmp_path: Path):
         """Default analyze run (no --filter-file) produces no

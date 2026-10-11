@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 _BED_MAGIC = bytes([0x6C, 0x1B, 0x01])
 
+# PLINK1 .bim alleles: single nucleotides only.
+_NUCLEOTIDES = frozenset("ACGT")
+
 _CHROM_CODES = {
     "X": "23",
     "Y": "24",
@@ -70,9 +73,11 @@ def export_plink(
         ``(variants_written, no_calls_skipped, indels_skipped, monomorphic_count)``
 
     Note:
-        No-call variants and indels (multi-character alleles) are dropped.
-        PLINK1 BIM is SNV-only (single-character A1/A2). Indels would
-        produce non-standard BIM rows that downstream tools may reject.
+        No-call variants and indels are dropped. PLINK1 BIM is SNV-only
+        (A1/A2 in ``ACGT``). Multi-character alleles and single-character
+        non-nucleotide codes (array ``I``/``D`` indel codes, a VCF ``*``)
+        would produce non-standard BIM rows that downstream tools may
+        reject; they are counted in ``indels_skipped``.
     """
     fam_path = prefix.with_suffix(".fam")
     bim_path = prefix.with_suffix(".bim")
@@ -93,7 +98,7 @@ def export_plink(
                 skipped += 1
                 continue
 
-            if len(v.allele1) != 1 or len(v.allele2) != 1:
+            if v.allele1 not in _NUCLEOTIDES or v.allele2 not in _NUCLEOTIDES:
                 indels += 1
                 continue
 

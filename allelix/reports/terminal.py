@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Allelix
 """Terminal report rendering for `allelix analyze`.
 
-GH #9: the terminal output is a quick-eyeball view (custom panels,
+the terminal output is a quick-eyeball view (custom panels,
 sanity checks, extracts). Deep-dive enrichment data (allele frequency,
 AlphaMissense, CADD, ClinVar review status, derived zygosity) belongs
 in the HTML/JSON report — not in a 12-column-wide terminal table that
@@ -22,9 +22,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from rich.table import Table
 
 from allelix.reports._pipeline import rollup_gwas_duplicates
+from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -83,13 +85,13 @@ def _print_panel_coverage_warning(
     console: Console,
     filtered_annotations: list[Annotation],
 ) -> None:
-    """GH #75: surface panel rsIDs that weren't in the user's input file.
+    """Surface panel rsIDs that weren't in the user's input file.
 
     "Not on your chip" is critically different from "homozygous reference"
     — making this invisible was the original audit complaint. Quiet when
     no panel was supplied, or when every panel rsID was genotyped.
 
-    GH #106: the post-filter annotation list is threaded through so
+    the post-filter annotation list is threaded through so
     `panel_coverage()` derives "annotated" from what was actually rendered,
     not from the unfiltered set. Without this thread, panel rsids whose
     only annotations were below the magnitude floor showed in "found" but
@@ -172,6 +174,7 @@ def render_terminal_diff(
         table.add_column("New Sig", style="yellow")
         table.add_column("Old Mag", justify="right", style="dim", min_width=4)
         table.add_column("New Mag", justify="right", min_width=4)
+        table.add_column("GT", no_wrap=True)
         if has_condition:
             table.add_column("Condition", overflow="fold")
         for c in diff.changed:
@@ -186,6 +189,7 @@ def render_terminal_diff(
                     _compact_significance(c.current.significance, c.current.source),
                     prev_mag_str,
                     f"{c.current.magnitude:.1f}",
+                    c.current.genotype_match,
                 ]
             )
             if has_condition:
@@ -204,6 +208,7 @@ def render_terminal_diff(
         table.add_column("Source", style="dim blue", no_wrap=True)
         table.add_column("Significance", style="dim")
         table.add_column("Mag", justify="right", style="dim", min_width=4)
+        table.add_column("GT", no_wrap=True, style="dim")
         if has_condition:
             table.add_column("Condition", overflow="fold", style="dim")
         for d in diff.removed:
@@ -216,6 +221,7 @@ def render_terminal_diff(
                     _compact_source(d.get("attribution", "")),
                     _compact_significance(d.get("significance", ""), source),
                     f"{d.get('magnitude', 0.0):.1f}",
+                    d.get("genotype_match", ""),
                 ]
             )
             if has_condition:
@@ -252,6 +258,13 @@ def _compact_source(attribution: str) -> str:
     return attribution
 
 
+# ADR-0041: marker appended to a flagged genotype.
+_PLAUSIBILITY_MARKERS: dict[str, str] = {
+    IMPLAUSIBLE: " [yellow]⚠[/yellow]",
+    SUSPICIOUS: " [yellow]?[/yellow]",
+}
+
+
 def _print_table(filtered: list[Annotation], console: Console) -> None:
     if not filtered:
         console.print("[yellow]No annotations matched the current filters.[/yellow]")
@@ -280,10 +293,17 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
                 _compact_source(a.attribution),
                 _compact_significance(a.significance, a.source),
                 f"{a.magnitude:.1f}",
-                a.genotype_match,
+                escape(a.genotype_match) + _PLAUSIBILITY_MARKERS.get(a.plausibility, ""),
             ]
         )
         if has_condition:
             row.append(a.condition or "—")
         table.add_row(*row)
     console.print(table)
+    flagged = {a.plausibility for a in filtered} & _PLAUSIBILITY_MARKERS.keys()
+    if flagged:
+        console.print(
+            "[yellow]⚠[/yellow] [dim]implausible: homozygous for an allele very rare in "
+            "gnomAD; [/dim][yellow]?[/yellow] [dim]suspicious: gnomAD reports no carriers. "
+            "Confirm flagged calls before relying on them.[/dim]"
+        )

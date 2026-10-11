@@ -18,16 +18,22 @@ historically masked:
 
   - Vocabulary invariants — every `significance` value must be in the
     known-vocabulary union. A novel value means the loader stopped
-    filtering placeholder CLNSIGs (a #116 / #101 regression).
+    filtering placeholder CLNSIGs (a regression).
 
   - Universal invariants — required-non-null fields, allowed sources,
     attribution mapping, magnitude range.
+
+  - Report assertions (optional, per floors entry) — report-level fields
+    outside the annotation list: `input.gvcf`, the VCF quality gate's
+    `input.vcf_quality.low_quality_calls`, and `high_value_no_calls`
+    (count and reason). Pins the GQ-floor behavior on low-coverage input.
 
 Usage:
     python3 test_data/check_ground_truth.py <json> <key>
 
 where <key> is one of the keys under `floors:` in the YAML
-(`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`).
+(`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`,
+`hg00187_gatkhc_gvcf_default`).
 
 Exit code 0 on full pass; 1 on any failure, with the failing assertions
 printed to stderr.
@@ -65,6 +71,41 @@ def _check_floors(anns: list[dict], floors: dict, failures: list[str]) -> None:
     if "unique_dedup_keys_min" in floors and n_unique < floors["unique_dedup_keys_min"]:
         floor = floors["unique_dedup_keys_min"]
         failures.append(f"floor: unique keys {n_unique} < {floor} — lost real classifications?")
+
+
+def _check_report_assertions(report: dict, floors: dict, failures: list[str]) -> None:
+    assertions = floors.get("report_assertions") or {}
+    if not assertions:
+        return
+    input_block = report.get("input") or {}
+    if "input_gvcf" in assertions and input_block.get("gvcf") != assertions["input_gvcf"]:
+        failures.append(
+            f"report: input.gvcf is {input_block.get('gvcf')!r}, "
+            f"expected {assertions['input_gvcf']!r}"
+        )
+    if "vcf_quality_low_quality_calls_min" in assertions:
+        floor = assertions["vcf_quality_low_quality_calls_min"]
+        quality = input_block.get("vcf_quality")
+        if not isinstance(quality, dict):
+            failures.append(f"report: input.vcf_quality is {quality!r}, expected an object")
+        elif quality.get("low_quality_calls", 0) < floor:
+            failures.append(
+                f"report: vcf_quality.low_quality_calls {quality.get('low_quality_calls')} "
+                f"< {floor} — GQ floor not applied?"
+            )
+    # The JSON report omits high_value_no_calls when the list is empty.
+    no_calls = report.get("high_value_no_calls") or []
+    if "high_value_no_calls_min" in assertions:
+        floor = assertions["high_value_no_calls_min"]
+        if len(no_calls) < floor:
+            failures.append(f"report: high_value_no_calls has {len(no_calls)} entries < {floor}")
+    if "high_value_no_calls_reason" in assertions:
+        reason = assertions["high_value_no_calls_reason"]
+        if not any(entry.get("reason") == reason for entry in no_calls):
+            seen = sorted({entry.get("reason") for entry in no_calls}, key=str)
+            failures.append(
+                f"report: no high_value_no_calls entry has reason {reason!r} (saw {seen})"
+            )
 
 
 def _check_spots(
@@ -177,6 +218,7 @@ def main() -> int:
 
     failures: list[str] = []
     _check_floors(anns, truth["floors"][file_key], failures)
+    _check_report_assertions(report, truth["floors"][file_key], failures)
     _check_spots(anns, truth.get("analyze", []), file_key, failures)
     _check_vocab(anns, truth["vocabulary"], failures)
     _check_universal(anns, truth["universal"], failures)

@@ -154,7 +154,7 @@ analyze:
 
 # Vocabulary invariants — every `significance` value emitted by allelix
 # must be in the known-vocabulary union. A value outside this set means
-# a junk CLNSIG slipped through the loader filter (a #116 / #101 regression).
+# a junk CLNSIG slipped through the loader filter (a regression).
 vocabulary:
   # ClinVar normalized significance tokens.
   # Authoritative set: derived from allelix/annotators/clinvar.py
@@ -230,11 +230,26 @@ floors:
     file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
     build: grch37
     total_annotations_mag_0_min: 8        # observed 11; tight floor on tiny dataset
-    written_annotations_mag_0_min: 1      # observed 1 after cross-build guard removed false positives
+    written_annotations_mag_0_min: 1      # observed 1 after removing cross-build false positives
     unique_dedup_keys_min: 1              # observed 1; the sole correctly anchored GRCh37 hit
     default_filter_written_min: 3         # observed 5
     expected_build_detection: "GRCh37 (override)"
     note: "Tiny dataset. The v2.3.1 recalibration classified all three removed rsIDs as GRCh38-coordinate coincidences in this GRCh37 file; rs2280789 is the sole correctly anchored hit. Do not lower again without equivalent coordinate-level classification."
+
+  hg00187_gatkhc_gvcf_default:
+    file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
+    build: grch37
+    # At default --min-gq 20, this ~4x genome produces 0 annotations
+    # because all ~44K non-ref calls have GQ below 20.
+    written_annotations_mag_0_min: 0
+    unique_dedup_keys_min: 0
+    # Report-level assertions that pin the new GQ-gate behavior:
+    report_assertions:
+      input_gvcf: true
+      vcf_quality_low_quality_calls_min: 1
+      high_value_no_calls_min: 1
+      high_value_no_calls_reason: "low_gq_block"
+    note: "Pins the GQ-gate behavior on a low-coverage genome. All non-ref calls fail GQ >= 20, producing zero annotations and non-empty high_value_no_calls with reason low_gq_block."
 
 # Cross-cutting invariants on every analyze output.
 universal:

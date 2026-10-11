@@ -169,7 +169,30 @@ _SAMPLE_OPT = click.option(
         "or any plain VCF tool to list available samples."
     ),
 )
-# #150: annotated VCF output. Requires VCF/gVCF input (any other format
+# VCF quality gate. Rows the variant caller filtered are skipped
+# unless --keep-filtered; calls below the GQ floor become no-calls.
+_KEEP_FILTERED_OPT = click.option(
+    "--keep-filtered",
+    is_flag=True,
+    default=False,
+    help=(
+        "VCF only: keep rows whose FILTER is not PASS (for example LowQual or a "
+        "VQSR tranche). By default the variant caller's filters are honoured "
+        "and those rows are skipped and counted."
+    ),
+)
+_MIN_GQ_OPT = click.option(
+    "--min-gq",
+    type=click.IntRange(min=0),
+    default=20,
+    show_default=True,
+    help=(
+        "VCF only: genotype quality floor. A call or gVCF reference block "
+        "with GQ below this value, or with no reads (DP 0), is treated as a "
+        "no-call. 0 turns the GQ floor off."
+    ),
+)
+# annotated VCF output. Requires VCF/gVCF input (any other format
 # errors out early). Existing output paths are refused (no clobber, no
 # --force in v2.3.0). See ADR-0036 for the output contract.
 _VCF_OUT_OPT = click.option(

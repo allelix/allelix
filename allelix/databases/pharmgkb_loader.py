@@ -337,7 +337,7 @@ def _safe_float(value: str) -> float | None:
 # Truncation sanity floor for production loads. Current ClinPGx clinical
 # annotations ship ~13K rows; ~5K is a generous floor that catches gross
 # truncation while staying permissive against upstream-data drift. Set
-# to 0 from tests so synthetic fixtures of any size load cleanly. See GH #19.
+# to 0 from tests so synthetic fixtures of any size load cleanly. See .
 PHARMGKB_MIN_ROWS = 5_000
 
 

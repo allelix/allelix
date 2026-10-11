@@ -10,7 +10,7 @@ import sqlite3
 import urllib.error
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref
+from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref, variant_locus
 from allelix.databases._versions import PHARMGKB_INTERPRETER_VERSION
 from allelix.databases.cpic_loader import (
     fetch_cpic_allele_functions,
@@ -85,6 +85,7 @@ class PharmGKBAnnotator(Annotator):
         self,
         data_dir: Path,
         clinvar_ref_provider: Callable[[str, str], str | None] | None = None,
+        palindromic_provider: Callable[[set[str]], set[str]] | None = None,
     ) -> None:
         """Resolve the ClinPGx SQLite cache path within `data_dir`.
 
@@ -93,11 +94,18 @@ class PharmGKBAnnotator(Annotator):
         wired to `ClinVarAnnotator.reference_for`. None disables the REF check
         and falls back to the cache's CPIC-based `is_nonfinding` flag for all
         suppression — the v0.7.1 behavior.
+
+        `palindromic_provider` returns the subset of given rsIDs whose site
+        the identity table flags palindromic; complement (strand-flip)
+        matching is skipped there. In production it's wired to
+        `RsidIdentityAnnotator.palindromic_rsids`. None keeps the per-genotype
+        palindrome guard only.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / PHARMGKB_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._clinvar_ref_provider = clinvar_ref_provider
+        self._palindromic_provider = palindromic_provider
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -277,6 +285,10 @@ class PharmGKBAnnotator(Annotator):
         rows = self._connection().execute(sql, params).fetchall()
         annotations: list[Annotation] = []
         user_diploid = _user_diploid(variant)
+        palindromic = (
+            self._palindromic_provider is not None
+            and variant.rsid in self._palindromic_provider({variant.rsid})
+        )
         for row in rows:
             (
                 geno,
@@ -290,7 +302,11 @@ class PharmGKBAnnotator(Annotator):
                 pgkb_annotation_id,
             ) = row
             if not strand_aware_genotype_match(
-                variant.allele1, variant.allele2, geno, variant.ref
+                variant.allele1,
+                variant.allele2,
+                geno,
+                variant.ref,
+                site_palindromic=palindromic,
             ):
                 continue
             sig_label = level_of_evidence.strip().lower() or "unknown"
@@ -317,6 +333,9 @@ class PharmGKBAnnotator(Annotator):
                     condition=phenotype or "",
                     gene=gene or "",
                     alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
+                    locus_ref=variant.ref,
+                    carried_alleles=(variant.allele1, variant.allele2),
+                    locus=variant_locus(variant),
                 )
             )
         return annotations
@@ -347,6 +366,9 @@ class PharmGKBAnnotator(Annotator):
         if not candidates:
             return
         rsids = list({v.rsid for v, _ in candidates})
+        palindromic_set: set[str] = set()
+        if self._palindromic_provider is not None:
+            palindromic_set = self._palindromic_provider(set(rsids))
 
         conn = self._connection()
         rows_by_rsid: dict[str, list[tuple]] = {}
@@ -383,7 +405,11 @@ class PharmGKBAnnotator(Annotator):
                 # ADR-0035 PR 4: strand-aware genotype match. See annotate() for
                 # the safety rationale (palindrome guard + variant.ref orientation).
                 if not strand_aware_genotype_match(
-                    variant.allele1, variant.allele2, geno, variant.ref
+                    variant.allele1,
+                    variant.allele2,
+                    geno,
+                    variant.ref,
+                    site_palindromic=variant.rsid in palindromic_set,
                 ):
                     continue
                 sig_label = level_of_evidence.strip().lower() or "unknown"
@@ -409,6 +435,9 @@ class PharmGKBAnnotator(Annotator):
                     condition=phenotype or "",
                     gene=gene or "",
                     alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
+                    locus_ref=variant.ref,
+                    carried_alleles=(variant.allele1, variant.allele2),
+                    locus=variant_locus(variant),
                 )
 
 

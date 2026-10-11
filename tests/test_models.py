@@ -49,11 +49,11 @@ class TestVariant:
         assert v.ref == "A"
 
     def test_ref_lowercase_normalized_to_uppercase(self):
-        """ADR-0035 + GH #14: soft-masked references emit lowercase REF.
+        """ADR-0035 + soft-masked references emit lowercase REF.
 
         Without normalization the strand-aware carrier match (PR 4) would
         compare a lowercase user ref against uppercase gnomAD / annotator
-        alleles and silently mismatch — exactly the #14 failure mode for
+        alleles and silently mismatch — exactly the failure mode for
         the new field. Normalize at the model boundary so the invariant
         is impossible to violate downstream.
         """
@@ -71,7 +71,7 @@ class TestVariant:
         assert v.genotype == "CTT/C"
 
     def test_lowercase_alleles_normalized_to_uppercase(self):
-        """GH #14 (case half): a lowercase user allele used to silently
+        """(case half): a lowercase user allele used to silently
         fail the raw-set-membership carrier match in clinical annotators
         (which check `alt in {variant.allele1, variant.allele2}` against
         uppercase REF/ALT from the source databases). Normalize at the
@@ -131,7 +131,7 @@ class TestAnnotation:
         assert a.gene == ""
 
     def test_annotation_to_public_dict_strips_internal_fields(self):
-        """GH allelix-dev #3 — every internal-only field is excluded.
+        """— every internal-only field is excluded.
 
         The contract: any field name in ``_INTERNAL_ANNOTATION_FIELDS`` MUST NOT
         appear in the dict returned by ``annotation_to_public_dict``. If a new
@@ -153,7 +153,7 @@ class TestAnnotation:
         assert d["rsid"] == "rs1"
 
     def test_annotation_to_public_dict_used_by_all_three_serializers(self):
-        """GH allelix-dev #3 — production serializers route through the
+        """— production serializers route through the
         canonical helper, not inline filters.
 
         If any future code path adds a 4th 'asdict(a) minus is_must_include'

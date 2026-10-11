@@ -54,12 +54,15 @@ if TYPE_CHECKING:
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.1.0"
+VCF_SCHEMA_VERSION = "0.2.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
 Bump on any incompatible change to a declared INFO field, provenance
-line, or attribution shape. ADR after real user feedback per #150.
+line, or attribution shape. ADR after real user feedback.
+
+0.2.0: adds ``ALLELIX_FILTER`` (rows kept with ``--keep-filtered``), and
+caller-rejected rows are no longer stamped by default.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -161,6 +164,10 @@ _PRIMARY_SOURCES: frozenset[str] = frozenset({"clinvar", "gwas", "pharmgkb", "sn
 _ENRICHMENT_SOURCES: frozenset[str] = frozenset({"alphamissense", "cadd", "gnomad"})
 
 _ORIGINAL_ID_FIELD = "ALLELIX_ORIGINAL_ID"
+# the input row's FILTER, repeated on a stamped row that the caller
+# rejected and the user kept with --keep-filtered.
+_FILTER_FIELD = "ALLELIX_FILTER"
+_UNFILTERED = frozenset({"PASS", ".", ""})
 _CONTIG_DECLARATION_PREFIX = "##contig=<ID="
 
 # Chars reserved by the VCF INFO grammar: ``;`` separates fields, ``,``
@@ -337,13 +344,15 @@ def _emit_provenance_lines(
     return lines
 
 
-def _emit_info_declarations(sources_used: set[str], *, include_original_id: bool) -> list[str]:
+def _emit_info_declarations(
+    sources_used: set[str], *, include_original_id: bool, keep_filtered: bool = False
+) -> list[str]:
     """Emit ``##INFO=<>`` declarations for the sources used in this run.
 
     Sources not touched are omitted so the header only declares fields
     that actually appear in the file. ``ALLELIX_ORIGINAL_ID`` is
     declared once when the caller passed a non-empty ``recovered_rsids``
-    map.
+    map. ``ALLELIX_FILTER`` is declared when filtered rows were kept.
     """
     lines: list[str] = []
     for source, spec in _INFO_SPECS.items():
@@ -356,6 +365,12 @@ def _emit_info_declarations(sources_used: set[str], *, include_original_id: bool
         lines.append(
             f"##INFO=<ID={_ORIGINAL_ID_FIELD},Number=1,Type=String,"
             'Description="Original VCF ID column value before Allelix rsID recovery">'
+        )
+    if keep_filtered:
+        lines.append(
+            f"##INFO=<ID={_FILTER_FIELD},Number=1,Type=String,"
+            'Description="FILTER of a row the variant caller rejected, annotated by '
+            'Allelix only because --keep-filtered was set">'
         )
     return lines
 
@@ -403,12 +418,12 @@ def _missing_contig_ids(input_path: Path) -> list[str]:
 
 
 def _is_symbolic(alt: str) -> bool:
-    """VCF symbolic ALT (``<NON_REF>``, ``<DEL>``, ``<*>``, …).
+    """VCF symbolic ALT (``<NON_REF>``, ``<DEL>``, ``<*>``, …) or the spanning deletion ``*``.
 
     We never look up annotations for symbolic alleles — the annotator
     layer works on realized nucleotide substitutions.
     """
-    return alt.startswith("<") and alt.endswith(">")
+    return (alt.startswith("<") and alt.endswith(">")) or alt == "*"
 
 
 def _sources_used(
@@ -451,6 +466,7 @@ def render_vcf(
     annotations_by_key: Mapping[_VariantKey, list[Annotation]],
     recovered_rsids: Mapping[_VariantKey, str] | None = None,
     run_date: datetime | None = None,
+    keep_filtered: bool = False,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -472,6 +488,10 @@ def render_vcf(
     declarations, and the provenance / attribution block are inserted
     immediately before ``#CHROM``. Sample columns and FORMAT fields pass
     through unchanged.
+
+    A row the caller rejected (FILTER not ``PASS`` / ``.``) is
+    copied unchanged and never stamped, unless ``keep_filtered`` is set;
+    then it is stamped like any row and also carries ``ALLELIX_FILTER``.
 
     Returns the number of data lines stamped with at least one Allelix
     INFO field (either an annotation source or ``ALLELIX_ORIGINAL_ID``).
@@ -500,7 +520,9 @@ def render_vcf(
                 for contig_id in missing_contig_ids:
                     fout.write(f"##contig=<ID={contig_id}>\n")
                 for h in _emit_info_declarations(
-                    sources_used, include_original_id=include_original_id
+                    sources_used,
+                    include_original_id=include_original_id,
+                    keep_filtered=keep_filtered,
                 ):
                     fout.write(h + "\n")
                 for h in _emit_provenance_lines(
@@ -526,6 +548,7 @@ def render_vcf(
                 sources_used=sources_used,
                 annotations_by_key=annotations_by_key,
                 recovered_rsids=recovered_rsids,
+                keep_filtered=keep_filtered,
             )
             fout.write(new_line)
             if row_stamped:
@@ -540,6 +563,7 @@ def _stamp_data_line(
     sources_used: set[str],
     annotations_by_key: Mapping[_VariantKey, list[Annotation]],
     recovered_rsids: Mapping[_VariantKey, str],
+    keep_filtered: bool = False,
 ) -> tuple[str, bool]:
     """Rewrite one VCF data line with Allelix INFO fields.
 
@@ -557,6 +581,11 @@ def _stamp_data_line(
     try:
         pos = int(pos_s)
     except ValueError:
+        return raw_line, False
+    caller_rejected = filt.strip() not in _UNFILTERED
+    if caller_rejected and not keep_filtered:
+        # Never put Allelix INFO on a row the caller rejected: other tools
+        # would read it as an Allelix-endorsed call.
         return raw_line, False
 
     alts = alt_col.split(",")
@@ -619,6 +648,8 @@ def _stamp_data_line(
     if recovered is not None and original_id is not None:
         orig_frag = f"{_ORIGINAL_ID_FIELD}={_sanitize_info_value(original_id)}"
         allelix_info = f"{allelix_info};{orig_frag}" if allelix_info else orig_frag
+    if allelix_info and caller_rejected:
+        allelix_info += f";{_FILTER_FIELD}={_sanitize_info_value(filt.strip())}"
 
     if allelix_info:
         info = allelix_info if info in ("", ".") else f"{info};{allelix_info}"

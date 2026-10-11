@@ -2,8 +2,8 @@
 # Copyright (C) 2026 Allelix
 """Release-gate sanitize guard for the public CHANGELOG.
 
-GH #118: CHANGELOG.md ships verbatim from the private allelix-dev
-repo to the public allelix repo and PyPI. Bare `#NN` references
+CHANGELOG.md ships verbatim from the private development
+repo to the public repo and PyPI. Bare `#NN` references
 auto-link on GitHub against the surrounding repo's numbering — on
 the public repo they ALL 404, because the issues/PRs only exist on
 the private tracker. Same hazard for an `### Internal` section,
@@ -41,7 +41,7 @@ def changelog_text() -> str:
 
 
 def test_changelog_has_no_issue_or_pr_references(changelog_text: str) -> None:
-    """GH #118: every `#NN` token in CHANGELOG.md auto-links to the
+    """every `#NN` token in CHANGELOG.md auto-links to the
     surrounding repo on GitHub. Private-repo issue/PR numbers don't
     exist on the public repo, so every shipped `#NN` is a dead link.
 
@@ -60,7 +60,7 @@ def test_changelog_has_no_issue_or_pr_references(changelog_text: str) -> None:
 
 
 def test_changelog_has_no_internal_section(changelog_text: str) -> None:
-    """GH #118: an `### Internal` heading carries forensic provenance
+    """an `### Internal` heading carries forensic provenance
     (architectural notes, plumbing details, fixture changes) that no
     public user needs. The squash commit on main + the private
     release commit body both retain this context for anyone tracing
@@ -143,7 +143,7 @@ def _extract_unreleased_section(text: str) -> str:
 def test_changelog_unreleased_has_no_drift_vulnerable_counts(
     changelog_text: str,
 ) -> None:
-    """GH #145-era discipline: raw drift-vulnerable counts in
+    """-era discipline: raw drift-vulnerable counts in
     ``[Unreleased]`` must carry an explicit snapshot caveat, or the
     measurement must be quoted via the §19 ground-truth harness output
     format (which is drift-tolerant by design).

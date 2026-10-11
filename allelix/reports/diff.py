@@ -28,9 +28,9 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6"}
+_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6", "7"}
 
-# GH #25: magnitude comparison tolerance. Magnitudes are scored on a
+# magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
 # vs 7.499999999999999) is well below 1e-9. Using exact `!=` previously
 # flagged such noise as "changed", filling diffs with non-events.
@@ -44,7 +44,7 @@ class ChangedAnnotation:
     ``previous_magnitude`` is ``None`` when the baseline entry had no
     magnitude recorded (legacy or partial baseline). Treating absence as
     ``0.0`` would flag every such entry as "changed" against any nonzero
-    current magnitude — see GH #25.
+    current magnitude — see .
     """
 
     current: Annotation
@@ -100,7 +100,7 @@ def load_previous_report(path: Path) -> dict:
         msg = f"{path.name} has no 'annotations' key."
         raise ValueError(msg)
 
-    # GH #25: validate per-annotation entries. `compute_diff` indexes
+    # validate per-annotation entries. `compute_diff` indexes
     # `d["source"]` / `d["rsid"]` unguarded; a baseline with the right
     # top-level shape but malformed entries (annotations as a dict,
     # entries missing required keys) would raise KeyError or TypeError
@@ -146,7 +146,7 @@ def compute_diff(
             p = prev_by_key[key]
             prev_mag = p.get("magnitude")
             significance_changed = c.significance != p.get("significance")
-            # GH #25: tolerance comparison against representation noise;
+            # tolerance comparison against representation noise;
             # treat a missing previous magnitude as "no value to compare"
             # rather than the implicit 0.0 the old code substituted.
             magnitude_changed = prev_mag is not None and not math.isclose(

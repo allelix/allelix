@@ -29,15 +29,25 @@ class GenotypeMetadata(TypedDict):
         chr_prefix_observed: True when the file uses ``chr``-prefixed contig
             names (``chr1`` / ``chrX``). Optional — only VCF / gVCF parsers
             populate it; consumer-array exports always use bare names and
-            don't set it. GH #38: used as a tertiary build-detection signal
+            don't set it. used as a tertiary build-detection signal
             after rsID matching and ``##assembly`` tag checks both fail.
             ``chr``-prefixed contigs overwhelmingly indicate GRCh38.
+        header_build: The build the file explicitly declares in its header
+            (e.g. MyHeritage ``##reference=build37`` -> ``"GRCh37"``).
+            Optional; absent when the file declares none. ``build`` may
+            still carry a parser default in that case.
+        method: How the genotypes were produced, when the file says so
+            (e.g. ``"low-pass-wgs-imputed"`` for MyHeritage low-pass whole
+            genome sequencing). Optional; absent for files that do not
+            declare it.
     """
 
     format: str
     sample_id: str
     build: str
     chr_prefix_observed: NotRequired[bool]
+    header_build: NotRequired[str]
+    method: NotRequired[str]
 
 
 class GenotypeParser(ABC):

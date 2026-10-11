@@ -14,7 +14,7 @@ noise tolerance)" of the seed matches. The implementation required exact
 unanimity and at least three matches. One stale or repositioned seed could
 therefore discard a strong position majority and fall back to the header.
 
-The correctness review proposed two relaxations: accept a sufficiently strong majority,
+Two relaxations were proposed: accept a sufficiently strong majority,
 and allow a unanimous sample smaller than three seeds to override the header.
 The first repairs the missing noise tolerance. The second is unsafe: two
 non-reference WGS calls can coincidentally be the only seed positions observed,

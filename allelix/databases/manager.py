@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# GH #42: ADR-0021 per-build dispatch is preserved at the SQLite cache
+# ADR-0021 per-build dispatch is preserved at the SQLite cache
 # layer (clinvar.GRCh37.sqlite + clinvar.GRCh38.sqlite), but the source
 # is a single TSV pair that carries rows for every supported Assembly.
 # variant_summary.txt.gz holds per-(VariationID, Assembly) rows with
@@ -159,7 +159,7 @@ def verify_file_hash(path: Path, algorithm: str, expected_hex: str) -> None:
         )
 
 
-# --- GH #42: per-SCV TSV loader ------------------------------------
+# --- per-SCV TSV loader ------------------------------------
 #
 # Column indices (zero-based) inside the TSV files, taken from the
 # verified column-header rows fetched 2026-06-17 from
@@ -185,7 +185,7 @@ _SS_REVIEW_STATUS = 6  # "ReviewStatus" — per-SCV
 _SS_SCV = 10  # "SCV"                   — submission accession
 _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 
-# GH #42 follow-up (evaluator defect 5, PR #101): exact set of
+# follow-up (evaluator defect 5, ): exact set of
 # ClinicalSignificance values the TSV loader filters at ingest.
 # These are values that ClinVar uses to mark SCVs with no actionable
 # classification — placeholders ("-", "", "not specified") AND
@@ -201,9 +201,9 @@ _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 #     would lose real submitter records.
 #   - "no classification for the single variant" — same.
 #
-# GH #116 added the three non-classification terms ("other",
+# added the three non-classification terms ("other",
 # "association", "association not found"). The per-SCV TSV
-# switch (#42) surfaced these from the underlying submission_summary
+# switch surfaced these from the underlying submission_summary
 # rows where the old summarized data hid them; they're meaningfully
 # distinct from placeholders (a curator chose them) but equally
 # unactionable as report content.
@@ -217,9 +217,9 @@ _CLINVAR_PLACEHOLDER_CLNSIGS: frozenset[str] = frozenset(
         "-",
         "not specified",
         "no classification provided",
-        # GH #116: non-classification curatorial terms — kept out of
+        # non-classification curatorial terms — kept out of
         # _CLNSIG_MAGNITUDE deliberately (they aren't classifications)
-        # and out of _BENIGN_CLNSIGS (they aren't benign; #56's repute
+        # and out of _BENIGN_CLNSIGS (they aren't benign; the repute
         # work must not see them as "good").
         "other",
         "association",
@@ -293,7 +293,7 @@ def iter_clinvar_tsv_records(
     (ClinicalSignificance, ReportedPhenotypeInfo) pair for each SCV
     submission. ``variant_summary`` carries the position / ref / alt /
     rsID / gene per (variant, build). The legacy VCF loader's
-    CLNSIG|CLNDN Frankenstein pairing (GH #42, removed in stage C) is
+    CLNSIG|CLNDN Frankenstein pairing (, removed in stage C) is
     structurally absent here because each row is one submission.
 
     Memory: the variant_summary index uses a temp on-disk SQLite, NOT
@@ -424,8 +424,8 @@ def iter_clinvar_tsv_records(
                     continue
                 rsid, chromosome, position, ref, alt, gene, review_status_agg = row
                 clinical_significance = cols[_SS_CLIN_SIG].strip()
-                # GH #42 follow-up (evaluator defect 5 + cross-PR value-
-                # domain review on PR #101): ClinVar's submission_summary
+                # follow-up (evaluator defect 5 + cross-PR value-
+                # domain review on ): ClinVar's submission_summary
                 # carries several placeholder values that mean "no clinical
                 # significance recorded." A placeholder that ISN'T in
                 # `_CLNSIG_MAGNITUDE` falls through to that dict's 5.0
@@ -482,7 +482,7 @@ def load_clinvar_tsv(
 ) -> None:
     """Build a ClinVar SQLite cache from the per-SCV TSV sources.
 
-    Production ingest path for ClinVar (#42). The annotator returns
+    Production ingest path for ClinVar. The annotator returns
     MULTIPLE Annotation objects per variant when multiple SCVs target
     the same (chrom, pos, ref, alt); the annotator-side reconciliation
     landed in stage B.
@@ -539,7 +539,7 @@ def load_clinvar_tsv(
 
             stamp_remote_signal(conn, "clinvar", remote_signal, source_url)
             _ensure_local_version_tag_column(conn)
-            # GH #42 follow-up (evaluator defect 3): stamp_remote_signal
+            # follow-up (evaluator defect 3): stamp_remote_signal
             # inserts version=NULL by design — it's a freshness-only
             # stamper meant to upsert remote_signal onto existing rows
             # (e.g. the baked-in metadata of the HF .sqlite.gz caches).
@@ -702,7 +702,7 @@ def stamp_existing_clinvar_cache(db_path: Path) -> bool:
     | NULL                  | no `|iv:` marker          | return False      |
     +-----------------------+---------------------------+-------------------+
 
-    The bottom-right case is the v2.2 #42 stage-B safety hole: a
+    The bottom-right case is the v2.2 stage-B safety hole: a
     pre-v2.0.1 cache (iv:1-era, NULL tag, no baked marker) skipping
     straight to v2.2 used to get stamped as iv:CURRENT unconditionally —
     serving old single-row VCF data labeled as fresh per-SCV TSV data.

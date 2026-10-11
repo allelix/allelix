@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Allelix
 """Tests for terminal report rendering.
 
-GH #9: the terminal table is intentionally bare-min — rsID, Gene
+the terminal table is intentionally bare-min — rsID, Gene
 (conditional), Source, Significance, Mag, GT, Condition (conditional).
 Enrichment columns (Review Status, Zygosity, Freq, AM, CADD) belong
 in the HTML and JSON reports, not in a 12-column-wide table that Rich
@@ -89,7 +89,7 @@ def _render_with_panel(
 
 
 class TestPanelCoverageTerminal:
-    """GH #75: terminal warning surfaces panel rsIDs not in the input
+    """terminal warning surfaces panel rsIDs not in the input
     file. The user explicitly asked for the count-of-N format."""
 
     def test_no_panel_no_warning(self):
@@ -200,7 +200,7 @@ class TestRenderTerminal:
 
 
 class TestBareMinColumns:
-    """GH #9: enrichment columns are intentionally NOT in the terminal."""
+    """enrichment columns are intentionally NOT in the terminal."""
 
     def test_review_status_not_in_terminal(self):
         """ClinVar review status surfaces in HTML/JSON, not terminal."""
@@ -232,7 +232,7 @@ class TestBareMinColumns:
 
 
 class TestCompactDisplay:
-    """GH #9: terminal cells use compact strings to fit narrow terminals."""
+    """terminal cells use compact strings to fit narrow terminals."""
 
     def test_significance_strips_source_prefix(self):
         """Source column already shows ClinVar; significance shouldn't repeat it."""
@@ -383,3 +383,26 @@ class TestRenderTerminalDiff:
         total = render_terminal_diff(diff, Console(force_terminal=True, width=200))
         assert total == 0
         assert "No changes since previous report." in capsys.readouterr().out
+
+    def test_diff_tables_show_genotype(self, capsys):
+        """changed and removed diff tables include GT column so
+        users can identify rows affected by the palindromic-site fix."""
+        from allelix.reports.diff import ChangedAnnotation, DiffResult
+
+        diff = DiffResult(
+            changed=[
+                ChangedAnnotation(
+                    current=_ann(genotype_match="CT"),
+                    previous_significance="clinvar_benign",
+                    previous_magnitude=1.0,
+                )
+            ],
+            removed=[_ann_dict(genotype_match="GG")],
+            previous_generated_at="2026-05-01T00:00:00",
+        )
+        render_terminal_diff(diff, Console(force_terminal=True, width=200))
+        out = capsys.readouterr().out
+        # Changed table shows the current genotype
+        assert "CT" in out
+        # Removed table shows the old genotype
+        assert "GG" in out

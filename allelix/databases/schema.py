@@ -167,3 +167,31 @@ CREATE TABLE IF NOT EXISTS cadd_scores (
 """
     + _DATABASE_VERSIONS_TABLE
 )
+
+# Release 2.4 (cross-build rsID identity, ADR-0040). One row per allele of an
+# rsID that has a single primary-assembly placement on both GRCh37 and GRCh38.
+# ``alt37`` / ``alt38`` are the SAME allele written on each build's forward
+# strand; either may equal its build's REF where the reference allele changed
+# between assemblies. ``palindromic`` = 1 when the allele set is its own
+# complement, so the strand relation between builds cannot be decided from
+# sequence and translation must abstain.
+RSID_IDENTITY_SCHEMA = (
+    """
+CREATE TABLE IF NOT EXISTS rsid_identity (
+    rsid TEXT NOT NULL,
+    chrom TEXT NOT NULL,
+    pos37 INTEGER NOT NULL,
+    ref37 TEXT NOT NULL,
+    alt37 TEXT NOT NULL,
+    pos38 INTEGER NOT NULL,
+    ref38 TEXT NOT NULL,
+    alt38 TEXT NOT NULL,
+    palindromic INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rsid_identity_rsid ON rsid_identity(rsid);
+CREATE INDEX IF NOT EXISTS idx_rsid_identity_pos37 ON rsid_identity(chrom, pos37);
+CREATE INDEX IF NOT EXISTS idx_rsid_identity_pos38 ON rsid_identity(chrom, pos38);
+"""
+    + _DATABASE_VERSIONS_TABLE
+)

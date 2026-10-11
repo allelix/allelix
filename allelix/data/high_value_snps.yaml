@@ -63,7 +63,7 @@
   gene: DPYD
   note: Fluoropyrimidine toxicity
 
-# v2.0.2 additions (GH #7): clinically actionable single-SNP variants
+# v2.0.2 additions: clinically actionable single-SNP variants
 # verified to be on consumer arrays. Two new clusters: HFE (hereditary
 # hemochromatosis compound-het) and TPMT (thiopurine *3 haplotype).
 

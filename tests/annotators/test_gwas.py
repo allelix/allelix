@@ -208,7 +208,7 @@ class TestMagnitudeScoring:
         assert [a.magnitude for a in batched] == [8.0]
 
     def test_exact_genome_wide_significance_boundary(self) -> None:
-        """GH #17: p == 5e-8 is the canonical genome-wide significance
+        """p == 5e-8 is the canonical genome-wide significance
         threshold. With strict `<` previously, the exact value fell into
         the suggestive bucket (4.0) — a full magnitude below 4.9e-8.
         ``<=`` puts 5e-8 inside the significant bucket (6.0)."""

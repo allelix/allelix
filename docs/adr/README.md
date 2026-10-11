@@ -44,6 +44,11 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0036: Annotated VCF output contract](0036-annotated-vcf-output-contract.md)
 - [ADR-0037: Build detection requires a three-seed, 80% majority](0037-build-detection-confidence-threshold.md) — supersedes ADR-0021's confidence threshold
 - [ADR-0038: GWAS magnitude modifiers require odds-ratio evidence](0038-gwas-odds-ratio-magnitude-modifier.md) — supersedes ADR-0024's effect-size modifier
+- [ADR-0039: Locus-keyed ClinVar selection and Annotation allele-identity invariants](0039-locus-keyed-clinvar-selection-and-annotation-invariants.md) — completes ADR-0035
+- [ADR-0040: Cross-build rsID identity table](0040-cross-build-rsid-identity-table.md) — restores GRCh38 enrichment for GRCh37 input through explicit translation
+- [ADR-0041: Plausibility flag from zygosity and population frequency](0041-plausibility-flag.md) — marks very rare homozygous and carrier-less heterozygous calls for review
+- [ADR-0042: VCF quality gate](0042-vcf-quality-gate.md) — FILTER and GQ honoured, low-quality gVCF blocks are no-calls, spanning deletions symbolic, every exclusion counted
+- [ADR-0043: rsID-less resolution as a shared step](0043-shared-rsid-resolution.md) — one resolver chain for analyze, stats, extract and export plink; build detection votes by position
 
 ## Writing a new ADR
 

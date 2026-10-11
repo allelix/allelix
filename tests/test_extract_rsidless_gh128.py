@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""GH #128 regression tests for the ``allelix extract`` command on
+"""regression tests for the ``allelix extract`` command on
 rsID-less VCF inputs.
 
 Sister test file to ``tests/reports/test_rsidless_resolution_gh128.py``.

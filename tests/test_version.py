@@ -31,7 +31,7 @@ def test_pyproject_version_matches_metadata():
 
 
 def test_version_falls_back_to_pyproject_when_metadata_missing(monkeypatch):
-    """GH #34: source-checkout fallback reads pyproject.toml instead of
+    """source-checkout fallback reads pyproject.toml instead of
     the ``0.0.0+local`` sentinel. Prevents bogus User-Agent strings on
     outbound HTTP from dev checkouts."""
     import allelix
@@ -61,7 +61,7 @@ def test_version_falls_back_to_pyproject_when_metadata_missing(monkeypatch):
 
 
 def test_version_falls_back_to_sentinel_when_pyproject_also_missing(monkeypatch):
-    """GH #34: when both ``importlib.metadata`` and ``pyproject.toml`` fail,
+    """when both ``importlib.metadata`` and ``pyproject.toml`` fail,
     the sentinel ``0.0.0+local`` remains as the last-resort default. Pins
     the sentinel as the floor; nothing should ever crash because the
     version can't be read."""

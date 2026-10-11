@@ -12,6 +12,7 @@ import it from here for consistent output styling.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sys
@@ -24,6 +25,7 @@ from rich.console import Console
 from allelix.annotators import get_annotators
 from allelix.databases import resolve_data_dir
 from allelix.parsers import ParserNotFoundError, detect_parser, get_parser_by_name
+from allelix.reports import input_method_label, is_imputed, vcf_quality_lines
 from allelix.reports._pipeline import rollup_gwas_duplicates, run_analysis
 from allelix.reports.diff import compute_diff, load_previous_report
 from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
@@ -32,13 +34,17 @@ from allelix.reports.json_report import render_json
 from allelix.reports.terminal import render_terminal, render_terminal_diff
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from allelix.annotators.alphamissense import AlphaMissenseAnnotator
     from allelix.annotators.base import Annotator
     from allelix.annotators.cadd import CaddAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
+    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+    from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
+    from allelix.parsers.vcf import VcfParser, VcfQualityStats
 
 console = Console()
 
@@ -106,7 +112,14 @@ def _unwire_parser_logging(
     parser_logger.propagate = snapshot.propagate
 
 
-def _resolve_parser(file_path: Path, fmt: str | None, sample: str | None = None) -> GenotypeParser:
+def _resolve_parser(
+    file_path: Path,
+    fmt: str | None,
+    sample: str | None = None,
+    *,
+    keep_filtered: bool = False,
+    min_gq: int | None = None,
+) -> GenotypeParser:
     """Resolve the parser for ``file_path``, with VCF sample binding.
 
     For VCF inputs, pre-flight checks the sample column header:
@@ -120,6 +133,10 @@ def _resolve_parser(file_path: Path, fmt: str | None, sample: str | None = None)
       (it's not wrong, just redundant).
     - ``--sample`` on a non-VCF format → silently ignored (no error;
       the option is VCF-specific by design).
+
+    ``keep_filtered`` / ``min_gq`` set the VCF quality gate;
+    ``min_gq=None`` keeps the parser default. Both are ignored for
+    non-VCF formats.
     """
     try:
         parser = get_parser_by_name(fmt) if fmt else detect_parser(file_path)
@@ -127,13 +144,20 @@ def _resolve_parser(file_path: Path, fmt: str | None, sample: str | None = None)
         raise click.ClickException(str(exc)) from exc
 
     from allelix.parsers.vcf import (
+        DEFAULT_MIN_GQ,
         MultiSampleError,
         SampleNotFoundError,
         VcfParser,
     )
 
     if isinstance(parser, VcfParser):
-        bound = VcfParser(sample=sample) if sample is not None else parser
+        bound = parser
+        if sample is not None or keep_filtered or min_gq is not None:
+            bound = VcfParser(
+                sample=sample,
+                keep_filtered=keep_filtered,
+                min_gq=DEFAULT_MIN_GQ if min_gq is None else min_gq,
+            )
         try:
             bound.validate_sample(file_path)
         except (MultiSampleError, SampleNotFoundError) as exc:
@@ -173,6 +197,107 @@ def _ready_annotators(
 
 
 _STALENESS_SECONDS = 7 * 24 * 60 * 60  # 7 days
+
+
+class _ResolvedStream:
+    """Variants from ``_resolved_variants``, plus the high-value watch results."""
+
+    def __init__(
+        self,
+        variants: Iterator[Variant],
+        parser: GenotypeParser,
+        placements: dict[str, dict[str, tuple[str, int]]] | None,
+        high_value: set[str],
+    ) -> None:
+        self.variants = variants
+        self._parser = parser
+        self._placements = placements
+        self._high_value = high_value
+
+    def high_value_states(self, build: str) -> dict[str, tuple[str, str]] | None:
+        """VCF input: what the file says at each high-value position.
+
+        Call after ``variants`` is exhausted, with the effective build.
+        None for non-VCF input or when no high-value set was watched.
+        """
+        from allelix.reports._pipeline import high_value_states
+
+        return high_value_states(
+            getattr(self._parser, "quality_stats", None),
+            self._placements,
+            self._high_value,
+            build,
+        )
+
+
+@contextlib.contextmanager
+def _resolved_variants(
+    parser: GenotypeParser,
+    file_path: Path,
+    *,
+    data_dir: Path | None,
+    build_override: str | None = None,
+    high_value: set[str] | None = None,
+) -> Iterator[_ResolvedStream]:
+    """Parse ``file_path`` with the effective build set and rsID-less calls resolved.
+
+    the command-level form of ``_flush()``'s resolution step, for
+    ``stats``, ``extract`` and ``export plink``. Build detection runs first
+    (resolution needs the build); then ``resolve_rsidless`` applies the
+    shared ClinVar / identity-table / gnomAD chain. Sources whose caches
+    are not installed are skipped, so without databases the variants pass
+    through unchanged.
+
+    ``high_value``: rsIDs whose positions a VCF parser should watch, as
+    ``analyze`` does, so rsID-less no-call records and gVCF blocks at those
+    positions are classified (``_ResolvedStream.high_value_states``).
+    """
+    from allelix.annotators._resolution import resolve_rsidless
+    from allelix.annotators.clinvar import ClinVarAnnotator
+    from allelix.annotators.gnomad import GnomadAnnotator
+    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+    from allelix.reports._pipeline import watch_high_value, with_effective_build
+
+    resolved = resolve_data_dir(data_dir)
+    clinvar = ClinVarAnnotator(resolved)
+    gnomad = GnomadAnnotator(resolved)
+    identity = RsidIdentityAnnotator(resolved)
+    hv = high_value or set()
+    placements = watch_high_value(parser, hv, identity)
+    try:
+        stream = with_effective_build(
+            parser.parse(file_path),
+            metadata=parser.get_metadata(file_path),
+            build_override=build_override,
+        )
+        variants = resolve_rsidless(stream, clinvar=clinvar, gnomad=gnomad, identity=identity)
+        yield _ResolvedStream(variants, parser, placements, hv)
+    finally:
+        if placements is not None:
+            # watch_high_value only watches (and returns placements) for a
+            # VcfParser; stop watching so the registry singleton stays clean.
+            cast("VcfParser", parser).watch(set(), set())
+        for source in (clinvar, gnomad, identity):
+            source.close()
+
+
+def _reject_structural_only(stats: VcfQualityStats | None, total_variants: int) -> None:
+    """Fail loudly on a VCF of structural-variant / copy-number records only.
+
+    Sequencing.com delivers a 30x order as three VCFs: the genotypes
+    (``snp-indel.genome.vcf.gz``), structural variants (``sv.vcf.gz``) and
+    copy number (``cnv.vcf.gz``). The last two are all symbolic ALTs, which
+    Allelix does not annotate, so they used to "complete" with an empty
+    report. Raise instead, naming the right file.
+    """
+    if stats is None or total_variants or not stats.symbolic_rows:
+        return
+    kinds = ", ".join(f"<{kind}>" for kind, _n in stats.symbolic_kinds.most_common(4))
+    raise click.ClickException(
+        f"This VCF contains only structural-variant / copy-number records ({kinds}; "
+        f"{stats.symbolic_rows:,} record(s)). Allelix annotates SNVs and indels; "
+        "for Sequencing.com, upload the snp-indel.genome.vcf.gz file."
+    )
 
 
 def _run_setup(annotator: Annotator) -> bool:
@@ -348,7 +473,7 @@ def _emit_build_diagnostics(result: object) -> None:
             else "header (no position confirmation)"
         )
     elif diag.chr_prefix_inferred:
-        # GH #38: chr-prefixed contig names ("chr1", "chrX", ...) reliably
+        # chr-prefixed contig names ("chr1", "chrX", ...) reliably
         # indicate GRCh38 in modern caller output. We DID detect a build;
         # the banner and the warning should say so instead of reading as
         # a blind default.
@@ -376,7 +501,7 @@ def _emit_build_diagnostics(result: object) -> None:
             f"mislabeled the build (see ADR-0021).[/yellow]"
         )
     elif diag.chr_prefix_inferred:
-        # GH #38: positive, accurate message — the inference path
+        # positive, accurate message — the inference path
         # actually fired. Still recommend `--build` for users who
         # want to lock in the answer; chr-prefix is a strong signal
         # but UCSC hg19 also uses `chr` prefixes, so the heuristic
@@ -411,7 +536,7 @@ def _emit_build_diagnostics(result: object) -> None:
         # build's reference position. Without this warning, the pipeline
         # silently falls through to header_build, and a GRCh36 file with a
         # GRCh37-mislabeled header gets the GRCh37 ClinVar cache (the
-        # silent-coords trap #15). The dim "header (no position
+        # silent-coords trap). The dim "header (no position
         # confirmation)" status line shows the same facts but reads as
         # routine — yellow is what the situation deserves.
         console.print(
@@ -441,20 +566,20 @@ def _emit_runtime_nudges(result: object) -> None:
     intent is transparency for cases where the silent default behavior
     used to leave the user uncertain about WHY their count looked low.
 
-    - **GH #90: strand-aware matching inactive or limited.** When
+    - **strand-aware matching inactive or limited.** When
       carrier/genotype matching ran with ``Variant.ref`` unavailable
       across the input, the strand-flip path in ``utils/allele.py``
-      falls back to the v2.0.x direct-match-only behavior. On GRCh38
-      arrays this typically means ``--no-gnomad`` or a missing cache;
-      on GRCh37 it is expected because the available enrichment cache
-      is GRCh38-only. VCF inputs always carry REF from the file, so this
-      never fires for them.
-    - **GH #91: GRCh38 rsID-less undercount.** When the effective
+      falls back to the v2.0.x direct-match-only behavior. On GRCh37
+      and GRCh38 arrays this means the rsID identity table (ADR-0040)
+      and gnomAD are both missing; on other builds no reference source
+      exists. VCF inputs always carry REF from the file, so this never
+      fires for them.
+    - **GRCh38 rsID-less undercount.** When the effective
       build is GRCh38 AND most variants entered the pipeline without
       rsIDs (the variant-caller ``ID=.`` case), annotation coverage
       is materially lower than the GRCh37 equivalent because rsID
       resolution falls back to ClinVar position lookup — a smaller
-      surface than dbSNP. Real fix is #62; this is the interim
+      surface than dbSNP. Real fix is pending; this is the interim
       honesty signal until then.
     """
     no_ref = getattr(result, "no_ref_variant_count", 0)
@@ -464,27 +589,26 @@ def _emit_runtime_nudges(result: object) -> None:
     diag = getattr(result, "build_diagnostics", None)
     effective_build = diag.effective_build if diag is not None else None
 
-    # GH #90: array inputs (everything except the VCF parser) running
+    # array inputs (everything except the VCF parser) running
     # without compatible gnomAD reference context leave every variant
     # ref=None. Gate
     # on "the whole input lacked ref" rather than "any variant lacked
     # ref" so a hybrid file (e.g. a few ref-less rows in an otherwise
     # populated VCF) doesn't flap the message on.
     if parser_name != "vcf" and total > 0 and no_ref == total:
-        if effective_build == "GRCh37":
+        if effective_build in ("GRCh37", "GRCh38"):
             console.print(
-                "[dim]strand-aware matching limited — GRCh38-only gnomAD "
-                "reference context is intentionally unavailable for GRCh37 "
-                "input; `allelix db update` will not change this[/dim]"
+                "[dim]strand-aware matching inactive — no reference context "
+                "(run `allelix db update` for the rsID identity table and gnomAD "
+                "reference resolution)[/dim]"
             )
         else:
             console.print(
-                "[dim]strand-aware matching inactive — no reference context "
-                "(run `allelix db update` for gnomAD-backed ref resolution, "
-                "or this is expected with `--no-gnomad`)[/dim]"
+                "[dim]strand-aware matching inactive — no reference context is "
+                f"available for {effective_build or 'this'} input[/dim]"
             )
 
-    # GH #91: GRCh38 + a high rsID-less fraction. The threshold (>50%)
+    # GRCh38 + a high rsID-less fraction. The threshold (>50%)
     # distinguishes a variant-caller VCF (mostly ID=. — fires) from a
     # 23andMe-style array (rsID-bearing — no warning) or a mostly-
     # rsID-bearing VCF where a handful of novel calls came in with
@@ -493,8 +617,8 @@ def _emit_runtime_nudges(result: object) -> None:
         console.print(
             "[yellow]GRCh38 input without rsIDs: annotation coverage is "
             "currently lower than GRCh37 because rsID resolution falls "
-            "back to ClinVar positions. Full dbSNP resolution is planned "
-            "(#62). If you have a GRCh37 build available, it currently "
+            "back to ClinVar positions. Full dbSNP resolution is planned"
+            ". If you have a GRCh37 build available, it currently "
             "surfaces more annotations.[/yellow]"
         )
 
@@ -522,13 +646,17 @@ def _run_analysis_command(
     no_cadd: bool = False,
     sample: str | None = None,
     vcf_out: Path | None = None,
+    keep_filtered: bool = False,
+    min_gq: int | None = None,
 ) -> None:
     resolved = resolve_data_dir(data_dir)
     if not no_update:
         _maybe_refresh_databases(resolved)
-    parser = _resolve_parser(file_path, fmt, sample=sample)
+    parser = _resolve_parser(
+        file_path, fmt, sample=sample, keep_filtered=keep_filtered, min_gq=min_gq
+    )
 
-    # #150: --vcf-out preflight. Bail before any expensive setup so a
+    # --vcf-out preflight. Bail before any expensive setup so a
     # user who mistyped the flag or aimed it at a 23andMe file finds
     # out immediately, not after the analyze pipeline runs.
     if vcf_out is not None:
@@ -562,6 +690,7 @@ def _run_analysis_command(
     gnomad_annotator, ready = _pop_enrichment_annotator(ready, "gnomad", skip=no_gnomad)
     am_annotator, ready = _pop_enrichment_annotator(ready, "alphamissense", skip=no_alphamissense)
     cadd_annotator, ready = _pop_enrichment_annotator(ready, "cadd", skip=no_cadd)
+    identity_annotator, ready = _pop_enrichment_annotator(ready, "rsid_identity", skip=False)
 
     if not_ready:
         names = [a.name for a in not_ready]
@@ -577,6 +706,8 @@ def _run_analysis_command(
         all_active.append(am_annotator)
     if cadd_annotator is not None and cadd_annotator.is_ready():
         all_active.append(cadd_annotator)
+    if identity_annotator is not None and identity_annotator.is_ready():
+        all_active.append(identity_annotator)
     versions = ", ".join(f"{a.display_name} ({a.version() or 'unknown'})" for a in all_active)
     console.print(f"[dim]Analyzing against: {versions}[/dim]")
 
@@ -594,6 +725,8 @@ def _run_analysis_command(
             gnomad=cast("GnomadAnnotator | None", gnomad_annotator),
             alphamissense=cast("AlphaMissenseAnnotator | None", am_annotator),
             cadd=cast("CaddAnnotator | None", cadd_annotator),
+            identity=cast("RsidIdentityAnnotator | None", identity_annotator),
+            plausibility=cfg.plausibility,
             high_value_rsids=hv_rsids,
             panel_rsids=rsids,
             collect_vcf_write_inputs=vcf_out is not None,
@@ -601,10 +734,11 @@ def _run_analysis_command(
     finally:
         _unwire_parser_logging(counter, stderr_handler, snapshot)
 
+    _reject_structural_only(result.vcf_quality, result.total_variants)
     _emit_build_diagnostics(result)
     _emit_runtime_nudges(result)
 
-    hv_warnings = scan_no_calls(result.hv_variants, high_value)
+    hv_warnings = scan_no_calls(result.hv_variants, high_value, result.high_value_vcf_states)
     if hv_warnings:
         console.print(
             f"[bold red]Warning:[/bold red] {len(hv_warnings)} high-value SNP(s) returned no-call:"
@@ -616,6 +750,18 @@ def _run_analysis_command(
         console.print(
             f"[yellow]Note:[/yellow] {counter.count:,} malformed line(s) skipped "
             "(see warnings on stderr)."
+        )
+    for line in vcf_quality_lines(result.vcf_quality):
+        console.print(f"[yellow]Note:[/yellow] {line}")
+    if result.input_method:
+        console.print(
+            f"[yellow]Note:[/yellow] input method: {input_method_label(result.input_method)}."
+            + (
+                " Rare variants are the least reliable imputed calls; confirm any finding"
+                " by direct genotyping."
+                if is_imputed(result.input_method)
+                else ""
+            )
         )
 
     source_floors: dict[str, float] | None = None
@@ -664,7 +810,15 @@ def _run_analysis_command(
         hv_warning_lines = format_warnings(hv_warnings) if hv_warnings else None
         if chosen == "json":
             hv_dicts = (
-                [{"rsid": w.snp.rsid, "gene": w.snp.gene, "note": w.snp.note} for w in hv_warnings]
+                [
+                    {
+                        "rsid": w.snp.rsid,
+                        "gene": w.snp.gene,
+                        "note": w.snp.note,
+                        "reason": w.reason,
+                    }
+                    for w in hv_warnings
+                ]
                 if hv_warnings
                 else None
             )
@@ -708,6 +862,7 @@ def _run_analysis_command(
             annotators_used=result.annotators_used,
             annotations_by_key=result.vcf_write_inputs.annotations_by_key,
             recovered_rsids=result.vcf_write_inputs.recovered_rsids,
+            keep_filtered=keep_filtered,
         )
         console.print(
             f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to {vcf_out}[/green]"

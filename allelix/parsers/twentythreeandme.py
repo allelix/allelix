@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # banner entirely (WGSExtract output, Genetic Lifehacks converter output,
 # privacy-conscious users who delete the comment block) are out of scope
 # for this parser by design — they are handled by ``GenericTsvParser`` at
-# the end of the dispatch chain (planned, see GH #146 / GH #127). That
+# the end of the dispatch chain (planned, see / ). That
 # two-layer design keeps banner-bearing 23andMe files attributed to
 # "23andMe" and banner-less 23andMe-shape files attributed to "generic-tsv"
 # without guessing a vendor.

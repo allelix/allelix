@@ -56,7 +56,7 @@ class TestIsStrandAmbiguous:
 
 
 class TestResolveStrand:
-    """GH #18: complement-resolution is intentionally NOT performed.
+    """complement-resolution is intentionally NOT performed.
 
     At multi-allelic sites, the complement of the user's true forward
     allele can coincidentally equal a different alt at the same
@@ -78,7 +78,7 @@ class TestResolveStrand:
         assert resolve_strand("C", "A", "G") is None
 
     def test_audit_reproduction_no_false_complement(self):
-        # GH #18 reproduction: user "A" at a C→T site.
+        # reproduction: user "A" at a C→T site.
         # Old code returned "T" (complement) and the consumer stamped a
         # CADD score for the C→T transition onto an annotation describing
         # the user's "A" carrier. Now returns None and enrichment is
@@ -152,7 +152,7 @@ class TestStrandAwareCarrierMatch:
         from allelix.utils.allele import strand_aware_carrier_match
 
         # User T/T, variant_ref=C (disagrees with A and complement(A)=T).
-        # The audit-reproduction shape from #18: complement(user)=A coincides
+        # The audit-reproduction shape: complement(user)=A coincides
         # with source_ref but the user isn't reverse-stranded — abstain.
         assert strand_aware_carrier_match("C", "T", "T", "A", "G") is False
 
@@ -219,8 +219,61 @@ class TestStrandAwareGenotypeMatch:
         assert strand_aware_genotype_match("C", "T", "AG", "A") is False
 
 
+class TestStrandAwareGenotypeMatchHomozygousPalindrome:
+    """the palindrome guard must be site-level, not genotype-level.
+
+    For a homozygous source genotype, set("GG") == {"G"} never equals the
+    two-allele palindromic pair, so a C/G or A/T site slipped through and a
+    user's complement genotype matched the source row.
+    """
+
+    def test_cg_site_user_cc_source_gg(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("C", "C", "GG", "C") is False
+
+    def test_at_site_user_aa_source_tt(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("A", "A", "TT", "A") is False
+
+    def test_gc_site_user_gg_source_cc(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("G", "G", "CC", "G") is False
+
+    def test_ta_site_user_tt_source_aa(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("T", "T", "AA", "T") is False
+
+    def test_non_palindromic_complement_still_matches(self):
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("C", "T", "AG", "T") is True
+
+    def test_multiallelic_palindromic_site_rejects_complement(self):
+        """residual: multi-allelic palindromic site rejects complement."""
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        # rs2298383 scenario: user CT, source AG, ref C. Identity table flags palindromic.
+        assert strand_aware_genotype_match("C", "T", "AG", "C", site_palindromic=True) is False
+
+    def test_site_palindromic_false_allows_complement(self):
+        """Explicit site_palindromic=False still allows complement matching."""
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("C", "T", "AG", "T", site_palindromic=False) is True
+
+    def test_site_palindromic_true_allows_direct_match(self):
+        """Direct genotype match works even when site_palindromic=True."""
+        from allelix.utils.allele import strand_aware_genotype_match
+
+        assert strand_aware_genotype_match("A", "G", "AG", "A", site_palindromic=True) is True
+
+
 class TestStrandAwareCarrierMatchLowercase:
-    """#79 missing-branch coverage: lowercase source alleles should not
+    """Missing-branch coverage: lowercase source alleles should not
     silently false-negative.
 
     Variant.allele1 / allele2 / ref are upper-cased in Variant.__post_init__,
@@ -285,7 +338,7 @@ class TestStrandAwareCarrierMatchLowercase:
 
 
 class TestStrandAwareGenotypeMatchLowercase:
-    """#79 missing-branch coverage: lowercase source_geno / variant_ref
+    """Missing-branch coverage: lowercase source_geno / variant_ref
     must not silently false-negative the diploid match."""
 
     def test_direct_match_with_lowercase_source_geno(self):

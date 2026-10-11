@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 def _read_pyproject_version() -> str | None:
     """Read the package version from ``pyproject.toml``.
 
-    GH #34: fall back to ``pyproject.toml`` when run from a bare source
+    fall back to ``pyproject.toml`` when run from a bare source
     checkout (no editable install, no installed package metadata). Keeps
     ``--version`` and the outbound HTTP User-Agent reporting the real
     version string instead of the ``0.0.0+local`` sentinel that

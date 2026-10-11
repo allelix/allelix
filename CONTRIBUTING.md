@@ -20,7 +20,7 @@ test suite; skipping them causes silent test skips rather than
 failures for the ``bcftools`` group and hard failures for ``plink``):
 
 - ``bcftools`` — annotated-VCF round-trip validation for ``--vcf-out``
-  (ADR-0036, PR 3 of #150). ``apt install bcftools`` on Debian /
+  (ADR-0036). ``apt install bcftools`` on Debian /
   Ubuntu, ``brew install bcftools`` on macOS. Tests skip gracefully
   when absent locally; CI installs it unconditionally.
 - ``plink2`` — PLINK1 binary export round-trip integration test
@@ -34,7 +34,7 @@ pytest
 ```
 
 Tests marked `@slow` exercise real-data invariants against fixtures
-that are gitignored due to size. As of v2.0.2 (GH #45), these fixtures
+that are gitignored due to size. As of v2.0.2, these fixtures
 are **auto-fetched on first use** and cached locally — no manual
 download step is required for the GWAS catalog.
 
@@ -469,7 +469,7 @@ CI (`.github/workflows/ci.yml`) fires on:
 CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
 fixtures only) on a Python 3.11 / 3.12 matrix. `@slow` and
 `@integration`-marked tests auto-skip in CI because the runner doesn't
-have the ~1.5 GB real-genotype fixture set or the ~16 GB default annotator
+have the ~1.5 GB real-genotype fixture set or the ~18 GB default annotator
 database cache — fetching either would push CI runtime past 45 minutes
 per push and burn GitHub Actions minutes that the local-run discipline
 already covers.
@@ -550,9 +550,10 @@ freely:
 - **Same-sample superset**: gVCF analyze output is a strict
   superset of the GIAB benchmark output at default magnitude
   filter — `0 missing` is the pass condition.
-- **Wrong-allele safety**: a non-zero GRCh38 direct-match CADD
-  denominator, 0 non-direct CADD scores, and 0 gnomAD /
-  AlphaMissense / CADD values on GRCh37 input.
+- **Wrong-allele safety**: a non-zero allele-direct enrichment
+  denominator on both builds, 0 non-direct (complement-resolved)
+  scores, and every GRCh37 enrichment value traceable through
+  the rsID identity table.
 - **Harness invariants**: vocabulary union holds, floor counts
   cleared, spot-checks on published HG002 carriers (rs1801133 /
   rs7412 / rs2010963 / rs6025) pass.
@@ -592,8 +593,7 @@ Field shapes that trigger a bump:
 `VCF_SCHEMA_VERSION` is currently at `0.x` (experimental). While it
 sits at `0.x`, INFO-shape churn is approved without ceremony because
 the version conveys instability to downstream readers. The `1.0.0`
-graduation is a follow-up ADR after real user feedback per GH
-allelix-dev #150; graduation locks the contract and revokes the
+graduation is a follow-up ADR after real user feedback; it locks the contract and revokes the
 churn freedom. `SCHEMA_VERSION` is stable and every field addition
 bumps it.
 

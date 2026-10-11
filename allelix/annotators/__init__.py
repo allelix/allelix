@@ -13,6 +13,7 @@ from allelix.annotators.clinvar import CLINVAR_SUPPORTED_BUILDS, ClinVarAnnotato
 from allelix.annotators.gnomad import GnomadAnnotator
 from allelix.annotators.gwas import GWASCatalogAnnotator
 from allelix.annotators.pharmgkb import PharmGKBAnnotator
+from allelix.annotators.rsid_identity import RsidIdentityAnnotator
 from allelix.annotators.snpedia import SNPediaAnnotator
 
 if TYPE_CHECKING:
@@ -47,14 +48,19 @@ def get_annotators(
     REF allele lookup universally determines whether the user is
     homozygous reference (and thus a non-finding for that variant).
     """
+    rsid_identity = RsidIdentityAnnotator(data_dir)
     clinvar = ClinVarAnnotator(data_dir, builds=clinvar_builds, include_benign=include_benign)
-    pharmgkb = PharmGKBAnnotator(data_dir, clinvar_ref_provider=clinvar.reference_for)
+    pharmgkb = PharmGKBAnnotator(
+        data_dir,
+        clinvar_ref_provider=clinvar.reference_for,
+        palindromic_provider=rsid_identity.palindromic_rsids,
+    )
     gwas = GWASCatalogAnnotator(data_dir, filter_traits=gwas_filter_traits)
     snpedia = SNPediaAnnotator(data_dir, clinvar_ref_provider=clinvar.reference_for)
     gnomad = GnomadAnnotator(data_dir)
     alphamissense = AlphaMissenseAnnotator(data_dir)
     cadd = CaddAnnotator(data_dir, full_mode=cadd_full)
-    return [clinvar, pharmgkb, gwas, snpedia, gnomad, alphamissense, cadd]
+    return [clinvar, pharmgkb, gwas, snpedia, gnomad, alphamissense, cadd, rsid_identity]
 
 
 _ANNOTATOR_CLASS_LIST: list[type[Annotator]] = [
@@ -65,6 +71,7 @@ _ANNOTATOR_CLASS_LIST: list[type[Annotator]] = [
     GnomadAnnotator,
     AlphaMissenseAnnotator,
     CaddAnnotator,
+    RsidIdentityAnnotator,
 ]
 _ANNOTATOR_CLASSES: dict[str, type[Annotator]] = {cls.name: cls for cls in _ANNOTATOR_CLASS_LIST}
 
@@ -82,6 +89,7 @@ __all__ = [
     "GWASCatalogAnnotator",
     "GnomadAnnotator",
     "PharmGKBAnnotator",
+    "RsidIdentityAnnotator",
     "SNPediaAnnotator",
     "get_annotator_class",
     "get_annotators",

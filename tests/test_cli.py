@@ -196,7 +196,7 @@ class TestAnalyzeCommand:
         assert "rs1801133" in result.output
         assert "MTHFR" in result.output
         assert "ClinVar" in result.output
-        # GH #9: terminal table strips the source prefix from significance
+        # terminal table strips the source prefix from significance
         # since the Source column already shows ClinVar; expect plain
         # ``pathogenic`` instead of ``clinvar_pathogenic``.
         assert "pathogenic" in result.output
@@ -326,7 +326,7 @@ class TestAnalyzeCommand:
             ["analyze", str(mock_mhg_path), "--data-dir", str(all_annotators_data_dir)],
         )
         assert result.exit_code == 0, result.output
-        # GH #9: terminal strips source_prefix from significance display.
+        # terminal strips source_prefix from significance display.
         # ``clinvar_pathogenic`` -> ``pathogenic``,
         # ``pharmgkb_loe_2a``   -> ``loe_2a`` next to the ClinPGx source col.
         assert "pathogenic" in result.output
@@ -434,6 +434,14 @@ class TestAnalyzeCommand:
 
 
 class TestDbCommands:
+    @pytest.fixture(autouse=True)
+    def _no_identity_download(self, monkeypatch):
+        """`db update` walks the whole registry; keep the pinned identity
+        table's real download out of these tests."""
+        from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+
+        monkeypatch.setattr(RsidIdentityAnnotator, "setup", lambda self: None)
+
     def test_status_with_empty_dir(self, tmp_path: Path):
         runner = CliRunner()
         result = runner.invoke(main, ["db", "status", "--data-dir", str(tmp_path)])
@@ -498,6 +506,54 @@ class TestDbCommands:
         assert gnomad.setup_called is False
         assert "clinvar ready" in result.output
         assert "gnomad" not in result.output
+
+    @pytest.mark.parametrize("extra", [[], ["--force"]])
+    def test_db_update_exits_nonzero_when_a_source_fails(self, tmp_path, monkeypatch, extra):
+        """A failed install or refresh must not be masked by exit code 0;
+        the other sources are still attempted."""
+
+        class FakeAnnotator:
+            requires_download = True
+            server_driven_freshness = True
+
+            def __init__(self, name, fails):
+                self.name = name
+                self.fails = fails
+                self.setup_called = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+            def is_ready(self):
+                return bool(extra)
+
+            def setup(self):
+                self.setup_called = True
+                if self.fails:
+                    raise RuntimeError("download failed")
+
+            def version(self):
+                return "test"
+
+            def cached_remote_signal(self):
+                return None
+
+        broken = FakeAnnotator("gnomad", fails=True)
+        working = FakeAnnotator("clinvar", fails=False)
+        monkeypatch.setattr(
+            "allelix.cli.db.get_annotators",
+            lambda *_args, **_kwargs: [broken, working],
+        )
+
+        result = CliRunner().invoke(main, ["db", "update", "--data-dir", str(tmp_path), *extra])
+
+        assert result.exit_code == 1, result.output
+        assert working.setup_called is True
+        assert "gnomad: download failed" in result.output
+        assert "Failed to install or refresh: gnomad" in result.output
 
     def test_db_update_with_file_url(
         self,
@@ -623,13 +679,13 @@ class TestDbCommands:
         ):
             info = get_database_info(db_path, clinvar_record_name(build))
             assert info is not None, f"{build} cache missing version row"
-            # GH #111 grew the fixture set: 13 → 20 (added 3 identical-SCV
+            # grew the fixture set: 13 → 20 (added 3 identical-SCV
             # rows for rs999000111, 2 conflicting-SCV rows for rs999000222,
             # 1 sub-floor row for rs999000333, 1 unmapped-CLNSIG row for
-            # rs999000444). #109 cross-PR review (Finding 1) added 2 more
+            # rs999000444). Cross-PR review (Finding 1) added 2 more
             # rows for rs999000555 (multi-allelic distinct-alt dedup
             # guard) → 22 total. Cache row count stays at 22 even after
-            # #109's dedup — dedup is annotator-side, not loader-side.
+            # the dedup — dedup is annotator-side, not loader-side.
             assert info["record_count"] == 22
             assert info["version"] == "20260101"
 
@@ -665,7 +721,7 @@ class TestDbCommands:
         info_before = get_database_info(sqlite_path, clinvar_record_name("GRCh37"))
         assert info_before is not None
 
-        # Stage B (#42): the annotator downloads variant_summary +
+        # Stage B: the annotator downloads variant_summary +
         # submission_summary instead of the per-build VCF. Pointing
         # either at a refused connection still exercises the M-1+M-2
         # "failure preserves cache" invariant.
@@ -701,6 +757,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -724,7 +781,7 @@ class TestDbCommands:
                 "grch37",
             ],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1, result.output
         assert "clinvar:" in result.output
 
         info_after = get_database_info(sqlite_path, clinvar_record_name("GRCh37"))
@@ -791,6 +848,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -858,6 +916,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -904,6 +963,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -922,7 +982,7 @@ class TestDbCommands:
     def test_db_update_legacy_cache_redownloads(
         self, tmp_path: Path, mock_gnomad_gz: Path, monkeypatch
     ):
-        """GH #20: a cache with no stored signal predates the signal mechanism
+        """a cache with no stored signal predates the signal mechanism
         (i.e., is old). It must be re-downloaded, NOT silently stamped as
         current — the previous behavior permanently marked stale caches as
         fresh."""
@@ -989,6 +1049,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -1031,6 +1092,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -1067,7 +1129,7 @@ class TestDbCommands:
         from allelix.annotators.alphamissense import AlphaMissenseAnnotator
         from allelix.databases import manager as manager_module
 
-        # Stage B (#42): TSV URLs replace the per-build VCF map. Refused-
+        # Stage B: TSV URLs replace the per-build VCF map. Refused-
         # connection URLs on both files still exercise the W-2 friendly-
         # error invariant.
         monkeypatch.setattr(
@@ -1094,6 +1156,7 @@ class TestDbCommands:
 
         gnomad_gz_url = f"file:{pathname2url(str(mock_gnomad_gz.resolve()))}"
         monkeypatch.setattr(gnomad_module, "GNOMAD_CACHE_URL", gnomad_gz_url)
+        monkeypatch.setattr(gnomad_module, "verify_file_hash", lambda *_a, **_kw: None)
         monkeypatch.setattr(AlphaMissenseAnnotator, "setup", lambda self: None)
 
         from allelix.annotators.snpedia import SNPediaAnnotator
@@ -1117,7 +1180,7 @@ class TestDbCommands:
                 "grch37",
             ],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1, result.output
         assert "clinvar:" in result.output
         assert not isinstance(result.exception, urllib.error.URLError)
 
@@ -1144,7 +1207,7 @@ class TestDbCommands:
         import os
         import stat
 
-        # GH #110: chmod 0 is bypassed by root — root sees a "readonly"
+        # chmod 0 is bypassed by root — root sees a "readonly"
         # dir as writable (DAC override) and the test silently passes
         # for the wrong reason. CI runners and dev containers commonly
         # run as root; skip there with a clear message so the test
@@ -1321,9 +1384,9 @@ class TestDbCommands:
         assert "doesn't look like an allelix cache" in stderr_flat
 
     def test_db_clean_refuses_dir_with_only_generic_config_toml(self, tmp_path: Path):
-        """GH #112: a `config.toml` alongside non-allelix content (the
+        """a `config.toml` alongside non-allelix content (the
         Rust / Hugo / Rocket / etc. project shape) must NOT pass the
-        guard. Pre-#112 the guard accepted any dir with a config.toml
+        guard. Previously, the guard accepted any dir with a config.toml
         — so a typo'd `--data-dir ~/my-rust-project` could trigger
         `rm -rf` against a Cargo project root.
 
@@ -1522,7 +1585,7 @@ class TestMethylationCommand:
         )
 
     def test_default_floor_surfaces_loe_3_hits(self, mock_mhg_path, all_annotators_data_dir: Path):
-        """#52: methylation default --min-magnitude is 3.0, not analyze's 5.0.
+        """Methylation default --min-magnitude is 3.0, not analyze's 5.0.
 
         ClinPGx LoE 3 hits (magnitude 4.0) on COMT / MTHFR / MTR / CBS are
         exactly the signal a user running the focused subcommand wants to
@@ -1574,7 +1637,7 @@ class TestPharmacogenomicsCommand:
         )
         assert result.exit_code == 0, result.output
         # ClinPGx rows have category=pharma; ClinVar rows don't.
-        # GH #9: terminal strips the source_ prefix; check the stripped form.
+        # terminal strips the source_ prefix; check the stripped form.
         assert "ClinPGx" in result.output
         assert "loe_" in result.output
         # No ClinVar row should surface. ``ClinVar`` itself appears in the
@@ -2960,7 +3023,7 @@ class TestBuildDiagnosticsFallback:
         assert "(detected;" not in output
 
     def test_tied_position_data_with_header_fires_inconclusive_warning(self) -> None:
-        """GH #15: tie or no-winner in position detection with a header set
+        """tie or no-winner in position detection with a header set
         must fire a yellow warning, not silently route through header_build.
 
         Trigger: position detection inspected rsIDs (`inspected_count > 0`)
@@ -3038,7 +3101,7 @@ class TestBuildDiagnosticsFallback:
 
 
 class TestRuntimeNudges:
-    """GH #90 / #91: post-pipeline diagnostic emission for
+    """Post-pipeline diagnostic emission for
     strand-aware-inactive (array input + no ref) and GRCh38 rsID-less
     undercount cases. Both are once-per-run and side-effect-only."""
 
@@ -3088,14 +3151,34 @@ class TestRuntimeNudges:
             setattr(r, k, v)
         return r
 
-    # ---- GH #90 strand-aware inactive ----
+    # ---- strand-aware inactive ----
 
-    def test_grch37_array_explains_reference_context_is_unavailable(self):
-        """GRCh37 arrays must not recommend a download that cannot help."""
+    def test_grch37_array_points_at_the_identity_table(self):
+        """GRCh37 arrays gain reference context from the rsID identity table."""
         result = self._result(no_ref_variant_count=1000)
         out = self._capture(result)
-        assert "intentionally unavailable for GRCh37" in out
-        assert "`allelix db update` will not change this" in out
+        assert "strand-aware matching inactive" in out
+        assert "run `allelix db update`" in out
+        assert "rsID identity table" in out
+
+    def test_grch36_array_does_not_recommend_a_download(self):
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            no_ref_variant_count=1000,
+            build_diagnostics=BuildDiagnostics(
+                header_build="GRCh36",
+                detected_build="GRCh36",
+                effective_build="GRCh36",
+                override=False,
+                matched_count=10,
+                inspected_count=10,
+                position_confident=True,
+            ),
+        )
+        out = self._capture(result)
+        assert "no reference context is available for GRCh36 input" in out
+        assert "db update" not in out
 
     def test_grch38_array_without_ref_keeps_actionable_download_hint(self):
         """A GRCh38 array can still gain reference context from gnomAD."""
@@ -3137,7 +3220,7 @@ class TestRuntimeNudges:
         out = self._capture(result)
         assert "strand-aware" not in out
 
-    # ---- GH #91 GRCh38 rsID-less undercount ----
+    # ---- GRCh38 rsID-less undercount ----
 
     def test_grch38_rsidless_fires_warning(self):
         """GRCh38 VCF with mostly ID=. rows → undercount warning."""
@@ -3159,7 +3242,6 @@ class TestRuntimeNudges:
         )
         out = self._capture(result)
         assert "GRCh38 input without rsIDs" in out
-        assert "#62" in out
 
     def test_grch38_with_rsids_no_warning(self):
         """GRCh38 VCF where most rows carry rsIDs (rare but real for
@@ -3186,7 +3268,7 @@ class TestRuntimeNudges:
     def test_grch37_rsidless_no_warning(self):
         """The undercount story is GRCh38-specific. A GRCh37 input —
         even one without rsIDs — gets the equivalent coverage as
-        always; #91 is interim until #62, so don't fire."""
+        always; this warning is interim, so don't fire."""
         result = self._result(
             parser_name="vcf",
             total_variants=1000,

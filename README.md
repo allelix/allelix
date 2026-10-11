@@ -16,7 +16,7 @@
 
 # Allelix
 
-> **Status:** Production. Nine parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three GRCh38-only enrichment sources (gnomAD + AlphaMissense + CADD), licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports and annotated VCF output for pipeline integration (v2.3.0+), methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Modern-build position detection requires at least three concordant seed SNPs and an 80% winning ratio before it overrides a fallback or header signal; a tentative GRCh36 signal instead fails closed to GRCh36 because no modern position cache is safe for it (ADR-0025, ADR-0037). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
+> **Status:** Production. Nine parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three GRCh38 enrichment sources (gnomAD + AlphaMissense + CADD) reached from GRCh37 input through a cross-build rsID identity table, licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports and annotated VCF output for pipeline integration (v2.3.0+), methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Modern-build position detection requires at least three concordant seed SNPs and an 80% winning ratio before it overrides a fallback or header signal; a tentative GRCh36 signal instead fails closed to GRCh36 because no modern position cache is safe for it (ADR-0025, ADR-0037). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
 
 ## Quickstart
 
@@ -25,7 +25,7 @@
 ```bash
 pip install allelix
 
-# Download reference databases (~16 GB default install; ~22 GB if you opt into CADD).
+# Download reference databases (~18 GB default install; ~24 GB if you opt into CADD).
 # Use --no-gnomad / --no-alphamissense to skip the large ones.
 # CADD is opt-in: download with `allelix db update --cadd`, then pass
 # `--cadd` to an analysis or set `sources.cadd = true` persistently.
@@ -39,6 +39,10 @@ allelix analyze your_wgs.vcf.gz --output report.html
 
 # Multi-sample VCF — pick which sample to analyze
 allelix analyze trio.vcf.gz --sample HG002 --output report.html
+
+# VCF quality gate: rows the variant caller filtered (FILTER not PASS) are
+# skipped and counted; calls with GQ below 20 or no reads become no-calls.
+allelix analyze your_wgs.vcf.gz --keep-filtered --min-gq 10 --output report.html
 
 # Filter to a custom panel (rsIDs + gene names, one per line; '#' comments and blank lines ignored)
 allelix analyze your_genotype_file.txt --filter-file my_panel.txt --output report.html
@@ -56,15 +60,15 @@ See [Development](#development) for source installs and running tests, [Managing
 
 | Format | Status | Notes |
 |---|---|---|
-| MyHappyGenes (Tempus) | ✓ | Tab-delimited, 5 columns. **Build is auto-detected** — real-world MHG exports mislabel the header as "build 37.1" while shipping GRCh38 coordinates. Allelix detects from position data and warns on header/data disagreement (ADR-0021). |
+| MyHappyGenes (Tempus) | ✓ | Tab-delimited, 5 columns. **Build is auto-detected** — real-world MHG exports mislabel the header as "build 37.1" while shipping GRCh38 coordinates. Allelix detects from position data and warns on header/data disagreement (ADR-0021). See [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#myhappygenes-tempus). |
 | 23andMe | ✓ | Tab-delimited, 4 columns, concatenated genotype. Supports build 36/37/38 from header. I-prefixed probe IDs passed through. |
 | AncestryDNA | ✓ | Tab-delimited, 5 columns. Chromosome mapping: 23→X, 24→Y, 25→X (PAR), 26→MT. V1 and V2 chip layouts. |
 | Family Tree DNA | ✓ | CSV, double-quoted fields, concatenated genotype. Build 37 default. |
-| MyHeritage DNA | ✓ | CSV, same structure as FTDNA. Detected by "MyHeritage" in comment header. Handles double-double-quoted field variant. |
+| MyHeritage DNA | ✓ | CSV, same structure as FTDNA. Detected by "MyHeritage" in the file's preamble. Handles double-double-quoted fields and files re-saved through a spreadsheet (padded rows, signature not on line 1, tab-delimited copies). Two exports: the **array** export (pre-2026 kits) and the **low-pass WGS** export (kits from January 2026; genotypes imputed from about 2x coverage), which the report labels as imputed and whose `##reference=build37` line is used as the header build. See [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#myheritage). |
 | Living DNA | ✓ | Tab-delimited despite `.csv` extension. Handles AX-, AFFX-prefixed and CHR:POS positional SNP IDs. |
 | FTDNA Illumina raw | ✓ | Tab-delimited variant of the FTDNA export (distinct from the CSV format above). `RSID/CHROMOSOME/POSITION/RESULT` columns. Build 37 default. |
 | FTDNA FamFinder | ✓ | Third FTDNA file shape: tab-delimited with **separate `ALLELE1` / `ALLELE2` columns** instead of a concatenated `RESULT`. Detected by the `famfinder` substring in the file header plus the 5-column canonical header. Build 37 default. |
-| VCF / gVCF | ✓ | REF/ALT encoding, `0/1` genotype notation. Plain VCF: absence at a position means reference. gVCF: explicit reference blocks (lines with `<NON_REF>` ALT and `END=` INFO) are skipped — they match nothing in any annotation database. Multi-sample files require `--sample <ID>`. Streams via stdlib; `.vcf.gz` handled transparently. Optional `pip install allelix[vcf-index]` enables pysam-backed tabix random access for fast `extract --snps` on huge VCFs. |
+| VCF / gVCF | ✓ | REF/ALT encoding, `0/1` genotype notation. Plain VCF: absence at a position means reference. gVCF: explicit reference blocks (lines with `<NON_REF>` ALT and `END=` INFO) are not annotated — they match nothing in any annotation database — but they are read at high-value positions: a block with low genotype quality or no reads there makes the position a no-call, and so does a gVCF position no record covers. High-value no-calls list the reason (for example `low_gq_block`, `no_coverage`, `filtered`, `low_gq_call`). A plain VCF has no reference blocks, so a position without a record is reported as unknown rather than as reference or as a no-call. Multi-sample files require `--sample <ID>`. Rows the variant caller rejected (FILTER other than `PASS` or `.`) are skipped and counted in the report; `--keep-filtered` keeps them. A call with genotype quality below `--min-gq` (default 20) or with no reads (DP 0) is reported as a no-call. The spanning-deletion allele `*` is treated as symbolic. A VCF that holds only structural-variant or copy-number records (such as a provider's separate `sv` / `cnv` file) is rejected with a message naming the file to use instead; see [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#sequencingcom-30x-whole-genome) for per-provider deliverables. Streams via stdlib; `.vcf.gz` handled transparently. Optional `pip install allelix[vcf-index]` enables pysam-backed tabix random access for fast `extract --snps` on huge VCFs. |
 
 Adding a new format means adding one file to `allelix/parsers/` and registering an instance in the `PARSERS` list in `allelix/parsers/__init__.py`.
 
@@ -74,23 +78,24 @@ Adding a new format means adding one file to `allelix/parsers/` and registering 
 |---|---|
 | **v2.2** | Annotation model expansion (cross-source conflict surfacing, risk-allele display, structured MTAG flag), custom-panel UX improvements, methylation panel retune + citations, ClinVar source switch (VCF → `variant_summary.txt`), CLI cleanups (`db clean` / `db path`). |
 | **v2.3** | Annotated VCF output plus v2.3.1 correctness hardening: cross-build enrichment guards, GWAS effect-type disambiguation, conservative build confidence, SNPedia orientation handling, and strict slow-suite drift verification. |
-| **v2.4** | Forward-strand normalization for GWAS risk alleles, broader and chromosome-aware build sampling with explicit provenance, test isolation, and deferred cache-loader hardening. |
+| **v2.4** | Correctness hardening: cross-build rsID identity table with explicit allele translation, plausibility flag for genotyping-artifact detection, VCF quality gate honouring FILTER and genotype quality, unified rsID-recovery step across all commands, and parser/format hygiene. |
 | **Later** | Variant consequences, CNVs and repeat expansions, gnomAD genomes, supplemental genotype-file merging, ancestry estimation, and PRS support. These are directional themes rather than release commitments. |
 
-Issues and milestones are tracked at [github.com/allelix/allelix/issues](https://github.com/allelix/allelix/issues). Annotator-level strand-aware carrier matching (R-1) shipped in v2.1.0's ADR-0035 cluster.
+Issues and milestones are tracked at [github.com/allelix/allelix/issues](https://github.com/allelix/allelix/issues). Annotator-level strand-aware carrier matching shipped in v2.1.0's ADR-0035 cluster.
 
 ## Supported Databases
 
 | Database | Status | Notes |
 |---|---|---|
-| ClinVar (GRCh37 + GRCh38) | ✓ | Public domain (NCBI). SNVs + indels + multi-allelic sites. **Both builds cached**; `analyze` dispatches by detected build (ADR-0021). Carrier rule (ADR-0007) requires the user to carry the ALT allele. Indel-anchor protection (ADR-0011) prevents single-base array readouts from matching anchor-base indels. |
+| ClinVar (GRCh37 + GRCh38) | ✓ | Public domain (NCBI). SNVs + indels + multi-allelic sites. **Both builds cached**; `analyze` dispatches by detected build (ADR-0021). Rows are matched by chromosome, position, REF and ALT, never by rsID alone, and reference-allele records (REF = ALT) are never reported (ADR-0039). Carrier rule (ADR-0007) requires the user to carry the ALT allele. Indel-anchor protection (ADR-0011) prevents single-base array readouts from matching anchor-base indels. |
 | ClinPGx (formerly PharmGKB) | ✓ | CC BY-SA 4.0. Clinical annotations only — single-rsid SNVs; star alleles and haplotypes deferred (ADR-0009). **Primary non-finding filter is the ClinVar REF carrier rule (ADR-0023):** if ClinVar publishes a single-base REF for the rsid and the user is homozygous for it, the row is suppressed. CPIC's `(rsid, base) → function_class` join (ADR-0020) survives as a secondary tier for rsids ClinVar doesn't catalog. Earlier prose tiers (ADR-0013, ADR-0017, ADR-0018) are superseded. |
 | CPIC (per-allele function table) | ✓ | Internal data source for the ClinPGx filter. Fetched from `api.cpicpgx.org` at `db update` time. Used to populate the `pharmgkb_allele_function` table — not surfaced to end users as its own annotator. |
 | SNPedia | ✓ | CC BY-NC-SA 3.0 US. Pre-built cache downloaded via `db update` (~216K wiki pages, ~105K genotype rows). The cache carries SNPedia's orientation metadata: minus-strand alleles are complemented before matching, while unknown-orientation palindromic genotypes abstain rather than risk a false match. If the database is absent, analysis runs without it. For commercial use, pass `--exclude-snpedia`. The cache can also be rebuilt from source via `scripts/scrape_snpedia.py` + `scripts/parse_snpedia.py`. |
-| GWAS Catalog | ✓ | Public domain (EBI/NHGRI). Trait–SNP associations with p-values and effect sizes. Carrier rule (ADR-0007) requires the user to carry the risk allele. P-value magnitude scoring maps continuous p-values to the 0–10 scale; only a confidence-interval field that positively identifies a bare odds ratio receives the odds-ratio modifier. Beta coefficients and ambiguous or unit-bearing effects receive no modifier (ADR-0038). Unknown-risk-allele entries fire on rsID match alone but are capped at 3.0. GWAS risk-allele strand normalization remains deferred to v2.4. |
-| gnomAD | ✓ | ODbL v1.0. **GRCh38-only enrichment annotator** — adds population allele frequency context to existing annotations. Shows how common each variant is in the general population (~16M exome variants from 730K individuals). A pathogenic variant that 35% of people carry reads very differently from one seen in 0.001%. Pre-built cache downloaded via `db update` (~6GB on disk). It is deliberately disabled, including for rsID resolution, on GRCh37 and GRCh36 inputs. Use `--no-gnomad` to skip. |
-| AlphaMissense | ✓ | CC BY 4.0. **GRCh38-only enrichment annotator** — adds DeepMind's protein-structure-based pathogenicity predictions to existing annotations. Scores 71M missense variants on a 0–1 scale: <0.34 = likely benign, >0.564 = likely pathogenic. Complements ClinVar's expert classifications with computational predictions — especially valuable for variants ClinVar hasn't reviewed yet. Pre-built cache downloaded via `db update` (~8GB on disk). It is deliberately disabled on GRCh37 and GRCh36 inputs. Use `--no-alphamissense` to skip. |
-| CADD | ✓ | LicenseRef-CADD (non-commercial). **GRCh38-only enrichment annotator** — adds PHRED-scaled deleteriousness scores from CADD v1.7. **Opt-in**, disabled by default and always disabled on GRCh37 and GRCh36 inputs; see [CADD modes](#cadd-modes) below for details. |
+| GWAS Catalog | ✓ | Public domain (EBI/NHGRI). Trait–SNP associations with p-values and effect sizes. Carrier rule (ADR-0007) requires the user to carry the risk allele. The reported allele is the study's effect (risk) allele, which can be the reference allele (ADR-0039). P-value magnitude scoring maps continuous p-values to the 0–10 scale; only a confidence-interval field that positively identifies a bare odds ratio receives the odds-ratio modifier. Beta coefficients and ambiguous or unit-bearing effects receive no modifier (ADR-0038). Unknown-risk-allele entries fire on rsID match alone but are capped at 3.0. GWAS risk-allele strand normalization remains deferred. |
+| gnomAD | ✓ | ODbL v1.0. **GRCh38-only enrichment annotator** — adds population allele frequency context to existing annotations. Shows how common each variant is in the general population (~16M exome variants from 730K individuals). A pathogenic variant that 35% of people carry reads very differently from one seen in 0.001%. Pre-built cache downloaded via `db update` (~7 GB on disk). GRCh37 input is enriched only through the rsID identity table's explicit allele translation (ADR-0040); gnomAD's own rsID resolution stays GRCh38-only, and GRCh36 input receives nothing. Use `--no-gnomad` to skip. |
+| AlphaMissense | ✓ | CC BY 4.0. **GRCh38-only enrichment annotator** — adds DeepMind's protein-structure-based pathogenicity predictions to existing annotations. Scores 71M missense variants on a 0–1 scale: <0.34 = likely benign, >0.564 = likely pathogenic. Complements ClinVar's expert classifications with computational predictions — especially valuable for variants ClinVar hasn't reviewed yet. Pre-built cache downloaded via `db update` (~8GB on disk). GRCh37 input is enriched only through the rsID identity table (ADR-0040); GRCh36 input receives nothing. Use `--no-alphamissense` to skip. |
+| CADD | ✓ | LicenseRef-CADD (non-commercial). **GRCh38-only enrichment annotator** — adds PHRED-scaled deleteriousness scores from CADD v1.7. **Opt-in**, disabled by default; GRCh37 input is scored only through the rsID identity table (ADR-0040) and GRCh36 input never; see [CADD modes](#cadd-modes) below for details. |
+| dbSNP rsID identity | ✓ | Public domain (NCBI dbSNP). Not an annotator: a cross-build table of each annotator rsID's GRCh37 and GRCh38 placement and alleles (ADR-0040). Supplies the reference allele for GRCh37 and GRCh38 array data, recovers rsIDs for rsID-less VCFs on both builds, and translates a GRCh37 allele to its GRCh38 coordinates so gnomAD, AlphaMissense and CADD can be looked up. Strand-inverted loci are translated explicitly; palindromic sites (A/T, C/G, or a site whose dbSNP alleles include all four bases) and alleles that became the GRCh38 reference abstain. Pre-built cache downloaded via `db update` (~4.9M rows covering ~3.0M rsIDs, from dbSNP b157). |
 
 ### CADD modes
 
@@ -100,16 +105,16 @@ CADD ranks how deleterious any single-nucleotide variant is using 100+ annotatio
 
 Two modes:
 
-- **Cache mode** (default): pre-built ~5.8 GB SQLite cache (~120M GRCh38 variant keys). Covers nearly every GRCh38 position allelix can annotate from its other databases (gnomAD, AlphaMissense, ClinVar). It is deliberately disabled for GRCh37 and GRCh36 input, even when an rsID happens to exist in the cache.
+- **Cache mode** (default): pre-built ~5.8 GB SQLite cache (~120M GRCh38 variant keys). Covers nearly every GRCh38 position allelix can annotate from its other databases (gnomAD, AlphaMissense, ClinVar). GRCh37 input is scored only after translation through the rsID identity table; GRCh36 input never is.
 - **Full mode** (`options.cadd_full = true`): tabix queries against the complete CADD v1.7 file via pysam (GRCh38 only). Adds coverage for novel or private variants that appear only in WGS/WES data and are not in any pre-computed database. Requires `pip install allelix[cadd]` for the pysam dependency.
 
-If your input is a GRCh38 genotyping chip file, cache mode is normally all you need. CADD enrichment is unavailable for GRCh37 and GRCh36 chip files.
+If your input is a genotyping chip file, cache mode is normally all you need. GRCh37 chip files are scored through the rsID identity table; GRCh36 files are not scored.
 
 ### Build coverage asymmetry (GRCh37 vs GRCh38)
 
-ClinVar dispatches per build and ships with both GRCh37 and GRCh38 caches. gnomAD v4.1 exomes, AlphaMissense, and CADD v1.7 are GRCh38 datasets in Allelix's current data model. Their enrichment and provenance are therefore emitted only for GRCh38 analyses; GRCh37 and GRCh36 analyses intentionally receive none of those values. This guard prevents an rsID or coordinate collision from attaching a valid GRCh38 score to the wrong allele on another assembly.
+ClinVar dispatches per build and ships with both GRCh37 and GRCh38 caches. gnomAD v4.1 exomes, AlphaMissense, and CADD v1.7 are GRCh38 datasets. Every enrichment lookup is made at GRCh38 coordinates by chromosome, position, reference and alternate allele, never by rsID. For GRCh37 input, the cross-build rsID identity table (ADR-0040) translates the allele the user carries at its GRCh37 position into the matching GRCh38 allele, written explicitly on the GRCh38 forward strand where the reference strand was inverted between assemblies. Palindromic sites (A/T, C/G, or all four bases in dbSNP, whose strand cannot be told from sequence) and alleles that are the GRCh38 reference receive no values rather than a guess. Without the identity table installed, GRCh37 analyses receive no gnomAD, AlphaMissense or CADD values; GRCh36 analyses never do.
 
-The same rule applies to position-based rsID recovery: ClinVar can resolve against the selected GRCh37 or GRCh38 cache, while the broader gnomAD resolver participates only on GRCh38. GRCh37 files with rsIDs still use ClinPGx, GWAS Catalog, and SNPedia normally, but an rsID-less GRCh37 VCF has narrower recovery coverage. If you convert between assemblies, re-normalize REF/ALT as part of the conversion and pass `--build` explicitly when the file does not carry a trustworthy build signal.
+Position-based rsID recovery for rsID-less VCFs uses ClinVar (on the selected build), the identity table (on GRCh37 and GRCh38), and gnomAD (GRCh38 only). The same recovery step runs for `analyze`, `stats`, `extract` and `export plink`, so high-value warnings, extracted genotypes and PLINK allele coding all see the recovered rsIDs (ADR-0043). The identity table covers the rsIDs the annotators hold, so an rsID-less GRCh37 VCF now recovers ClinPGx, GWAS Catalog and SNPedia rsIDs as well as ClinVar ones. If you convert between assemblies, re-normalize REF/ALT as part of the conversion and pass `--build` explicitly when the file does not carry a trustworthy build signal.
 
 ### Known ClinPGx limitation: reference-genotype rows where ClinVar and CPIC both lack data
 
@@ -126,7 +131,7 @@ The CFTR × ivacaftor leak (~30+ rows on real data, pre-v0.7.3) is fixed by the 
 
 Two ClinVar rows in real-world reports are known upstream artifacts, not Allelix bugs:
 
-- **PKD1 rs199476100 GG (Pathogenic/Likely pathogenic, magnitude 8.5).** This is a stop-gained variant with a gnomAD frequency of 0.0005% (7 observations in 1.38 million chromosomes). Homozygosity for this variant is biologically implausible — PKD1 is autosomal dominant and the nonsense variant would be embryonic-lethal or devastating in homozygous state. The chip genotyping call is almost certainly a probe artifact. The code correctly reports what ClinVar says and what the chip reads; the error is upstream of Allelix. Future work: population-frequency filtering could flag ultra-rare variants where the chip call is likely unreliable.
+- **PKD1 rs199476100 GG (Pathogenic/Likely pathogenic, magnitude 8.5).** This is a stop-gained variant with a gnomAD frequency of 0.0005% (7 observations in 1.38 million chromosomes). Homozygosity for this variant is biologically implausible — PKD1 is autosomal dominant and the nonsense variant would be embryonic-lethal or devastating in homozygous state. The chip genotyping call is almost certainly a probe artifact. The code correctly reports what ClinVar says and what the chip reads; the error is upstream of Allelix. The row is now marked implausible (see [Plausibility flag](#plausibility-flag)) but is still shown.
 
 - **IL10 rs1800896 CT (Pathogenic, magnitude 9.0).** This is a common polymorphism (MAF ~20–40%) in the IL-10 promoter. ClinVar's Pathogenic classification comes from a single submitter for hepatitis C susceptibility; another submission classifies the allele as "Uncertain risk allele" for leprosy susceptibility. Allelix's per-SCV loader keeps each submitter's significance paired with its own condition, so it does not create cross-submission combinations. The remaining concern is the upstream strength of a single-submitter classification on a common variant. Future work: review-status weighting could down-weight that evidence.
 
@@ -178,9 +183,27 @@ allelix config set license.commercial true
 
 # Assert that you hold a commercial CADD license
 allelix config set license.cadd true
+
+# Tune the plausibility flag (allele frequencies between 0 and 1)
+allelix config set plausibility.homozygous_max_af 0.0001
+allelix config set plausibility.heterozygous_max_af 0
 ```
 
 CLI flags (`--no-gnomad`, `--no-alphamissense`, `--no-cadd`, `--exclude-snpedia`, `--cadd`) override the config for a single run. The config sets the baseline; flags override per-invocation.
+
+### Plausibility flag
+
+Genotyping arrays sometimes miscall very rare variants, most visibly as a homozygous call for an allele almost nobody carries. Allelix compares each call with the allele's gnomAD frequency and marks it for review. The row is never hidden (ADR-0041).
+
+| Call | gnomAD frequency of the allele | Flag |
+|---|---|---|
+| Homozygous | below `plausibility.homozygous_max_af` (default 0.0001, i.e. 0.01%) | **implausible**: often a genotyping artifact |
+| Heterozygous | at or below `plausibility.heterozygous_max_af` (default 0: gnomAD has the site but no carriers) | **suspicious** |
+| Either | otherwise | plausible |
+
+The HTML report shows a ⚠ icon next to a flagged genotype, with the reason on hover and in the detail panel. The terminal table marks implausible calls with ⚠ and suspicious ones with ?. JSON reports carry `plausibility` on every annotation (`plausible`, `suspicious`, `implausible`, or empty when not assessed).
+
+A call is not assessed when gnomAD has no frequency for the allele. Allelix's gnomAD cache covers exome sites with an rsID, so a missing value says nothing about rarity. Calls are also not assessed when the gnomAD database is skipped. Homozygous calls on X are not assessed because a male's single X reads as homozygous; heterozygous X calls are. Y and mitochondrial calls are not assessed. Confirm a flagged call with a clinical-grade test before relying on it.
 
 ### Database sizes and download times
 
@@ -188,12 +211,13 @@ Not all databases are equal in size. `allelix db update` downloads them all by d
 
 | Database | On disk | Download time | What it adds |
 |---|---|---|---|
-| ClinVar (GRCh37 + GRCh38) | ~900MB | 1–2 min | Core clinical variant classifications. Required. |
+| ClinVar (GRCh37 + GRCh38) | ~1.6 GB | 1–2 min | Core clinical variant classifications. Required. |
 | ClinPGx + CPIC | ~6MB | seconds | Drug-gene interactions. |
-| GWAS Catalog | ~200MB | 1–2 min | Trait-SNP associations from genome-wide studies. |
-| gnomAD | ~6GB | 5–15 min | Population allele frequencies (how common is this variant?). |
+| GWAS Catalog | ~950 MB | 1–2 min | Trait-SNP associations from genome-wide studies. |
+| gnomAD | ~7 GB | 5–15 min | Population allele frequencies (how common is this variant?). |
 | AlphaMissense | ~8GB | 5–15 min | Missense pathogenicity predictions (how likely to break protein function?). |
-| CADD (opt-in) | ~5GB | 5–15 min | Variant deleteriousness scores (how damaging is this variant?). Download with `db update --cadd`; enable per analysis or in config. |
+| dbSNP rsID identity | ~460 MB | ~1 min | Cross-build placements: reference allele for array data, rsID recovery on both builds, GRCh37 enrichment translation. |
+| CADD (opt-in) | ~6 GB | 5–15 min | Variant deleteriousness scores (how damaging is this variant?). Download with `db update --cadd`; enable per analysis or in config. |
 
 gnomAD and AlphaMissense are the largest but add the most interpretive context. gnomAD answers "is this variant rare or common?" — a pathogenic variant carried by 35% of the population reads very differently from one seen in 3 people. AlphaMissense answers "does this missense change likely damage the protein?" — especially valuable for the thousands of variants ClinVar hasn't reviewed yet.
 
@@ -201,25 +225,26 @@ To skip either during download: `allelix db update --no-gnomad --no-alphamissens
 
 ### Managing your data
 
-Allelix stores reference database caches at `~/.local/share/allelix/` (Linux/macOS) or the XDG-equivalent on other platforms. Default install (no CADD) is ~16 GB on disk; with the CADD opt-in it's ~22 GB.
+Allelix stores reference database caches at `~/.local/share/allelix/` (Linux/macOS) or the XDG-equivalent on other platforms. Default install (no CADD) is ~18 GB on disk; with the CADD opt-in it's ~24 GB.
 
 ```
 ~/.local/share/allelix/
 ├── alphamissense.sqlite       ~7.8 GB
-├── gnomad.sqlite              ~6.1 GB
+├── gnomad.sqlite              ~7.1 GB
 ├── cadd.sqlite                ~5.8 GB   (only if you opted into --cadd)
-├── clinvar.GRCh37.sqlite      ~470 MB
-├── clinvar.GRCh38.sqlite      ~480 MB
-├── gwas_catalog_associations.tsv  ~700 MB
-├── snpedia.sqlite             ~390 MB
-├── gwas.sqlite                ~190 MB
-└── pharmgkb.sqlite            ~14 MB
+├── clinvar.GRCh37.sqlite      ~800 MB
+├── clinvar.GRCh38.sqlite      ~800 MB
+├── gwas_catalog_associations.tsv  ~745 MB
+├── rsid_identity.sqlite       ~457 MB
+├── gwas.sqlite                ~202 MB
+├── snpedia.sqlite             ~194 MB
+└── pharmgkb.sqlite            ~6 MB
 ```
 
 **The caches are disposable and re-downloadable.** Everything here was fetched by `allelix db update` and can be re-fetched at any time. There's no per-user state in the cache — your genotype files never enter this directory. Safe to delete to reclaim space (or to force a full refresh if you suspect a cache went stale):
 
 ```bash
-# Reclaim all ~16-22 GB, with size report and confirmation prompt
+# Reclaim all ~18-24 GB, with size report and confirmation prompt
 allelix db clean
 
 # Preserve the CADD cache (avoids re-downloading the slowest one, ~5.8 GB)
@@ -269,9 +294,10 @@ Allelix source code is licensed under the **GNU Affero General Public License v3
 | ClinPGx (formerly PharmGKB) | clinpgx.org | CC BY-SA 4.0 | Attribution required |
 | CPIC | cpicpgx.org | CC BY-SA 4.0 | Attribution required. Per-allele function data fetched from `api.cpicpgx.org` at `db update` time; used internally for the ClinPGx non-finding filter (ADR-0020), not surfaced as its own annotator. |
 | SNPedia | snpedia.com | CC BY-NC-SA 3.0 US | Attribution required, **non-commercial only**. Use `--exclude-snpedia` to omit. |
-| gnomAD | gnomad.broadinstitute.org | ODbL v1.0 | Attribution required. GRCh38-only population allele frequencies for context; not a clinical annotator. Use `--no-gnomad` to omit. |
-| AlphaMissense | zenodo.org/records/10813168 | CC BY 4.0 | Attribution required. Cheng et al., Science 2023. GRCh38-only missense variant pathogenicity predictions. Use `--no-alphamissense` to omit. |
-| CADD | cadd.gs.washington.edu | LicenseRef-CADD | Attribution required, **non-commercial by default**. Commercial licenses available from UW CoMotion. GRCh38-only enrichment; download with `allelix db update --cadd`, then enable per analysis with `--cadd` or persistently in config. Use `--no-cadd` to omit. |
+| gnomAD | gnomad.broadinstitute.org | ODbL v1.0 | Attribution required. GRCh38 population allele frequencies for context (GRCh37 input through the identity table); not a clinical annotator. Use `--no-gnomad` to omit. |
+| AlphaMissense | zenodo.org/records/10813168 | CC BY 4.0 | Attribution required. Cheng et al., Science 2023. GRCh38 missense variant pathogenicity predictions (GRCh37 input through the identity table). Use `--no-alphamissense` to omit. |
+| dbSNP (rsID identity table) | ncbi.nlm.nih.gov/snp | Public domain | No restrictions. Cross-build rsID placements derived from dbSNP; not surfaced as an annotator. |
+| CADD | cadd.gs.washington.edu | LicenseRef-CADD | Attribution required, **non-commercial by default**. Commercial licenses available from UW CoMotion. GRCh38 scores (GRCh37 input through the identity table); download with `allelix db update --cadd`, then enable per analysis with `--cadd` or persistently in config. Use `--no-cadd` to omit. |
 
 **Commercial users:** When `license.commercial = true`, non-commercial sources are gated by a three-state permission model. SNPedia is permanently blocked (no commercial license is available). CADD is blocked by default but can be unlocked — the University of Washington offers commercial licenses at `https://els2.comotion.uw.edu/product/cadd-scores`; after purchasing, assert your license with `allelix config set license.cadd true` to re-enable CADD in commercial mode. All other databases (ClinVar, ClinPGx, GWAS Catalog, gnomAD, AlphaMissense) are compatible with commercial use. `allelix config show` displays the permission state for each source.
 
@@ -320,7 +346,7 @@ Almost always a schema or interpreter version bump in a recent allelix release t
 
 ### Build mismatch warning when analyzing a known-good file
 
-Either: (a) the file's header claims one build and the position data confidently indicates another (real-world MHG / Tempus exports do this — header says 37, positions are 38), or (b) the position signal is too small or mixed to be authoritative. Allelix requires at least three concordant seed SNPs and an 80% winning ratio; weaker GRCh37/38 evidence is reported as tentative and the header or fallback remains effective. A tentative GRCh36 winner is the safety exception: Allelix uses GRCh36 so it cannot accidentally query a modern position cache. Modern position-keyed caches are unavailable for that build (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)).
+Either: (a) the file's header claims one build and the position data confidently indicates another (real-world MHG / Tempus exports do this — header says 37, positions are 38), or (b) the position signal is too small or mixed to be authoritative. Allelix requires at least three concordant seed SNPs and an 80% winning ratio. A VCF record without an rsID counts as a seed when it sits at that seed's position on a build, so variant-caller output with an empty ID column is detected by position too. Weaker GRCh37/38 evidence is reported as tentative and the header or fallback remains effective. A tentative GRCh36 winner is the safety exception: Allelix uses GRCh36 so it cannot accidentally query a modern position cache. Modern position-keyed caches are unavailable for that build (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)).
 
 If you trust the file's header more than allelix's detection, force the build: `--build grch37` or `--build grch38`. The build banner in the analyze output will reflect what was actually used.
 
@@ -352,6 +378,9 @@ Notable load-bearing ADRs:
 - **ADR-0036 — Annotated VCF output contract.** JSON and annotated VCF schemas evolve independently.
 - **ADR-0037 — Conservative position-based build confidence.** A winning build needs at least three matches and an 80% ratio; weaker signals remain diagnostic only.
 - **ADR-0038 — GWAS effect-modifier disambiguation.** Only positively identified odds ratios receive an effect-size modifier; beta and ambiguous effects abstain.
+- **ADR-0042 — VCF quality gate.** The variant caller's FILTER and genotype quality are honoured, low-quality reference blocks are no-calls, and every exclusion is counted in the report.
+- **ADR-0043 — One rsID-recovery step.** Every command that needs rsIDs recovers them for rsID-less input through the same shared step; build detection votes by position instead.
+- **ADR-0041 — Plausibility flag.** Very rare homozygous calls and heterozygous calls with no gnomAD carriers are flagged for review, never suppressed.
 
 Release history: see [`CHANGELOG.md`](https://github.com/allelix/allelix/blob/main/CHANGELOG.md).
 

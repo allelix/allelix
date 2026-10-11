@@ -306,7 +306,7 @@ filter test.
   `test_unknown_risk_allele_cap_value_is_3_0`.
 - Unknown-risk-allele rows are always identifiable by their description text
   and by their magnitude ≤ 3.0.
-- Future strand normalization (R-1) is a latent gap, not a blocking issue.
+- Future strand normalization is a latent gap, not a blocking issue.
   Documented here so R-1 implementation can reference this ADR.
 - If the magnitude tiers need revision, update this ADR and the
   `_magnitude()` function together.

@@ -32,7 +32,7 @@ Specifics:
       real exports. The parser normalizes haploid input to a
       hemizygous-looking Variant where ``allele1 == allele2 ==
       <the called base>`` (consistent with the haploid convention
-      in ``_helpers.split_genotype``). GH #113.
+      in ``_helpers.split_genotype``).
 
       Chromosome-aware: the haploid shape (4-column line OR
       5-column line with empty ALLELE2) is accepted ONLY when the
@@ -42,7 +42,7 @@ Specifics:
       allele in transit — promoting it to hemizygous would silently
       double the surviving allele and synthesize a wrong-zygosity
       genotype. The parser warns-and-skips that case instead.
-      Tightened against the v2.2.1 cross-PR review on PR #117.
+      Tightened against the v2.2.1 cross-PR review on .
     - No-calls: ``-`` in one or both allele columns (with both
       columns present and ALLELE1 != empty).
     - Build 37 (GRCh37) on every export observed.
@@ -153,7 +153,7 @@ class FTDNAFamFinderParser(GenotypeParser):
                     continue
 
                 parts = line.split("\t")
-                # GH #113: accept the 4-column haploid shape (missing
+                # accept the 4-column haploid shape (missing
                 # ALLELE2 column for hemizygous MT/Y calls) in addition
                 # to the canonical 5-column diploid shape. The docstring
                 # already claimed haploid support; the impl didn't.
@@ -182,10 +182,10 @@ class FTDNAFamFinderParser(GenotypeParser):
                 # call is represented as allele1 == allele2 (the
                 # convention shared by 23andMe / _helpers.split_genotype),
                 # NOT allele2 = NO_CALL_MARKER (which would render as a
-                # half no-call and surface the GH #113 reporter's
+                # half no-call and surface the reporter's
                 # "lab-spec MT/Y vanishes" behavior).
                 #
-                # GH #113 cross-PR review (#117 review): only accept the
+                # cross-PR review: only accept the
                 # haploid shape on MT and Y — the only chromosomes FTDNA
                 # publishes haploid calls on. A 4-column line (or
                 # 5-column-empty-ALLELE2) on an autosome or X is almost

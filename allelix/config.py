@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING
 
 from allelix.annotators.base import Permission
 from allelix.annotators.base import permission as check_permission
+from allelix.utils.plausibility import PlausibilityThresholds
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,6 +31,7 @@ _DEFAULT_SOURCES: dict[str, bool] = {
     "alphamissense": True,
     "snpedia": True,
     "cadd": False,
+    "rsid_identity": True,
 }
 
 
@@ -40,6 +43,7 @@ class AllelixConfig:
     commercial: bool = False
     cadd_full: bool = False
     license_overrides: dict[str, bool] = field(default_factory=dict)
+    plausibility: PlausibilityThresholds = field(default_factory=PlausibilityThresholds)
 
     def license_held(self, source_name: str) -> bool:
         """Return whether the user asserts they hold a license for this source."""
@@ -96,6 +100,43 @@ class AllelixConfig:
         return self.sources.get(source_name, True)
 
 
+# Tunable plausibility cut-offs (ADR-0041), in config.toml's [plausibility].
+PLAUSIBILITY_KEYS: tuple[str, ...] = tuple(f.name for f in fields(PlausibilityThresholds))
+
+
+def parse_frequency(value: object) -> float | None:
+    """An allele frequency in [0, 1] from a TOML value or CLI string, or None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or not 0.0 <= number <= 1.0:
+        return None
+    return number
+
+
+def _load_plausibility(raw: object) -> PlausibilityThresholds:
+    thresholds = PlausibilityThresholds()
+    if not isinstance(raw, dict):
+        return thresholds
+    for name in PLAUSIBILITY_KEYS:
+        if name not in raw:
+            continue
+        number = parse_frequency(raw[name])
+        if number is None:
+            logger.warning(
+                "config.toml: plausibility.%s = %r is not a frequency in [0, 1]; "
+                "using the default",
+                name,
+                raw[name],
+            )
+            continue
+        thresholds = replace(thresholds, **{name: number})
+    return thresholds
+
+
 def _config_path(data_dir: Path) -> Path:
     return data_dir / CONFIG_FILENAME
 
@@ -114,6 +155,10 @@ def _serialize(config: AllelixConfig) -> str:
     lines.append("")
     lines.append("[options]")
     lines.append(f"cadd_full = {str(config.cadd_full).lower()}")
+    lines.append("")
+    lines.append("[plausibility]")
+    for name in PLAUSIBILITY_KEYS:
+        lines.append(f"{name} = {getattr(config.plausibility, name)!r}")
     lines.append("")
     return "\n".join(lines)
 
@@ -160,4 +205,5 @@ def load_config(data_dir: Path) -> AllelixConfig:
         commercial=commercial,
         cadd_full=cadd_full,
         license_overrides=license_overrides,
+        plausibility=_load_plausibility(raw.get("plausibility")),
     )

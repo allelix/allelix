@@ -147,23 +147,53 @@ class BuildDetectionResult(NamedTuple):
         )
 
 
+# (chromosome, position) -> (seed rsID, build) for every seed on
+# every build. Lets an rsID-less record (VCF ``ID=.``) vote by position.
+# No coordinate repeats across seeds or builds (pinned by a test).
+_SEED_AT_LOCUS: dict[tuple[str, int], tuple[str, str]] = {
+    locus: (rsid, build)
+    for rsid, entry in KNOWN_SNP_POSITIONS.items()
+    for build, locus in entry.items()
+}
+
+
+def known_snp_seed(variant: Variant) -> str | None:
+    """The build-detection seed this variant can vote for, or None.
+
+    A variant carrying a seed rsID votes through its rsID. An rsID-less
+    variant (no ``rs`` ID) at a seed's coordinate on any build votes by
+    position. rsID-less resolution cannot run first because it needs the
+    build being detected; the seed table already knows every build's
+    coordinate, so no lookup is needed.
+    """
+    if variant.rsid in KNOWN_SNP_POSITIONS:
+        return variant.rsid
+    if variant.rsid.startswith("rs"):
+        return None
+    hit = _SEED_AT_LOCUS.get((variant.chromosome, variant.position))
+    return hit[0] if hit is not None else None
+
+
 def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:
     """Detect the genome build of an iterable of `Variant` records.
 
-    Iterates the input, looking for any rsID in `KNOWN_SNP_POSITIONS`,
-    and tallies which build's (chromosome, position) each match votes
-    for. Returns when every entry in the table has been seen OR the
-    input is exhausted. Streaming-friendly — does not materialize the
-    full variant list.
+    Iterates the input, looking for any seed in `KNOWN_SNP_POSITIONS`
+    (by rsID, or by position for rsID-less records; see
+    `known_snp_seed`), and tallies which build's (chromosome, position)
+    each match votes for. Returns when every entry in the table has been
+    seen OR the input is exhausted. Streaming-friendly — does not
+    materialize the full variant list.
     """
     votes: dict[str, int] = {BUILD_GRCH36: 0, BUILD_GRCH37: 0, BUILD_GRCH38: 0}
     inspected = 0
     remaining = set(KNOWN_SNP_POSITIONS)
     for variant in variants:
-        if variant.rsid not in remaining:
+        seed = known_snp_seed(variant)
+        if seed not in remaining:
             continue
-        entry = KNOWN_SNP_POSITIONS[variant.rsid]
-        remaining.discard(variant.rsid)
+        assert seed is not None
+        entry = KNOWN_SNP_POSITIONS[seed]
+        remaining.discard(seed)
         inspected += 1
         for build, (chrom, pos) in entry.items():
             if variant.chromosome == chrom and variant.position == pos:
@@ -188,7 +218,7 @@ def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:
 _HG_TO_BUILD = {"18": BUILD_GRCH36, "19": BUILD_GRCH37, "38": BUILD_GRCH38}
 _NUM_TO_BUILD = {"36": BUILD_GRCH36, "37": BUILD_GRCH37, "38": BUILD_GRCH38}
 
-# GH #16: build-label patterns are anchored on word boundaries so a date
+# build-label patterns are anchored on word boundaries so a date
 # (`2038-01-01`) or version string (`v37`) doesn't false-match by bare
 # substring containment. Each pattern captures one of the canonical
 # numeric tokens; a label that surfaces *multiple distinct builds* (e.g.

@@ -5,17 +5,20 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "6",
+      "schema_version": "7",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
       "input": {
         "file": "genotype.txt",
         "format": "myhappygenes",
+        "method": null,
         "sample_id": "MHG000001",
         "build": "GRCh37",
         "total_variants": 2015,
-        "skipped_lines": 0
+        "skipped_lines": 0,
+        "gvcf": false,
+        "vcf_quality": null
       },
       "annotators": [
         {"name": "clinvar", "version": "20260101"}
@@ -52,11 +55,33 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
+# v6 -> v7 bump (ADR-0033): every annotation carries ``plausibility``, the
+# zygosity x gnomAD frequency quality-control flag (ADR-0041); the
+# ``input`` block carries ``gvcf`` and ``vcf_quality`` (null for non-VCF
+# input); ``high_value_no_calls`` entries carry ``reason``; ``input.method``
+# names a declared genotyping method (null when none). All land in the
+# same unreleased version, so one bump covers them.
 # v4 → v5 bump: enters the ADR-0035 cluster contract. Incoming cluster fields
 # (variant.ref via Variant model, annotation.trait / .p_value / .phecode via
 # Annotation model) land across PRs 1-4 of the v2.1 Cluster B work. v4
 # consumers reading v5 output still succeed — every v4 field is unchanged.
+
+
+def _vcf_quality_dict(result: AnalysisResult) -> dict | None:
+    """What the VCF quality gate did; None for non-VCF input."""
+    stats = result.vcf_quality
+    if stats is None:
+        return None
+    return {
+        "filtered_rows": stats.filtered_rows,
+        "filtered_by_label": dict(sorted(stats.filtered_by_label.items())),
+        "kept_filtered": stats.kept_filtered,
+        "low_quality_calls": stats.low_quality_calls,
+        "min_gq": stats.min_gq,
+        "spanning_deletion_calls": stats.spanning_deletion_calls,
+        "symbolic_rows": stats.symbolic_rows,
+    }
 
 
 def _annotation_dict(a: Annotation) -> dict:
@@ -129,10 +154,13 @@ def render_json(
         "input": {
             "file": result.file_path.name,
             "format": result.parser_name,
+            "method": result.input_method or None,
             "sample_id": result.sample_id,
             "build": result.build,
             "total_variants": result.total_variants,
             "skipped_lines": result.skipped_count,
+            "gvcf": result.vcf_quality is not None and result.vcf_quality.is_gvcf,
+            "vcf_quality": _vcf_quality_dict(result),
         },
         "annotators": [
             {"name": name, "version": version} for name, version in result.annotators_used
@@ -153,11 +181,11 @@ def render_json(
     if high_value_no_calls:
         payload["high_value_no_calls"] = high_value_no_calls
 
-    # GH #75: when --filter-file supplied a panel, the panel_coverage
+    # when --filter-file supplied a panel, the panel_coverage
     # object distinguishes "not on chip" from "homozygous reference"
     # from "had a finding". `missing` is state 3, `no_findings` is
     # state 2, both lists are sorted for deterministic diffs.
-    # GH #106 (v2.2.1 patch): thread the post-filter annotation list so
+    # (v2.2.1 patch): thread the post-filter annotation list so
     # `panel_coverage` derives "annotated" from what actually got
     # rendered. Without this, sub-floor panel rsids vanished from every
     # rendered surface while still being counted as "found".

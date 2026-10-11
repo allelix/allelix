@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Tests for the per-SCV ClinVar TSV loader (#42 stage A).
+"""Tests for the per-SCV ClinVar TSV loader.
 
 The loader joins ``submission_summary.txt.gz`` (per-SCV rows) against
 ``variant_summary.txt.gz`` (per-(VariationID, Assembly) rows) and emits
 one cache record per submission. Stage A added the loader, stage B
 wired it into ``db update`` with an interpreter-version bump, stage C
-(#42) removed the legacy VCF path entirely — this is now the only
+ removed the legacy VCF path entirely — this is now the only
 production ingest route.
 """
 
@@ -204,7 +204,7 @@ class TestIterTsvRecords:
         assert r["allele_id"] == 100  # variation_id repurposed
 
     def test_multiple_scvs_per_variant_emit_multiple_records(self, tmp_path):
-        """The whole point of #42: per-SCV pairing instead of one row per variant."""
+        """Per-SCV pairing instead of one row per variant."""
         vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
         ss = _write_tsv(
             tmp_path / "ss.tsv",
@@ -359,7 +359,7 @@ class TestIterTsvRecords:
         assert records[0]["clinical_significance"] == "Pathogenic"
 
     def test_skips_all_placeholder_clnsigs(self, tmp_path):
-        """GH #42 follow-up (evaluator defect 5 + cross-PR review):
+        """follow-up (evaluator defect 5 + cross-PR review):
         ClinVar's submission_summary carries multiple placeholder
         values meaning "no classification recorded." The loader must
         drop every placeholder NOT in ``_CLNSIG_MAGNITUDE`` (those
@@ -393,9 +393,9 @@ class TestIterTsvRecords:
         # And the placeholder set must be the exact set used by the
         # protocol §7b ship-gate. If you broaden one, broaden both
         # together — that's the cross-PR-review lesson.
-        # GH #116: the set grew with "other", "association",
+        # the set grew with "other", "association",
         # "association not found" — non-classification curatorial
-        # terms surfaced by the #42 per-SCV switch that fell to the
+        # terms surfaced by the per-SCV switch that fell to the
         # 5.0 default before this filter.
         expected = frozenset(
             {
@@ -411,7 +411,7 @@ class TestIterTsvRecords:
         assert expected == _CLINVAR_PLACEHOLDER_CLNSIGS
 
     def test_skips_junk_clnsig_curatorial_terms(self, tmp_path):
-        """GH #116: ClinVar's per-SCV TSV surfaces non-classification
+        """ClinVar's per-SCV TSV surfaces non-classification
         curatorial terms — "other", "association", "association not
         found" — that the old summarized data hid. Each is a real
         ClinVar value (a curator chose it) but is not a classification,
@@ -669,7 +669,7 @@ class TestLoadClinvarTsv:
         assert row[1] == "md5:abcdef"
         assert row[2] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
         assert row[3] == 1
-        # GH #42 follow-up (evaluator defect 3): the TSV loader stamps
+        # follow-up (evaluator defect 3): the TSV loader stamps
         # the cache build date as version so `db status` doesn't show
         # "ClinVar version: None". The build date is YYYY-MM-DD UTC.
         assert row[4] is not None
@@ -735,7 +735,7 @@ class TestRealClinvarTsvIngest:
     The test's job is to verify that the loader, as written, handles
     real-shaped data — not synthetic fixtures — without crashing,
     produces a sensible row count, surfaces per-SCV multi-row variants
-    (the whole point of #42), and writes a queryable cache.
+    (the whole point of per-SCV pairing), and writes a queryable cache.
     """
 
     def test_full_ingest_to_cache(self, tmp_path):
@@ -810,7 +810,7 @@ class TestRealClinvarTsvIngest:
             f"Expected 100K+ distinct rsIDs in the cache; got {distinct_rsids}."
         )
         assert multi_scv_count > 1_000, (
-            "The whole point of #42 is per-SCV multi-row variants. Got "
+            "The whole point is per-SCV multi-row variants. Got "
             f"{multi_scv_count} variants with >1 SCV row — should be thousands."
         )
         assert distinct_sigs >= 10, (
@@ -852,4 +852,4 @@ class TestRealClinvarTsvIngest:
     # (i.e. real ClinVar still contains rows aggregate_only drops). The
     # mock tests prove the logic; R-4 covers vocabulary drift separately.
     # Net trim: slow class 3 passes → 1, ~15 min → ~5 min on slow.yml's
-    # weekly cron and on local run-tests.sh. See PR #88 review thread.
+    # weekly cron and on local run-tests.sh. See review thread.

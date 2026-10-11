@@ -523,7 +523,7 @@ class TestMultiAllelicMax:
 class TestBulkLookupByPosition:
     """Position-keyed fallback for rsIDs whose AlphaMissense rsid index is sparse.
 
-    Same shape as gnomAD: resolution via ClinVar (GH #8) populates a variant's
+    Same shape as gnomAD: resolution via ClinVar populates a variant's
     rsid, but AlphaMissense's rsid index may not list it. PK lookup recovers
     the score in a second enrichment pass.
     """

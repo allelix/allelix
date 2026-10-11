@@ -460,7 +460,7 @@ class TestLoadPharmgkbTsv:
 
 
 class TestMinRowsFloor:
-    """GH #19: post-load row-count sanity gate catches mid-stream truncation.
+    """post-load row-count sanity gate catches mid-stream truncation.
 
     Production callers pass ``min_rows=PHARMGKB_MIN_ROWS``. A truncated
     download produces a parseable-but-short cache that previously committed

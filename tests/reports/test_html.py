@@ -48,7 +48,7 @@ def _ann(**overrides) -> Annotation:
 
 
 class TestPanelCoverageHtml:
-    """GH #75: HTML report grows a Panel Coverage section near the top
+    """HTML report grows a Panel Coverage section near the top
     when --filter-file supplied a rsid panel."""
 
     def _result_with_panel(
@@ -91,7 +91,7 @@ class TestPanelCoverageHtml:
         assert "no annotations matched" in body
 
     def test_panel_gt_column_renders_when_genotypes_supplied(self, tmp_path: Path):
-        """GH #120: when `result.panel_genotypes` is supplied (the
+        """when `result.panel_genotypes` is supplied (the
         rsid → "A/G" map run_analysis collected during the batch
         flush), the HTML Panel Coverage table grows a GT column.
         Genotyped rsIDs show their literal call; state-3 rows show

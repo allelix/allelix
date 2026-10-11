@@ -38,10 +38,29 @@ class HighValueSNP:
 
 @dataclass(frozen=True)
 class NoCallWarning:
-    """A high-value SNP that returned a no-call in the input file."""
+    """A high-value SNP that returned a no-call in the input file.
+
+    ``reason`` (VCF input) says why: ``no_call`` (the caller emitted
+    a missing genotype), ``filtered``, ``low_gq_call``, ``low_gq_block``,
+    ``spanning_deletion``, ``symbolic_allele`` or ``no_coverage`` (gVCF:
+    no record covers the position). Empty for array input.
+    """
 
     snp: HighValueSNP
     cluster_incomplete: bool
+    reason: str = ""
+
+
+# Plain-language text for each no-call reason.
+_REASON_TEXT: dict[str, str] = {
+    "no_call": "no genotype called",
+    "filtered": "rejected by the variant caller's filters",
+    "low_gq_call": "genotype quality below the floor",
+    "low_gq_block": "reference call with low genotype quality or no reads",
+    "spanning_deletion": "overlapped by a deletion on one copy",
+    "symbolic_allele": "structural or symbolic allele",
+    "no_coverage": "no record covers this position",
+}
 
 
 def load_high_value_snps(
@@ -90,6 +109,7 @@ def _load_yaml(path: Path) -> dict[str, HighValueSNP]:
 def scan_no_calls(
     variants: list[Variant],
     high_value: dict[str, HighValueSNP] | None = None,
+    vcf_states: dict[str, tuple[str, str]] | None = None,
 ) -> list[NoCallWarning]:
     """Scan variants for no-calls on high-value SNPs.
 
@@ -98,18 +118,31 @@ def scan_no_calls(
     is a no-call while another member was called, the warning notes that
     the cluster result is incomplete (e.g., "APOE genotype cannot be
     determined").
+
+    ``vcf_states`` (VCF input) adds what the file says at each
+    high-value position, including rsID-less reference blocks:
+    ``(called | reference | no_call, reason)``. A confident reference
+    call counts as called. A variant call always wins over a no-call.
     """
     if high_value is None:
         high_value = load_high_value_snps()
 
-    no_call_rsids: set[str] = set()
+    no_call_reasons: dict[str, str] = {}
     called_rsids: set[str] = set()
     for v in variants:
         if v.rsid in high_value:
             if v.is_no_call:
-                no_call_rsids.add(v.rsid)
+                no_call_reasons.setdefault(v.rsid, "")
             else:
                 called_rsids.add(v.rsid)
+    for rsid, (state, reason) in (vcf_states or {}).items():
+        if rsid not in high_value:
+            continue
+        if state == "no_call":
+            no_call_reasons[rsid] = reason or no_call_reasons.get(rsid, "")
+        else:
+            called_rsids.add(rsid)
+    no_call_rsids = set(no_call_reasons) - called_rsids
 
     warnings: list[NoCallWarning] = []
     for rsid in sorted(no_call_rsids):
@@ -118,7 +151,11 @@ def scan_no_calls(
         if snp.cluster:
             cluster_members = {r for r, s in high_value.items() if s.cluster == snp.cluster}
             cluster_incomplete = bool(cluster_members & called_rsids)
-        warnings.append(NoCallWarning(snp=snp, cluster_incomplete=cluster_incomplete))
+        warnings.append(
+            NoCallWarning(
+                snp=snp, cluster_incomplete=cluster_incomplete, reason=no_call_reasons[rsid]
+            )
+        )
     return warnings
 
 
@@ -127,6 +164,8 @@ def format_warnings(warnings: list[NoCallWarning]) -> list[str]:
     lines: list[str] = []
     for w in warnings:
         line = f"{w.snp.rsid} ({w.snp.gene}): {w.snp.note}"
+        if w.reason:
+            line += f" [{_REASON_TEXT.get(w.reason, w.reason)}]"
         if w.cluster_incomplete:
             line += f" — {w.snp.cluster} genotype cannot be determined"
         lines.append(line)

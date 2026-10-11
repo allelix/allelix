@@ -164,7 +164,7 @@ class TestParse:
         assert variants[0].rsid == "rs_good"
 
     def test_skips_wrong_column_count(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
-        """GH #113: 4 columns is the haploid shape and is now accepted
+        """4 columns is the haploid shape and is now accepted
         (see test_haploid_4_column_line). Genuinely wrong column counts
         — 3 columns (missing both alleles) or 6+ (extra data) — are
         still skipped."""
@@ -180,12 +180,12 @@ class TestParse:
         assert variants[0].rsid == "rs_good"
 
     def test_haploid_4_column_line(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
-        """GH #113: a 4-column line (missing ALLELE2 column entirely)
+        """a 4-column line (missing ALLELE2 column entirely)
         is a haploid MT/Y call in the FamFinder convention. Parser
         emits a hemizygous Variant where allele1 == allele2 == the
         called base — NOT a half no-call.
 
-        Pre-#113 the parser warned and skipped the line, dropping
+        Previously, the parser warned and skipped the line, dropping
         every haploid MT/Y call.
         """
         f = _write(
@@ -213,7 +213,7 @@ class TestParse:
     def test_haploid_shape_on_autosome_skipped_as_truncated_diploid(
         self, parser: FTDNAFamFinderParser, tmp_path: Path
     ) -> None:
-        """GH #113 cross-PR review (PR #117): the haploid shape (4-col
+        """cross-PR review (): the haploid shape (4-col
         line OR 5-col with empty ALLELE2) is accepted ONLY on MT and Y.
         FTDNA does not publish haploid calls on autosomes or X — the
         same shape on chr1 is almost certainly a truncated diploid
@@ -276,12 +276,12 @@ class TestParse:
     def test_empty_allele2_cell_treated_as_haploid(
         self, parser: FTDNAFamFinderParser, tmp_path: Path
     ) -> None:
-        """GH #113: a 5-column line with an empty trailing ALLELE2 cell
+        """a 5-column line with an empty trailing ALLELE2 cell
         is also the haploid shape — same biology as the 4-column line,
         just from a writer that emitted the trailing tab. Both must
         parse the same way: hemizygous, not half no-call.
 
-        Pre-#113 the empty ALLELE2 was normalized to ``-``, producing
+        Previously, the empty ALLELE2 was normalized to ``-``, producing
         a synthetic half no-call (e.g. ``A/-``) that the analyze
         pipeline correctly abstained on — losing every haploid MT/Y
         call to a no-call sink.

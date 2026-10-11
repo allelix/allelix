@@ -12,15 +12,24 @@ Format reference (from real sample files and snps package):
 
 Specifics:
     - CSV format, comma-delimited. Structurally identical to FTDNA.
-    - Detection key: ``MyHeritage`` in the first comment line.
+    - Detection key: ``MyHeritage`` in one of the first lines. A file
+      re-saved through a spreadsheet can start with an emptied row
+      (``,,,``), drop the ``#`` from comment lines and pad every row with
+      trailing commas; all three are tolerated. Tab-delimited rows (a
+      spreadsheet "save as text") are read as well.
+    - Low-pass WGS exports (kits processed from January 2026) start with
+      ``##fileformat=MyHeritage`` and carry ``##method=Low-pass Whole
+      Genome Sequencing`` and ``##reference=build37``. The genotypes are
+      imputed from ~2x coverage. ``get_metadata`` reports both lines.
     - Header line: ``RSID,CHROMOSOME,POSITION,RESULT`` (quoted or unquoted).
     - Data fields are double-quoted; some exports double-double-quote
       fields (``""rs1""``). ``split_csv_line`` handles both.
     - RESULT column is concatenated genotype (e.g., "AG" not "A","G").
     - Haploid calls on MT/Y appear as single characters (e.g., "A").
     - No-calls represented as ``--``.
-    - Build: not declared in file; position-based detection required.
-      Defaults to GRCh37.
+    - Build: array exports declare none (position-based detection
+      required; defaults to GRCh37). ``##reference=buildNN`` is an
+      explicit header build.
 """
 
 from __future__ import annotations
@@ -29,9 +38,15 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import split_csv_line, split_genotype
+from allelix.parsers._helpers import (
+    is_padding_only,
+    split_csv_line,
+    split_genotype,
+    strip_trailing_empty,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
-from allelix.parsers.ftdna import HEADER_CANONICAL, _is_header_line
+from allelix.parsers.ftdna import HEADER_CANONICAL, PREAMBLE_WARNING_LIMIT, _is_header_line
+from allelix.utils.build_detect import normalize_build_label
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -43,6 +58,33 @@ SIGNATURE = "MyHeritage"
 SNIFF_LINE_LIMIT = 50
 EXPECTED_COLUMNS = 4
 
+# ``##method=`` values -> GenotypeMetadata ``method``.
+_METHODS: dict[str, str] = {
+    "low-pass whole genome sequencing": "low-pass-wgs-imputed",
+}
+
+
+def _split_row(line: str) -> list[str]:
+    """Split a data or header row: tab-delimited when it has tabs, else CSV.
+
+    Quotes and trailing padding past the four columns are removed either way.
+    """
+    if "\t" in line:
+        fields = [field.strip().strip('"') for field in line.split("\t")]
+        return strip_trailing_empty(fields, keep=EXPECTED_COLUMNS)
+    return split_csv_line(line, EXPECTED_COLUMNS)
+
+
+def _is_column_header(line: str) -> bool:
+    """The ``RSID,CHROMOSOME,POSITION,RESULT`` header, comma- or tab-delimited."""
+    return _is_header_line(",".join(_split_row(line)))
+
+
+def _looks_like_data_row(line: str) -> bool:
+    """Four non-empty fields with an integer position: a genotype row."""
+    fields = _split_row(line)
+    return len(fields) == EXPECTED_COLUMNS and all(fields) and fields[2].isdigit()
+
 
 class MyHeritageParser(GenotypeParser):
     """Parser for MyHeritage DNA consumer genotype files."""
@@ -53,35 +95,53 @@ class MyHeritageParser(GenotypeParser):
     url: ClassVar[str] = "https://www.myheritage.com"
 
     def can_parse(self, file_path: Path) -> bool:
-        """Recognize the file by ``MyHeritage`` in the first comment line."""
+        """Recognize the file by ``MyHeritage`` in one of its first lines.
+
+        Scans up to ``SNIFF_LINE_LIMIT`` lines and stops, unclaimed, at the
+        column header or the first genotype row: the signature belongs to
+        the preamble, so a file without it before its data is never claimed
+        (FTDNA exports share the column layout).
+        """
         try:
             with file_path.open("r", encoding="utf-8") as fh:
-                first_line = fh.readline()
-                return SIGNATURE in first_line
+                for _ in range(SNIFF_LINE_LIMIT):
+                    line = fh.readline()
+                    if not line:
+                        return False
+                    if SIGNATURE in line:
+                        return True
+                    if _is_column_header(line) or _looks_like_data_row(line):
+                        return False
         except (OSError, UnicodeDecodeError):
             return False
+        return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
         with file_path.open("r", encoding="utf-8") as fh:
             header_seen = False
+            preamble_warnings = 0
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or is_padding_only(line):
                     continue
                 if not header_seen:
-                    if _is_header_line(line):
+                    if _is_column_header(line):
                         header_seen = True
                         continue
-                    logger.warning(
-                        "Line %d: expected %s header, got %r — skipping",
-                        lineno,
-                        HEADER_CANONICAL,
-                        line,
-                    )
+                    # A spreadsheet re-save drops the '#' from comment lines;
+                    # they land here. Warn about the first few only.
+                    preamble_warnings += 1
+                    if preamble_warnings <= PREAMBLE_WARNING_LIMIT:
+                        logger.warning(
+                            "Line %d: expected %s header, got %r — skipping",
+                            lineno,
+                            HEADER_CANONICAL,
+                            line,
+                        )
                     continue
 
-                parts = split_csv_line(line)
+                parts = _split_row(line)
                 if len(parts) != EXPECTED_COLUMNS:
                     logger.warning(
                         "Line %d: expected %d columns, got %d — skipping",
@@ -110,9 +170,36 @@ class MyHeritageParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract metadata. MyHeritage files have no sample ID or build field."""
-        return GenotypeMetadata(
-            format=self.name,
-            sample_id="",
-            build=DEFAULT_BUILD,
-        )
+        """Extract metadata from the ``##key=value`` preamble.
+
+        No sample ID in either export. Low-pass WGS exports declare
+        ``##method`` and ``##reference=buildNN``: the method becomes
+        ``method`` and the build ``header_build`` (also ``build``, which
+        feeds build detection as the header signal; positions still
+        override it, ADR-0021). Array exports declare neither, and
+        ``build`` stays the GRCh37 default.
+        """
+        meta = GenotypeMetadata(format=self.name, sample_id="", build=DEFAULT_BUILD)
+        try:
+            with file_path.open("r", encoding="utf-8") as fh:
+                for _ in range(SNIFF_LINE_LIMIT):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    stripped = line.strip()
+                    if not stripped.startswith("##") or "=" not in stripped:
+                        if _is_column_header(stripped):
+                            break
+                        continue
+                    key, value = stripped[2:].split("=", 1)
+                    key, value = key.strip().lower(), value.strip()
+                    if key == "method" and value:
+                        meta["method"] = _METHODS.get(value.lower(), value)
+                    elif key == "reference":
+                        build = normalize_build_label(value)
+                        if build is not None:
+                            meta["header_build"] = build
+                            meta["build"] = build
+        except (OSError, UnicodeDecodeError):
+            pass
+        return meta

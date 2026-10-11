@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import click
@@ -16,6 +17,24 @@ from allelix.databases import resolve_data_dir
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+_UNKNOWN_KEY = (
+    "Unknown key {key!r}. Use 'sources.<name>', 'license.commercial', "
+    "'license.<source>', 'options.cadd_full', or 'plausibility.<key>'."
+)
+
+
+def _plausibility_key(key: str) -> str:
+    """The threshold name in a ``plausibility.<name>`` key, or a usage error."""
+    from allelix.config import PLAUSIBILITY_KEYS
+
+    name = key[len("plausibility.") :]
+    if name not in PLAUSIBILITY_KEYS:
+        raise click.ClickException(
+            f"Unknown plausibility key {name!r}. Known keys: {', '.join(PLAUSIBILITY_KEYS)}"
+        )
+    return name
 
 
 @main.group()
@@ -58,6 +77,11 @@ def config_show(data_dir: Path | None) -> None:
     console.print(table)
     mode = "[yellow]commercial[/yellow]" if cfg.commercial else "[green]personal[/green]"
     console.print(f"License mode: {mode}")
+    console.print(
+        "Plausibility flag: homozygous below "
+        f"{cfg.plausibility.homozygous_max_af!r}, heterozygous at or below "
+        f"{cfg.plausibility.heterozygous_max_af!r} (gnomAD allele frequency)"
+    )
 
 
 @config.command("get")
@@ -72,6 +96,8 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
       license.commercial   Show commercial mode
       license.<source>     Show if a license is asserted for <source>
       options.cadd_full    Show full CADD tabix mode
+      plausibility.<key>   Show a plausibility cut-off (homozygous_max_af,
+                           heterozygous_max_af)
 
     \b
     Examples:
@@ -105,11 +131,10 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
         click.echo(str(cfg.license_held(source_name)).lower())
     elif key == "options.cadd_full":
         click.echo(str(cfg.cadd_full).lower())
+    elif key.startswith("plausibility."):
+        click.echo(repr(getattr(cfg.plausibility, _plausibility_key(key))))
     else:
-        raise click.ClickException(
-            f"Unknown key {key!r}. Use 'sources.<name>', 'license.commercial', "
-            "'license.<source>', or 'options.cadd_full'."
-        )
+        raise click.ClickException(_UNKNOWN_KEY.format(key=key))
 
 
 @config.command("set")
@@ -125,6 +150,9 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
       license.commercial   Set commercial mode (true/false)
       license.<source>     Assert you hold a commercial license for <source>
       options.cadd_full    Use full CADD tabix file instead of cache (true/false)
+      plausibility.<key>   Plausibility cut-off, an allele frequency in [0, 1]:
+                           homozygous_max_af (default 0.0001) or
+                           heterozygous_max_af (default 0.0)
 
     \b
     Examples:
@@ -132,11 +160,25 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
       allelix config set license.commercial true
       allelix config set license.cadd true
       allelix config set options.cadd_full true
+      allelix config set plausibility.homozygous_max_af 0.00005
     """
-    from allelix.config import load_config, save_config
+    from allelix.config import load_config, parse_frequency, save_config
 
     resolved = resolve_data_dir(data_dir)
     cfg = load_config(resolved)
+
+    if key.startswith("plausibility."):
+        name = _plausibility_key(key)
+        number = parse_frequency(value.strip())
+        if number is None:
+            raise click.ClickException(
+                f"Value must be an allele frequency between 0 and 1, got {value!r}"
+            )
+        cfg.plausibility = replace(cfg.plausibility, **{name: number})
+        save_config(resolved, cfg)
+        console.print(f"[dim]Config: {resolved / 'config.toml'}[/dim]")
+        console.print(f"[green]Set {key} = {number!r}[/green]")
+        return
 
     val_lower = value.strip().lower()
     if val_lower not in ("true", "false"):
@@ -172,10 +214,7 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
     elif key == "options.cadd_full":
         cfg.cadd_full = bool_val
     else:
-        raise click.ClickException(
-            f"Unknown key {key!r}. Use 'sources.<name>', 'license.commercial', "
-            "'license.<source>', or 'options.cadd_full'."
-        )
+        raise click.ClickException(_UNKNOWN_KEY.format(key=key))
 
     save_config(resolved, cfg)
     console.print(f"[dim]Config: {resolved / 'config.toml'}[/dim]")

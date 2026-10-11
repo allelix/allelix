@@ -76,9 +76,9 @@ class GnomadAnnotator(Annotator):
                     f"gnomAD cache not found at {self._db_path}. Run `allelix db update` first."
                 )
             self._conn = sqlite3.connect(self._db_path)
-            # GH #134: lazy-create the position index on caches built before
+            # lazy-create the position index on caches built before
             # the index landed (anything <= v2.2.1). The index is required
-            # for ``bulk_resolve_rsids_from_positions`` (GH #128) to perform
+            # for ``bulk_resolve_rsids_from_positions`` to perform
             # well — without it that method scans the full 57M-row
             # ``gnomad_frequencies`` table per query, which is the root
             # cause of the ~2x analyze slowdown on rsID-less WGS VCFs
@@ -114,7 +114,7 @@ class GnomadAnnotator(Annotator):
     def is_ready(self) -> bool:
         """True when the gnomAD SQLite cache exists with current schema version.
 
-        GH #22: a cache with no ``local_version_tag`` used to be accepted
+        a cache with no ``local_version_tag`` used to be accepted
         as ready (the previous ``or not tag`` escape). That defeated the
         whole point of ``GNOMAD_SCHEMA_VERSION``: if it ever gets bumped,
         every tagless legacy cache would silently pass as the new
@@ -221,7 +221,7 @@ class GnomadAnnotator(Annotator):
     ) -> dict[tuple[str, int], list[tuple[str, str, str]]]:
         """Reverse-lookup rsIDs by ``(chromosome, position)``.
 
-        Counterpart to :meth:`bulk_resolve_coordinates` for the GH #128
+        Counterpart to :meth:`bulk_resolve_coordinates` for the
         flow: a VCF variant arriving with an empty ID column (DeepVariant
         gVCFs, GIAB GRCh38 benchmarks, anything that doesn't stamp dbSNP
         IDs) is parsed as a positional pseudo-ID. The ClinVar resolver

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,9 +21,10 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
-from allelix.models import NO_CALL_MARKER
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
 
@@ -31,8 +33,13 @@ if TYPE_CHECKING:
 @_FILE_ARG
 @_FORMAT_OPT
 @_SAMPLE_OPT
-def stats(file_path: Path, fmt: str | None, sample: str | None) -> None:
-    """Show summary statistics for a genotype file."""
+@_DATA_DIR_OPT
+def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path | None) -> None:
+    """Show summary statistics for a genotype file.
+
+    High-value no-call warnings cover rsID-less VCF records too: calls are
+    resolved to rsIDs with the installed databases first.
+    """
     from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
@@ -49,17 +56,22 @@ def stats(file_path: Path, fmt: str | None, sample: str | None) -> None:
     chrom_counts: dict[str, int] = {}
     try:
         metadata = parser.get_metadata(file_path)
-        for variant in parser.parse(file_path):
-            total += 1
-            if variant.rsid in hv_rsids:
-                hv_variants.append(variant)
-            if variant.is_no_call:
-                no_calls += 1
-            elif variant.is_heterozygous:
-                het += 1
-            else:
-                hom += 1
-            chrom_counts[variant.chromosome] = chrom_counts.get(variant.chromosome, 0) + 1
+        build = ""
+        with _helpers._resolved_variants(
+            parser, file_path, data_dir=data_dir, high_value=hv_rsids
+        ) as resolved:
+            for variant in resolved.variants:
+                build = variant.build
+                total += 1
+                if variant.rsid in hv_rsids:
+                    hv_variants.append(variant)
+                if variant.is_no_call:
+                    no_calls += 1
+                elif variant.is_heterozygous:
+                    het += 1
+                else:
+                    hom += 1
+                chrom_counts[variant.chromosome] = chrom_counts.get(variant.chromosome, 0) + 1
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
 
@@ -93,7 +105,7 @@ def stats(file_path: Path, fmt: str | None, sample: str | None) -> None:
             f"[yellow]{counter.count:,}[/yellow] (see warnings on stderr)",
         )
 
-    hv_warnings = scan_no_calls(hv_variants, high_value)
+    hv_warnings = scan_no_calls(hv_variants, high_value, resolved.high_value_states(build))
     if hv_warnings:
         summary.add_row(
             "High-value no-calls",
@@ -168,73 +180,21 @@ def _sequential_extract(
     Streaming early-exit once all wanted rsIDs are found — for arrays
     that yield <1 M variants this is fast enough on any input.
 
-    GH #128: for VCF inputs the parser may emit a positional pseudo-ID
-    (``chr1:11856378:G:A``) when the row's ID column is empty — every
-    modern caller (DeepVariant, DRAGEN, GIAB GRCh38 benchmark) emits
-    these. The rsID-only fast path on the iterator misses them. To
-    cover the rsID-less VCF case, the function pre-resolves the wanted
-    set's coordinates via gnomAD (when ready) and matches variants by
-    ``(chrom, pos, ref, alt)`` whenever the rsID match misses. The
-    ``ref + alt-in-alleles`` rule matches the tabix path's correctness
-    contract and the resolver's carrier-rule disambiguation.
+    Variant callers emit ``ID=.`` or positional pseudo-IDs
+    (DeepVariant, DRAGEN, the GIAB GRCh38 benchmark). The stream goes
+    through the shared rsID-less resolution step (``_resolved_variants``:
+    build detection, then ClinVar / identity table / gnomAD), so a wanted
+    rsID matches whether the file named it or a resolver recovered it.
     """
-    from allelix.annotators.gnomad import GnomadAnnotator
-
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
     found: dict[str, Variant] = {}
-    # Pre-resolve wanted → (chrom, pos, ref, alt) → rsid via gnomAD so
-    # the iterator can cover rsID-less VCFs by coord-matching. ``data_dir``
-    # is optional only because tests construct mock parsers without a
-    # configured cache; production CLI invocations always reach
-    # ``resolve_data_dir`` (which defaults to the standard cache
-    # location when the user didn't pass ``--data-dir``). The if-test
-    # below gates only on gnomAD readiness, not on whether the user
-    # explicitly opted in.
-    coord_to_rsid: dict[tuple[str, int, str, str], str] = {}
     try:
-        resolved_data_dir = resolve_data_dir(data_dir)
-    except (OSError, ValueError):
-        resolved_data_dir = None
-    if resolved_data_dir is not None:
-        gnomad = GnomadAnnotator(resolved_data_dir)
-        try:
-            if gnomad.is_ready():
-                coord_map = gnomad.bulk_resolve_coordinates(wanted)
-                for rsid, entries in coord_map.items():
-                    for chrom, pos, ref, alt in entries:
-                        coord_to_rsid[(chrom, pos, ref, alt)] = rsid
-        finally:
-            gnomad.close()
-    try:
-        for variant in parser.parse(file_path):
-            if variant.rsid in wanted:
-                found[variant.rsid] = variant
-                if len(found) == len(wanted):
-                    break
-                continue
-            # rsID fast path missed — try coord match for the rsID-less
-            # VCF case. Requires ref populated; non-VCF parsers (arrays)
-            # don't carry ref but always stamp rsIDs in the file, so
-            # they never reach this branch.
-            if not coord_to_rsid or variant.ref is None:
-                continue
-            matched_rsid: str | None = None
-            for alt in (variant.allele1, variant.allele2):
-                if alt in (NO_CALL_MARKER, variant.ref):
-                    continue
-                key = (variant.chromosome, variant.position, variant.ref, alt)
-                candidate = coord_to_rsid.get(key)
-                if candidate is None or candidate in found or candidate not in wanted:
-                    continue
-                matched_rsid = candidate
-                break
-            if matched_rsid is None:
-                continue
-            variant.original_rsid = variant.rsid
-            variant.rsid = matched_rsid
-            found[matched_rsid] = variant
-            if len(found) == len(wanted):
-                break
+        with _helpers._resolved_variants(parser, file_path, data_dir=data_dir) as resolved:
+            for variant in resolved.variants:
+                if variant.rsid in wanted and variant.rsid not in found:
+                    found[variant.rsid] = variant
+                    if len(found) == len(wanted):
+                        break
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
     return found
@@ -277,7 +237,7 @@ def _try_tabix_extract(
     )
 
 
-def _execute_tabix_extract(  # pragma: no cover
+def _execute_tabix_extract(
     file_path: Path,
     wanted: set[str],
     sample: str | None,
@@ -290,22 +250,21 @@ def _execute_tabix_extract(  # pragma: no cover
     be unit-tested without pysam installed. Returns None on any
     in-execution failure (gnomAD not ready, invalid sample binding,
     etc.) so the caller falls back to sequential scan.
+
+    gnomAD gives each wanted rsID's GRCh38 coordinates, which is where
+    the rows are fetched. The fetched rows then go through the shared
+    rsID-less resolution step: a row matches a wanted rsID
+    when the file names it or a resolver recovers it at that locus. The
+    same rule applies here as in every other command, rather than a
+    separate (ref, alt) comparison.
     """
+    from allelix.annotators._resolution import resolve_batch
+    from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
+    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
     from allelix.parsers.vcf import _open_vcf, _parse_data_line, _read_header
+    from allelix.utils.build_detect import BUILD_GRCH38
 
-    resolved_data_dir = resolve_data_dir(data_dir)
-    gnomad = GnomadAnnotator(resolved_data_dir)
-    try:
-        if not gnomad.is_ready():
-            return None
-        coord_map = gnomad.bulk_resolve_coordinates(wanted)
-    finally:
-        gnomad.close()
-    if not coord_map:
-        return None
-
-    found: dict[str, Variant] = {}
     with _open_vcf(file_path) as handle:
         header = _read_header(handle)
     if not header.samples:
@@ -319,57 +278,76 @@ def _execute_tabix_extract(  # pragma: no cover
     else:
         sample_idx = 0
 
-    tabix_file = pysam.TabixFile(str(file_path))
+    resolved_data_dir = resolve_data_dir(data_dir)
+    clinvar = ClinVarAnnotator(resolved_data_dir)
+    gnomad = GnomadAnnotator(resolved_data_dir)
+    identity = RsidIdentityAnnotator(resolved_data_dir)
+    found: dict[str, Variant] = {}
     try:
-        for rsid, coords in coord_map.items():
-            if rsid in found or not coords:
-                continue
-            for chrom, pos, ref, alt in coords:
-                # gnomAD chromosomes are bare ('1', 'X'); the VCF might
-                # use 'chr1'. Try both.
-                for chrom_candidate in (chrom, f"chr{chrom}"):
-                    try:
-                        rows = list(tabix_file.fetch(chrom_candidate, pos - 1, pos))
-                    except (ValueError, OSError):
-                        continue
-                    for row in rows:
-                        variant = _parse_data_line(row, sample_idx)
-                        if variant is None:
-                            continue
-                        # GH #128: match the tabix-fetched row to the
-                        # gnomAD record by (ref, alt) rather than by
-                        # rsID equality. On rsID-stamped VCFs (e.g. GIAB
-                        # GRCh37, 23andMe) the parser populates
-                        # ``variant.rsid`` with the file's ID column and
-                        # the prior equality check happened to work; on
-                        # rsID-less VCFs (DeepVariant gVCFs, GIAB GRCh38
-                        # benchmark, Sequencing.com DRAGEN output)
-                        # ``variant.rsid`` is a positional pseudo-ID and
-                        # the equality check silently discarded every
-                        # tabix-fetched row. Ref+alt match is correct on
-                        # both — that's what the gnomAD coord was
-                        # resolved against.
-                        if variant.ref == ref and alt in (
-                            variant.allele1,
-                            variant.allele2,
-                        ):
-                            # _parse_data_line already normalizes chromosome;
-                            # no re-normalization needed. Stash + stamp
-                            # so the displayed table shows the requested
-                            # rsID rather than the pseudo-ID, with audit
-                            # preserved per Variant.original_rsid.
-                            if variant.rsid != rsid:
-                                variant.original_rsid = variant.rsid
-                                variant.rsid = rsid
-                            found[rsid] = variant
-                            break
-                    if rsid in found:
+        if not gnomad.is_ready():
+            return None
+        coord_map = gnomad.bulk_resolve_coordinates(wanted)
+        if not coord_map:
+            return None
+        tabix_file = pysam.TabixFile(str(file_path))
+        try:
+            for rsid, coords in coord_map.items():
+                for chrom, pos, _ref, _alt in coords:
+                    hit = _fetch_resolved(
+                        tabix_file,
+                        chrom,
+                        pos,
+                        rsid,
+                        sample_idx,
+                        lambda batch: resolve_batch(
+                            batch, clinvar=clinvar, gnomad=gnomad, identity=identity
+                        ),
+                        parse_row=_parse_data_line,
+                        build=BUILD_GRCH38,
+                    )
+                    if hit is not None:
+                        found[rsid] = hit
                         break
-                if rsid in found:
-                    break
+        finally:
+            tabix_file.close()
     finally:
-        tabix_file.close()
+        for source in (clinvar, gnomad, identity):
+            source.close()
     return found
+
+
+def _fetch_resolved(
+    tabix_file: Any,  # noqa: ANN401 — pysam.TabixFile, no type stubs
+    chrom: str,
+    pos: int,
+    rsid: str,
+    sample_idx: int,
+    resolve: Callable[[list[Variant]], None],
+    *,
+    parse_row: Callable[[str, int], Variant | None],
+    build: str,
+) -> Variant | None:
+    """The row at ``chrom:pos`` that is ``rsid`` after resolution, or None.
+
+    gnomAD chromosomes are bare (``1``, ``X``); the VCF may use ``chr1``,
+    so both spellings are tried. Fetched rows take ``build`` (the
+    coordinates' build) before resolution.
+    """
+    for chrom_candidate in (chrom, f"chr{chrom}"):
+        try:
+            rows = list(tabix_file.fetch(chrom_candidate, pos - 1, pos))
+        except (ValueError, OSError):
+            continue
+        variants = [
+            replace(v, build=build)
+            for v in (parse_row(row, sample_idx) for row in rows)
+            if v is not None and v.position == pos
+        ]
+        resolve(variants)
+        for variant in variants:
+            if variant.rsid == rsid:
+                return variant
+    return None
 
 
 def _maybe_print_vcf_index_hint(file_path: Path) -> None:
@@ -547,11 +525,16 @@ def export_plink_cmd(
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     prefix = output_prefix if output_prefix else file_path.with_suffix("")
     build_override = _helpers._normalize_cli_build(build)
-    metadata = parser.get_metadata(file_path)
-    effective_build = build_override or metadata.get("build", "GRCh37")
     resolved = resolve_data_dir(data_dir)
 
-    variants = list(parser.parse(file_path))
+    # rsID-less records (VCF ID=.) are resolved to rsIDs before
+    # the rsID-keyed gnomAD ref/alt lookup below, so they get proper A1/A2
+    # coding instead of exporting as monomorphic.
+    with _helpers._resolved_variants(
+        parser, file_path, data_dir=resolved, build_override=build_override
+    ) as resolved_stream:
+        variants = list(resolved_stream.variants)
+    effective_build = variants[0].build if variants else (build_override or "GRCh37")
 
     # Sort by chromosome then position so the .bim has contiguous
     # chromosome blocks — PLINK1.9 rejects split chromosomes.

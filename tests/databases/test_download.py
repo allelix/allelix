@@ -86,7 +86,7 @@ class TestDownload:
 class _TruncatingHandler(http.server.BaseHTTPRequestHandler):
     """Lies about Content-Length to simulate a truncated upstream.
 
-    #79 missing-branch coverage: the canonical _CapturingHandler always
+    missing-branch coverage: the canonical _CapturingHandler always
     matches header bytes to delivered bytes, so the size-mismatch check
     at databases/manager.py:117-124 never fires under tests. This handler
     advertises a longer payload than it actually delivers — exercising
@@ -123,7 +123,7 @@ def truncating_server():
 
 
 class TestDownloadTruncation:
-    """#79 missing-branch coverage: server lies about Content-Length, the
+    """Missing-branch coverage: server lies about Content-Length, the
     download function must detect the size mismatch and refuse the cache."""
 
     def test_truncated_response_raises_download_truncated(

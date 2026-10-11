@@ -4,6 +4,246 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chip reports no longer show reference-allele records as findings.**
+  ClinVar publishes records that describe the reference allele itself
+  (written with `=`, for example `c.1601=`). On array input these were
+  matched by rsID, so a person homozygous for the normal allele could be
+  shown a "Pathogenic" ClinVar row whose allele was the reference base,
+  for example at F5 or BRCA1. Such records are now never reported. To
+  check an existing JSON report, re-run the same raw file with this
+  release and compare: `allelix analyze RAW_FILE --diff OLD_REPORT.json`.
+  ClinVar rows listed as removed whose ClinVar allele page is titled
+  with `=` were affected. Other removals in that diff can come from
+  database updates since the old report.
+
+- **gVCF and other VCFs without rsIDs no longer drop ClinVar findings.**
+  When a VCF record had no rsID, a ClinVar variant with several
+  submissions for the same allele, or a call carrying two different
+  non-reference alleles, could be skipped silently, while the same
+  genotype on a genotyping chip was reported. This mainly affected runs
+  without the gnomAD cache. ClinVar findings are now selected by
+  chromosome, position, reference allele and alternate allele on every
+  input type, never by rsID alone. The same genotype now produces the
+  same ClinVar findings from a chip file and from a gVCF. Chip probes
+  that carry a vendor ID instead of an rsID (such as 23andMe `i`
+  probes) are never matched by position, because the strand their
+  alleles are reported on is unknown. A chip rsID that ClinVar records at a different position is
+  never given the record of another variant that shares its position.
+
+- **ClinVar no longer matches by rsID at a different position.** When a
+  file's positions disagreed with the genome build in use (for example
+  a forced `--build`), a ClinVar row could still be attached by rsID.
+  Rows must now match the variant's position in the build-specific
+  ClinVar data.
+
+- **VCF rows the variant caller rejected were reported as findings.**
+  Allelix ignored the VCF FILTER column. A row the caller had marked as
+  unreliable (for example `LowQual`, or a VQSR tranche in a filtered
+  whole-genome VCF) was annotated and reported exactly like a passing
+  call, and the annotated VCF output added Allelix fields to it. Such
+  rows are now skipped by default and counted by filter name in the
+  report, so you can see how many were left out. `--keep-filtered`
+  includes them again; the annotated VCF then marks each one with
+  `ALLELIX_FILTER`. A filtered row never receives Allelix fields
+  otherwise. Genotype quality is now read as well: a call with GQ below
+  20 (set with `--min-gq`), or with no reads, is reported as a no-call
+  instead of as a genotype. JSON reports record these counts in
+  `input.vcf_quality`.
+
+- **MyHeritage and Family Tree DNA files re-saved through a spreadsheet
+  are recognised again.** Opening an export in a spreadsheet and saving
+  it pads every row with trailing commas. It can also leave an empty
+  first row that pushes the "MyHeritage" line down, and remove the `#`
+  from comment lines. Such files were not recognised, or their padded
+  rows were skipped. They are now detected and parsed, including
+  tab-delimited "save as text" copies. A genotype row with an empty
+  genotype is still read as a no-call.
+
+- **VCF files with only structural-variant or copy-number records now
+  fail with a clear message.** Sequencing.com delivers a 30x genome as
+  three VCF files. Two of them (`sv` and `cnv`) contain only records
+  Allelix does not annotate, and analyzing either one used to finish
+  with an empty report and no explanation. `allelix analyze` now stops
+  and names the file to use instead (`snp-indel.genome.vcf.gz`).
+  Structural-variant records in any VCF are counted in the report (JSON
+  `input.vcf_quality.symbolic_rows`). Breakend records are no longer
+  read as alleles.
+
+- **`stats`, `extract` and `export plink` now recover rsIDs for VCF files
+  without them.** Variant callers usually leave the VCF ID column empty.
+  `analyze` recovered the rsIDs from position, but the other commands
+  did not. As a result, `stats` missed high-value warnings, and `export
+  plink` wrote every such variant without its reference and alternate
+  allele. All four commands now use the same recovery step and the same
+  installed databases. `stats` also reports high-value no-calls in a VCF
+  the way `analyze` does, and gains a `--data-dir` option.
+
+- **Genome build detection now works on VCF files without rsIDs.** Build
+  detection looked for a set of well-known SNPs by rsID only, so it had
+  no position evidence on variant-caller output with an empty ID column.
+  A record at one of those SNPs' positions now counts as well. This
+  matters most for GRCh37 files with `chr`-prefixed chromosome names,
+  which were otherwise assumed to be GRCh38.
+
+- **gVCF positions with no reads were treated as reference, and
+  high-value no-calls were never listed for VCF input.** A gVCF reference
+  block with no reads, or with low genotype quality, says nothing about
+  the genotype. Allelix read it as a confident reference call. A block
+  below the genotype-quality floor (`--min-gq`, default 20) or with no
+  reads now makes the high-value positions it covers no-calls. So does a
+  gVCF position that no record covers at all. The high-value no-call list
+  is now filled in for VCF input, and each entry says why: for example a
+  low-quality block, no coverage, a filtered row or a low-quality call. A
+  plain VCF (without reference blocks) cannot tell reference from
+  missing, so a high-value position without a record there is reported as
+  unknown rather than listed. JSON reports record whether the input was a
+  gVCF in `input.gvcf`.
+
+- **VCF spanning-deletion alleles are no longer read as real alleles.**
+  VCF 4.3 writes `*` for a base removed by a deletion on the other copy of
+  the chromosome. Allelix treated it as an ordinary allele, so a report
+  could show a genotype like `A/*` and `export plink` could write `*` into
+  the `.bim` file. `*` is now handled like other symbolic alleles: a call
+  that includes it is skipped and the character never appears in a
+  genotype. Calls with `*` on one copy are counted, and the report says
+  how many were not assessed. `export plink` also skips any allele that is not A, C, G or
+  T, such as the `I`/`D` indel codes some genotyping chips use.
+
+- **`allelix db update` now exits with an error when a database fails to
+  install.** A failed download or refresh was reported on screen but the
+  command still exited successfully, so scripts and scheduled jobs could
+  not notice it. The remaining databases are still attempted, the failed
+  ones are listed at the end, and the exit status is 1.
+
+- **ClinPGx no longer reports false matches at palindromic SNP sites.**
+  When matching a user's genotype to a pharmacogenomic source genotype,
+  Allelix tries the complement strand if the direct alleles do not match.
+  At palindromic sites — where the forward and reverse strands are
+  indistinguishable (A↔T or C↔G pairs) — this step could produce a
+  spurious match. The guard that was meant to prevent it did not account
+  for multi-allelic sites or for the reference allele. Such sites are now
+  detected and complement matching is suppressed at them; direct matches
+  still work. A report affected by this issue shows a ClinPGx genotype
+  the person does not carry — for example GG where the true call is CC.
+  To check an existing report, re-run the same raw file with this release
+  and compare: `allelix analyze RAW_FILE --diff OLD_REPORT.json`. A
+  ClinPGx row listed as removed whose genotype is the complement of the
+  retained row was affected. The same issue affected VCF and gVCF input
+  in earlier releases wherever the reference allele was available.
+
+### Added
+
+- **Population frequency, missense and deleteriousness scores for GRCh37
+  chip files.** A new pre-built table, derived from dbSNP, records where
+  each rsID that Allelix can report sits on both GRCh37 and GRCh38 and how
+  its alleles correspond. With it, a GRCh37 genotype (every major consumer
+  chip format) is translated to the matching GRCh38 allele and receives
+  gnomAD, AlphaMissense and CADD values again. Where the reference strand
+  was flipped between assemblies the translation is explicit. Sites whose
+  strand cannot be told from sequence (A/T, C/G, or sites where all four
+  bases are known alleles) receive no values rather than a guess. The
+  same table supplies the reference allele for chip data on both builds,
+  so strand-aware matching now works on GRCh37 chips. It also recovers
+  rsIDs for VCF files without rsIDs on GRCh37 as well as GRCh38. It is downloaded by `allelix db update`. Without it,
+  GRCh37 analyses behave as before.
+
+- **Plausibility flag for genotype calls.** Each finding is now compared
+  with how common the allele is in gnomAD. A homozygous call for an allele
+  rarer than 0.01% is marked *implausible*: two copies of an allele that
+  rare are usually a genotyping error. A heterozygous call for an allele
+  that gnomAD lists with no carriers is marked *suspicious*. Flagged rows
+  are never hidden. The HTML report shows a warning icon next to the
+  genotype with the reason, and the terminal table marks the genotype.
+  Both thresholds can be changed with
+  `allelix config set plausibility.homozygous_max_af` and
+  `plausibility.heterozygous_max_af`. Calls without a gnomAD frequency are
+  not assessed. Neither are homozygous X calls (a male's single X reads as
+  homozygous) or Y and mitochondrial calls.
+
+- **MyHeritage low-pass whole-genome exports are labelled as imputed.**
+  MyHeritage kits processed from January 2026 are sequenced at about 2x
+  coverage, and most genotypes are filled in by imputation, which is
+  least reliable for rare variants. Allelix now reads the file's
+  `##method` line and states the provenance in every report: "low-pass
+  whole genome sequencing (about 2x coverage); genotypes are imputed",
+  with advice to confirm any finding by direct genotyping. The HTML
+  report's array caveat is replaced by an imputation caveat for these
+  files. JSON reports carry it as `input.method`. The file's
+  `##reference=build37` line is now used as the header build.
+
+### Changed
+
+- **JSON report schema version 7.** Every annotation carries a
+  `plausibility` field: `plausible`, `suspicious`, `implausible`, or empty
+  when not assessed. The `input` block gains `gvcf` and `vcf_quality`
+  (rows excluded by the caller's filters, calls demoted for low genotype
+  quality, and spanning-deletion calls not assessed; `null` for non-VCF
+  input), and each `high_value_no_calls` entry gains a `reason`. The
+  `input` block also gains `method`, the genotyping method a file
+  declares (`null` when none). `--diff`
+  accepts reports from earlier schema versions as before.
+
+- **Annotated VCF output schema 0.2.0.** Rows the variant caller rejected
+  are copied unchanged without Allelix fields. With `--keep-filtered`
+  they are annotated and carry the new `ALLELIX_FILTER` field.
+
+- **Every enrichment lookup is made by position and allele.** gnomAD,
+  AlphaMissense and CADD values are looked up at the variant's GRCh38
+  chromosome, position, reference and alternate allele, never by rsID.
+  A GWAS association without a reported risk allele now shows the values
+  for the single non-reference allele the person carries, and none when
+  they carry two.
+
+### Documentation
+
+- **Documentation no longer references private-repo issue and PR numbers.**
+  README, CONTRIBUTING and FULL_TEST_PROTOCOL previously cited internal
+  tracker numbers that resolve to nothing on the public repository. They
+  have been removed; database sizes have been updated to match current
+  builds.
+
+- New per-provider format guide: Sequencing.com's three deliverables
+  and which one to use, MyHeritage's array and low-pass sequencing
+  exports, and MyHappyGenes' build label.
+
+- New architecture decision record: rsID recovery for rsID-less input
+  is one shared step used by every command, and build detection matches
+  well-known SNPs by position when the rsID is missing.
+
+- New architecture decision record for the VCF quality gate: how
+  caller filters, genotype quality, low-quality reference blocks and
+  spanning deletions are handled, and how high-value positions are
+  classified on gVCF and plain VCF input.
+
+- New architecture decision record for the plausibility flag: which calls
+  are assessed, the default thresholds, and why a missing gnomAD
+  frequency is never treated as zero.
+
+- New architecture decision record for the cross-build rsID identity
+  table and position-keyed enrichment.
+
+- New architecture decision record: ClinVar rows are identified by
+  locus and alleles, and every annotation is checked at construction
+  never to name an allele the person does not carry, and (for ClinVar,
+  ClinPGx and SNPedia) never to name the reference allele. The GWAS
+  Catalog allele is documented as the study's effect allele, which can
+  be the reference allele.
+
+### Infrastructure
+
+- **Chip / gVCF parity harness.** A new test suite writes the same
+  synthetic genotypes at the same positions as a consumer-array file
+  and as an rsID-less GRCh38 gVCF, runs both through the analysis
+  pipeline against the same ClinVar data (with and without gnomAD
+  installed), and requires identical annotations: same alleles,
+  significance, magnitude and frequency. Each case is also checked
+  against the ClinVar rows the genotype actually carries, so two
+  paths that agree on an empty result cannot pass. Disagreements on
+  the current code are recorded as expected failures that the
+  corresponding fix must remove.
+
 ## [2.3.1] - 2026-07-31
 
 ### Fixed
@@ -1754,14 +1994,14 @@ vocabulary drift.
 ## [1.3.0]
 
 ### Added
-- **gnomAD population allele frequencies (R-6).** New `GnomadAnnotator`
+- **gnomAD population allele frequencies.** New `GnomadAnnotator`
   enriches report annotations with population frequency context from
   gnomAD v4.1 exomes (~16M rsIDs). Pre-built cache downloaded from
   HuggingFace via `db update`. Frequency column appears in terminal,
   HTML, and JSON reports when gnomAD data is available. `--no-gnomad`
   flag on `analyze`, `methylation`, `pharmacogenomics`, and `db update`
   to skip.
-- **CPIC fallback for PharmGKB (R-5).** `db update` succeeds when the
+- **CPIC fallback for PharmGKB.** `db update` succeeds when the
   CPIC API is unreachable — PharmGKB downloads complete and the
   non-finding filter degrades gracefully. Signal carries
   `cpic:unavailable` so recovery auto-triggers a refresh.
@@ -1907,10 +2147,10 @@ vocabulary drift.
   header comments. CLI emits warning that GRCh36 positions won't match modern
   references.
 - **`BUILD_GRCH36`** constant in `build_detect.py`.
-- **Build mismatch warning in HTML report** (R-9). When the file header claims
+- **Build mismatch warning in HTML report**. When the file header claims
   a different build than position data indicates, the HTML report renders a
   visible warning banner matching the CLI warning.
-- **"Reading This Report" education section** (R-7). Static HTML block after
+- **"Reading This Report" education section**. Static HTML block after
   the regulatory notice covering pseudogene cross-hybridization, ClinVar
   aggregation, carrier vs. affected, and confirmatory testing.
 - **Signal guard on all annotator `setup()` methods.** ClinVar, PharmGKB, and

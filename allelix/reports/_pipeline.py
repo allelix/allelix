@@ -15,21 +15,26 @@ override) before annotators see the variant.
 from __future__ import annotations
 
 import contextlib
-import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from allelix.annotators._resolution import resolve_batch
 from allelix.utils.build_detect import (
     BUILD_GRCH36,
     BUILD_GRCH37,
     BUILD_GRCH38,
-    KNOWN_SNP_POSITIONS,
     detect_build,
+    known_snp_seed,
     normalize_build_label,
+)
+from allelix.utils.plausibility import (
+    DEFAULT_THRESHOLDS,
+    PlausibilityThresholds,
+    classify,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from allelix.annotators.alphamissense import AlphaMissenseAnnotator
@@ -37,8 +42,10 @@ if TYPE_CHECKING:
     from allelix.annotators.cadd import CaddAnnotator
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
+    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
     from allelix.models import Annotation, Variant
-    from allelix.parsers.base import GenotypeParser
+    from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+    from allelix.parsers.vcf import Locus, LocusState, VcfParser, VcfQualityStats
     from allelix.reports.vcf import VcfWriteInputs
 
 
@@ -77,7 +84,7 @@ class BuildDiagnostics:
     `mismatch` is True when header_build and detected_build disagree
     AND no override was supplied. The CLI surfaces this as a warning.
 
-    `chr_prefix_inferred` (GH #38): True when the effective build was
+    `chr_prefix_inferred`: True when the effective build was
     picked using the ``chr``-prefixed contig heuristic (GRCh38
     convention). False whenever rsID detection or an explicit header
     build chose the answer, or when no chr-prefix signal was seen.
@@ -109,7 +116,7 @@ class BuildDiagnostics:
 
 
 class PanelCoverage(TypedDict):
-    """GH #75: shape returned by AnalysisResult.panel_coverage().
+    """shape returned by AnalysisResult.panel_coverage().
 
     Same shape lands in the JSON report under ``panel_coverage`` and
     drives the HTML Panel Coverage section.
@@ -136,7 +143,7 @@ class AnalysisResult:
     annotations: list[Annotation] = field(default_factory=list)
     build_diagnostics: BuildDiagnostics | None = None
     hv_variants: list[Variant] = field(default_factory=list)
-    # GH #75: when --filter-file supplies a rsid panel, the pipeline
+    # when --filter-file supplies a rsid panel, the pipeline
     # records which panel rsIDs the input file actually carries so
     # reporters can surface coverage (state 2: genotyped but no
     # annotations; state 3: not on the user's chip). Both None when
@@ -145,36 +152,48 @@ class AnalysisResult:
     panel_rsids: frozenset[str] | None = None
     genotyped_panel_rsids: frozenset[str] | None = None
     panel_annotated_rsids: frozenset[str] | None = None
-    # GH #120: per-rsID genotype string (e.g. "C/T", "A/-", "-/-")
+    # per-rsID genotype string (e.g. "C/T", "A/-", "-/-")
     # for each panel rsID present in the input file. Populated only
     # when --filter-file supplied a panel. None on default analyze
     # runs (zero behavior change on the default path). The HTML
     # Panel coverage section renders this in a GT column; JSON shape
     # stays v6 untouched — display-only addition. The genotype-aware
-    # MECE redesign that lands this in JSON + terminal is #115 (v2.3).
+    # MECE redesign that lands this in JSON + terminal is planned for v2.3.
     panel_genotypes: dict[str, str] | None = None
-    # GH #90: variants reaching the annotator phase with ref=None.
+    # variants reaching the annotator phase with ref=None.
     # Used by the CLI to surface the strand-aware-matching-inactive
     # info line once per run for array inputs.
     no_ref_variant_count: int = 0
-    # GH #91: variants reaching the annotator phase whose rsID isn't
-    # an "rs..." string (variant-caller VCFs emit ID=. — see GH #8).
+    # variants reaching the annotator phase whose rsID isn't
+    # an "rs..." string (variant-caller VCFs emit ID=. — see the rsID-less resolution step).
     # Used by the CLI to surface the GRCh38 rsID-less undercount
-    # warning until #62's dbSNP resolution lands.
+    # warning until the dbSNP resolution lands.
     rsidless_variant_count: int = 0
-    # #150: pipeline-produced inputs for the annotated VCF writer.
+    # pipeline-produced inputs for the annotated VCF writer.
     # Populated only when ``run_analysis`` is called with
     # ``collect_vcf_write_inputs=True`` — the ``--vcf-out`` code path.
     # None on every other analyze run (zero memory / CPU overhead on the
     # default path). Consumed by ``allelix.reports.vcf.render_vcf``.
     vcf_write_inputs: VcfWriteInputs | None = None
+    # what the VCF quality gate did (caller-filtered rows skipped or
+    # kept, low-GQ calls turned into no-calls). None for non-VCF input.
+    vcf_quality: VcfQualityStats | None = None
+    # How the input's genotypes were produced, when the file declares it
+    # (GenotypeMetadata ``method``, e.g. "low-pass-wgs-imputed" for
+    # MyHeritage low-pass WGS). Empty when not declared.
+    input_method: str = ""
+    # per high-value rsID, what a VCF says at its position on the
+    # effective build: (called | reference | no_call, reason). A gVCF
+    # position no record covers is (no_call, no_coverage). Absent rsIDs
+    # are unknown (plain VCF, or no placement). None for non-VCF input.
+    high_value_vcf_states: dict[str, LocusState] | None = None
 
     def panel_coverage(
         self, filtered_annotations: list[Annotation] | None = None
     ) -> PanelCoverage | None:
         """Return panel-coverage info when a rsid panel was supplied.
 
-        States, per GH #75:
+        States,
 
         - **state 1** (genotyped + has annotations): rsid is in
           ``genotyped_panel_rsids`` AND ``panel_annotated_rsids``;
@@ -199,7 +218,7 @@ class AnalysisResult:
         separately surfaced by the ``hv_warnings`` path in the CLI;
         readers should not interpret ``found`` as "called."
 
-        GH #106 (v2.2.1 patch): when ``filtered_annotations`` is
+        (v2.2.1 patch): when ``filtered_annotations`` is
         supplied — the post-magnitude-filter list each renderer
         already produces for the main annotation table — the
         "annotated" set is derived from THAT list, not from
@@ -216,14 +235,14 @@ class AnalysisResult:
 
         The redesign (genotype-aware MECE 4-state with `no_call`
         distinct from `typed_no_annotation`, schema 6→7) lands in
-        v2.3 (#115).
+        v2.3.
         """
         if self.panel_rsids is None:
             return None
         genotyped = self.genotyped_panel_rsids or frozenset()
         panel_rsids = self.panel_rsids
         if filtered_annotations is not None:
-            # GH #106 patch: "annotated" is the set of panel rsIDs that
+            # patch: "annotated" is the set of panel rsIDs that
             # actually got rendered — derived from the post-filter
             # annotation list the renderer passes in. Sub-floor-only
             # panel rsids drop out of `annotated`, so they fall into
@@ -238,7 +257,7 @@ class AnalysisResult:
             # filtered list. `annotated` stays the raw pre-filter set,
             # reproducing the v6.0 behavior (sub-floor panel rsids
             # land in `found` and vanish from every rendered surface —
-            # the limbo bug the #106 patch retires when the filtered
+            # the limbo bug the fix retires when the filtered
             # list IS supplied).
             annotated = self.panel_annotated_rsids or frozenset()
         missing = sorted(panel_rsids - genotyped)
@@ -304,7 +323,7 @@ class AnalysisResult:
         return out
 
 
-# ADR-0035 PR 3 closed the GH #24 structural-half: GWAS rollup now reads
+# ADR-0035 PR 3 closed the structural-half: GWAS rollup now reads
 # trait / phecode / p_value from structured Annotation fields instead of
 # regex-parsing the rendered ``description`` prose. The previous
 # ``_gwas_base_trait`` / ``_gwas_phecode_parent`` / ``_gwas_p_value`` helpers
@@ -369,75 +388,166 @@ def rollup_gwas_duplicates(annotations: list[Annotation]) -> list[Annotation]:
     return survivors
 
 
-def _lookup_user_allele(
-    user_alt: str,
-    coords: list[tuple[str, int, str, str]],
-    scores: dict[tuple[str, int, str, str], float],
-) -> float | None:
-    """Find the CADD score for a specific user allele at a multi-allelic site.
+_IDENTITY_BUILDS: frozenset[str] = frozenset({BUILD_GRCH37, BUILD_GRCH38})
 
-    GH #18: only direct allele matches are accepted. The previous
-    minus-strand fallback (``resolve_strand`` → complement match) could
-    coincidentally hit a different alt at multi-allelic positions and
-    stamp a wrong-allele CADD score. Until strand handling is properly
-    plumbed (ADR-0010), enrichment is skipped rather than risked.
+EnrichmentKey = tuple[str, int, str, str]
+
+
+def watch_high_value(
+    parser: GenotypeParser,
+    hv_set: set[str],
+    identity: RsidIdentityAnnotator | None,
+) -> dict[str, dict[str, Locus]] | None:
+    """Ask a VCF parser to record what the file says at high-value sites.
+
+    Positions come from the identity table on both builds (the effective
+    build is not known until streaming ends); rsIDs are watched directly
+    as well. Returns the placements, or None when nothing is watched
+    (non-VCF input or no high-value list).
     """
-    for chrom, pos, ref, alt in coords:
-        if user_alt == alt:
-            return scores.get((chrom, pos, ref, alt))
-    return None
+    from allelix.parsers.vcf import VcfParser
+
+    if not hv_set or not isinstance(parser, VcfParser):
+        return None
+    placements: dict[str, dict[str, Locus]] = {}
+    if identity is not None and identity.is_ready():
+        placements = identity.loci_of_rsids(hv_set)
+    parser.watch({locus for p in placements.values() for locus in p.values()}, hv_set)
+    return placements
 
 
-def _enrich_cadd(
-    annotations: list[Annotation],
-    gnomad: GnomadAnnotator,
-    cadd: CaddAnnotator,
-    resolved_coords: dict[str, tuple[str, int, str, str]] | None = None,
+def high_value_states(
+    stats: VcfQualityStats | None,
+    placements: dict[str, dict[str, Locus]] | None,
+    hv_set: set[str],
+    build: str,
+) -> dict[str, LocusState] | None:
+    """Each high-value rsID's state on the effective build, from the watch results.
+
+    A record carrying the rsID and a record covering its position both
+    count; the stronger state wins. On a gVCF, a placed rsID that no
+    record covers is a no-call (``no_coverage``). On a plain VCF it is
+    unknown and left out.
+    """
+    from allelix.parsers.vcf import NO_CALL, REASON_NO_COVERAGE, strongest_state
+
+    if stats is None or placements is None:
+        return None
+    states: dict[str, LocusState] = {}
+    for rsid in hv_set:
+        locus = placements.get(rsid, {}).get(build)
+        state = stats.rsid_states.get(rsid)
+        if locus is not None:
+            state = strongest_state(state, stats.locus_states.get(locus))
+        if state is None and locus is not None and stats.is_gvcf:
+            state = (NO_CALL, REASON_NO_COVERAGE)
+        if state is not None:
+            states[rsid] = state
+    return states
+
+
+def _enrichment_allele(a: Annotation) -> str | None:
+    """The non-reference allele an annotation's enrichment describes, or None.
+
+    The annotation's ``alt``; when it has none (a GWAS row with no reported
+    risk allele), the user's single carried non-reference allele. None when
+    the locus or its REF is unknown, when there is no such allele or more
+    than one, or when the allele is the reference.
+    """
+    if a.locus is None or a.locus_ref is None:
+        return None
+    allele = a.alt
+    if not allele:
+        carried = {x for x in a.carried_alleles if x != a.locus_ref}
+        if len(carried) != 1:
+            return None
+        allele = carried.pop()
+    if allele == a.locus_ref:
+        return None
+    return allele
+
+
+def _flag_plausibility(
+    keyed: list[tuple[Annotation, EnrichmentKey]],
+    thresholds: PlausibilityThresholds,
 ) -> None:
-    """Stamp annotations with CADD PHRED scores via coordinate resolution.
+    """Stamp each enriched annotation's plausibility (ADR-0041).
 
-    Resolves rsIDs to genomic coordinates through gnomAD, normalizes
-    alleles to reference-forward orientation, and looks up CADD scores.
-
-    GH #23 suppress-half: annotations without an explicit ``alt`` (raw
-    GWAS rows) previously took a ``MAX(phred)`` fallback across every
-    alt at the position — at multi-allelic sites that stamped the
-    highest-CADD alt's score next to the annotation as if it described
-    the user's variant. The MAX fallback is removed.
-
-    ``resolved_coords`` (when supplied) carries the user's specific alt
-    for rsIDs that the pipeline resolved on the fly via ClinVar's
-    ``bulk_resolve_rsids`` (GH #8). That path is allele-specific —
-    safe to fire for alt-less Annotation rows — and gives back the
-    legitimate CADD enrichment that the MAX-fallback removal would
-    otherwise lose for these rows. Symmetric with the gnomAD / AM
-    position-fallback blocks in ``run_analysis``.
+    Runs after gnomAD has stamped ``allele_frequency``. The copy count is
+    of the same allele the frequency describes, counted in the user's
+    alleles in the annotation's orientation.
     """
-    rsids = {a.rsid for a in annotations}
-    coord_map = gnomad.bulk_resolve_coordinates(rsids)
-    if not coord_map and not resolved_coords:
-        return
+    for a, _key in keyed:
+        allele = _enrichment_allele(a)
+        if allele is None or a.locus is None:
+            continue
+        a.plausibility = classify(
+            a.allele_frequency, a.carried_alleles.count(allele), a.locus[0], thresholds
+        )
 
-    cadd_keys: set[tuple[str, int, str, str]] = set()
-    for coords in coord_map.values():
-        for chrom, pos, ref, alt in coords:
-            cadd_keys.add((chrom, pos, ref, alt))
-    if resolved_coords:
-        cadd_keys.update(resolved_coords.values())
-    scores = cadd.bulk_lookup(cadd_keys)
-    if not scores:
-        return
 
+def _enrichment_keys(
+    annotations: list[Annotation],
+    build: str,
+    identity: RsidIdentityAnnotator | None,
+) -> list[tuple[Annotation, EnrichmentKey]]:
+    """Pair each annotation with the GRCh38 key its enrichment is looked up by.
+
+    The input-build key is ``(locus chrom, locus pos, locus_ref, allele)``.
+    The allele is the annotation's ``alt``; an annotation without one (a
+    GWAS row with no reported risk allele) uses the user's single carried
+    non-reference allele, as the rsID-less position fallback always did,
+    and gets no key when there is none or more than one. An allele equal
+    to the reference has no variant to look up. GRCh38 keys are used as
+    they are; GRCh37 keys go through the identity table; any other build
+    gets no keys.
+    """
+    keyed: list[tuple[Annotation, EnrichmentKey]] = []
     for a in annotations:
-        if a.alt:
-            ann_coords = coord_map.get(a.rsid)
-            if ann_coords:
-                a.cadd_phred = _lookup_user_allele(a.alt, ann_coords, scores)
-        elif resolved_coords and a.rsid in resolved_coords:
-            # Position fallback: rsID was resolved on the fly via
-            # ClinVar; the resolved tuple carries the user's actual
-            # alt, so this is an allele-specific lookup, not a MAX.
-            a.cadd_phred = scores.get(resolved_coords[a.rsid])
+        allele = _enrichment_allele(a)
+        if allele is None or a.locus is None or a.locus_ref is None:
+            continue
+        keyed.append((a, (a.locus[0], a.locus[1], a.locus_ref, allele)))
+    if build == BUILD_GRCH38:
+        return keyed
+    if build == BUILD_GRCH37 and identity is not None and identity.is_ready():
+        translated = identity.translate_to_grch38({key for _a, key in keyed})
+        return [(a, translated[key]) for a, key in keyed if key in translated]
+    return []
+
+
+def _enrich(
+    keyed: list[tuple[Annotation, EnrichmentKey]],
+    gnomad: GnomadAnnotator | None,
+    alphamissense: AlphaMissenseAnnotator | None,
+    cadd: CaddAnnotator | None,
+) -> list[Annotator]:
+    """Stamp gnomAD AF, AlphaMissense and CADD by GRCh38 key.
+
+    Returns the enrichment sources that were queried, for provenance.
+    """
+    used: list[Annotator] = []
+    if not keyed:
+        return used
+    keys = {key for _a, key in keyed}
+    if gnomad is not None and gnomad.is_ready():
+        used.append(gnomad)
+        freqs = gnomad.bulk_lookup_by_position(keys)
+        for a, key in keyed:
+            a.allele_frequency = freqs.get(key)
+    if alphamissense is not None and alphamissense.is_ready():
+        used.append(alphamissense)
+        scores = alphamissense.bulk_lookup_by_position(keys)
+        for a, key in keyed:
+            hit = scores.get(key)
+            if hit is not None:
+                a.am_pathogenicity, a.am_class = hit
+    if cadd is not None and cadd.is_ready():
+        used.append(cadd)
+        phreds = cadd.bulk_lookup(keys)
+        for a, key in keyed:
+            a.cadd_phred = phreds.get(key)
+    return used
 
 
 def run_analysis(
@@ -450,6 +560,8 @@ def run_analysis(
     gnomad: GnomadAnnotator | None = None,
     alphamissense: AlphaMissenseAnnotator | None = None,
     cadd: CaddAnnotator | None = None,
+    identity: RsidIdentityAnnotator | None = None,
+    plausibility: PlausibilityThresholds = DEFAULT_THRESHOLDS,
     high_value_rsids: set[str] | None = None,
     panel_rsids: frozenset[str] | None = None,
     collect_vcf_write_inputs: bool = False,
@@ -481,6 +593,10 @@ def run_analysis(
     phase ends; those annotators already do bulk lookups against the
     collected annotation set.
 
+    `plausibility` holds the allele-frequency cut-offs for the
+    zygosity x gnomAD plausibility flag (ADR-0041), applied after gnomAD
+    enrichment.
+
     `build_override` short-circuits build detection: every variant
     gets that build and the position-data detector is skipped.
 
@@ -489,7 +605,7 @@ def run_analysis(
     """
     metadata = parser.get_metadata(file_path)
     header_build = normalize_build_label(metadata.get("build"))
-    # GH #38: chr-prefix on contigs is the strongest remaining heuristic
+    # chr-prefix on contigs is the strongest remaining heuristic
     # for the increasingly common case of rsID-less VCFs from modern
     # callers (DeepVariant / DRAGEN / GATK HC) that also lack
     # ``##contig assembly=`` tags. GRCh38 conventionally uses
@@ -501,21 +617,21 @@ def run_analysis(
     annotations: list[Annotation] = []
     hv_variants: list[Variant] = []
     hv_set: set[str] = high_value_rsids or set()
-    # GH #75: rsIDs the input file actually carries that are in the
+    # rsIDs the input file actually carries that are in the
     # supplied panel. Only collected when ``panel_rsids`` is non-empty
     # (so a normal analyze run has zero overhead). Filtered at insert
     # so a 600k-variant input contributes ~panel-size memory, not
     # 600k rsids.
     genotyped_panel: set[str] = set()
-    # GH #120: per-rsID genotype for panel members. First-occurrence
+    # per-rsID genotype for panel members. First-occurrence
     # wins (a 23andMe-style chip emits one row per rsID anyway; multi-
     # row input formats keep the earliest reading). HTML-only surface
-    # in v2.2.1; #115 carries the JSON + terminal addition in v2.3.
+    # in v2.2.1; JSON + terminal addition planned for v2.3.
     panel_genotypes_map: dict[str, str] = {}
-    # GH #90 / #91: per-run diagnostic totals for ref-None and
+    # Per-run diagnostic totals for ref-None and
     # rsidless variants reaching the annotator phase. Used by the CLI
-    # to emit the "strand-aware inactive" info line (#90) and the
-    # "GRCh38 rsID-less undercount" warning (#91).
+    # to emit the "strand-aware inactive" info line and the
+    # "GRCh38 rsID-less undercount" warning.
     no_ref_total = 0
     rsidless_total = 0
     total = 0
@@ -525,11 +641,11 @@ def run_analysis(
         chr_prefix_observed=chr_prefix_observed,
     )
     # Coords for rsIDs the pipeline resolved on the fly (real-world VCFs from
-    # variant callers emit ID=. — see GH #8). Lets the enrichment phase fall
+    # variant callers emit ID=. — see ). Lets the enrichment phase fall
     # back to position-keyed gnomAD / AlphaMissense lookups for resolved
     # rsIDs that don't appear in those caches' rsid index.
     resolved_coords: dict[str, tuple[str, int, str, str]] = {}
-    # #150: annotation dict keyed by (chrom, pos, ref, alt) for the
+    # annotation dict keyed by (chrom, pos, ref, alt) for the
     # annotated-VCF writer. Populated per batch inside ``_flush`` when
     # ``collect_vcf_write_inputs`` is True. Values are references to the
     # Annotation objects in ``annotations`` — enrichment mutations
@@ -539,12 +655,12 @@ def run_analysis(
 
     with contextlib.ExitStack() as stack:
         bound = [stack.enter_context(a) for a in annotators]
-        # GH #36: the optional enrichment annotators were previously
+        # the optional enrichment annotators were previously
         # constructed by callers and passed in by keyword without
         # context-management; their SQLite connections leaked at GC
         # time. Wire them into the same stack so cleanup is
         # deterministic alongside the primary annotators.
-        for enrich in (gnomad, alphamissense, cadd):
+        for enrich in (gnomad, alphamissense, cadd, identity):
             if enrich is not None:
                 stack.enter_context(enrich)
         clinvar_resolver = next((a for a in bound if a.name == "clinvar"), None)
@@ -554,79 +670,19 @@ def run_analysis(
         def _flush() -> None:
             if not batch_buf:
                 return
-            if clinvar_resolver is not None:
-                # Resolve any variant whose ID column doesn't look like an
-                # rsID: empty (GATK / DeepVariant emit "."), positional
-                # synthetic IDs (1000 Genomes uses "22:10519265:CA:C"),
-                # COSMIC IDs etc. None of those work as keys into the
-                # rsID-indexed annotators. GH #8.
-                rsidless = [v for v in batch_buf if not v.rsid.startswith("rs")]
-                if rsidless:
-                    resolution = cast("ClinVarAnnotator", clinvar_resolver).bulk_resolve_rsids(
-                        rsidless
-                    )
-                    for (chrom, pos, ref, alt), rsid in resolution.items():
-                        resolved_coords[rsid] = (chrom, pos, ref, alt)
-            # GH #128: second-pass resolution against gnomAD for any variant
-            # still rsidless after ClinVar's pass. ClinVar carries the
-            # clinically-curated subset of dbSNP; gnomAD's frequencies table
-            # is keyed on the full dbSNP rsID universe, so pharmacogenomic
-            # / GWAS-only / SNPedia-only rsIDs (which never make it into
-            # ClinVar) get recovered here. Same carrier-rule disambiguation
-            # as the ClinVar resolver: unique consistent (ref, alt) match
-            # against the user's allele pair, abstain on ties.
-            if gnomad is not None and gnomad.is_ready():
-                still_rsidless = [
-                    v for v in batch_buf if v.build == BUILD_GRCH38 and not v.rsid.startswith("rs")
-                ]
-                if still_rsidless:
-                    positions = {
-                        (v.chromosome, v.position)
-                        for v in still_rsidless
-                        if not v.is_no_call and v.chromosome and v.position > 0
-                    }
-                    gnomad_rows = gnomad.bulk_resolve_rsids_from_positions(positions)
-                    for v in still_rsidless:
-                        rows = gnomad_rows.get((v.chromosome, v.position))
-                        if not rows:
-                            continue
-                        user_alleles = {v.allele1, v.allele2}
-                        matches = [
-                            (ref, alt, rsid)
-                            for ref, alt, rsid in rows
-                            if ref != alt and user_alleles.issubset({ref, alt})
-                        ]
-                        if len(matches) == 1:
-                            ref, alt, rsid = matches[0]
-                            # Same audit stash as the ClinVar resolver
-                            # (clinvar.py:bulk_resolve_rsids). Debug-only.
-                            v.original_rsid = v.rsid
-                            v.rsid = rsid
-                            resolved_coords[rsid] = (v.chromosome, v.position, ref, alt)
-            # ADR-0035 PR 4: populate Variant.ref for array data via gnomAD's
-            # rsid → forward-REF map. VCF inputs already carry ref (PR 1).
-            # Annotators downstream (ClinVar / PharmGKB strand-aware carrier
-            # match; SNPedia / ClinPGx per-row alt threading from PR 2)
-            # consume this. Variants without rsIDs (post-resolution) or
-            # whose rsID isn't in gnomAD keep ref=None and degrade
-            # gracefully — direct-match-only with no strand-flip.
-            if gnomad is not None and gnomad.is_ready():
-                need_ref = {
-                    v.rsid
-                    for v in batch_buf
-                    if v.build == BUILD_GRCH38 and v.ref is None and v.rsid.startswith("rs")
-                }
-                if need_ref:
-                    coord_map = gnomad.bulk_resolve_coordinates(need_ref)
-                    for v in batch_buf:
-                        if v.build == BUILD_GRCH38 and v.ref is None and v.rsid in coord_map:
-                            entries = coord_map[v.rsid]
-                            # All multi-allelic rows at a position share the
-                            # same REF; first entry's REF is canonical.
-                            v.ref = entries[0][2] if entries else None
+            # REF population and rsID-less resolution are one shared
+            # step (ClinVar, identity table, gnomAD), the same for every
+            # command that needs rsIDs. See allelix.annotators._resolution.
+            resolve_batch(
+                batch_buf,
+                clinvar=cast("ClinVarAnnotator | None", clinvar_resolver),
+                gnomad=gnomad,
+                identity=identity,
+                resolved_coords=resolved_coords,
+            )
             # High-value rsID match runs AFTER resolution so a variant
             # entering as ID=. that resolves to a high-value rsID is still
-            # caught. GH #11.
+            # caught. .
             if hv_set:
                 hv_variants.extend(v for v in batch_buf if v.rsid in hv_set)
             if panel_rsids:
@@ -638,7 +694,7 @@ def run_analysis(
                         # same Variant.genotype property the rest of
                         # the codebase uses.
                         panel_genotypes_map.setdefault(v.rsid, v.genotype)
-            # GH #90 / #91: per-batch diagnostic counters. Tallied AFTER
+            # Per-batch diagnostic counters. Tallied AFTER
             # the ref-population and resolver passes so the counts
             # reflect the final state annotators see — not the raw input.
             nonlocal no_ref_total, rsidless_total
@@ -648,7 +704,7 @@ def run_analysis(
             for annotator in bound:
                 batch_new.extend(annotator.batch_annotate(batch_buf))
             annotations.extend(batch_new)
-            # #150: collect writer inputs for this batch. Only touches
+            # collect writer inputs for this batch. Only touches
             # variants whose ``ref`` is populated (VCF inputs; array
             # data with ref=None can't produce a well-formed VCF key).
             # Skips annotations with empty ``alt`` — GWAS rows keyed by
@@ -674,13 +730,20 @@ def run_analysis(
             if len(batch_buf) >= _BATCH_SIZE:
                 _flush()
 
-        for variant in parser.parse(file_path):
-            total += 1
-            ready, batch = diag.feed(variant)
-            if not ready:
-                continue
-            for v in batch:
-                _accept(v)
+        # watch high-value positions so gVCF reference blocks and
+        # no-call records, which carry no rsIDs, can be classified.
+        hv_placements = watch_high_value(parser, hv_set, identity)
+        try:
+            for variant in parser.parse(file_path):
+                total += 1
+                ready, batch = diag.feed(variant)
+                if not ready:
+                    continue
+                for v in batch:
+                    _accept(v)
+        finally:
+            if hv_placements is not None:
+                cast("VcfParser", parser).watch(set(), set())
         # End of stream: drain the build-detection buffer with the best
         # effective build we can resolve (detected → header → default),
         # then flush the final annotation batch.
@@ -688,92 +751,24 @@ def run_analysis(
             _accept(v)
         _flush()
 
-    # GH #23: enrichment is allele-specific. Annotations that carry an
-    # explicit ``alt`` (ClinVar, ClinPGx, SNPedia, also GWAS rows whose
-    # rsID resolved via ClinVar position lookup → recorded in
-    # ``resolved_coords``) get an exact ``(rsid, alt)`` lookup. The old
-    # code ran a ``MAX() GROUP BY rsid`` fallback for the alt-less case
-    # (all original GWAS rows), which at multi-allelic sites stamps the
-    # highest-frequency / highest-pathogenicity / highest-CADD alt's
-    # value next to the user's annotation as if it described them. That
-    # is the same wrong-allele hazard #18 fixed in the strand path.
-    # Symmetric fix: skip enrichment rather than show a wrong-allele
-    # number. The full fix — carrying the user's alt onto every
-    # Annotation so GWAS rows can take the exact-alt path too — is
-    # architectural and tracked for v2.1 (Variant.ref / per-annotation
-    # allele tracking).
-    if diag.effective_build == BUILD_GRCH38 and gnomad is not None and gnomad.is_ready():
-        exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
-        exact_freq = gnomad.bulk_lookup_by_alt(exact_keys)
-        for a in annotations:
-            if a.alt:
-                a.allele_frequency = exact_freq.get((a.rsid, a.alt))
-        # Position fallback for rsIDs resolved on the fly via ClinVar
-        # bulk_resolve_rsids (GH #8). The resolved-coords map already
-        # carries the user's specific alt — this is an allele-specific
-        # lookup, NOT a MAX, so it's safe to fire for alt-less rows
-        # whose rsID was resolved this way.
-        if resolved_coords:
-            missing_keys = {
-                resolved_coords[a.rsid]
-                for a in annotations
-                if a.allele_frequency is None and a.rsid in resolved_coords
-            }
-            if missing_keys:
-                pos_freq = gnomad.bulk_lookup_by_position(missing_keys)
-                for a in annotations:
-                    if a.allele_frequency is None and a.rsid in resolved_coords:
-                        a.allele_frequency = pos_freq.get(resolved_coords[a.rsid])
-
-    if (
-        diag.effective_build == BUILD_GRCH38
-        and alphamissense is not None
-        and alphamissense.is_ready()
-    ):
-        exact_keys = {(a.rsid, a.alt) for a in annotations if a.alt}
-        exact_am = alphamissense.bulk_lookup_by_alt(exact_keys)
-        for a in annotations:
-            if a.alt:
-                hit = exact_am.get((a.rsid, a.alt))
-                if hit is not None:
-                    a.am_pathogenicity, a.am_class = hit
-        # Position fallback — see gnomAD block above. Safe (allele-specific).
-        if resolved_coords:
-            missing_keys = {
-                resolved_coords[a.rsid]
-                for a in annotations
-                if a.am_pathogenicity is None and a.rsid in resolved_coords
-            }
-            if missing_keys:
-                pos_am = alphamissense.bulk_lookup_by_position(missing_keys)
-                for a in annotations:
-                    if a.am_pathogenicity is None and a.rsid in resolved_coords:
-                        hit = pos_am.get(resolved_coords[a.rsid])
-                        if hit is not None:
-                            a.am_pathogenicity, a.am_class = hit
-
-    if cadd is not None and cadd.is_ready() and gnomad is not None and gnomad.is_ready():
-        if diag.effective_build != BUILD_GRCH38:
-            logging.getLogger(__name__).warning(
-                "CADD requires GRCh38 coordinates; detected %s — skipping CADD enrichment",
-                diag.effective_build,
-            )
-        else:
-            _enrich_cadd(annotations, gnomad, cadd, resolved_coords=resolved_coords or None)
+    # ADR-0040: one enrichment step for every build. Each annotation gets a
+    # GRCh38 ``(chrom, pos, ref, alt)`` key from its own locus (GRCh38
+    # input) or through the identity table (GRCh37 input; palindromic and
+    # reference-swapped alleles abstain), and gnomAD / AlphaMissense / CADD
+    # are all queried by that key. No rsID-keyed or MAX lookups:
+    # an annotation without an allele-specific key gets no value.
+    enrichment_keys = _enrichment_keys(annotations, diag.effective_build, identity)
+    enriched_by = _enrich(enrichment_keys, gnomad, alphamissense, cadd)
+    # ADR-0041: zygosity x gnomAD frequency, only where gnomAD was queried.
+    if gnomad in enriched_by:
+        _flag_plausibility(enrichment_keys, plausibility)
 
     annotators_used = [(a.name, a.version()) for a in annotators]
-    if diag.effective_build == BUILD_GRCH38 and gnomad is not None and gnomad.is_ready():
-        annotators_used.append((gnomad.name, gnomad.version()))
-    if (
-        diag.effective_build == BUILD_GRCH38
-        and alphamissense is not None
-        and alphamissense.is_ready()
-    ):
-        annotators_used.append((alphamissense.name, alphamissense.version()))
-    if diag.effective_build == BUILD_GRCH38 and cadd is not None and cadd.is_ready():
-        annotators_used.append((cadd.name, cadd.version()))
+    if identity is not None and identity.is_ready() and diag.effective_build in _IDENTITY_BUILDS:
+        annotators_used.append((identity.name, identity.version()))
+    annotators_used.extend((e.name, e.version()) for e in enriched_by)
 
-    # GH #75: panel coverage derives genotyped rsIDs above (state 2+3
+    # panel coverage derives genotyped rsIDs above (state 2+3
     # boundary) and annotated rsIDs from the post-enrichment annotation
     # set (state 1 boundary). Empty frozensets vs None disambiguate
     # "no panel supplied" from "panel supplied, zero hits".
@@ -808,6 +803,7 @@ def run_analysis(
         parser_name=parser.name,
         parser_display_name=parser.display_name,
         sample_id=metadata["sample_id"],
+        input_method=metadata.get("method", ""),
         build=diag.effective_build,
         total_variants=total,
         skipped_count=skipped_count_provider(),
@@ -822,7 +818,36 @@ def run_analysis(
         no_ref_variant_count=no_ref_total,
         rsidless_variant_count=rsidless_total,
         vcf_write_inputs=vcf_write_inputs,
+        vcf_quality=getattr(parser, "quality_stats", None),
+        high_value_vcf_states=high_value_states(
+            getattr(parser, "quality_stats", None), hv_placements, hv_set, diag.effective_build
+        ),
     )
+
+
+def with_effective_build(
+    variants: Iterable[Variant],
+    *,
+    metadata: GenotypeMetadata,
+    build_override: str | None = None,
+) -> Iterator[Variant]:
+    """Yield ``variants`` with ``build`` set to the effective build (ADR-0021).
+
+    The same detection ``run_analysis`` uses (``_BuildDetectionState``):
+    override > position-based seeds > header > chr-prefix > GRCh37. For
+    command paths that need the build before rsID-less resolution
+    (``stats``, ``extract``, ``export plink``; ). Order is kept.
+    """
+    diag = _BuildDetectionState(
+        override=build_override,
+        header_build=normalize_build_label(metadata.get("build")),
+        chr_prefix_observed=bool(metadata.get("chr_prefix_observed", False)),
+    )
+    for variant in variants:
+        ready, batch = diag.feed(variant)
+        if ready:
+            yield from batch
+    yield from diag.flush()
 
 
 class _BuildDetectionState:
@@ -846,7 +871,7 @@ class _BuildDetectionState:
     ) -> None:
         self.header_build = header_build
         self.override = override
-        # GH #38: ``chr``-prefixed contig names indicate GRCh38 in modern
+        # ``chr``-prefixed contig names indicate GRCh38 in modern
         # variant callers. Tertiary signal — falls in priority after
         # override > rsID detection > header_build, ahead of the bare
         # GRCh37 fallback.
@@ -867,7 +892,7 @@ class _BuildDetectionState:
         1. ``override`` (--build flag) — already applied to ``self.effective`` at init.
         2. Position-based ``detected`` (set by ``feed()`` / ``flush()``).
         3. ``header_build`` (``##contig assembly=...`` tag normalized).
-        4. ``chr_prefix_observed`` → GRCh38 (GH #38).
+        4. ``chr_prefix_observed`` → GRCh38.
         5. ``BUILD_GRCH37`` fallback.
         """
         if self.effective:
@@ -883,7 +908,8 @@ class _BuildDetectionState:
             return True, [replace(variant, build=self.effective)]
         # Buffering until detection converges or we hit the cap.
         self._buffer.append(variant)
-        if variant.rsid in KNOWN_SNP_POSITIONS:
+        # rsID-less records at a seed coordinate count too.
+        if known_snp_seed(variant) is not None:
             result = detect_build(self._buffer)
             if result.is_confident:
                 assert result.build is not None  # is_confident ⇒ build set
@@ -952,7 +978,7 @@ class _BuildDetectionState:
         return out
 
     def diagnostics(self) -> BuildDiagnostics:
-        # GH #38: chr_prefix_inferred is True only when the
+        # chr_prefix_inferred is True only when the
         # chr-prefix signal is what actually picked the effective
         # build — i.e., no override, no rsID detection, no header
         # build, and the chr-prefix signal flipped the fallback from
