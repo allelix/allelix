@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 from typing import TYPE_CHECKING
 
 from allelix.utils.allele import complement, is_strand_ambiguous
@@ -15,6 +17,20 @@ if TYPE_CHECKING:
     from allelix.models import Variant
 
 _BED_MAGIC = bytes([0x6C, 0x1B, 0x01])
+
+
+class EmptyPlinkSetError(ValueError):
+    """No variant could be written, so no PLINK set is produced.
+
+    ``no_calls`` and ``indels`` count the variants that were skipped.
+    """
+
+    def __init__(self, no_calls: int, indels: int) -> None:
+        """Record what was skipped."""
+        super().__init__(f"no variant to write ({no_calls} no-calls, {indels} indels skipped)")
+        self.no_calls = no_calls
+        self.indels = indels
+
 
 # PLINK1 .bim alleles: single nucleotides only.
 _NUCLEOTIDES = frozenset("ACGT")
@@ -78,11 +94,42 @@ def export_plink(
         non-nucleotide codes (array ``I``/``D`` indel codes, a VCF ``*``)
         would produce non-standard BIM rows that downstream tools may
         reject; they are counted in ``indels_skipped``.
-    """
-    fam_path = prefix.with_suffix(".fam")
-    bim_path = prefix.with_suffix(".bim")
-    bed_path = prefix.with_suffix(".bed")
 
+        The three files are written to ``.tmp`` siblings and renamed into
+        place only after ``variants`` is exhausted. An exception raised while
+        it is consumed (for example a late build stop, ADR-0044) removes the
+        ``.tmp`` files and leaves no output. A killed process can leave
+        ``*.tmp`` files behind, but never a final ``.bed``, ``.bim`` or
+        ``.fam``.
+
+    Raises:
+        EmptyPlinkSetError: no variant could be written (every one was a
+            no-call or an indel, or there were none); no files are left.
+    """
+    final = {ext: prefix.with_suffix(ext) for ext in (".fam", ".bim", ".bed")}
+    tmp = {ext: path.with_name(path.name + ".tmp") for ext, path in final.items()}
+    try:
+        counts = _write_plink(variants, tmp[".fam"], tmp[".bim"], tmp[".bed"], ref_alt_map)
+        if counts[0] == 0:
+            raise EmptyPlinkSetError(counts[1], counts[2])
+        for ext, path in tmp.items():
+            os.replace(path, final[ext])
+    except BaseException:
+        for path in tmp.values():
+            with contextlib.suppress(OSError):
+                path.unlink()
+        raise
+    return counts
+
+
+def _write_plink(
+    variants: Iterator[Variant],
+    fam_path: Path,
+    bim_path: Path,
+    bed_path: Path,
+    ref_alt_map: dict[str, tuple[str, str]] | None,
+) -> tuple[int, int, int, int]:
+    """The body of ``export_plink``: write the three files at the given paths."""
     fam_path.write_text("0\tSAMPLE\t0\t0\t0\t-9\n")
 
     written = 0

@@ -89,8 +89,8 @@ def _render_with_panel(
 
 
 class TestPanelCoverageTerminal:
-    """terminal warning surfaces panel rsIDs not in the input
-    file. The user explicitly asked for the count-of-N format."""
+    """The terminal warning surfaces panel rsIDs not in the input
+    file, in a count-of-N format."""
 
     def test_no_panel_no_warning(self):
         """Default analyze run never emits a coverage warning."""
@@ -144,7 +144,7 @@ class TestRenderTerminal:
         assert "Source" in out
 
     def test_regulatory_disclaimer_present(self):
-        """Evaluator defect 1: the ADR-0003 regulatory notice ("not
+        """The ADR-0003 regulatory notice ("not
         medical advice") must appear in terminal output the same way
         it appears in HTML and JSON. The terminal is the default
         analyze output — if the disclaimer is only in the other two
@@ -200,7 +200,7 @@ class TestRenderTerminal:
 
 
 class TestBareMinColumns:
-    """enrichment columns are intentionally NOT in the terminal."""
+    """Enrichment columns are intentionally NOT in the terminal."""
 
     def test_review_status_not_in_terminal(self):
         """ClinVar review status surfaces in HTML/JSON, not terminal."""
@@ -232,7 +232,7 @@ class TestBareMinColumns:
 
 
 class TestCompactDisplay:
-    """terminal cells use compact strings to fit narrow terminals."""
+    """Terminal cells use compact strings to fit narrow terminals."""
 
     def test_significance_strips_source_prefix(self):
         """Source column already shows ClinVar; significance shouldn't repeat it."""
@@ -385,7 +385,7 @@ class TestRenderTerminalDiff:
         assert "No changes since previous report." in capsys.readouterr().out
 
     def test_diff_tables_show_genotype(self, capsys):
-        """changed and removed diff tables include GT column so
+        """Changed and removed diff tables include GT column so
         users can identify rows affected by the palindromic-site fix."""
         from allelix.reports.diff import ChangedAnnotation, DiffResult
 

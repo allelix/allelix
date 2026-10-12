@@ -2,6 +2,98 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2026-10-12
+
+### Added
+
+- Reports say where the build came from: forced with `--build`, the
+  chromosome lengths, the known-SNP positions, the file's build line or
+  VCF assembly, or the format default. The JSON report has
+  `input.build_source` and `input.build_evidence` (schema version 8;
+  `--diff` still reads older reports), the HTML report shows the source
+  under the build, and the annotated VCF writes
+  `##ALLELIX_Build=<ID=...,Source=...>` (VCF schema 0.3.0).
+- `--build grch36` (and `--build1` / `--build2 grch36` for `compare`):
+  runs an old GRCh36 / hg18 file that Allelix cannot identify by itself,
+  with position-keyed lookups off, as for a detected GRCh36 file.
+- `--build` for `stats` and `extract`, and `--build1` / `--build2` for
+  `compare`.
+- MyHeritage array files: the "human reference build 37" header sentence is
+  now read as the file's build label.
+- VCFs whose mitochondrial chromosome has the old hg19 length: mitochondrial
+  records are skipped, with a note, because their positions do not match
+  the reference sequence ClinVar uses.
+
+### Removed
+
+- `scripts/tag-release.sh`, a release-tagging helper, has been removed.
+  Tag pushes are still checked against the `pyproject.toml` version by
+  the pre-push hook in `.githooks/`.
+
+### Fixed
+
+- **Reports on the wrong genome build: files whose build label was wrong
+  or missing.** Allelix looked for its build-detection SNPs only in the
+  first 100,000 rows of a file. Real raw data files are sorted by
+  chromosome, so on full-size files the build almost always came from the
+  file's label, from the way a VCF names its chromosomes (`chr1` or `1`),
+  or from the format's default. When that guess was wrong, the report used
+  the other genome build's positions: real findings were lost, and
+  findings the person does not carry appeared, including ClinVar
+  "pathogenic" ones. This affected chip files whose header names the wrong
+  build or none, UCSC hg19 VCFs with `chr`-named chromosomes, and GRCh38
+  VCFs with plain chromosome names, in every release since 2.0.0.
+  Allelix now decides the build before annotating, from the evidence in the
+  file itself: a VCF's declared chromosome lengths, or well-known SNP
+  positions across the whole file. The run stops instead of guessing when
+  that evidence contradicts the file's label, or when the file carries no
+  usable evidence: a VCF without chromosome lengths, without an assembly
+  line and without enough of those SNPs, a chip with no build line and
+  none of the SNPs (such as an X-chromosome-only export), or SNPs that sit
+  at none of the supported builds' positions. The message says what was
+  found and asks you to name the build with `--build grch37` or `--build
+  grch38` (or `--build grch36` for an old GRCh36 / hg18 file). Nothing is
+  written in that case.
+  If you have reports from such files, run them again with this release.
+- `stats`, `extract`, `export plink` and `compare` now decide the build the
+  same way as `analyze`. `compare` no longer settles on a weak guess.
+- Three entries in the build-detection SNP table were wrong (one SNP on
+  both modern builds, two on GRCh36). They now match dbSNP. Old GRCh36
+  FTDNA files that were detected only tentatively are now detected with
+  confidence.
+- The note about GRCh38 VCFs without rsIDs no longer claims GRCh37 gives
+  more findings. It now appears only when the rsID identity table or
+  gnomAD is not installed, says which, and tells you to run
+  `allelix db update`.
+- A failed `export plink` no longer leaves partial `.bed` / `.bim` / `.fam`
+  files behind.
+- `export plink` no longer writes a PLINK set with no variants. When every
+  record is a no-call or an indel, or was dropped (for example mitochondrial
+  records under an hg19-length chrM), it stops and says what was skipped.
+- AlphaMissense and CADD caches without a schema version stamp are no longer
+  treated as current. `allelix db update` replaces such a cache with the
+  current one, as it already did for gnomAD.
+- Very old GWAS Catalog and ClinPGx caches, made before Allelix recorded a
+  version inside each cache, are accepted only when the version noted in
+  them is the current one. Otherwise the GWAS cache is rebuilt from the
+  download kept next to it, if that file is still there; if not, GWAS
+  Catalog, like ClinPGx, is skipped until you run `allelix db update`.
+- When an upgrade changes how Allelix reads ClinPGx data, `allelix analyze`
+  no longer rebuilds the ClinPGx cache itself, which kept the old CPIC
+  allele-function data. It skips ClinPGx and asks you to run
+  `allelix db update`, which rebuilds the cache and fetches the CPIC data
+  again. `analyze` makes no network request for it.
+- The source distribution no longer ships a partial, unrunnable copy of the
+  test suite (the top-level `tests/test_*.py` files without their fixtures).
+  It contains the package, the licence, the README and the build files.
+- Building Allelix from source now declares the setuptools version it needs
+  (77 or later, for the SPDX licence field). With an older setuptools the
+  build failed with a `project.license` configuration error.
+- The GRCh36 warning no longer claims gnomAD results are complete: on
+  GRCh36 files ClinVar, gnomAD, AlphaMissense and CADD give no values, and
+  only ClinPGx, GWAS Catalog and SNPedia (matched by rsID) run. It also
+  says how GRCh36 was chosen.
+
 ## [2.4.0] - 2026-10-11
 
 ### Fixed
@@ -198,11 +290,8 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
 
 ### Documentation
 
-- **Documentation no longer references private-repo issue and PR numbers.**
-  README, CONTRIBUTING and FULL_TEST_PROTOCOL previously cited internal
-  tracker numbers that resolve to nothing on the public repository. They
-  have been removed; database sizes have been updated to match current
-  builds.
+- Database sizes in the documentation have been updated to match
+  current builds.
 
 - New per-provider format guide: Sequencing.com's three deliverables
   and which one to use, MyHeritage's array and low-pass sequencing
@@ -610,18 +699,16 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
   data dir with only `config.toml`) is unaffected — the empty
   cache list short-circuits to "Nothing to clean" before the
   guard runs.
-- **Public CHANGELOG no longer leaks dead links to the private
-  tracker.** Bare `NN` references in the changelog auto-link to
-  the surrounding repo on GitHub; on the public repo those
-  numbers do not exist, so every shipped reference rendered as a
-  dead link. The previously documented `### Internal` section
-  was internal-provenance content public users do not need. The
-  released changelog content has been rewritten to stand on its
-  own without tracker numbers and without an Internal section. A
-  structural guard (`tests/test_changelog_sanitize.py`) now runs
+- **CHANGELOG no longer contains dead issue links.** Bare
+  issue-number references in the changelog auto-linked on GitHub
+  to pages that do not exist in this repository, so every shipped
+  reference rendered as a dead link. The previously documented
+  `### Internal` section carried development notes users do not
+  need. The released changelog content has been rewritten to stand
+  on its own without issue numbers and without an Internal section.
+  A structural guard (`tests/test_changelog_sanitize.py`) now runs
   on every fast-tier pytest pass and fails the build if either
-  form reappears. The release procedure documents the sanitize
-  step.
+  form reappears.
 
 ### Changed
 
@@ -632,33 +719,24 @@ All notable changes are documented here. Format follows [Keep a Changelog](https
   significance-sentinel ship-gate scans the same seven values;
   loader and gate share a single source of truth.
 
-### Release procedure
-
-The provenance/architectural-notes subsection that previous
-releases included has been removed in this release per the public
-CHANGELOG sanitize rule. Architectural notes, fixture changes, and
-other forensic detail now live exclusively in the git history (the
-squash commit body on `main` is the load-bearing surface for
-anyone tracing release-level details). Per-PR detail remains in
-the private dev tracker.
-
 ## [2.2.0] - 2026-06-18
 
 ### Changed
 
-- **ClinVar source switched from VCF to a per-SCV tab-delimited
-  pair.** The loader now ingests `variant_summary.txt.gz` + `submission_summary.txt.gz`
-  from NCBI's tab-delimited dump, emitting one cache record per (variant,
-  SCV submission) instead of one combined row per variant. Structurally
-  retires the CLNSIG|CLNDN Frankenstein-pair hazard the original audit
-  flagged: each row carries one submitter's exact (significance,
-  condition) pair, so there is no cross-product pairing risk. Record
-  count roughly doubles (~5.79M → ~9.09M GRCh38) — expected from per-SCV
-  granularity. `CLINVAR_INTERPRETER_VERSION` bumps `2 → 4` so existing
-  caches auto-invalidate on the next `db update` (iv:3 was the in-flight
-  bump for the initial loader; iv:4 forces the placeholder-skip fix
-  described under Fixed). Old VCF loader + URL constants removed in
-  the cluster's final stage.
+- **ClinVar source switched from VCF to a per-SCV tab-delimited pair.**
+  The loader now ingests `variant_summary.txt.gz` +
+  `submission_summary.txt.gz` from NCBI's tab-delimited dump, emitting
+  one cache record per (variant, SCV submission) instead of one combined
+  row per variant. Structurally retires the CLNSIG|CLNDN
+  Frankenstein-pair hazard of the VCF loader: each row carries one
+  submitter's exact (significance, condition) pair, so there is no
+  cross-product pairing risk. Record count roughly doubles (~5.79M →
+  ~9.09M GRCh38) — expected from per-SCV granularity.
+  `CLINVAR_INTERPRETER_VERSION` bumps `2 → 4` so existing caches
+  auto-invalidate on the next `db update` (iv:3 was the in-flight bump
+  for the initial loader; iv:4 forces the placeholder-skip fix described
+  under Fixed). Old VCF loader + URL constants removed in the cluster's
+  final stage.
 - **JSON report `schema_version` bumped 5 → 6.** Adds
   the new top-level `panel_coverage` object when `--filter-file`
   supplies a rsID panel. Additive only — prior-version consumers still
@@ -752,79 +830,75 @@ the private dev tracker.
   `_CLINVAR_PLACEHOLDER_CLNSIGS` in either build cache, with
   `LOWER()` for case-insensitive symmetry with the loader. Named
   ship-gate ("0 rows expected; any row → do not tag") and a
-  forward-pointer to R-4 as the durable allowlist backstop.
+  forward-pointer to the CLNSIG vocabulary drift test as the durable
+  allowlist backstop.
 
 ### Fixed
 
-- **TSV loader filters ClinVar placeholder CLNSIGs (cluster
-  follow-up, evaluator defect 5).** ClinVar's `submission_summary.txt.gz`
-  carries several placeholder values that mean "no clinical
-  significance recorded." Values not in `_CLNSIG_MAGNITUDE` fell
-  through to the dict's 5.0 default — equal to the analyze display
-  floor — and surfaced as bogus annotations on real rsIDs
-  (rs137854557 → Meningioma was the canary). The loader now filters
-  the exact set that would otherwise default
-  (`_CLINVAR_PLACEHOLDER_CLNSIGS = {"", "-", "not specified",
-  "no classification provided"}`), with case-insensitive membership
-  testing to mirror `_magnitude()`'s `_normalize_clnsig`
-  normalization. `not provided` and
-  `no_classification_for_the_single_variant` are intentionally kept
-  (both map to 2.0 — safe below the floor; dropping them would lose
-  real submitter records). The drift snapshot is updated to remove
-  `no_classification_provided` so R-4's live drift guard remains
-  honest about what's filtered. `CLINVAR_INTERPRETER_VERSION` bumps
-  `3 → 4` to force reingest of any iv:3 cache built by the
-  pre-fix loader.
-- **TSV loader stamps a real `version` value (cluster follow-up,
-  evaluator defect 3).** `db status` previously showed
-  "ClinVar version: None" after the per-SCV rebuild;
+- **TSV loader filters ClinVar placeholder CLNSIGs.** ClinVar's
+  `submission_summary.txt.gz` carries several placeholder values that
+  mean "no clinical significance recorded." Values not in
+  `_CLNSIG_MAGNITUDE` fell through to the dict's 5.0 default — equal to
+  the analyze display floor — and surfaced as bogus annotations on real
+  rsIDs (rs137854557 → Meningioma was the canary). The loader now
+  filters the exact set that would otherwise default
+  (`_CLINVAR_PLACEHOLDER_CLNSIGS = {"", "-", "not specified", "no
+  classification provided"}`), with case-insensitive membership testing
+  to mirror `_magnitude()`'s `_normalize_clnsig` normalization.
+  `not provided` and `no_classification_for_the_single_variant` are
+  intentionally kept (both map to 2.0 — safe below the floor; dropping
+  them would lose real submitter records). The drift snapshot is updated
+  to remove `no_classification_provided` so the live CLNSIG drift guard
+  remains honest about what's filtered. `CLINVAR_INTERPRETER_VERSION`
+  bumps `3 → 4` to force reingest of any iv:3 cache built by the pre-fix
+  loader.
+- **TSV loader stamps a real `version` value.** `db status` previously
+  showed "ClinVar version: None" after the per-SCV rebuild;
   `stamp_remote_signal` inserts `version=NULL` by design (it's a
-  freshness-only stamper meant to upsert remote_signal onto
-  baked-in HuggingFace cache rows), and the TSV loader had no
-  pre-existing row. Now stamps build date `YYYY-MM-DD` UTC — the
-  practical equivalent of the old VCF loader's `##fileDate` header.
-- **Terminal output emits the regulatory disclaimer (evaluator
-  defect 1).** HTML and JSON have carried the ADR-0003
-  "not medical advice / not a diagnosis" notice since v2.0.x; the
-  terminal — the **default** analyze output — did not. Anyone
-  running `analyze` without `--output` got a clinical-looking
-  table with no disclaimer.
-- **`FULL_TEST_PROTOCOL.md §7` per-SCV condition contract
-  (evaluator defect 4).** The flagship sanity block was still
-  pinning the pre-TSV-loader VCF-era semicolon-joined condition shape
-  (`rs1800896 → "Leprosy ... ; Hepatitis C ..."`). Doc rewritten
-  to pin the per-SCV row shape (multi-row, never combined) and
-  explain why the join-pin is structurally retired.
-- **`FULL_TEST_PROTOCOL.md §15` stale exome-VCF expectation
-  (evaluator defect 2).** `unsupported_23andme_exome_vcf.txt` is a
-  valid VCFv4.1 file and is parsed by the VCF parser added after
-  the fixture was named. Doc split into "still unsupported"
-  (decodeme) and "previously-unsupported / now-supported regression
-  pin" (the 23andMe exome VCF, kept under its historical filename
-  for git-mtime continuity).
+  freshness-only stamper meant to upsert remote_signal onto baked-in
+  HuggingFace cache rows), and the TSV loader had no pre-existing row.
+  Now stamps build date `YYYY-MM-DD` UTC — the practical equivalent of
+  the old VCF loader's `##fileDate` header.
+- **Terminal output emits the regulatory disclaimer.** HTML and JSON
+  have carried the ADR-0003 "not medical advice / not a diagnosis"
+  notice since v2.0.x; the terminal — the **default** analyze output —
+  did not. Anyone running `analyze` without `--output` got a
+  clinical-looking table with no disclaimer.
+- **`FULL_TEST_PROTOCOL.md §7` per-SCV condition contract.** The
+  flagship sanity block was still pinning the pre-TSV-loader VCF-era
+  semicolon-joined condition shape (`rs1800896 → "Leprosy ... ;
+  Hepatitis C ..."`). Doc rewritten to pin the per-SCV row shape
+  (multi-row, never combined) and explain why the join-pin is
+  structurally retired.
+- **`FULL_TEST_PROTOCOL.md §15` stale exome-VCF expectation.**
+  `unsupported_23andme_exome_vcf.txt` is a valid VCFv4.1 file and is
+  parsed by the VCF parser added after the fixture was named. Doc split
+  into "still unsupported" (decodeme) and "previously-unsupported /
+  now-supported regression pin" (the 23andMe exome VCF, kept under its
+  historical filename for git-mtime continuity).
 
 ## [2.1.2] - 2026-06-16
 
 ### Changed
 
-- **`Annotator.__del__` safety net removed .** v2.1.1
-  finished the production-side audit; v2.1.2 finishes the test-side
-  refactor and drops the destructor entirely. The
-  pipeline's `contextlib.ExitStack` plus the CLI utility paths' explicit
-  `try/finally close()` are now the only cleanup paths — deterministic,
-  not GC-timed. `import contextlib` removed from `allelix/annotators/base.py`
-  as a follow-on (no longer used).
+- **`Annotator.__del__` safety net removed.** v2.1.1 finished the
+  production-side audit; v2.1.2 finishes the test-side refactor and
+  drops the destructor entirely. The pipeline's `contextlib.ExitStack`
+  plus the CLI utility paths' explicit `try/finally close()` are now the
+  only cleanup paths — deterministic, not GC-timed. `import contextlib`
+  removed from `allelix/annotators/base.py` as a follow-on (no longer
+  used).
 - **Test-suite annotator instantiation routed through a `cm_stack`
-  fixture .** 20 test methods in
-  `tests/reports/test_pipeline.py` previously constructed annotators
-  outside any context manager and relied on `__del__` for SQLite
-  cleanup; that pattern surfaced as `PytestUnraisableExceptionWarning`
-  once `__del__` was removed. New per-test `cm_stack` fixture (a
-  `contextlib.ExitStack`) wraps every `enter_context(Annotator(...))`
-  call so cleanup is deterministic at test-function teardown. Same
-  shape as production's pipeline-ExitStack pattern.
+  fixture.** 20 test methods in `tests/reports/test_pipeline.py`
+  previously constructed annotators outside any context manager and
+  relied on `__del__` for SQLite cleanup; that pattern surfaced as
+  `PytestUnraisableExceptionWarning` once `__del__` was removed. New
+  per-test `cm_stack` fixture (a `contextlib.ExitStack`) wraps every
+  `enter_context(Annotator(...))` call so cleanup is deterministic at
+  test-function teardown. Same shape as production's pipeline-ExitStack
+  pattern.
 - **PLINK gnomAD coordinate resolution moved out of the CLI.**
-  The audit flagged `allelix/cli.py` as a god-module with PLINK business
+  `allelix/cli.py` had become a god-module with PLINK business
   logic — gnomAD coordinate lookup + multi-allelic disambiguation —
   sitting in the presentation layer. The CLI was already split into the
   `allelix/cli/` package before; the remaining business-logic leak
@@ -853,7 +927,7 @@ the private dev tracker.
 
 ## [2.1.1] - 2026-06-16
 
-Patch release. Focus: docs / process drift caught during prep cycle —
+Patch release. Focus: documentation drift —
 SECURITY.md staleness, missing ADR index entry, sparse operational
 docs, plus one structural refactor that eliminates the `is_must_include`
 leak-by-omission risk at the model boundary. No user-facing behavior
@@ -862,21 +936,18 @@ changes; existing v2.1.0 caches and reports stay current.
 ### Security
 
 - **SECURITY.md "Supported versions" table was stuck at 1.8.x while
-  v1.9.0, v2.0.0, v2.0.1, v2.0.2, and v2.1.0 all shipped ('s audit
-  caught it during v2.1.1 prep).** Table updated to `2.1.x ✓` / `< 2.1 ✗`
+  v1.9.0, v2.0.0, v2.0.1, v2.0.2, and v2.1.0 all shipped (caught
+  during v2.1.1 prep).** Table updated to `2.1.x ✓` / `< 2.1 ✗`
   to match the "current minor release receives security fixes" policy
   line above it. Out-of-scope third-party data list also corrected:
   PharmGKB → `ClinPGx (formerly PharmGKB)` to match v2.0+ display-name
   conventions, plus AlphaMissense / CADD added (they were shipped after
-  SECURITY.md was last touched). No reporting URL change. The
-  `GITHUB_WORKFLOW.md` pre-flight checklist now includes the
-  SECURITY.md "Supported versions" check so this drift class doesn't
-  recur. (commit b298f07)
+  SECURITY.md was last touched). No reporting URL change.
 
 ### Changed
 
 - **Centralized internal-field exclusion for public Annotation
-  serialization .** Three production sites previously
+  serialization.** Three production sites previously
   duplicated the inline `asdict(a) minus is_must_include` filter
   (JSON report's main annotations list, JSON diff "new" entries, the
   `diff_annotation_to_dict` change records). A fourth public-output
@@ -894,28 +965,26 @@ changes; existing v2.1.0 caches and reports stay current.
 
 ### Documentation
 
-- **Operational / data-lifecycle docs in the README ( docs-half,
- / ed5a369).** New "Managing your data" section under the
-  database-sizes block covers cache location
-  (`$XDG_DATA_HOME/allelix`), per-file footprint (~16 GB default,
-  ~22 GB with CADD), the disposability rule (caches are
+- **Operational / data-lifecycle docs in the README.** New "Managing
+  your data" section under the database-sizes block covers cache
+  location (`$XDG_DATA_HOME/allelix`), per-file footprint (~16 GB
+  default, ~22 GB with CADD), the disposability rule (caches are
   re-downloadable; safe to delete), the manual cleanup path
-  (`rm -rf ~/.local/share/allelix/`), config.toml as the backup
-  target (only non-reproducible state in the install), and the full
-  uninstall procedure. New "Troubleshooting" section before
-  "Architecture" covers six common failure states (3.10 ImportError,
-  partial `db update` failure, "not ready" cache after a release
-  upgrade, build mismatch warnings, the signal-driven staleness
-  model, output-file sensitivity). Python 3.11+ requirement promoted
-  from a buried sentence to the first line of Quickstart with the
-  exact ImportError users see on 3.10 (`cannot import name 'UTC'
-  from 'datetime'` — grep-able). CADD table cell tightened from a
-  full-paragraph cell to a one-line summary + a new "CADD modes"
-  subsection that holds the cache-vs-full-mode explanation. Status
-  banner refreshed from a stale `Latest: v2.0.0` to v2.1.0 with the
-  ADR-0035 cluster summary. The `db clean` / `db path` CLI tooling
-  the original also covered ships in v2.2.
-- **`__del__` removal audit — partial closure .**
+  (`rm -rf ~/.local/share/allelix/`), config.toml as the backup target
+  (only non-reproducible state in the install), and the full uninstall
+  procedure. New "Troubleshooting" section before "Architecture" covers
+  six common failure states (3.10 ImportError, partial `db update`
+  failure, "not ready" cache after a release upgrade, build mismatch
+  warnings, the signal-driven staleness model, output-file sensitivity).
+  Python 3.11+ requirement promoted from a buried sentence to the first
+  line of Quickstart with the exact ImportError users see on 3.10
+  (`cannot import name 'UTC' from 'datetime'` — grep-able). CADD table
+  cell tightened from a full-paragraph cell to a one-line summary + a
+  new "CADD modes" subsection that holds the cache-vs-full-mode
+  explanation. Status banner refreshed from a stale `Latest: v2.0.0` to
+  v2.1.0 with the ADR-0035 cluster summary. The `db clean` / `db path`
+  CLI tooling for the same topic ships in v2.2.
+- **`__del__` removal audit — partial closure.**
   v2.0.2 deferred `__del__` removal to v2.1 pending an audit of every
   callsite. v2.1.1 finishes the audit: zero production paths rely on
   `__del__` for SQLite-connection cleanup. `run_analysis` wires
@@ -934,9 +1003,8 @@ changes; existing v2.1.0 caches and reports stay current.
   stays as the safety net with an updated docstring documenting
   the partial-closure state; full removal is gated on the test
   refactor and lands in v2.1.2.
-- **ADR-0035 added to the ADR index ( docs-drift class
-  catch / 719e8cc).** ADR-0035 itself (v2.1.0 Cluster B design)
-  shipped at commit `f3c902c` but didn't update
+- **ADR-0035 added to the ADR index.** ADR-0035 itself (the v2.1.0
+  `Variant.ref` and annotation-model design) shipped without updating
   `docs/adr/README.md`'s index. Index entry added with the
   supersedes note that ADR-0035's cluster carve-out partially
   supersedes ADR-0033's strict-per-field schema-version bump policy
@@ -944,44 +1012,43 @@ changes; existing v2.1.0 caches and reports stay current.
   the SECURITY.md table fix and the stale README version banner —
   single-file additions that skip the index/inventory update step.
   The ADR index update is already step 4 of the "Writing a new ADR"
-  checklist in `docs/adr/README.md`; the v2.0.2 review protocol
-  (memory: `grep_all_variants_in_doc_sweeps`) and the
-  `GITHUB_WORKFLOW.md` pre-flight checklist additions are the
-  going-forward mitigations.
+  checklist in `docs/adr/README.md`.
 
 ## [2.1.0] - 2026-06-16
 
 ### Added
 
-- **Strand-aware carrier matching (ADR-0035, PR 4 of 4; closes the strand-half
-  of and R-1).** ClinVar and ClinPGx carrier matching now accepts
-  complement-strand reads of the same variant: a het carrier of an ALT scored
-  on the forward strand and the same biology read on the coding strand
-  produce identical annotation sets. The v2.0.1 multi-allelic safety
-  invariant is preserved — strand-flip fires only when `Variant.ref` confirms
-  reverse orientation (`variant.ref == complement(source_ref)`) AND the
-  source `(ref, alt)` pair is non-palindromic. Without that orientation
-  context (`variant.ref is None`) or against palindromic A/T and C/G sites,
-  the match falls back to direct membership only — same behavior as v2.0.x.
-  Two new helpers in `allelix.utils.allele`: `strand_aware_carrier_match` for
-  per-row ClinVar-style `(ref, alt)` carrier checks; `strand_aware_genotype_match`
-  for ClinPGx / SNPedia per-diploid matches. CLAUDE.md R-1's mandatory test
-  case (forward C/C and coding G/G both producing zero annotations on a het
-  pathogenic site) is pinned via the fixture rsid, plus the het-carrier
-  parity case (forward G/A and coding C/T producing the same annotation set)
-  and a test (variant.ref disagreement abstains).
-- **Array-data `Variant.ref` population (ADR-0035, PR 4).** The analysis
+- **Strand-aware carrier matching (ADR-0035).** ClinVar and ClinPGx
+  carrier matching now accepts complement-strand reads of the same
+  variant: a het carrier of an ALT scored on the forward strand and the
+  same biology read on the coding strand produce identical annotation
+  sets. The v2.0.1 multi-allelic safety invariant is preserved —
+  strand-flip fires only when `Variant.ref` confirms reverse orientation
+  (`variant.ref == complement(source_ref)`) AND the source `(ref, alt)`
+  pair is non-palindromic. Without that orientation context
+  (`variant.ref is None`) or against palindromic A/T and C/G sites, the
+  match falls back to direct membership only — same behavior as v2.0.x.
+  Two new helpers in `allelix.utils.allele`:
+  `strand_aware_carrier_match` for per-row ClinVar-style `(ref, alt)`
+  carrier checks; `strand_aware_genotype_match` for ClinPGx / SNPedia
+  per-diploid matches. The reference test case (forward C/C and coding
+  G/G both producing zero annotations on a het pathogenic site) is
+  pinned via the fixture rsid, plus the het-carrier parity case (forward
+  G/A and coding C/T producing the same annotation set) and a case where
+  `variant.ref` disagrees with both the source ref and its complement,
+  so strand-flip abstains.
+- **Array-data `Variant.ref` population (ADR-0035).** The analysis
   pipeline now resolves the forward REF allele for array-format inputs via
   gnomAD's `bulk_resolve_coordinates(rsid)` lookup, mutating `Variant.ref`
   in place at batch-flush time. VCF inputs continue to carry `ref` from the
-  REF column (PR 1). The population step gates on `gnomad.is_ready()` —
+  REF column. The population step gates on `gnomad.is_ready()` —
   array runs without a current gnomAD cache continue to leave `ref=None`,
-  and downstream consumers (SNPedia / ClinPGx PR 2 alt threading; the new
-  strand-aware carrier match in this PR) degrade gracefully to direct-match
-  only. This is what unlocks PR 2's allele-specific enrichment on 23andMe /
+  and downstream consumers (SNPedia / ClinPGx alt threading; the new
+  strand-aware carrier match) degrade gracefully to direct-match
+  only. This is what unlocks allele-specific enrichment on 23andMe /
   AncestryDNA / MyHappyGenes / FTDNA / MyHeritage / LivingDNA inputs that
   previously got `alt=""` because `variant.ref` was None.
-- **ClinPGx carrier rule extended to strand-aware (ADR-0035, PR 4).**
+- **ClinPGx carrier rule extended to strand-aware (ADR-0035).**
   Previously `WHERE rsid = ? AND genotype = ?` SQL — direct exact-match
   only. Now fetches all rows for the rsid (typically ≤5) and applies
   `strand_aware_genotype_match` per row, so reverse-strand array reads
@@ -990,61 +1057,65 @@ changes; existing v2.1.0 caches and reports stay current.
 
 ### Added
 
-- **`Variant.ref` field (ADR-0035, PR 1 of 4 for v2.1 Cluster B).** New
-  optional field on the `Variant` dataclass carrying the reference allele on
-  the forward strand. The VCF parser populates `ref` from the VCF REF column;
-  array parsers leave it `None` for now (population via the existing
-  `resolve_strand` path against gnomAD lands in PR 4 alongside the strand-aware
-  carrier matching that consumes it). Required by downstream consumers
-  (strand-aware comparison, plausibility flagging, future ACMG engine) to
-  identify which side of the user's allele pair is the risk allele. `None`
-  means "cannot resolve" — consumers degrade gracefully rather than guess.
+- **`Variant.ref` field (ADR-0035).** New optional field on the
+  `Variant` dataclass carrying the reference allele on the forward
+  strand. The VCF parser populates `ref` from the VCF REF column; array
+  parsers leave it `None` for now (population via the existing
+  `resolve_strand` path against gnomAD arrives together with the
+  strand-aware carrier matching that consumes it). Required by
+  downstream consumers (strand-aware comparison, plausibility flagging,
+  future ACMG engine) to identify which side of the user's allele pair
+  is the risk allele. `None` means "cannot resolve" — consumers degrade
+  gracefully rather than guess.
 
 ### Changed
 
-- **JSON `schema_version` bumped 4 → 5.** Enters the ADR-0035 cluster contract.
-  The full v2.1 Cluster B manifest landing within v5 across PRs 1-4:
-  `variant.ref` (this PR), `annotation.trait` / `annotation.p_value` /
-  `annotation.phecode` (PR 3, the structured GWAS fields). `annotation.alt`
-  exists since v1.4.1; PR 2 extends its population coverage from ClinVar to
-  GWAS / SNPedia / ClinPGx without a schema change. v4 consumers reading v5
-  output still succeed — every v4 field is unchanged. The diff loader accepts
-  both v4 and v5 baselines.
-- **Per-Annotation `alt` threading: GWAS / SNPedia / ClinPGx (ADR-0035, PR 2
-  of 4; closes the structural-half of).** The `Annotation.alt` field
-  exists since v1.4.1 but until this PR only ClinVar populated it. The
-  v2.0.1 suppress-half removed the wrong-allele MAX-fallback for alt-less
-  rows; this PR closes the loop by routing per-row alt from upstream source
-  data onto the annotation so rsID-bearing input VCFs once again get
-  allele-specific gnomAD / AlphaMissense / CADD enrichment via the existing
-  exact-`(rsid, alt)` lookup path. (a) GWAS Catalog: the catalog's
-  per-association risk allele threads as `alt` when present; rows without a
-  specified risk allele continue to emit `alt=""` and stay capped at
-  magnitude 3.0 per ADR-0024. (b) SNPedia: alt is derived from `Variant.ref`
-  + the matched diploid row via `derive_alt_from_diploid()` (new helper in
-  `allelix.utils.allele`); empty when `Variant.ref` is None (array data
-  prior to PR 4's gnomAD-backed ref population). (c) ClinPGx: same
-  derivation as SNPedia. The position-fallback enrichment path (used when
-  rsID-less input VCFs resolve rsIDs on the fly via ClinVar)
-  is unchanged; it was already allele-specific and stays that way. No
-  schema-version change — `Annotation.alt` is the same field.
-- **Structured GWAS fields on `Annotation`: `trait` / `p_value` / `phecode`.** v2.0.1's
-  suppress-half merged two inconsistent `(PheCode ` delimiter strings into a
-  shared constant; this PR closes the structural half by promoting the values
-  themselves out of the rendered `description` prose into typed `Annotation`
-  fields. The GWAS annotator extracts the PheCode suffix (when the upstream
-  trait carries one) at the ingestion boundary, populates the structured
-  fields, and rebuilds the rendered `description` from the structured parts.
-  Downstream code reads `a.trait` / `a.phecode` / `a.p_value` directly — the
-  three regex-on-prose helpers (`_gwas_base_trait` / `_gwas_phecode_parent` /
-  `_gwas_p_value`) and the shared `_PHECODE_DELIM` delimiter are deleted.
-  Rollup behavior is unchanged; MTAG detection still uses `"(MTAG)" in
-  a.description` (promotion to a structured flag is outside the ADR-0035
-  cluster manifest). **First PR in the cluster to deliver observable v5 JSON
-  fields** — `annotation.trait` / `.p_value` / `.phecode` now appear in every
-  JSON report. v4 consumers continue to ignore the unknown fields; v5
-  consumers can read them as the structured contract ADR-0035 advertised at
-  PR 1's schema bump.
+- **JSON `schema_version` bumped 4 → 5.** Enters the ADR-0035 cluster
+  contract. The full ADR-0035 field set arriving within v5:
+  `variant.ref`, `annotation.trait` / `annotation.p_value` /
+  `annotation.phecode` (the structured GWAS fields). `annotation.alt`
+  exists since v1.4.1; this release extends its population coverage from
+  ClinVar to GWAS / SNPedia / ClinPGx without a schema change. v4
+  consumers reading v5 output still succeed — every v4 field is
+  unchanged. The diff loader accepts both v4 and v5 baselines.
+- **Per-Annotation `alt` threading: GWAS / SNPedia / ClinPGx
+  (ADR-0035).** The `Annotation.alt` field exists since v1.4.1 but until
+  this release only ClinVar populated it. The v2.0.1 suppress-half
+  removed the wrong-allele MAX-fallback for alt-less rows; this release
+  closes the loop by routing per-row alt from upstream source data onto
+  the annotation so rsID-bearing input VCFs once again get
+  allele-specific gnomAD / AlphaMissense / CADD enrichment via the
+  existing exact-`(rsid, alt)` lookup path. (a) GWAS Catalog: the
+  catalog's per-association risk allele threads as `alt` when present;
+  rows without a specified risk allele continue to emit `alt=""` and
+  stay capped at magnitude 3.0 per ADR-0024. (b) SNPedia: alt is derived
+  from `Variant.ref` + the matched diploid row via
+  `derive_alt_from_diploid()` (new helper in `allelix.utils.allele`);
+  empty when `Variant.ref` is None (array data without gnomAD-backed ref
+  population). (c) ClinPGx: same derivation as SNPedia. The
+  position-fallback enrichment path (used when rsID-less input VCFs
+  resolve rsIDs on the fly via ClinVar) is unchanged; it was already
+  allele-specific and stays that way. No schema-version change —
+  `Annotation.alt` is the same field.
+- **Structured GWAS fields on `Annotation`: `trait` / `p_value` /
+  `phecode`.** v2.0.1's suppress-half merged two inconsistent
+  `(PheCode ` delimiter strings into a shared constant; this release
+  closes the structural half by promoting the values themselves out of
+  the rendered `description` prose into typed `Annotation` fields. The
+  GWAS annotator extracts the PheCode suffix (when the upstream trait
+  carries one) at the ingestion boundary, populates the structured
+  fields, and rebuilds the rendered `description` from the structured
+  parts. Downstream code reads `a.trait` / `a.phecode` / `a.p_value`
+  directly — the three regex-on-prose helpers (`_gwas_base_trait` /
+  `_gwas_phecode_parent` / `_gwas_p_value`) and the shared
+  `_PHECODE_DELIM` delimiter are deleted. Rollup behavior is unchanged;
+  MTAG detection still uses `"(MTAG)" in a.description` (promotion to a
+  structured flag is outside the ADR-0035 cluster manifest). **First
+  change in the cluster to deliver observable v5 JSON fields** —
+  `annotation.trait` / `.p_value` / `.phecode` now appear in every JSON
+  report. v4 consumers continue to ignore the unknown fields; v5
+  consumers can read them as the structured contract ADR-0035 advertised
+  at the schema bump.
 
 ## [2.0.2] - 2026-06-16
 
@@ -1095,7 +1166,7 @@ changes; existing v2.1.0 caches and reports stay current.
 
 ### Changed
 
-- **Pipeline: enrichment annotators are stack-managed .**
+- **Pipeline: enrichment annotators are stack-managed.**
   `run_analysis` previously context-managed only the `annotators=`
   list. The optional keyword params `gnomad=`, `alphamissense=`, and
   `cadd=` were used internally but never explicitly closed; their
@@ -1122,7 +1193,7 @@ changes; existing v2.1.0 caches and reports stay current.
 
 ### Known limitations
 
-- **ClinVar per-(classification, condition) pairing (, tracked for
+- **ClinVar per-(classification, condition) pairing (planned for
   v2.1).** ClinVar variants with multiple SCV submissions display the
   primary aggregate classification and the union of all associated
   conditions (semicolon-joined). The exact 1:1 pairing between a
@@ -1170,19 +1241,18 @@ changes; existing v2.1.0 caches and reports stay current.
 
 ### Fixed
 
-- **`Variant`: alleles normalized to uppercase at construction (,
-  case half).** Reference databases (ClinVar, gnomAD, ClinPGx, ...)
-  all ship uppercase alleles, and carrier matching is raw set
-  membership against `{variant.allele1, variant.allele2}` — a
-  lowercase user allele would silently miss every clinical annotator
-  and a real carrier would get zero annotations with no warning.
-  Production parsers all emit uppercase today, but a user-supplied
-  filter file (custom panel) or future format variant could leak
-  lowercase through. Normalization now happens in
-  `Variant.__post_init__` so every emission point (parsers, filters,
-  synthetic variants in tests, and any future code) is covered at the
-  single chokepoint. No-call marker preserved as-is; multi-base
-  indels uppercased in place. Strand-naive half of (using
+- **`Variant`: alleles normalized to uppercase at construction.**
+  Reference databases (ClinVar, gnomAD, ClinPGx, ...) all ship uppercase
+  alleles, and carrier matching is raw set membership against
+  `{variant.allele1, variant.allele2}` — a lowercase user allele would
+  silently miss every clinical annotator and a real carrier would get
+  zero annotations with no warning. Production parsers all emit
+  uppercase today, but a user-supplied filter file (custom panel) or
+  future format variant could leak lowercase through. Normalization now
+  happens in `Variant.__post_init__` so every emission point (parsers,
+  filters, synthetic variants in tests, and any future code) is covered
+  at the single chokepoint. No-call marker preserved as-is; multi-base
+  indels uppercased in place. Strand-aware carrier matching (using
   `resolve_strand` at carrier-match time) is deferred to v2.1+ per
   ADR-0010.
 - **SNPedia parser: allowlist guard on `raw_table` interpolation.**
@@ -1195,7 +1265,7 @@ changes; existing v2.1.0 caches and reports stay current.
   `_VALID_RAW_TABLES = frozenset({"_raw_pages", "pages"})` guard at
   the top of `_parse_raw_pages_inner`; an unexpected name raises
   `ValueError`. No behavior change on current paths.
-- **GWAS rollup: consistent PheCode delimiter .**
+- **GWAS rollup: consistent PheCode delimiter.**
   `_gwas_base_trait` was splitting on `" (PheCode "` (leading space)
   while `_gwas_phecode_parent` was searching for `"(PheCode "` (no
   leading space) — the two readers reaching into the same formatted
@@ -1244,7 +1314,7 @@ changes; existing v2.1.0 caches and reports stay current.
   current value). Now uses `math.isclose(abs_tol=1e-9)` and carries
   `previous_magnitude: float | None`; absent baseline magnitude is
   passed through as `None` and rendered as `—` in the terminal table.
-- **ClinVar `condition` joins all CLNDN entries .**
+- **ClinVar `condition` joins all CLNDN entries.**
   The loader was treating `|` in `CLNSIG` and `CLNDN` as parallel arrays
   index-paired with the VCF's ALT, then picking `[0]` from each. That's
   wrong: the `|` separator is per-SCV (per submission), not per-ALT, and
@@ -1261,19 +1331,18 @@ changes; existing v2.1.0 caches and reports stay current.
   has classification X; here are all the conditions it has been
   submitted for." Per-(classification, condition) pairing requires the
   `submission_summary.txt.gz` source and is tracked for v2.1.
-- **Enrichment: drop MAX-fallback for alt-less annotations .**
+- **Enrichment: drop MAX-fallback for alt-less annotations.**
   GWAS rows set `alt=""` because the catalog is rsID-keyed. The previous
   enrichment path took a `MAX(af) / MAX(am_pathogenicity) / MAX(phred)
   GROUP BY rsid` fallback for those rows, which at a multi-allelic site
   stamped the highest-frequency / highest-pathogenicity / highest-CADD
   alt's value next to the annotation as if it described the user's
-  variant. Same wrong-allele hazard as the strand path fixed in.
-  Symmetric fix: skip the enrichment number rather than show one that
-  may belong to a different allele. The position-fallback path
-
-  is allele-specific and stays — it pairs the alt-less annotation's
-  rsID with the user's actual carried alt. CADD enrichment grew the
-  same position-fallback path (it previously only had the MAX-fallback,
+  variant. Same wrong-allele hazard as the `resolve_strand` complement
+  fallback (below). Symmetric fix: skip the enrichment number rather
+  than show one that may belong to a different allele. The
+  position-fallback path is allele-specific and stays — it pairs the
+  alt-less annotation's rsID with the user's actual carried alt. CADD
+  enrichment grew the same position-fallback path (it previously only had the MAX-fallback,
   which the suppress-half removed); for symmetry, alt-less rows whose
   rsID resolved on the fly now get a correct allele-specific CADD score
   rather than nothing. The full fix — carrying the user's alt onto
@@ -1287,7 +1356,7 @@ changes; existing v2.1.0 caches and reports stay current.
   directly, try `complement(user_allele) ∈ {ref, alt}`) would return
   that coincidental complement, and the CADD enrichment path then
   stamped a wrong-allele score onto an annotation that read as
-  describing the user's variant. Audit reproduction:
+  describing the user's variant. Example:
   `resolve_strand('A', 'C', 'T') -> 'T'` (the user's `A` is neither
   REF nor ALT but `complement('A') = 'T' = ALT`). The function now
   returns `None` whenever the user allele isn't directly in
@@ -1299,7 +1368,7 @@ changes; existing v2.1.0 caches and reports stay current.
   describing the user's variant when it didn't.
 - **`normalize_build_label`: anchored tokens, ambiguity rejection.**
   The previous implementation was first-substring-wins over a bare
-  `"3X" in s` chain. Bugs caught by the audit: `2038-01-01` registered
+  `"3X" in s` chain. Wrong results it gave: `2038-01-01` registered
   as GRCh38, `hg19/hg38` picked GRCh37 (the first substring hit),
   `38 (37 liftover)` picked GRCh37. The normalizer is now driven by
   anchored regex tokens (`\bgrch3[678]\b`, `\bhg(18|19|38)\b`,
@@ -1396,7 +1465,7 @@ vocabulary drift.
   EXISTS` on first connection. ClinVar coverage is the
   clinically-actionable subset, which is what's in scope for this
   release; the load-bearing test on real GIAB HG002 GRCh38 (4M
-  variants) drove annotation count from 0 → 4,867. GH.
+  variants) drove annotation count from 0 → 4,867.
 - **Position-keyed enrichment fallback for gnomAD + AlphaMissense**
   (`bulk_lookup_by_position(set[(chrom, pos, ref, alt)])` on each).
   After the existing rsID-keyed enrichment pass, the pipeline does
@@ -1409,7 +1478,7 @@ vocabulary drift.
   in the batch. A variant entering the pipeline as `ID=.` that
   resolves to a high-value rsID is now collected into
   `AnalysisResult.hv_variants` (previously the match ran against
-  the pre-resolution empty rsid and missed). GH.
+  the pre-resolution empty rsid and missed).
 - **VCF + gVCF parser** (`allelix/parsers/vcf.py`). Plain VCF, gVCF
   (GATK reference-confidence), and `.vcf.gz` all handled via the
   standard library — no `pysam` dependency on the base path. gVCF
@@ -1438,7 +1507,7 @@ vocabulary drift.
   chromosomes are canonicalized to bare form (`1`, `X`, `MT`) at
   the parser boundary. Used by both VCF and FTDNA Illumina raw
   parsers; available for any future format that needs it.
-- **R-4: ClinVar CLNSIG vocabulary drift CI test**
+- **ClinVar CLNSIG vocabulary drift CI test**
   (`tests/databases/test_clinvar_clnsig_drift.py`). Pins the
   current ClinVar CLNSIG vocabulary as a snapshot
   (`allelix/data/clinvar_clnsig_snapshot.yaml`); the fast tier
@@ -1499,9 +1568,8 @@ vocabulary drift.
 
 ### Fixed
 
-- **rsID resolver: indel-anchor disambiguation (ship-blocker, found in
-  external review).** The position-keyed resolver matched ClinVar rows
-  by ALT only. At positions where two co-located ClinVar entries share
+- **rsID resolver: indel-anchor disambiguation.** The position-keyed
+  resolver matched ClinVar rows by ALT only. At positions where two co-located ClinVar entries share
   an ALT but differ in REF anchor length (e.g. `CA>C` and `CAG>C` at
   the same position — common in clustered indel regions like CFTR /
   BRCA), sort order picked the wrong row and stamped the user's
@@ -1620,7 +1688,7 @@ vocabulary drift.
 ### Fixed
 - **HTML report link colors.** Links in dark mode were browser-default
   neon blue, unreadable against the dark background. Dark mode
-  now uses5fd; light mode uses2 (matching the existing accent).
+  now uses `#93c5fd`; light mode uses `#1976d2` (matching the existing accent).
 - **Favicon SVG rendering.** The report's inline SVG favicon used a
   `linearGradient` with an internal IRI reference (`url(#g)`) that doesn't
   resolve inside `data:` URIs, rendering the icon invisible. Replaced with
@@ -2186,13 +2254,13 @@ vocabulary drift.
   GRCh37 (no warning). PharmGKB, GWAS, and SNPedia continue to fire via
   rsID-only lookups, but ClinVar would query against the GRCh37 cache with
   GRCh36 positions and miss any variants whose coordinates shifted between
-  builds. Tracked as R-12.
-- **No ClinVar GRCh36 cache.** `CLINVAR_SUPPORTED_BUILDS` is GRCh37/GRCh38
-  only. When a file is correctly detected as GRCh36 (e.g. 23andMe with
-  "build 36" in the header), `analyze` produces zero ClinVar annotations —
-  PharmGKB, GWAS, and SNPedia still fire normally. The CLI prints a warning.
-  Full GRCh36 annotation support requires either an NCBI GRCh36 VCF or
-  liftover. Tracked as R-12.
+  builds.
+- **No ClinVar GRCh36 cache.** `CLINVAR_SUPPORTED_BUILDS` is
+  GRCh37/GRCh38 only. When a file is correctly detected as GRCh36 (e.g.
+  23andMe with "build 36" in the header), `analyze` produces zero
+  ClinVar annotations — PharmGKB, GWAS, and SNPedia still fire normally.
+  The CLI prints a warning. Full GRCh36 annotation support requires
+  either an NCBI GRCh36 VCF or liftover.
 
 ## [0.9.2] — 2026-05-22
 
@@ -2248,7 +2316,7 @@ vocabulary drift.
 ### Docs
 - ADR-0023 amended with ClinVar interpreter version stamp mechanism.
 - ADR-0024 amended with GWAS auto-reingest from cached TSV.
-- Added roadmap feature R-11: supplemental genotype file merging
+- Added roadmap feature: supplemental genotype file merging
   (custom panels, Sanger confirmations).
 
 ## [0.9.1] — 2026-05-21
@@ -2386,7 +2454,7 @@ vocabulary drift.
   typical `--min-magnitude 5` thresholds.
 - **ADR-0024** documenting GWAS Catalog magnitude scoring from p-value
   and effect size, unknown-risk-allele cap rationale, and the
-  forward-strand assumption (deferred to R-1).
+  forward-strand assumption (deferred until strand-aware matching).
 - **`TestGwasMockInvariants`** (four tests) pinning the GWAS fixture
   shape per ADR-0015: single-base risk allele, unknown risk allele,
   p-value tier coverage, and haplotype-skip row.
@@ -2438,9 +2506,8 @@ vocabulary drift.
 
 ## [0.7.2] — 2026-05-13
 
-> **Genome build auto-detection (ADR-0021 + ADR-0022) with Round 23
-> audit follow-up.** A real-world MyHappyGenes/Tempus export was
-> confirmed to ship GRCh38 positions while its header claims "build
+> **Genome build auto-detection (ADR-0021 + ADR-0022).** A real-world
+> MyHappyGenes/Tempus export was confirmed to ship GRCh38 positions while its header claims "build
 > 37.1." Cross-build REF/ALT comparison against ClinVar's GRCh37 VCF
 > produced a false-positive pathogenic call on NIPA1 `rs104894490`.
 > The carrier check (ADR-0007) was correct — it was matching against
@@ -2449,8 +2516,8 @@ vocabulary drift.
 > ADR-0022 documents the deliberate decision NOT to filter PharmGKB
 > reference-genotype rows on non-CPIC genes.
 >
-> An external audit (Round 23) subsequently found three fixture-layer
-> defects and one `.gitignore` omission in the build-detection work.
+> This release also fixes three fixture-layer defects and one
+> `.gitignore` omission in the build-detection work.
 > The new code was right; the test fixtures were lying about what they
 > covered.
 
@@ -2511,7 +2578,7 @@ vocabulary drift.
   fixture grew from 2,015 to 2,016 SNPs to carry the regression case.
 
 ### Fixed
-- **Per-build ClinVar fixtures.** The pre-Round-23 mock_clinvar.vcf
+- **Per-build ClinVar fixtures.** The earlier mock_clinvar.vcf
   had mixed-build positions (some GRCh37, some GRCh38, rs80357906 at
   41245466 matching neither). This was the exact failure mode
   ADR-0021 was written to detect, hardcoded into the project's own
@@ -2627,16 +2694,16 @@ vocabulary drift.
     → all `is_nonfinding=1`.
   - Known carriers (rs1801133 AG/AA ×20, rs1799853 CT ×3, rs4149056 CT ×39,
     rs4244285 AG ×7) → all `is_nonfinding=0`. Zero over-suppression.
-- **C-1: test suite no longer hits the real CPIC API.**
+- **Test suite no longer hits the real CPIC API.**
   `test_db_update_with_file_url` monkey-patches
   `fetch_cpic_allele_functions` on the annotator module to return the
   same `MOCK_CPIC_LOOKUP` the rest of the suite uses. Run time on that
   single test dropped from ~4 s (network-bound) to 0.6 s (offline).
-- **C-2: README refreshed to v0.7.1.** Status banner, supported-
+- **README refreshed to v0.7.1.** Status banner, supported-
   databases table, and architecture-decision summary reflect ADR-0020
   (CPIC API as the structured per-allele function source) and drop
   obsolete references to ADR-0013 / ADR-0014.
-- **M-3: CPIC conflict-resolution policy flipped.** When the same
+- **CPIC conflict-resolution policy flipped.** When the same
   `(rsid, base)` appears under multiple allele definitions with a
   Normal-vs-non-Normal disagreement, the loader now picks the
   non-Normal classification. Suppressing happens only when EVERY base
@@ -2656,26 +2723,26 @@ vocabulary drift.
   tests inject a synthetic dict.
 - **`mock_cpic_lookup` pytest fixture** in `conftest.py` holds the
   canonical synthetic CPIC lookup the test suite joins against.
-- **M-1: retry-with-backoff on CPIC fetches.** `_http_get_json`
+- **Retry-with-backoff on CPIC fetches.** `_http_get_json`
   retries up to 3 times with `(1, 2, 4) s` backoff on `URLError`,
   `TimeoutError`, and `JSONDecodeError`. A single transient TCP RST
   during `db update` no longer aborts the refresh.
-- **M-2: composite PharmGKB + CPIC freshness signal.**
+- **Composite PharmGKB + CPIC freshness signal.**
   `PharmGKBAnnotator.fetch_remote_signal()` now returns
   `pgkb:<pgkb-signal>|cpic:<cpic-signal>` where the CPIC portion is
   the latest date from CPIC's `change_log` table. If CPIC publishes
   new allele functions while PharmGKB's zip is unchanged, the next
   `db update` detects it and refreshes. CPIC probe failure returns
   None (existing "can't verify, pass --force" UX).
-- **M-4: mutation-gap tests pinning critical policies.**
+- **Mutation-gap tests pinning critical policies.**
   `_classify_cpic_status` returning None for unknown statuses, and
   `fetch_cpic_allele_functions` skipping multi-base / non-ACGT values,
   both have direct pins. A future refactor can't silently break
   either without a test failure.
-- **m-2: zip cleanup wrapped in try/finally** in
-  `PharmGKBAnnotator.setup()`. A failure between download and ingest
-  no longer leaves the staged `clinicalAnnotations.zip` on disk.
-- **m-6: `MOCK_CPIC_LOOKUP` shape invariants.** New
+- **Zip cleanup wrapped in try/finally** in `PharmGKBAnnotator.setup()`.
+  A failure between download and ingest no longer leaves the staged
+  `clinicalAnnotations.zip` on disk.
+- **`MOCK_CPIC_LOOKUP` shape invariants.** New
   `TestCpicLookupMockInvariants` checks every fixture entry is
   `(rsid, single-base)` keyed and every value is a recognized
   `function_class`. Mirrors what real `fetch_cpic_allele_functions`
@@ -2719,10 +2786,11 @@ vocabulary drift.
 > in a new structured table.
 
 ### Fixed
-- **PharmGKB SNV per-allele function now structurally extracted (ADR-0018).**
-  The DPYD cluster the v0.6.1 reviewer flagged (rs115232898 TT,
-  rs1801266 GG, rs3918290 CC and ~17 others of the same shape) now
-  classifies correctly. Reference-allele homozygotes do not emit.
+- **PharmGKB SNV per-allele function now structurally extracted
+  (ADR-0018).** The DPYD cluster that v0.6.1 wrongly reported as
+  findings (rs115232898 TT, rs1801266 GG, rs3918290 CC and ~17 others of
+  the same shape) now classifies correctly. Reference-allele homozygotes
+  do not emit.
 
 ### Added
 - **ADR-0018: PharmGKB per-allele function via CPIC template
@@ -2753,7 +2821,7 @@ vocabulary drift.
 - **Tests:** `TestExtractCpicAlleleFunction` (direct regex unit tests),
   `TestBuildAlleleFunctionLookup` (fixture-integration), and
   `TestIsNonfindingByAlleleLookup` (per-allele classifier including
-  the reviewer's exact leaker shapes).
+  the reference-homozygote shapes v0.6.1 wrongly reported).
 
 ### Migration
 - v0.6.x caches lack `pharmgkb_allele_function`, so
@@ -2891,8 +2959,7 @@ vocabulary drift.
   user-facing contract unchanged.
 - **ADR-0014 superseded**: somatic suppression removed; structured
   signal does not exist in PharmGKB; gap documented.
-- Full repo audit (recorded in commit message): two regex violations
-  identified, both in `pharmgkb_loader.py`, both removed. Remaining
+- Two prose-classifying regexes in `pharmgkb_loader.py` removed. Remaining
   regexes (`_RSID_RE`, `_TWO_LETTER_GENOTYPE_RE`, VCF header parsers,
   test fixture validators) are structural-format checks, not prose
   classification.
@@ -2975,7 +3042,7 @@ vocabulary drift.
 
 > **Clinical-safety release.** v0.5.0 closes three categorical false-positive
 > bugs in the annotator layer. v0.4.2 already shipped the ClinVar indel
-> fix ; v0.5.0 adds the two PharmGKB fixes and is
+> fix; v0.5.0 adds the two PharmGKB fixes and is
 > the first version where reports against array-based parsers can be
 > read with confidence. **Treat all v0.4.x and earlier reports as
 > untrusted; regenerate against v0.5.0.**
@@ -3080,23 +3147,23 @@ vocabulary drift.
   re-downloaded every annotator.
 
 ### Changed
-- Round-11 minors (originally listed under Unreleased; folded into 0.4.1):
-  - **m-1** Removed dead `render_annotations` from `reports/terminal.py`;
+- Minor fixes:
+  - Removed dead `render_annotations` from `reports/terminal.py`;
     `render_terminal` is the single entry point. Test file rewritten to
     assert against `render_terminal` + `AnalysisResult` fixtures.
-  - **m-2** Dropped the unreachable `else` branch in
+  - Dropped the unreachable `else` branch in
     `_run_analysis_command`; renderer dispatch is now a ternary.
-  - **m-4** `analyze --category` help text no longer lists "methylation"
+  - `analyze --category` help text no longer lists "methylation"
     (no annotator emits that category — use `allelix methylation` instead).
-  - **m-5** HTML and JSON outputs are now atomic via a shared
+  - HTML and JSON outputs are now atomic via a shared
     `atomic_write_text` helper in `allelix.reports` (`.tmp` then
     `os.replace`). A killed process mid-write leaves either the previous
     file or no file, never a half-written one.
-  - **m-6** `REGULATORY_NOTICE` moved from `json_report.py` to
+  - `REGULATORY_NOTICE` moved from `json_report.py` to
     `allelix.reports`. Both `json_report` and `html` import from there.
 
 ### Added
-- **m-3 coverage**: PA-007 fixture row in the synthetic PharmGKB dump
+- **Coverage**: PA-007 fixture row in the synthetic PharmGKB dump
   exercises the inner `_normalize_genotype` skip path
   (single-rsid annotation with only non-SNV per-allele rows).
 - `tests/reports/test_init.py` covers `REGULATORY_NOTICE` presence and
@@ -3105,10 +3172,10 @@ vocabulary drift.
 ## [0.4.0] — 2026-05-11
 
 ### Added
-- **Reports (Phase 6).** New `allelix/reports/_pipeline.py` builds an
-  `AnalysisResult` once and hands it to format-specific renderers, so the
-  CLI streams the file and queries each annotator exactly once per `analyze`
-  invocation regardless of output format.
+- **Reports.** New `allelix/reports/_pipeline.py` builds an
+  `AnalysisResult` once and hands it to format-specific renderers, so
+  the CLI streams the file and queries each annotator exactly once per
+  `analyze` invocation regardless of output format.
 - **JSON report** (`reports/json_report.py`): versioned schema (v1),
   embedded regulatory notice (ADR-0003), per-annotation source attribution
   preserved, applied filters echoed in the payload.
@@ -3121,7 +3188,7 @@ vocabulary drift.
   curated methylation gene panel (MTHFR, MTR, MTRR, COMT, CBS, BHMT, …).
 - **`allelix pharmacogenomics`** subcommand: focused report filtered to
   `category=pharma` annotations (PharmGKB-style drug response).
-- **Strand-flip helpers** (Phase 7 polish, partial): `allelix.utils.allele`
+- **Strand-flip helpers** (partial): `allelix.utils.allele`
   ships `complement`, `flip_genotype`, `is_strand_ambiguous` for parser /
   annotator authors. Not wired into matching logic yet — opt-in.
 - **ADR-0010**: documents the strand-flip decision and explicitly defers
@@ -3131,14 +3198,14 @@ vocabulary drift.
 ### Changed
 - Annotators are entered into a `contextlib.ExitStack` inside the pipeline
   module, replacing the inline ExitStack in the CLI's `analyze` command.
-  Same deterministic-cleanup contract (C-1) applies across all report
+  The same deterministic-cleanup contract applies across all report
   commands now.
 - `allelix/cli.py` factored: `_resolve_parser`, `_ready_annotators`,
   `_run_analysis_command` are shared by `analyze`, `methylation`, and
   `pharmacogenomics`.
 
 ### Fixed
-- **R-1**: `test_version_flag` no longer hardcodes a version string; it
+- `test_version_flag` no longer hardcodes a version string; it
   asserts the rendered output contains `__version__` and a new
   `test_pyproject_version_matches_metadata` test in `tests/test_version.py`
   pins that `pyproject.toml`'s version equals the installed package
@@ -3146,35 +3213,35 @@ vocabulary drift.
   pyproject.toml without reinstalling the editable package.
 
 ### Added
-- **R-2**: PharmGKB loader gets the W-1-style batch-flush spy test
+- PharmGKB loader gets a batch-flush spy test
   (`test_batched_insert_flushes`) — `INSERT_BATCH_SIZE = 3` against the
   9-record fixture asserts `[3, 3, 3]`. A mutation flipping the flush
   condition to `if False:` now fails the suite.
 - Asymmetric no-call test (`Variant("A", "-")` and `("-", "A")`) for
-  both ClinVar and PharmGKB annotators (r-2). Verified that the ClinVar
+  both ClinVar and PharmGKB annotators. Verified that the ClinVar
   test catches `if variant.is_no_call:` → `if variant.allele1 == "-":`.
 - `_safe_float` direct unit tests cover the empty-string and ValueError
-  branches in `pharmgkb_loader` (r-1).
+  branches in `pharmgkb_loader`.
 - `test_leftover_tmp_file_is_cleared` covers the stale-`.tmp` cleanup
-  branch in `load_pharmgkb_tsv` (r-5).
+  branch in `load_pharmgkb_tsv`.
 
 ### Changed
 - `pharmgkb_loader._open_directory` now imports `Path` at module top
-  instead of inline-aliasing inside the function (r-3). `extractall`
+  instead of inline-aliasing inside the function. `extractall`
   now has an explicit code comment about Python 3.11+'s built-in
-  `..`/absolute-path sanitization (r-4).
+  `..`/absolute-path sanitization.
 
 ## [0.3.0] — 2026-05-11
 
 ### Added
-- **PharmGKB annotator** (Phase 3, first cut). `allelix db update` now also
+- **PharmGKB annotator** (first cut). `allelix db update` now also
   downloads PharmGKB's `clinicalAnnotations.zip` into `pharmgkb.sqlite`;
-  `allelix analyze` layers in pharmacogenomic annotations alongside ClinVar's
-  clinical-significance calls.
+  `allelix analyze` layers in pharmacogenomic annotations alongside
+  ClinVar's clinical-significance calls.
 - `allelix.databases.pharmgkb_loader` parses the joined
   `clinical_ann.tsv` + `clinical_ann_alleles.tsv` view, normalizes 2-letter
   SNV genotypes (sorted, uppercased), and skips star alleles, multi-rsid
-  composites, and indel genotypes (Phase 7+).
+  composites, and indel genotypes (not supported in this release).
 - `PharmGKBAnnotator` matches the user's exact normalized diploid call (per
   ADR-0009), with magnitude derived from PharmGKB Level of Evidence
   (1A → 9.0, 1B → 8.0, …, 4 → 2.0; per ADR-0008).
@@ -3201,13 +3268,13 @@ vocabulary drift.
     that doesn't lint or format clean is blocked.
   - **pre-push** runs the version-tag check only (fast, no test suite).
     The full test suite runs in CI on every pull request.
-- Annotator test fixture now closes connections on teardown (round-4 N-1).
+- Annotator test fixture now closes connections on teardown.
 - `pytest.PytestUnraisableExceptionWarning` is escalated to error in
   `filterwarnings`, so future fixtures without teardown fail CI loudly.
 - Tests covering the INSERT batch flush path, the download timeout path,
   the `parse_clinvar_version` end-of-file fall-through, and friendly
   `db update` failure output.
-- Round 5 (W-1, W-2): the batch-flush test now spies on `executemany`
+- The batch-flush test now spies on `executemany`
   via a delegating connection proxy so a mutation that disables
   mid-iteration flushing fails the suite. The `db update` friendly-error
   test now asserts Click's `Error: clinvar:` prefix and that
@@ -3259,7 +3326,20 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
-[2.0.0]: https://github.com/allelix/allelix/compare/v1.9.0...v2.0.0
+[2.4.1]: https://github.com/allelix/allelix/compare/v2.4.0...v2.4.1
+[2.4.0]: https://github.com/allelix/allelix/compare/v2.3.1...v2.4.0
+[2.3.1]: https://github.com/allelix/allelix/compare/v2.3.0...v2.3.1
+[2.3.0]: https://github.com/allelix/allelix/compare/v2.2.3...v2.3.0
+[2.2.3]: https://github.com/allelix/allelix/compare/v2.2.2...v2.2.3
+[2.2.2]: https://github.com/allelix/allelix/compare/v2.2.1...v2.2.2
+[2.2.1]: https://github.com/allelix/allelix/compare/v2.2.0...v2.2.1
+[2.2.0]: https://github.com/allelix/allelix/compare/v2.1.2...v2.2.0
+[2.1.2]: https://github.com/allelix/allelix/compare/v2.1.1...v2.1.2
+[2.1.1]: https://github.com/allelix/allelix/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/allelix/allelix/compare/v2.0.2...v2.1.0
+[2.0.2]: https://github.com/allelix/allelix/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/allelix/allelix/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/allelix/allelix/releases/tag/v2.0.0
 [1.9.0]: https://github.com/dial481/allelix/compare/v1.8.4...v1.9.0
 [1.8.4]: https://github.com/dial481/allelix/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/dial481/allelix/compare/v1.8.2...v1.8.3

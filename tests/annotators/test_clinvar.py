@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 def annotator(clinvar_data_dir: Path):
     """Yield an annotator and ensure its SQLite connection is closed.
 
-    N-1: without explicit teardown, _connection() opens a sqlite3.Connection
+    Without explicit teardown, _connection() opens a sqlite3.Connection
     that's only reaped by GC. Yield + close() pins the contract every test
     relies on.
     """
@@ -58,7 +58,7 @@ class TestSignalGuard:
     def test_setup_aborts_when_signal_fetch_fails(self, tmp_path: Path, monkeypatch):
         """setup() raises RuntimeError when remote signal is None.
 
-        Stage B: signal is fetched once from submission_summary.md5
+        Since v2.2 the signal is fetched once from submission_summary.md5
         (not per-build), so the patch target is the single static method.
         """
         ann = ClinVarAnnotator(tmp_path)
@@ -69,8 +69,8 @@ class TestSignalGuard:
             ann.setup()
 
 
-class TestStageBWiring:
-    """Stage B: ClinVarAnnotator.setup() drives the per-SCV TSV loader."""
+class TestTsvSetupWiring:
+    """ClinVarAnnotator.setup() drives the per-SCV TSV loader (v2.2)."""
 
     def _stub_downloads_and_loader(self, tmp_path: Path, monkeypatch):
         """Wire a complete fake setup path:
@@ -139,7 +139,7 @@ class TestStageBWiring:
         return load_calls
 
     def test_setup_dispatches_to_both_builds_from_one_download(self, tmp_path: Path, monkeypatch):
-        """Stage B's key win: one TSV pair → both build caches."""
+        """The TSV loader's key win: one TSV pair → both build caches."""
         load_calls = self._stub_downloads_and_loader(tmp_path, monkeypatch)
         ann = ClinVarAnnotator(tmp_path)
         try:
@@ -192,13 +192,13 @@ class TestStageBWiring:
             ann.close()
 
     def test_interpreter_version_current(self):
-        """Stage B bumped CLINVAR_INTERPRETER_VERSION 2 → 3 so iv:2
-        VCF-era caches auto-reingest. (evaluator defect 5)
+        """v2.2 bumped CLINVAR_INTERPRETER_VERSION 2 → 3 so iv:2
+        VCF-era caches auto-reingest. A follow-up fix in the same release
         bumped iv:3 → iv:4 because the per-SCV TSV loader was
         landing placeholder CLNSIG values ("-", "not specified",
         etc.) in the cache; without the bump, existing iv:3 caches
         stayed poisoned across the fix. Every cache-content change
-        requires a bump per CLAUDE.md.
+        requires an interpreter-version bump.
 
         Pin the current value here so a future content-altering
         loader change is forced to revisit this assertion (and the
@@ -213,8 +213,8 @@ class TestStageBWiring:
         """Any iv-tag older than CLINVAR_INTERPRETER_VERSION must fail
         is_ready() so db update triggers a reingest.
 
-        - ``iv:2`` is the pre-stage-B VCF-era cache.
-        - ``iv:3`` is the broken-loader cache from before 's
+        - ``iv:2`` is the pre-v2.2 VCF-era cache.
+        - ``iv:3`` is the broken-loader cache from before the
           placeholder-CLNSIG fix; bumping to iv:4 was the whole point
           of forcing existing caches to rebuild against the fixed
           loader.
@@ -252,7 +252,7 @@ class TestInterpreterVersionStamp:
     def test_is_ready_rejects_null_tag_without_baked_marker(
         self, tmp_path: Path, build_synthetic_clinvar_cache
     ):
-        """PR-1 safety fix: NULL local_version_tag with no `|iv:N` marker
+        """Safety fix: NULL local_version_tag with no `|iv:N` marker
         in remote_signal is an unknown-version legacy cache. is_ready()
         returns False so db update reingests, instead of silent-promoting
         the cache to the current interpreter version across what may be a
@@ -364,7 +364,7 @@ class TestGenotypeMatching:
         assert annotator.annotate(v) == []
 
     def test_asymmetric_no_call_does_not_trigger(self, annotator: ClinVarAnnotator):
-        """r-2: one good allele + one no-call must short-circuit before lookup.
+        """One good allele + one no-call must short-circuit before lookup.
 
         Catches mutations like `if variant.is_no_call` → `if variant.allele1 == "-"`
         that pass the both-no-call test but leak through here.
@@ -383,7 +383,7 @@ class TestGenotypeMatching:
 
 
 class TestStrandAwareCarrierMatch:
-    """ADR-0035 PR 4 + CLAUDE.md Feature R-1: complement-strand reads match.
+    """ADR-0035: complement-strand reads match.
 
     A clinical lab reports a SNP on the coding strand; the array reports the
     same position on the forward reference strand. Complementary genotypes
@@ -396,7 +396,7 @@ class TestStrandAwareCarrierMatch:
         """rs1801133 (mock REF=G ALT=A Pathogenic). Hom-ref on either strand
         must produce zero annotations (user doesn't carry ALT).
 
-        Mirrors the CLAUDE.md R-1 mandatory test case (rs5742904 forward C/C
+        Mirrors the reference test case for strand-aware matching (rs5742904 forward C/C
         and coding G/G both producing zero annotations) using the fixture
         rsid we ship.
         """
@@ -425,7 +425,7 @@ class TestStrandAwareCarrierMatch:
         assert forward_results[0].genotype_match == "AG"
         assert coding_results[0].genotype_match == "CT"
 
-    def test_audit_18_multi_allelic_safety_preserved(self, annotator: ClinVarAnnotator):
+    def test_variant_ref_disagreement_abstains(self, annotator: ClinVarAnnotator):
         """Variant.ref disagreement (neither matches source ref nor its
         complement) → no strand-flip fires. Preserves the v2.0.1
         wrong-allele invariant.
@@ -472,7 +472,7 @@ class TestRegistryMetadata:
 
 
 class TestIndelMatching:
-    """M-4: ClinVar contains pathogenic indels (e.g., CFTR ΔF508). Must match."""
+    """ClinVar contains pathogenic indels (e.g., CFTR ΔF508). Must match."""
 
     def test_indel_carrier_triggers(self, annotator: ClinVarAnnotator):
         # mock ClinVar: rs113993960 REF=CTT ALT=C, Pathogenic CFTR
@@ -528,7 +528,7 @@ class TestIndelAnchorProtection:
 
 
 class TestMultiAllelicMatching:
-    """C-2: Multi-allelic ClinVar rows must match per-ALT, not as the joined string."""
+    """Multi-allelic ClinVar rows must match per-ALT, not as the joined string."""
 
     def test_carrier_of_pathogenic_alt_triggers(self, annotator: ClinVarAnnotator):
         # mock ClinVar: rs1065852 ALT=A,C with CLNSIG=Drug_response|Benign.
@@ -553,7 +553,7 @@ class TestRemoteSignal:
     """Freshness signal: ClinVar uses the .md5 sidecar file (ADR-0012)."""
 
     def test_fetch_returns_md5_prefixed_signal(self, annotator: ClinVarAnnotator, monkeypatch):
-        """Stage B: signal is a single md5 from submission_summary.md5
+        """The signal is a single md5 from submission_summary.md5
         (build-agnostic — the per-SCV TSV pair serves both builds from one
         download)."""
         from allelix.annotators import clinvar as clinvar_module
@@ -579,7 +579,7 @@ class TestRemoteSignal:
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_html_error_page(self, annotator: ClinVarAnnotator, monkeypatch):
-        """a CDN 503 returning HTML must not be accepted as a hash.
+        """A CDN 503 returning HTML must not be accepted as a hash.
 
         Before the fix the first whitespace-separated token of the body
         was treated as the md5, so ``<!DOCTYPE`` would become the
@@ -596,7 +596,7 @@ class TestRemoteSignal:
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_short_hex(self, annotator: ClinVarAnnotator, monkeypatch):
-        """tokens that are hex but the wrong length are rejected."""
+        """Tokens that are hex but the wrong length are rejected."""
         from allelix.annotators import clinvar as clinvar_module
 
         monkeypatch.setattr(
@@ -630,7 +630,7 @@ class TestRemoteSignal:
         assert annotator.cached_remote_signal() is None
 
     def test_cached_round_trip_after_setup(self, tmp_path: Path, build_synthetic_clinvar_cache):
-        """Stage B: cached signal is the single TSV md5, not a per-build composite.
+        """The cached signal is the single TSV md5, not a per-build composite.
 
         Builds share the same source TSVs and therefore stamp the same
         remote_signal. cached_remote_signal() returns the shared value.
@@ -654,7 +654,7 @@ class TestConstructorValidation:
 
 
 class TestCloseable:
-    """C-1: ClinVarAnnotator must release its SQLite connections deterministically."""
+    """ClinVarAnnotator must release its SQLite connections deterministically."""
 
     def test_close_releases_connection(self, annotator: ClinVarAnnotator):
         # Touch the connection
@@ -1109,21 +1109,21 @@ class TestBulkResolveRsids:
 
 
 class TestMultiScvSemantics:
-    """pin the per-SCV cache semantics that the TSV loader introduced and the
-    fast suite was previously blind to.
+    """Pin the per-SCV cache semantics that the TSV loader introduced.
 
-    Every test in this class MUST FAIL on dev tip (the previous,
-    pre-patch state). They pin the CORRECT current
-    behavior. The whole point is that the fast tier now catches the
-    regressions the per-SCV loader silently enabled.
+    Identical SCV rows collapse to one annotation that keeps the strongest
+    review status; distinct (significance, condition) pairs and distinct
+    alts at one site stay separate annotations; a row below the display
+    floor is still produced from the cache; and a ClinVar term missing from
+    the magnitude table falls back to the 5.0 default.
     """
 
     def test_three_identical_scvs_collapse_to_one_annotation(self, annotator: ClinVarAnnotator):
-        """a variant with N identical (significance, condition,
+        """A variant with N identical (significance, condition,
         gene) SCV rows in the cache must emit exactly ONE Annotation —
-        not N copies. On dev tip the annotator emits 3 identical
-        Annotation objects (3-way duplicate), which is the user-visible
-        regression the dedup patch fixes.
+        not N copies. Without the dedup the annotator emitted 3 identical
+        Annotation objects (a 3-way duplicate), the user-visible
+        regression this test pins.
 
         Fixture: rs999000111 on chr1 pos 200000, REF=A ALT=T,
         three SCV rows all Pathogenic / Cystic_fibrosis_test /
@@ -1142,7 +1142,7 @@ class TestMultiScvSemantics:
         assert a.significance == "clinvar_pathogenic"
 
     def test_collapsed_annotation_keeps_strongest_review_status(self, annotator: ClinVarAnnotator):
-        """acceptance criterion: when N SCVs collapse, the
+        """When N SCVs collapse, the
         surviving Annotation must carry the strongest review_status
         across the collapsed SCVs (not silently drop provenance).
 
@@ -1166,7 +1166,7 @@ class TestMultiScvSemantics:
     def test_distinct_significance_condition_pairs_survive_dedup(
         self, annotator: ClinVarAnnotator
     ):
-        """acceptance criterion: distinct (significance,
+        """Distinct (significance,
         condition) pairs for one variant must remain separate
         Annotations after dedup — collapsing them would be the
         Frankenstein-pair regression the per-SCV loader was BUILT to retire.
@@ -1204,15 +1204,15 @@ class TestMultiScvSemantics:
             ann.close()
 
     def test_sub_floor_variant_present_in_cache_but_below_floor(self, annotator: ClinVarAnnotator):
-        """setup: pin that the sub-floor fixture exists in the
+        """Precondition: the sub-floor fixture exists in the
         cache and emits an Annotation, but its magnitude is below the
         analyze 5.0 floor.
 
         Fixture: rs999000333 on chr1 pos 200200, REF=T ALT=C,
         single Likely_benign SCV row → magnitude 2.0 (sub-floor).
-        On dev tip this annotation is correctly produced; the bug is
-        downstream in panel_coverage which counts it as "found"
-        but the renderer filters it out — pure limbo. This test pins
+        This annotation is correctly produced; the bug it guards against
+        was downstream in panel_coverage which counts it as "found"
+        while the renderer filtered it out — pure limbo. This test pins
         the cache-side reality so the downstream test can build on
         a known-good fact.
 
@@ -1234,16 +1234,14 @@ class TestMultiScvSemantics:
             ann.close()
 
     def test_unmapped_clnsig_falls_to_default_magnitude(self, annotator: ClinVarAnnotator):
-        """(v2.3) pin: this fixture exists so the fix can land
-        the allowlist drift-guard against a known unmapped term.
+        """A ClinVar term missing from the magnitude table falls back to 5.0.
 
         Fixture: rs999000444 on chr1 pos 200300, REF=G ALT=A,
         single SCV with clinical_significance="protective" — a real
         ClinVar term NOT in _CLNSIG_MAGNITUDE. The dict's 5.0 default
         applies, equal to the analyze display floor — so the annotation
         surfaces at exactly the floor without a real magnitude rule.
-        This test pins the silent fallback so the future fix has a
-        regression target.
+        This test pins that fallback.
         """
         v = Variant("rs999000444", "1", 200300, "G", "A", build="GRCh37")
         results = annotator.annotate(v)
@@ -1253,11 +1251,11 @@ class TestMultiScvSemantics:
         assert a.gene == "UNMAPPED_CLNSIG"
 
     def test_multi_allelic_distinct_alts_survive_dedup(self, annotator: ClinVarAnnotator):
-        """cross-PR review Finding 1: two SCVs at a multi-
+        """Two SCVs at a multi-
         allelic site that share (rsid, significance, condition, gene)
         but DIFFER on alt must survive dedup as separate Annotations.
 
-        Pre-Finding-1 the dedup key was (rsid, sig, cond, gene) — these
+        With a dedup key of only (rsid, sig, cond, gene), these
         two rows would collapse, dropping a distinct-allele annotation
         and (worse) mis-attaching the surviving row's `alt` to a row
         that should describe the other allele. Downstream exact-

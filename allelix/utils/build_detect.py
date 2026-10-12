@@ -33,9 +33,13 @@ BUILD_GRCH36 = "GRCh36"
 BUILD_GRCH37 = "GRCh37"
 BUILD_GRCH38 = "GRCh38"
 
-# Authoritative 1-based positions per NCBI dbSNP / Variation API. Each
-# entry was cross-checked against the API's SPDI (0-based) + 1 and the
-# correct NC accession version for each build. SNPs were chosen for:
+# Authoritative 1-based positions (ADR-0044). GRCh37 and GRCh38 come from
+# the dbSNP b157 VCF releases for GRCh37.p13 and GRCh38.p14, cross-checked
+# with the NCBI Variation API (refsnp SPDI placements); GRCh36 comes from
+# dbSNP build 130 as published for hg18 (UCSC snp130), the last dbSNP build
+# with NCBI36 placements. tests/fixtures/dbsnp_seed_placements.json records
+# those sources and a test checks every entry against them. SNPs were
+# chosen for:
 #   - presence on virtually every consumer array
 #   - clinical or pharmacogenomic relevance (so coverage is high)
 #   - distribution across chromosomes so partial-coverage files still
@@ -58,7 +62,7 @@ KNOWN_SNP_POSITIONS: dict[str, dict[str, tuple[str, int]]] = {
     },
     # CYP2C9 / CYP2C19 cluster — chromosome 10 long arm
     "rs1799853": {
-        BUILD_GRCH36: ("10", 96692448),
+        BUILD_GRCH36: ("10", 96692037),
         BUILD_GRCH37: ("10", 96702047),
         BUILD_GRCH38: ("10", 94942290),
     },
@@ -68,7 +72,7 @@ KNOWN_SNP_POSITIONS: dict[str, dict[str, tuple[str, int]]] = {
         BUILD_GRCH38: ("10", 94981296),
     },
     "rs4244285": {
-        BUILD_GRCH36: ("10", 96532017),
+        BUILD_GRCH36: ("10", 96531606),
         BUILD_GRCH37: ("10", 96541616),
         BUILD_GRCH38: ("10", 94781859),
     },
@@ -84,11 +88,13 @@ KNOWN_SNP_POSITIONS: dict[str, dict[str, tuple[str, int]]] = {
         BUILD_GRCH37: ("11", 113270828),
         BUILD_GRCH38: ("11", 113400106),
     },
-    # BRCA1 — hereditary cancer, chromosome 17
+    # BRCA1 — hereditary cancer, chromosome 17. An insertion: the position
+    # is the VCF anchor base (dbSNP SPDI start), as ClinVar and arrays report
+    # it. dbSNP build 130 (the last with NCBI36 placements) has no record for
+    # it, so it has no GRCh36 entry and votes only for GRCh37 or GRCh38.
     "rs80357906": {
-        BUILD_GRCH36: ("17", 38449327),
-        BUILD_GRCH37: ("17", 41209080),
-        BUILD_GRCH38: ("17", 43057063),
+        BUILD_GRCH37: ("17", 41209079),
+        BUILD_GRCH38: ("17", 43057062),
     },
     # APOE — chromosome 19, near telomere
     "rs429358": {
@@ -125,11 +131,18 @@ class BuildDetectionResult(NamedTuple):
     inconsistent (e.g., one rsID matches GRCh37, another matches
     GRCh38). The majority is authoritative only when ``is_confident``;
     otherwise callers surface diagnostics and retain their fallback build.
+
+    `tied` names the builds that share the highest non-zero vote count when
+    no single build wins (``build`` is then None and ``matched`` 0, as
+    before); `tied_votes` is that shared count. Both are empty / 0 when
+    there is a winner or no vote.
     """
 
     build: str | None
     matched: int
     inspected: int
+    tied: tuple[str, ...] = ()
+    tied_votes: int = 0
 
     @property
     def is_confident(self) -> bool:
@@ -155,6 +168,11 @@ _SEED_AT_LOCUS: dict[tuple[str, int], tuple[str, str]] = {
     for rsid, entry in KNOWN_SNP_POSITIONS.items()
     for build, locus in entry.items()
 }
+
+
+def known_seed_loci() -> list[tuple[str, int]]:
+    """Every seed's ``(chromosome, position)`` on every build, for indexed lookups."""
+    return sorted(_SEED_AT_LOCUS)
 
 
 def known_snp_seed(variant: Variant) -> str | None:
@@ -208,10 +226,13 @@ def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:
     winner = max(votes, key=votes.__getitem__)
     if votes[winner] == 0:
         return BuildDetectionResult(build=None, matched=0, inspected=inspected)
-    # Tie between two builds with equal non-zero votes — don't pick.
-    top_counts = sorted(votes.values(), reverse=True)
-    if top_counts[0] == top_counts[1]:
-        return BuildDetectionResult(build=None, matched=0, inspected=inspected)
+    # Tie between builds with equal non-zero votes: no winner, but say which.
+    top = votes[winner]
+    tied = tuple(sorted(b for b, n in votes.items() if n == top))
+    if len(tied) > 1:
+        return BuildDetectionResult(
+            build=None, matched=0, inspected=inspected, tied=tied, tied_votes=top
+        )
     return BuildDetectionResult(build=winner, matched=votes[winner], inspected=inspected)
 
 
@@ -260,3 +281,409 @@ def normalize_build_label(label: str | None) -> str | None:
     if len(found) == 1:
         return next(iter(found))
     return None
+
+
+# ── Contig lengths (ADR-0044) ─────────────────────────────────────────
+# Nuclear contig lengths of the two supported assemblies, as declared in the
+# ``##contig`` lines of the GIAB v4.2.1 HG002 benchmark VCFs (GRCh37: hs37d5;
+# GRCh38: no-alt analysis set). Every nuclear contig differs between the two
+# builds, so any one of them identifies the build. MT is 16,569 bp in both
+# and is not evidence.
+_CONTIG_LENGTHS: dict[str, dict[str, int]] = {
+    BUILD_GRCH37: {
+        "1": 249250621,
+        "2": 243199373,
+        "3": 198022430,
+        "4": 191154276,
+        "5": 180915260,
+        "6": 171115067,
+        "7": 159138663,
+        "8": 146364022,
+        "9": 141213431,
+        "10": 135534747,
+        "11": 135006516,
+        "12": 133851895,
+        "13": 115169878,
+        "14": 107349540,
+        "15": 102531392,
+        "16": 90354753,
+        "17": 81195210,
+        "18": 78077248,
+        "19": 59128983,
+        "20": 63025520,
+        "21": 48129895,
+        "22": 51304566,
+        "X": 155270560,
+        "Y": 59373566,
+    },
+    BUILD_GRCH38: {
+        "1": 248956422,
+        "2": 242193529,
+        "3": 198295559,
+        "4": 190214555,
+        "5": 181538259,
+        "6": 170805979,
+        "7": 159345973,
+        "8": 145138636,
+        "9": 138394717,
+        "10": 133797422,
+        "11": 135086622,
+        "12": 133275309,
+        "13": 114364328,
+        "14": 107043718,
+        "15": 101991189,
+        "16": 90338345,
+        "17": 83257441,
+        "18": 80373285,
+        "19": 58617616,
+        "20": 64444167,
+        "21": 46709983,
+        "22": 50818468,
+        "X": 156040895,
+        "Y": 57227415,
+    },
+}
+_NUCLEAR = frozenset(_CONTIG_LENGTHS[BUILD_GRCH37])
+# UCSC hg19's chrM is the 16,571 bp Yoruba sequence, not the rCRS that
+# GRCh37 MT and ClinVar positions use.
+HG19_CHRM_LENGTH = 16571
+
+
+class LengthVerdict(NamedTuple):
+    """What a VCF's ``##contig`` lengths say about its build.
+
+    ``status`` is ``"none"`` (no nuclear contig declares a length),
+    ``"match"`` (every declared nuclear length is one build's; ``build``
+    names it), ``"mixed"`` (some lengths are GRCh37's, others GRCh38's) or
+    ``"unsupported"`` (a nuclear length matches neither build). ``detail``
+    is a short human-readable account; ``skip_mt`` is True when chrM/MT is
+    declared with the hg19 length, whose coordinates are not rCRS.
+    """
+
+    status: str
+    build: str | None
+    detail: str
+    skip_mt: bool = False
+
+
+def _bare_contig(name: str) -> str:
+    """``chr1`` -> ``1``, ``chrX`` -> ``X``, ``chrM`` / ``M`` -> ``MT``."""
+    bare = (name[3:] if name.lower().startswith("chr") else name).upper()
+    return "MT" if bare in ("M", "MT") else bare
+
+
+def contig_length_verdict(lengths: dict[str, int]) -> LengthVerdict:
+    """Classify declared contig lengths (``{contig ID: length}``)."""
+    seen: dict[str, set[str]] = {}
+    unsupported: list[str] = []
+    skip_mt = False
+    for name, length in lengths.items():
+        bare = _bare_contig(name)
+        if bare == "MT":
+            skip_mt = skip_mt or length == HG19_CHRM_LENGTH
+            continue
+        if bare not in _NUCLEAR:
+            continue  # alt, decoy, random and unplaced contigs are ignored
+        builds = {b for b, table in _CONTIG_LENGTHS.items() if table[bare] == length}
+        if not builds:
+            unsupported.append(f"{name}={length:,}")
+            continue
+        for build in builds:
+            seen.setdefault(build, set()).add(name)
+    if unsupported:
+        return LengthVerdict(
+            "unsupported",
+            None,
+            "contig lengths match neither GRCh37 nor GRCh38 (" + ", ".join(unsupported[:3]) + ")",
+            skip_mt,
+        )
+    if not seen:
+        return LengthVerdict("none", None, "no nuclear contig declares a length", skip_mt)
+    if len(seen) > 1:
+        parts = [
+            f"{', '.join(sorted(names)[:3])} = {build}" for build, names in sorted(seen.items())
+        ]
+        return LengthVerdict(
+            "mixed", None, "contig lengths disagree (" + "; ".join(parts) + ")", skip_mt
+        )
+    build, names = next(iter(seen.items()))
+    return LengthVerdict("match", build, f"{len(names)} contig length(s) match {build}", skip_mt)
+
+
+# ── The build decision (ADR-0044) ─────────────────────────────────────
+# Fixed vocabulary for where the build came from (JSON ``input.build_source``).
+SOURCE_OVERRIDE = "override"
+SOURCE_CONTIG_LENGTHS = "contig_lengths"
+SOURCE_SEEDS = "seeds"
+SOURCE_ASSEMBLY_HEADER = "assembly_header"
+SOURCE_FILE_LABEL = "file_label"
+SOURCE_DEFAULT = "default"
+BUILD_SOURCES = (
+    SOURCE_OVERRIDE,
+    SOURCE_CONTIG_LENGTHS,
+    SOURCE_SEEDS,
+    SOURCE_ASSEMBLY_HEADER,
+    SOURCE_FILE_LABEL,
+    SOURCE_DEFAULT,
+)
+# Short reader-facing wording for each source (HTML report, ``stats``).
+BUILD_SOURCE_LABELS = {
+    SOURCE_OVERRIDE: "forced with --build",
+    SOURCE_CONTIG_LENGTHS: "from the contig lengths",
+    SOURCE_SEEDS: "from known-SNP positions",
+    SOURCE_ASSEMBLY_HEADER: "from the VCF assembly header",
+    SOURCE_FILE_LABEL: "from the file's build line",
+    SOURCE_DEFAULT: "format default; the file states no build",
+}
+
+KIND_VCF = "vcf"
+KIND_ARRAY = "array"
+
+
+# The builds --build (and the Python API's override) may force. GRCh36 runs
+# with position lookups off (ADR-0025).
+SUPPORTED_OVERRIDES = (BUILD_GRCH36, BUILD_GRCH37, BUILD_GRCH38)
+
+
+class BuildDecisionError(ValueError):
+    """The build cannot be decided safely; the run must stop.
+
+    The message says what is wrong, what evidence the file carries and
+    what to supply. Nothing has been written when it is raised.
+    """
+
+
+class BuildDecision(NamedTuple):
+    """The decided build, where it came from, and the evidence behind it."""
+
+    build: str
+    source: str
+    file_label: str | None
+    seeds: BuildDetectionResult
+    lengths: LengthVerdict | None
+    label_overridden: bool = False
+    tentative_grch36: bool = False
+    skip_mt: bool = False
+
+
+NO_SEEDS = BuildDetectionResult(build=None, matched=0, inspected=0)
+
+
+def _seed_text(seeds: BuildDetectionResult) -> str:
+    if seeds.inspected == 0:
+        return "no known-SNP positions in the file"
+    if seeds.tied:
+        return (
+            f"{seeds.inspected} known-SNP positions found, tied between "
+            f"{' and '.join(seeds.tied)} ({seeds.tied_votes} each)"
+        )
+    if seeds.build is None:
+        return (
+            f"{seeds.inspected} known-SNP position(s) found, none at any supported "
+            "build's coordinate"
+        )
+    strength = "confident" if seeds.is_confident else "tentative"
+    return (
+        f"{seeds.matched} of {seeds.inspected} known-SNP positions match {seeds.build} "
+        f"({strength})"
+    )
+
+
+def _stop(file_name: str, problem: str, evidence: list[str]) -> BuildDecisionError:
+    return BuildDecisionError(
+        f"Cannot use {file_name}: {problem}. Evidence: {'; '.join(evidence)}. "
+        "Tell Allelix which genome build the file uses (command line: --build grch37 "
+        "or --build grch38; for an old GRCh36 / hg18 file, --build grch36, see "
+        "docs/grch36-liftover.md), and run it again."
+    )
+
+
+def decide_build(
+    *,
+    file_name: str,
+    kind: str,
+    override: str | None,
+    file_label: str | None,
+    default: str | None,
+    lengths: LengthVerdict | None,
+    seeds: BuildDetectionResult,
+) -> BuildDecision:
+    """Decide the build from the evidence the file carries (ADR-0044).
+
+    ``kind`` is ``"vcf"`` or ``"array"``. ``file_label`` is the build the
+    file states (a VCF's ``assembly=``, an array's header line), or None.
+    ``default`` is the parser's documented default (arrays only).
+    ``lengths`` is the VCF contig-length verdict (None for arrays).
+    ``seeds`` is the known-SNP evidence from the whole file (pre-scan), or
+    ``NO_SEEDS`` when contig lengths decide and the seeds are only checked
+    during the annotation pass (``check_late_seeds``).
+
+    Raises ``BuildDecisionError`` when the run must stop.
+    """
+    if override and override not in SUPPORTED_OVERRIDES:
+        raise ValueError(
+            f"Unsupported build override {override!r}: use one of {', '.join(SUPPORTED_OVERRIDES)}"
+        )
+    if override:
+        return BuildDecision(override, SOURCE_OVERRIDE, file_label, seeds, lengths)
+    label_text = f"the file says {file_label}" if file_label else "the file states no build"
+    if lengths is not None and lengths.status != "none":
+        if lengths.status == "unsupported":
+            raise _stop(file_name, "unsupported assembly", [lengths.detail, label_text])
+        if lengths.status == "mixed":
+            raise _stop(file_name, "its contig lengths contradict each other", [lengths.detail])
+        assert lengths.build is not None
+        if file_label and file_label != lengths.build:
+            raise _stop(
+                file_name,
+                f"its header says {file_label} but its contig lengths are {lengths.build}",
+                [lengths.detail, label_text],
+            )
+        if seeds.build is not None and seeds.build != lengths.build:
+            raise _stop(
+                file_name,
+                f"its contig lengths say {lengths.build} "
+                f"but its known-SNP positions say {seeds.build}",
+                [lengths.detail, _seed_text(seeds)],
+            )
+        if seeds.tied and lengths.build not in seeds.tied:
+            raise _stop(
+                file_name,
+                f"its contig lengths say {lengths.build} but its known-SNP positions "
+                f"are tied between {' and '.join(seeds.tied)}",
+                [lengths.detail, _seed_text(seeds)],
+            )
+        return BuildDecision(
+            lengths.build,
+            SOURCE_CONTIG_LENGTHS,
+            file_label,
+            seeds,
+            lengths,
+            skip_mt=lengths.skip_mt,
+        )
+    if seeds.inspected > 0 and seeds.build is None and not seeds.tied:
+        # Seeds found but placed on no build are evidence against
+        # every build, not an absence of evidence; the label or the default
+        # cannot be trusted either. (When contig lengths decided, they are
+        # decisive and this point is not reached.)
+        raise _stop(
+            file_name,
+            "its known-SNP positions match none of the supported builds",
+            [_seed_text(seeds), label_text],
+        )
+    if seeds.is_confident:
+        assert seeds.build is not None
+        return BuildDecision(
+            seeds.build,
+            SOURCE_SEEDS,
+            file_label,
+            seeds,
+            lengths,
+            label_overridden=bool(file_label and file_label != seeds.build),
+        )
+    if BUILD_GRCH36 in seeds.tied:
+        # When contig lengths did not decide, a tie that includes
+        # GRCh36 takes the GRCh36 fail-safe (ADR-0025) whatever the label
+        # says. A wrong GRCh36 only turns position lookups off, and says so;
+        # a wrong modern build on a real GRCh36 file attaches wrong records.
+        return BuildDecision(
+            BUILD_GRCH36,
+            SOURCE_SEEDS,
+            file_label,
+            seeds,
+            lengths,
+            label_overridden=bool(file_label and file_label != BUILD_GRCH36),
+            tentative_grch36=True,
+        )
+    tentative = seeds.build
+    if tentative == BUILD_GRCH36:
+        # Fail-safe (ADR-0025): GRCh36 turns position lookups off, so a
+        # tentative GRCh36 winner cannot attach another build's data.
+        return BuildDecision(
+            BUILD_GRCH36,
+            SOURCE_SEEDS,
+            file_label,
+            seeds,
+            lengths,
+            label_overridden=bool(file_label and file_label != BUILD_GRCH36),
+            tentative_grch36=True,
+        )
+    if file_label:
+        if tentative is not None and tentative != file_label:
+            raise _stop(
+                file_name,
+                f"its known-SNP positions point to {tentative} but {label_text}",
+                [_seed_text(seeds), label_text],
+            )
+        if seeds.tied and file_label not in seeds.tied:
+            raise _stop(
+                file_name,
+                f"its known-SNP positions are tied between {' and '.join(seeds.tied)} "
+                f"but {label_text}",
+                [_seed_text(seeds), label_text],
+            )
+        source = SOURCE_ASSEMBLY_HEADER if kind == KIND_VCF else SOURCE_FILE_LABEL
+        return BuildDecision(file_label, source, file_label, seeds, lengths)
+    if kind == KIND_VCF or default is None:
+        evidence = [_seed_text(seeds), label_text]
+        if lengths is not None:
+            evidence.insert(0, lengths.detail)
+        raise _stop(
+            file_name,
+            "the file carries no contig lengths, no assembly and not enough known-SNP positions",
+            evidence,
+        )
+    if tentative is not None and tentative != default:
+        raise _stop(
+            file_name,
+            f"its known-SNP positions point to {tentative}, "
+            f"not the {default} default for this format",
+            [_seed_text(seeds), label_text],
+        )
+    # A tie that excludes the default needs a third build besides the default;
+    # with GRCh37 as every format's default that tie includes GRCh36 and took
+    # the GRCh36 fail-safe above, so it never reaches this point.
+    if seeds.inspected == 0:
+        # No label and no evidence at all (for example an X-only
+        # export, which can carry none of the autosomal seeds). The default
+        # needs at least one seed position that does not contradict it.
+        raise _stop(
+            file_name,
+            "the file states no genome build and carries no known-SNP positions to check one",
+            [_seed_text(seeds), label_text],
+        )
+    return BuildDecision(default, SOURCE_DEFAULT, None, seeds, lengths)
+
+
+def check_late_seeds(decision: BuildDecision, seeds: BuildDetectionResult, file_name: str) -> None:
+    """Stop when seeds seen during the annotation pass contradict contig lengths.
+
+    Contig lengths decide a VCF's build without a pre-scan; the seeds the
+    annotation pass meets are checked afterwards. Any seed majority for
+    another build stops the run before anything is written, and so does a
+    tie that does not include the contig-length build (ADR-0044). A tie
+    that includes it lets the run proceed; the caller shows the tie as an
+    inconclusive warning.
+    """
+    if decision.source != SOURCE_CONTIG_LENGTHS:
+        return
+    if seeds.tied and decision.build not in seeds.tied:
+        assert decision.lengths is not None
+        raise _stop(
+            file_name,
+            f"its contig lengths say {decision.build} but its known-SNP positions are "
+            f"tied between {' and '.join(seeds.tied)} (found during the annotation pass, "
+            "which ran in full before this check; nothing was written)",
+            [decision.lengths.detail, _seed_text(seeds)],
+        )
+    if seeds.build is None:
+        return
+    if seeds.build != decision.build:
+        assert decision.lengths is not None
+        raise _stop(
+            file_name,
+            f"its contig lengths say {decision.build} but its known-SNP positions say "
+            f"{seeds.build} (found during the annotation pass, which ran in full before "
+            "this check; nothing was written)",
+            [decision.lengths.detail, _seed_text(seeds)],
+        )

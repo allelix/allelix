@@ -2,8 +2,8 @@
 # Copyright (C) 2026 Allelix
 """Tests for the Living DNA parser.
 
-Reviewer test instructions
---------------------------
+Real-data testing
+-----------------
 The synthetic fixture covers all documented edge cases (AX-, AFFX-,
 CHR:POS SNP IDs, no-calls, X chromosome, haploid). For real-data
 validation:
@@ -248,15 +248,15 @@ class TestMetadata:
         meta = parser.get_metadata(f)
         assert meta["build"] == "GRCh38"
 
-    def test_defaults_to_grch37(self, parser: LivingDNAParser, tmp_path: Path) -> None:
+    def test_no_build_line_is_none(self, parser: LivingDNAParser, tmp_path: Path) -> None:
         f = _write(tmp_path, "# Living DNA\nrs1\t1\t100\tAG\n")
         meta = parser.get_metadata(f)
-        assert meta["build"] == "GRCh37"
+        assert meta["build"] is None
 
     def test_date_comment_does_not_override_build(
         self, parser: LivingDNAParser, tmp_path: Path
     ) -> None:
-        """a `2038-…` download-date comment must not silently
+        """A `2038-…` download-date comment must not silently
         retag the file as GRCh38. Only build-marker lines (containing
         ``build``, ``reference``, or ``genome``) are inspected, and the
         normalizer rejects digits inside year strings via word
@@ -272,9 +272,9 @@ class TestMetadata:
         assert meta["build"] == "GRCh37"
 
     def test_first_build_marker_line_wins(self, parser: LivingDNAParser, tmp_path: Path) -> None:
-        """previously the LAST normalize-match won (no break),
-        so a stray later comment could overwrite the real header. Now
-        the first valid build-marker line wins."""
+        """The first valid build-marker line wins. Previously the LAST
+        normalize-match won (no break), so a stray later comment could
+        overwrite the real header."""
         f = _write(
             tmp_path,
             "# Living DNA\n"

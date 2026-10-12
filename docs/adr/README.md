@@ -26,7 +26,7 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0018: PharmGKB per-allele function via CPIC template extraction](0018-cpic-template-allele-function-extraction.md) — superseded by ADR-0020
 - ADR-0019 was reserved during drafting and not used.
 - [ADR-0020: CPIC API is the structured per-allele function source](0020-cpic-api-allele-function.md) — superseded as primary filter by ADR-0023
-- [ADR-0021: Genome build is detected from position data, not file headers](0021-build-auto-detection.md) — confidence threshold superseded in part by ADR-0037
+- [ADR-0021: Genome build is detected from position data, not file headers](0021-build-auto-detection.md) — superseded in part by ADR-0037 (confidence threshold) and ADR-0044 (decision rule)
 - [ADR-0022: PharmGKB reference-genotype annotations on non-CPIC genes are documented, not filtered](0022-pharmgkb-non-cpic-reference-annotations-are-documented-not-filtered.md) — scope reduced by ADR-0023
 - [ADR-0023: ClinVar REF allele is the primary PharmGKB non-finding filter](0023-clinvar-ref-as-primary-pharmgkb-filter.md)
 - [ADR-0024: GWAS Catalog magnitude scoring from p-value + effect size](0024-gwas-magnitude-scoring.md) — effect-size modifier superseded in part by ADR-0038
@@ -49,6 +49,7 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0041: Plausibility flag from zygosity and population frequency](0041-plausibility-flag.md) — marks very rare homozygous and carrier-less heterozygous calls for review
 - [ADR-0042: VCF quality gate](0042-vcf-quality-gate.md) — FILTER and GQ honoured, low-quality gVCF blocks are no-calls, spanning deletions symbolic, every exclusion counted
 - [ADR-0043: rsID-less resolution as a shared step](0043-shared-rsid-resolution.md) — one resolver chain for analyze, stats, extract and export plink; build detection votes by position
+- [ADR-0044: The genome build is decided from the file's evidence before annotation](0044-build-decision-evidence-before-labels.md) — contig lengths and whole-file seeds before labels; contradictions stop the run; one decision for every command
 
 ## Writing a new ADR
 

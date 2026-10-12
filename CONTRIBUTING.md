@@ -520,9 +520,7 @@ snapshot caveat:**
 
 - `CHANGELOG.md` entries (the `[Unreleased]` block and every
   shipped release section)
-- Commit messages (release commit on `dev`, private squash on
-  `main`, public squash on the public mirror, annotated tag
-  body)
+- Commit messages and annotated tag bodies
 - GitHub Release notes on the public repo
 
 Patterns that count as drift-vulnerable include (non-exhaustive):
@@ -558,11 +556,10 @@ freely:
   cleared, spot-checks on published HG002 carriers (rs1801133 /
   rs7412 / rs2010963 / rs6025) pass.
 
-The `tests/test_changelog_sanitize.py` CI guard enforces this on
-`CHANGELOG.md` — drift-vulnerable numeric tokens in unsnapshotted
-release sections fail the build. The commit-message and release-
-notes paths are policy-enforced (reviewer responsibility): scan
-release-content drafts before publishing.
+This applies to `CHANGELOG.md`, commit messages and release notes
+alike (reviewer responsibility): check release-content drafts for
+drift-vulnerable numeric tokens in unsnapshotted release sections
+before publishing.
 
 ### Output-contract schema bumps
 

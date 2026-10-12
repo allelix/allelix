@@ -44,7 +44,7 @@ from allelix.parsers._helpers import (
     split_genotype,
     strip_trailing_empty,
 )
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, build_statement
 from allelix.parsers.ftdna import HEADER_CANONICAL, PREAMBLE_WARNING_LIMIT, _is_header_line
 from allelix.utils.build_detect import normalize_build_label
 
@@ -174,12 +174,12 @@ class MyHeritageParser(GenotypeParser):
 
         No sample ID in either export. Low-pass WGS exports declare
         ``##method`` and ``##reference=buildNN``: the method becomes
-        ``method`` and the build ``header_build`` (also ``build``, which
-        feeds build detection as the header signal; positions still
-        override it, ADR-0021). Array exports declare neither, and
-        ``build`` stays the GRCh37 default.
+        ``method`` and the build ``build`` (the file's own label; the
+        build decision weighs it against the positions, ADR-0044). Array
+        exports state the build in a prose comment line instead, which is
+        read the same way; ``build`` is None when the file states none.
         """
-        meta = GenotypeMetadata(format=self.name, sample_id="", build=DEFAULT_BUILD)
+        meta = GenotypeMetadata(format=self.name, sample_id="", build=None)
         try:
             with file_path.open("r", encoding="utf-8") as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
@@ -190,6 +190,11 @@ class MyHeritageParser(GenotypeParser):
                     if not stripped.startswith("##") or "=" not in stripped:
                         if _is_column_header(stripped):
                             break
+                        # Array exports state the build in prose: "# ... with
+                        # respect to the human reference build 37." (also
+                        # without the "#" once a spreadsheet re-saves it).
+                        if meta["build"] is None:
+                            meta["build"] = build_statement(stripped)
                         continue
                     key, value = stripped[2:].split("=", 1)
                     key, value = key.strip().lower(), value.strip()
@@ -198,7 +203,6 @@ class MyHeritageParser(GenotypeParser):
                     elif key == "reference":
                         build = normalize_build_label(value)
                         if build is not None:
-                            meta["header_build"] = build
                             meta["build"] = build
         except (OSError, UnicodeDecodeError):
             pass

@@ -4,15 +4,15 @@
 **Date:** 2026-06-16
 **Supersedes:** ADR-0033's strict-per-field schema-version bump, as applied to
 coordinated field clusters. Per-field bumps remain in effect for non-clustered
-field additions; clusters defined in an ADR share a single bump on first PR.
+field additions; clusters defined in an ADR share a single bump on the first step.
 
 ## Context
 
 v2.0.1 shipped three "suppress-half" fixes and
-deferred the matching structural-halves to v2.1. The four open v2.1 issues —
+deferred the matching structural-halves to v2.1. The four open v2.1 problems —
 carrier-match case + strand, per-Annotation alt threading for
 non-ClinVar sources, structured GWAS trait / p-value / PheCode fields,
-and R-1 annotator-level strand-aware carrier matching — share one
+and annotator-level strand-aware carrier matching — share one
 underlying model deficiency:
 
 - **No reference allele on `Variant`.** Strand-aware carrier matching requires
@@ -28,9 +28,9 @@ underlying model deficiency:
   is to carry the values as structured fields and stop re-parsing prose for
   rollup / diff / display.
 
-Landing the four issues piecemeal would mean four PRs each touching `models.py`,
+Fixing the four problems piecemeal would mean four changes each touching `models.py`,
 the renderer set, the diff loader, and the JSON schema version. One coordinated
-design ADR + four sequential implementation PRs is the cleaner shape.
+design ADR + four sequential implementation steps is the cleaner shape.
 
 ## Decision
 
@@ -84,7 +84,7 @@ fields, not the source of truth.
 
 Existing rollup readers (`_gwas_base_trait`, `_gwas_phecode_parent`) consume the
 structured fields directly. The `_PHECODE_DELIM` shared constant introduced in
-v2.0.1 becomes dead code at the third PR and is removed.
+v2.0.1 becomes dead code at the third step and is removed.
 
 ### 4. Schema-version bump: cluster amendment to ADR-0033
 
@@ -98,21 +98,21 @@ cluster share one schema-version bump. A cluster is a set of fields:
 - All consumed by a single design decision (no field stands alone semantically),
 - Landed within one minor release cycle.
 
-The bump fires on the **first PR** in the cluster. Subsequent cluster PRs add
+The bump fires on the **first step** in the cluster. Subsequent cluster steps add
 their fields within the bumped schema version. The ADR's manifest section is
 the consumer contract — anyone reading the ADR sees every cluster field before
 the first one arrives in code.
 
 **Cluster manifest for ADR-0035** (v4 → v5):
 
-| Field | Type | Source | Lands in PR |
+| Field | Type | Source | Lands in step |
 |---|---|---|---|
 | `variant.ref` | `str \| None` | Variant model | 1 |
 | `annotation.trait` | `str` | Annotation model | 3 |
 | `annotation.p_value` | `float \| None` | Annotation model | 3 |
 | `annotation.phecode` | `str \| None` | Annotation model | 3 |
 
-`annotation.alt` is unchanged (already present since v1.4.1). PR 2 extends its
+`annotation.alt` is unchanged (already present since v1.4.1). Step 2 extends its
 population coverage, not the schema.
 
 ADR-0033's spirit ("don't silently change the schema") is preserved: the change
@@ -121,12 +121,12 @@ manifest names every field that will appear within that bump.
 
 Non-clustered field additions continue under ADR-0033's per-field policy.
 
-## Migration plan — four sequential PRs
+## Migration plan — four sequential steps
 
-Each PR is independently shippable and reverts cleanly without entangling the
+Each step is independently shippable and reverts cleanly without entangling the
 others.
 
-### PR 1 — `Variant.ref` field + schema bump v4 → v5
+### Step 1 — `Variant.ref` field + schema bump v4 → v5
 
 - Add `Variant.ref: str | None = None` to `models.py`.
 - Bump `SCHEMA_VERSION = "5"` in `json_report.py`.
@@ -138,12 +138,13 @@ others.
   same blob; field is optional so v4 consumers ignore it).
 - Document the cluster manifest in the bump's docstring referencing this ADR.
 - No behavior change at downstream consumers — they opt in field-by-field as
-  PRs 2-4 land.
+  steps 2-4 land.
 
-**Partial resolution** (this ADR + PR 1 done). Tests add fixtures
-covering `ref`-populated paths.
+**Outcome:** the model carries the reference allele, the prerequisite for
+the strand part of carrier matching in step 4. Tests add fixtures covering
+`ref`-populated paths.
 
-### PR 2 — Per-Annotation `alt` threading
+### Step 2 — Per-Annotation `alt` threading
 
 - GWAS / SNPedia / ClinPGx loaders populate `alt` from upstream data where
   available.
@@ -152,9 +153,10 @@ covering `ref`-populated paths.
 - Position-fallback path for resolved rsIDs unchanged.
 - Wrong-allele safety regression tests pin both paths.
 
-**Closes structural-half.**
+**Outcome:** completes the alt-threading fix that v2.0.1 started by
+removing the wrong-allele fallback for alt-less rows.
 
-### PR 3 — Structured GWAS fields
+### Step 3 — Structured GWAS fields
 
 - Add `Annotation.trait`, `Annotation.p_value`, `Annotation.phecode`.
 - GWAS loader writes structured fields directly.
@@ -163,23 +165,25 @@ covering `ref`-populated paths.
   truth.
 - `_PHECODE_DELIM` removed.
 
-**Closes structural-half.**
+**Outcome:** completes the PheCode fix that v2.0.1 started by sharing
+one delimiter constant.
 
-### PR 4 — Strand-aware carrier matching
+### Step 4 — Strand-aware carrier matching
 
 - `ClinVarAnnotator.annotate()` / `PharmGKBAnnotator.annotate()` / `compare`
   command consult `complement(user_allele)` against `{ref, alt}` using the
-  `Variant.ref` field PR 1 introduced.
+  `Variant.ref` field step 1 introduced.
 - Palindromic A/T and C/G SNPs return "ambiguous" (already handled in
-  `compare` since v1.1; this PR extends the policy to annotator carrier rules).
+  `compare` since v1.1; this step extends the policy to annotator carrier rules).
 - Mandatory test fixture: rs5742904 forward C/C and coding G/G produce the
-  same set of annotations (per CLAUDE.md R-1 spec).
+  same set of annotations.
 
-**Closes strand-half.**
+**Outcome:** completes carrier matching across strands; the case part
+was fixed in v2.0.1.
 
 ## Consequences
 
-- Schema v4 consumers see v5 once PR 1 lands. The diff loader carries both v4
+- Schema v4 consumers see v5 once step 1 lands. The diff loader carries both v4
   and v5 baselines forward (additive only — every v4 field is unchanged).
 - Existing JSON baselines stay diff-compatible (new fields are optional with
   `None` / empty defaults).
@@ -187,7 +191,7 @@ covering `ref`-populated paths.
   GWAS fields, and strand-aware carrier matching.
 - ADR-0033's per-field policy stays in effect for non-clustered field
   additions. Future cluster ADRs (e.g., JSON v3 in v2.3) follow the same
-  pattern: cluster manifest in the ADR, single bump on first PR.
+  pattern: cluster manifest in the ADR, single bump on the first step.
 - `Annotator.__del__` removal is independent of this ADR and can land in
   parallel without merge conflicts.
 
@@ -197,8 +201,6 @@ covering `ref`-populated paths.
   here)
 - ADR-0010 (strand-flip helpers shipped v0.4.0; liftover deferred — unchanged
   by this ADR)
-- ADR-0024 (GWAS magnitude scoring — interacts with PR 2: unknown-risk-allele
+- ADR-0024 (GWAS magnitude scoring — interacts with step 2: unknown-risk-allele
   cap at 3.0 still fires when `alt` is empty)
 - ADR-0033 (schema version bump policy — cluster carve-out documented above)
-- The four implementation issues listed in Context above
-- CLAUDE.md "Feature R-1" (strand-aware carrier matching spec)

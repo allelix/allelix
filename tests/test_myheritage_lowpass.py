@@ -25,23 +25,21 @@ LOWPASS = FIXTURES / "myheritage_lowpass_wgs.csv"
 
 
 class TestMetadata:
-    def test_method_and_header_build(self) -> None:
+    def test_method_and_build(self) -> None:
         meta = MyHeritageParser().get_metadata(LOWPASS)
         assert meta["method"] == "low-pass-wgs-imputed"
-        assert meta["header_build"] == "GRCh37"
         assert meta["build"] == "GRCh37"
 
     def test_array_export_declares_neither(self) -> None:
         meta = MyHeritageParser().get_metadata(FIXTURES / "mock_myheritage.csv")
         assert "method" not in meta
-        assert "header_build" not in meta
-        assert meta["build"] == "GRCh37"  # the parser default, as before
+        assert meta["build"] is None  # no default here (ADR-0044)
 
     def test_a_build38_reference_is_a_build38_header(self, tmp_path: Path) -> None:
         path = tmp_path / "x.csv"
         path.write_text(LOWPASS.read_text().replace("##reference=build37", "##reference=build38"))
         meta = MyHeritageParser().get_metadata(path)
-        assert meta["header_build"] == "GRCh38"
+        assert meta["build"] == "GRCh38"
 
     def test_unknown_method_is_kept_verbatim(self, tmp_path: Path) -> None:
         path = tmp_path / "x.csv"
@@ -64,10 +62,11 @@ class TestParsing:
             ("rs9001002", "C", "T"),
         ]
 
-    def test_header_build_reaches_build_detection(self) -> None:
+    def test_header_build_reaches_the_build_decision(self) -> None:
         result = run_analysis(LOWPASS, MyHeritageParser(), [])
         assert result.build_diagnostics is not None
-        assert result.build_diagnostics.header_build == "GRCh37"
+        assert result.build_diagnostics.file_label == "GRCh37"
+        assert result.build_diagnostics.source == "file_label"
         assert result.input_method == "low-pass-wgs-imputed"
 
 

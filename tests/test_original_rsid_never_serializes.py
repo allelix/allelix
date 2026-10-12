@@ -16,7 +16,7 @@ This test exercises every renderer path that could leak the field:
   - ``render_diff`` (``--diff`` JSON output)
   - ``render_terminal`` (Rich terminal report; reads ``hv_variants``
     for the high-value no-call banner)
-  - ``_render_extract_table`` (``allelix extract`` output; this PR
+  - ``_render_extract_table`` (``allelix extract`` output; extract
     stamps ``original_rsid`` directly on Variants returned from
     ``_sequential_extract``, so the extract-side renderer is the most
     immediately exposed surface)
@@ -90,13 +90,13 @@ def _result_with_sentinel(file_path: Path) -> AnalysisResult:
         annotators_used=[("clinvar", "2026-06-18")],
         annotations=[annotation],
         build_diagnostics=BuildDiagnostics(
-            header_build="GRCh38",
-            detected_build="GRCh38",
             effective_build="GRCh38",
-            override=False,
+            source="contig_lengths",
+            file_label="GRCh38",
+            detected_build="GRCh38",
             matched_count=1,
             inspected_count=1,
-            chr_prefix_inferred=False,
+            position_confident=False,
         ),
         hv_variants=[v],
         panel_rsids=frozenset({"rs1801133"}),

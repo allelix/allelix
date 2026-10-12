@@ -18,8 +18,8 @@ verification.
 - **`baselines/`** — Frozen `allelix analyze` output keyed per release.
   Diff against the previous release to detect regressions. Generated with
   `--exclude-snpedia` so the JSON contains only CC0-compatible content.
-- **`edge_cases/`** — Files that exercise specific parser quirks (P-A
-  canonical-header tightening, P-B GRCh36 position detection, MHG/Tempus
+- **`edge_cases/`** — Files that exercise specific parser quirks (23andMe
+  canonical-header check, GRCh36 position detection, MHG/Tempus
   build-mismatch warning, unsupported formats). Documented in
   `edge_cases/README.md`.
 - **`databases/`** — Pinned annotator databases. **Gitignored** (~17 GB
@@ -124,16 +124,15 @@ new pinned database snapshot; cross-format identity is the invariant.
   fixture with GRCh38 positions but a header claiming `build 37.1`. Exercises
   ADR-0021's auto-detect + mismatch warning path.
 - `edge_cases/23andme_lookalike_rejected_by_PA.txt` — non-23andMe file that
-  looks 23andMe-shaped. The v1.1.0 P-A canonical-header tightening correctly
+  looks 23andMe-shaped. The v1.1.0 23andMe canonical-header check correctly
   rejects it.
 - `edge_cases/23andme_format_from_genes_for_good_service.txt` — Genes for
   Good service exports in 23andMe format. Auto-detect correctly identifies
   it as 23andMe.
 - `edge_cases/ftdna_grch36_positions.csv` — FTDNA file with GRCh36
-  coordinates. Its 3/4 vote is tentative, but `allelix analyze` uses the
-  GRCh36 fail-safe and warns that modern position-keyed caches are
-  unavailable; `allelix stats` reports the parser's GRCh37 default because
-  it does not run the analysis pipeline's position detector.
+  coordinates and no build line. Its 4/4 GRCh36 vote is confident;
+  `allelix analyze` and `allelix stats` both use GRCh36, and `analyze` warns
+  that modern position-keyed caches are unavailable (ADR-0025, ADR-0044).
 - `edge_cases/unsupported_decodeme.txt` and `unsupported_23andme_exome_vcf.txt`
   — deCODEme remains unsupported. The historically named 23andMe exome file
   is now recognized as VCF; its filename predates VCF support and is retained

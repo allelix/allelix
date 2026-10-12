@@ -129,12 +129,16 @@ class AlphaMissenseAnnotator(Annotator):
             logger.warning("Could not remove staged file at %s", gz_path)
 
     def is_ready(self) -> bool:
-        """True when the AlphaMissense SQLite cache exists with current schema version."""
+        """True when the AlphaMissense SQLite cache exists with current schema version.
+
+        A cache with no ``local_version_tag`` is not ready: its schema version
+        is unknown, so it could pass as the current one after a bump. The
+        installer stamps the current version, so ``db update`` replaces it.
+        """
         info = get_database_info(self._db_path, "alphamissense")
         if info is None:
             return False
-        tag = info.get("local_version_tag") or ""
-        return tag == f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}" or not tag
+        return info.get("local_version_tag") == f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}"
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""

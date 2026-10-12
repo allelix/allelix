@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
 #
-# ClinVar CLNSIG vocabulary snapshot — R-4 drift detection.
+# ClinVar CLNSIG vocabulary snapshot for the live drift test.
 #
 # Source: ClinVar's published CLNSIG vocabulary as documented in the
 # ClinVar VCF release notes
@@ -85,16 +85,16 @@ values:
   # ── Curatorial categories (no clinical assertion attached) ──
   # These map to magnitude 2.0 in _CLNSIG_MAGNITUDE (safe below the
   # analyze 5.0 floor) so they're kept in the cache. Listing them
-  # here is what tells R-4 they're known vocab.
+  # here is what tells the drift test they're known vocab.
   - not_provided
   - no_classification_for_the_single_variant
   - no_classifications_from_unflagged_records
-  # `no_classification_provided` was here. Removed: as of ,
+  # `no_classification_provided` was here. Removed: as of v2.2.0,
   # the loader filters it via _CLINVAR_PLACEHOLDER_CLNSIGS (it's
   # not in _CLNSIG_MAGNITUDE, so it'd fall through to the 5.0
   # default — same family of bug as "-" and "not specified"). The
   # snapshot must NOT pretend to know about a filtered placeholder:
-  # if the loader ever regresses on it, R-4's allowlist-style live
+  # if the loader ever regresses on it, the drift test's allowlist-style live
   # drift check is the durable backstop the §7b denylist points to
   # — but only if the snapshot doesn't list it. The "honest snapshot"
   # invariant: every entry below should appear in a real db update

@@ -6,10 +6,13 @@ of unfalsifiable invariants against an allelix `analyze --report-format
 json` output. Sized to catch the failure modes that stale-pin counts
 historically masked:
 
-  - Floor invariants — written / total / unique-key counts must clear
-    floors sized at ~80% of v2.2.1 observed values. A drop below floor
-    is an over-filter or vocab-leak regression — NOT a license to ratchet
-    down without root-cause analysis (see §19 prose).
+  - Identity — the report is of the floor entry's `file`, on its `build`,
+    and the build came from its `build_source` (ADR-0044 vocabulary).
+
+  - Floor invariants — written and unique-key counts must clear floors
+    sized at ~80% of v2.2.1 observed values. A drop below floor is an
+    over-filter or vocab-leak regression — NOT a license to ratchet down
+    without root-cause analysis (see §19 prose).
 
   - Spot-check invariants — published HG002 ground truth at specific
     rsIDs (carrier identity, source-set membership, condition presence).
@@ -27,6 +30,9 @@ historically masked:
     outside the annotation list: `input.gvcf`, the VCF quality gate's
     `input.vcf_quality.low_quality_calls`, and `high_value_no_calls`
     (count and reason). Pins the GQ-floor behavior on low-coverage input.
+
+Every key in the YAML is read: a key this checker does not know fails the
+run (exit 2), so the YAML cannot define a check that is never made.
 
 Usage:
     python3 test_data/check_ground_truth.py <json> <key>
@@ -47,6 +53,77 @@ import sys
 from pathlib import Path
 
 import yaml
+
+
+# The keys this checker reads, per YAML block. `source_of_truth`, `sample`
+# and `note` are descriptive text.
+_TOP_KEYS = {"source_of_truth", "sample", "analyze", "vocabulary", "floors", "universal"}
+_SPOT_KEYS = {
+    "rsid",
+    "applies_to",
+    "min_rows",
+    "expected_sources",
+    "allowed_significance_patterns",
+    "must_have_condition",
+    "note",
+}
+_FLOOR_KEYS = {
+    "file",
+    "build",
+    "build_source",
+    "written_annotations_mag_0_min",
+    "unique_dedup_keys_min",
+    "report_assertions",
+    "note",
+}
+_FLOOR_REQUIRED = _FLOOR_KEYS - {"report_assertions", "note"}
+_ASSERTION_KEYS = {
+    "input_gvcf",
+    "vcf_quality_low_quality_calls_min",
+    "high_value_no_calls_min",
+    "high_value_no_calls_reason",
+}
+_VOCAB_KEYS = {"clinvar_allowed", "pharmgkb_allowed", "forbidden_significance_values"}
+_UNIVERSAL_KEYS = {
+    "required_non_null_fields",
+    "allowed_source_values",
+    "attribution_map",
+    "magnitude_range",
+}
+
+
+def _schema_errors(truth: dict) -> list[str]:
+    """Keys the checker would not read, and floor keys that are missing."""
+    errors = []
+
+    def unknown(where: str, block: dict, known: set[str]) -> None:
+        errors.extend(f"{where}: unknown key {k!r}" for k in sorted(set(block) - known))
+
+    unknown("top level", truth, _TOP_KEYS)
+    for spec in truth.get("analyze", []):
+        unknown(f"analyze {spec.get('rsid')}", spec, _SPOT_KEYS)
+    unknown("vocabulary", truth.get("vocabulary", {}), _VOCAB_KEYS)
+    unknown("universal", truth.get("universal", {}), _UNIVERSAL_KEYS)
+    for name, floors in truth.get("floors", {}).items():
+        unknown(f"floors {name}", floors, _FLOOR_KEYS)
+        errors.extend(
+            f"floors {name}: missing key {k!r}" for k in sorted(_FLOOR_REQUIRED - set(floors))
+        )
+        unknown(
+            f"floors {name} report_assertions",
+            floors.get("report_assertions") or {},
+            _ASSERTION_KEYS,
+        )
+    return errors
+
+
+def _check_identity(report: dict, floors: dict, failures: list[str]) -> None:
+    input_block = report.get("input") or {}
+    expected = (Path(floors["file"]).name, floors["build"], floors["build_source"])
+    actual = (input_block.get("file"), input_block.get("build"), input_block.get("build_source"))
+    for label, want, got in zip(("file", "build", "build_source"), expected, actual, strict=True):
+        if got != want:
+            failures.append(f"identity: input.{label} is {got!r}, expected {want!r}")
 
 
 def _key(a: dict) -> tuple:
@@ -206,6 +283,12 @@ def main() -> int:
     truth_path = Path(__file__).resolve().parent / "HG002_GROUND_TRUTH.yaml"
 
     truth = yaml.safe_load(truth_path.read_text())
+    schema = _schema_errors(truth)
+    if schema:
+        print(f"{truth_path.name} has keys this checker does not read:", file=sys.stderr)
+        for error in schema:
+            print(f"  - {error}", file=sys.stderr)
+        return 2
     if file_key not in truth["floors"]:
         print(
             f"unknown file key {file_key!r}; expected one of {list(truth['floors'])}",
@@ -217,6 +300,7 @@ def main() -> int:
     anns = report.get("annotations", [])
 
     failures: list[str] = []
+    _check_identity(report, truth["floors"][file_key], failures)
     _check_floors(anns, truth["floors"][file_key], failures)
     _check_report_assertions(report, truth["floors"][file_key], failures)
     _check_spots(anns, truth.get("analyze", []), file_key, failures)

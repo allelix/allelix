@@ -94,7 +94,7 @@ class TestSetupAndStatus:
         assert not annotator.is_ready()
 
     def test_tagless_cache_is_not_ready(self, tmp_path: Path) -> None:
-        """a cache with no ``local_version_tag`` must not be
+        """A cache with no ``local_version_tag`` must not be
         accepted as ready. Previously the ``or not tag`` escape passed
         tagless caches, which defeated ``GNOMAD_SCHEMA_VERSION``
         invalidation — any legacy cache would silently pass as the new
@@ -118,7 +118,7 @@ class TestSetupAndStatus:
         assert not annotator.is_ready()
 
     def test_stale_schema_tag_is_not_ready(self, tmp_path: Path) -> None:
-        """a cache stamped with an older schema version is rejected."""
+        """A cache stamped with an older schema version is rejected."""
         db_path = tmp_path / GNOMAD_DB_FILENAME
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             for stmt in GNOMAD_SCHEMA.split(";"):

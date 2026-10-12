@@ -13,13 +13,14 @@ from allelix.annotators.clinvar import ClinVarAnnotator
 from allelix.annotators.pharmgkb import PharmGKBAnnotator
 from allelix.models import Variant
 from allelix.parsers.myhappygenes import MyHappyGenesParser
-from allelix.reports._pipeline import (
-    _DETECTION_BUFFER_LIMIT,
-    AnalysisResult,
-    _BuildDetectionState,
-    run_analysis,
+from allelix.reports._pipeline import AnalysisResult, run_analysis
+from allelix.utils.build_detect import (
+    BUILD_GRCH36,
+    BUILD_GRCH37,
+    BUILD_GRCH38,
+    KNOWN_SNP_POSITIONS,
+    BuildDecisionError,
 )
-from allelix.utils.build_detect import BUILD_GRCH36, BUILD_GRCH37, KNOWN_SNP_POSITIONS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -130,7 +131,7 @@ class TestAnalysisResultFilter:
 
 
 class TestPanelCoverage:
-    """panel coverage distinguishes "not on chip" (state 3) from
+    """Panel coverage distinguishes "not on chip" (state 3) from
     "genotyped but no findings" (state 2) from "genotyped with findings"
     (state 1)."""
 
@@ -219,7 +220,7 @@ class TestPanelCoverage:
         assert "rs999999999" not in cov["no_findings"]
 
     def test_sub_floor_panel_rsid_lands_in_no_findings_not_limbo(self):
-        """patch: when ``filtered_annotations`` is supplied
+        """When ``filtered_annotations`` is supplied
         the "annotated" set is derived from THAT list (post-magnitude-
         filter) instead of the raw pre-filter set.
 
@@ -321,274 +322,322 @@ class TestRunAnalysis:
         assert ann._conns == {}
 
 
-class TestBuildDetectionMajority:
-    """ADR-0021 noise tolerance must control the effective build."""
+def _vcf_text(contigs: list[str], rows: list[tuple[str, int, str]]) -> str:
+    """A one-sample VCF with the given ``##contig`` bodies and (chrom, pos, id) rows."""
+    head = "".join(f"##contig=<{c}>\n" for c in contigs)
+    body = "".join(f"{c}\t{p}\t{i}\tA\tG\t50\tPASS\t.\tGT\t0/1\n" for c, p, i in rows)
+    return (
+        "##fileformat=VCFv4.2\n"
+        + head
+        + '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        + body
+    )
+
+
+def _seed_rows(build: str, *, prefix: str = "") -> list[tuple[str, int, str]]:
+    return [
+        (f"{prefix}{entry[build][0]}", entry[build][1], ".")
+        for entry in KNOWN_SNP_POSITIONS.values()
+        if build in entry
+    ]
+
+
+class TestBuildDecisionInPipeline:
+    """ADR-0044: the build is decided before annotation, from the file's evidence."""
 
     @staticmethod
-    def _variant(rsid: str, build: str, *, noisy: bool = False) -> Variant:
-        chrom, pos = KNOWN_SNP_POSITIONS[rsid][build]
-        return Variant(
-            rsid=rsid,
-            chromosome=chrom,
-            position=99_999_999 if noisy else pos,
-            allele1="A",
-            allele2="A",
+    def _chip(tmp_path: Path, label: str | None, rows: list[tuple[str, str, int]]) -> Path:
+        header = f"# using human reference build {label} coordinates.\n" if label else ""
+        lines = "".join(f"{r}\t{c}\t{p}\tA\tG\n" for r, c, p in rows)
+        path = tmp_path / "chip.txt"
+        path.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            + header
+            + "# Sample ID\tMHG1\n"
+            + "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            + lines
         )
+        return path
 
-    def test_four_of_five_overrides_disagreeing_header(self):
-        rsids = list(KNOWN_SNP_POSITIONS)
-        variants = [
-            self._variant(rsids[0], "GRCh38"),
-            self._variant(rsids[1], "GRCh38"),
-            self._variant(rsids[2], "GRCh38", noisy=True),
-            self._variant(rsids[3], "GRCh38"),
-            self._variant(rsids[4], "GRCh38"),
+    @staticmethod
+    def _seed_chip_rows(build: str, *, noisy: int = 0) -> list[tuple[str, str, int]]:
+        rows = []
+        for n, (rsid, entry) in enumerate(KNOWN_SNP_POSITIONS.items()):
+            chrom, pos = entry[build]
+            rows.append((rsid, chrom, 99_999_999 if n < noisy else pos))
+        return rows
+
+    def test_four_of_five_overrides_disagreeing_label(self, tmp_path: Path) -> None:
+        rows = self._seed_chip_rows(BUILD_GRCH38, noisy=1)[:5]
+        result = run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH38
+        assert diag is not None
+        assert (diag.source, diag.file_label, diag.mismatch) == ("seeds", BUILD_GRCH37, True)
+        assert (diag.matched_count, diag.inspected_count) == (4, 5)
+
+    def test_three_of_four_against_the_label_stops(self, tmp_path: Path) -> None:
+        """2.4.0 used the label here and annotated with the wrong build."""
+        rows = self._seed_chip_rows(BUILD_GRCH38, noisy=1)[:4]
+        with pytest.raises(BuildDecisionError, match="point to GRCh38 but the file says GRCh37"):
+            run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+
+    def test_tentative_grch36_fails_safe(self, tmp_path: Path) -> None:
+        grch36 = [r for r in KNOWN_SNP_POSITIONS if BUILD_GRCH36 in KNOWN_SNP_POSITIONS[r]]
+        rows = [(r, *KNOWN_SNP_POSITIONS[r][BUILD_GRCH36]) for r in grch36[:3]]
+        rows.append((grch36[3], KNOWN_SNP_POSITIONS[grch36[3]][BUILD_GRCH36][0], 99_999_999))
+        result = run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+        assert result.build == BUILD_GRCH36
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.tentative_grch36
+        assert result.build_diagnostics.detected_build == BUILD_GRCH36
+        assert result.build_diagnostics.mismatch
+
+    def test_below_threshold_seeds_agreeing_with_the_label_keep_it(self, tmp_path: Path) -> None:
+        """3/4 GRCh37 under a GRCh37 label: not confident, not contradicting."""
+        rows = self._seed_chip_rows(BUILD_GRCH37, noisy=1)[:4]
+        result = run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert (diag.source, diag.position_confident, diag.mismatch) == (
+            "file_label",
+            False,
+            False,
+        )
+        assert (diag.matched_count, diag.inspected_count) == (3, 4)
+
+    @staticmethod
+    def _tie_rows(first: str, second: str) -> list[tuple[str, str, int]]:
+        """Two seeds on ``first``, two on ``second`` (seeds that have both builds)."""
+        both = [r for r, e in KNOWN_SNP_POSITIONS.items() if first in e and second in e]
+        rows = [(r, *KNOWN_SNP_POSITIONS[r][first]) for r in both[:2]]
+        rows += [(r, *KNOWN_SNP_POSITIONS[r][second]) for r in both[2:4]]
+        return sorted(rows, key=lambda r: (int(r[1]), r[2]))
+
+    def test_chip_tie_including_the_label_proceeds_inconclusive(self, tmp_path: Path) -> None:
+        rows = self._tie_rows(BUILD_GRCH37, BUILD_GRCH38)
+        result = run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert diag.source == "file_label"
+        assert diag.inconclusive
+        assert (diag.tied_builds, diag.tied_votes) == ((BUILD_GRCH37, BUILD_GRCH38), 2)
+        assert diag.evidence()["seeds_tied"] == [BUILD_GRCH37, BUILD_GRCH38]
+
+    def test_chip_tie_excluding_the_label_stops(self, tmp_path: Path) -> None:
+        """No GRCh36 in the tie: a GRCh36 label against a 37/38 tie stops."""
+        rows = self._tie_rows(BUILD_GRCH37, BUILD_GRCH38)
+        with pytest.raises(BuildDecisionError, match="tied between GRCh37 and GRCh38"):
+            run_analysis(self._chip(tmp_path, "36", rows), MyHappyGenesParser(), [])
+
+    def test_chip_grch36_tie_takes_the_fail_safe(self, tmp_path: Path) -> None:
+        """A 36/38 tie under a 37.1 label means GRCh36 (fail-safe), with the warning."""
+        rows = self._tie_rows(BUILD_GRCH36, BUILD_GRCH38)
+        result = run_analysis(self._chip(tmp_path, "37.1", rows), MyHappyGenesParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH36
+        assert diag is not None
+        assert (diag.source, diag.tentative_grch36, diag.mismatch) == ("seeds", True, True)
+        assert diag.inconclusive
+        assert diag.tied_builds == (BUILD_GRCH36, BUILD_GRCH38)
+
+    def test_override_beats_a_grch36_tie(self, tmp_path: Path) -> None:
+        rows = self._tie_rows(BUILD_GRCH36, BUILD_GRCH38)
+        result = run_analysis(
+            self._chip(tmp_path, "37.1", rows),
+            MyHappyGenesParser(),
+            [],
+            build_override=BUILD_GRCH38,
+        )
+        assert result.build == BUILD_GRCH38
+        assert result.build_diagnostics is not None
+        assert not result.build_diagnostics.inconclusive
+
+    def test_unlabelled_chip_tie_with_the_default_proceeds(self, tmp_path: Path) -> None:
+        rows = self._tie_rows(BUILD_GRCH37, BUILD_GRCH38)
+        result = run_analysis(self._chip(tmp_path, None, rows), MyHappyGenesParser(), [])
+        assert result.build == BUILD_GRCH37
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.source == "default"
+        assert result.build_diagnostics.inconclusive
+
+    def test_unlabelled_chip_tie_without_the_default_takes_the_fail_safe(
+        self, tmp_path: Path
+    ) -> None:
+        rows = self._tie_rows(BUILD_GRCH36, BUILD_GRCH38)
+        result = run_analysis(self._chip(tmp_path, None, rows), MyHappyGenesParser(), [])
+        assert result.build == BUILD_GRCH36
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.tentative_grch36
+        assert result.build_diagnostics.inconclusive
+
+    def _tie_vcf(self, tmp_path: Path, first: str, second: str, contigs: list[str]) -> Path:
+        records = [(c, p, ".") for _, c, p in self._tie_rows(first, second)]
+        vcf = tmp_path / "tie.vcf"
+        vcf.write_text(_vcf_text(contigs, records))
+        return vcf
+
+    def test_vcf_late_tie_including_the_lengths_build_proceeds(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = self._tie_vcf(tmp_path, BUILD_GRCH37, BUILD_GRCH38, ["ID=1,length=249250621"])
+        result = run_analysis(vcf, VcfParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert diag.source == "contig_lengths"
+        assert diag.inconclusive
+        assert diag.tied_builds == (BUILD_GRCH37, BUILD_GRCH38)
+
+    def test_vcf_late_tie_excluding_the_lengths_build_stops(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = self._tie_vcf(tmp_path, BUILD_GRCH36, BUILD_GRCH38, ["ID=1,length=249250621"])
+        with pytest.raises(BuildDecisionError, match="tied between GRCh36 and GRCh38"):
+            run_analysis(vcf, VcfParser(), [])
+
+    def test_vcf_assembly_tie(self, tmp_path: Path) -> None:
+        """No contig lengths: the assembly label is the build that would decide."""
+        from allelix.parsers.vcf import VcfParser
+
+        ok = self._tie_vcf(tmp_path, BUILD_GRCH37, BUILD_GRCH38, ["ID=1,assembly=GRCh37"])
+        result = run_analysis(ok, VcfParser(), [])
+        assert result.build == BUILD_GRCH37
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.inconclusive
+        grch36_tie = self._tie_vcf(tmp_path, BUILD_GRCH36, BUILD_GRCH38, ["ID=1,assembly=GRCh37"])
+        result = run_analysis(grch36_tie, VcfParser(), [])
+        assert result.build == BUILD_GRCH36  # no contig lengths: the GRCh36 fail-safe
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.tentative_grch36
+
+    def test_vcf_late_grch36_tie_keeps_the_contig_length_build(self, tmp_path: Path) -> None:
+        """Contig lengths decided, so no GRCh36 fail-safe: GRCh37 is in the 36/37 tie."""
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = self._tie_vcf(tmp_path, BUILD_GRCH36, BUILD_GRCH37, ["ID=1,length=249250621"])
+        result = run_analysis(vcf, VcfParser(), [])
+        assert result.build == BUILD_GRCH37
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.source == "contig_lengths"
+        assert result.build_diagnostics.inconclusive
+
+    def test_zero_vote_seeds_stop_a_labelled_chip(self, tmp_path: Path) -> None:
+        """Seed rsIDs at no build's position are evidence against the label: stop."""
+        rows = [
+            (r, KNOWN_SNP_POSITIONS[r][BUILD_GRCH37][0], 7) for r in list(KNOWN_SNP_POSITIONS)[:3]
         ]
-        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
-        emitted = []
-        for variant in variants:
-            ready, batch = state.feed(variant)
-            if ready:
-                emitted.extend(batch)
-        emitted.extend(state.flush())
+        chip = self._chip(tmp_path, "37.1", sorted(rows, key=lambda r: int(r[1])))
+        with pytest.raises(BuildDecisionError, match="match none of the supported builds"):
+            run_analysis(chip, MyHappyGenesParser(), [])
+        forced = run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH37)
+        assert forced.build == BUILD_GRCH37
 
-        assert state.effective_build == "GRCh38"
-        diagnostics = state.diagnostics()
-        assert diagnostics.position_confident is True
-        assert diagnostics.matched_count == 4
-        assert diagnostics.inspected_count == 5
-        assert {variant.build for variant in emitted} == {"GRCh38"}
+    def test_zero_vote_seeds_do_not_stop_a_contig_length_decision(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
 
-    def test_three_of_four_falls_back_to_header(self):
-        rsids = list(KNOWN_SNP_POSITIONS)
-        variants = [
-            self._variant(rsids[0], "GRCh38"),
-            self._variant(rsids[1], "GRCh38"),
-            self._variant(rsids[2], "GRCh38", noisy=True),
-            self._variant(rsids[3], "GRCh38"),
+        records = [
+            (KNOWN_SNP_POSITIONS[r][BUILD_GRCH37][0], 7, r) for r in list(KNOWN_SNP_POSITIONS)[:3]
         ]
-        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
-        for variant in variants:
-            state.feed(variant)
-        emitted = state.flush()
+        vcf = tmp_path / "lengths.vcf"
+        vcf.write_text(_vcf_text(["ID=1,length=249250621"], sorted(records)))
+        result = run_analysis(vcf, VcfParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert diag.source == "contig_lengths"
+        assert (diag.detected_build, diag.inspected_count) == (None, 3)
 
-        diagnostics = state.diagnostics()
-        assert diagnostics.detected_build == "GRCh38"
-        assert diagnostics.effective_build == BUILD_GRCH37
-        assert diagnostics.position_confident is False
-        assert diagnostics.matched_count == 3
-        assert diagnostics.inspected_count == 4
-        assert {variant.build for variant in emitted} == {BUILD_GRCH37}
+    def test_unlabelled_chip_without_seeds_stops(self, tmp_path: Path) -> None:
+        """An X-only export carries none of the autosomal seeds: stop."""
+        rows = [(f"rs99{n:05d}", "X", 2_700_000 + n) for n in range(50)]
+        chip = self._chip(tmp_path, None, rows)
+        with pytest.raises(BuildDecisionError, match="carries no known-SNP positions"):
+            run_analysis(chip, MyHappyGenesParser(), [])
+        result = run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH37)
+        assert result.build == BUILD_GRCH37
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.source == "override"
 
+    def test_override_wins_over_every_stop(self, tmp_path: Path) -> None:
+        """--build skips the evidence: no mixed-length stop, no late seed check."""
+        from pathlib import Path
 
-class TestGRCh36FlushFailSafe:
-    """GRCh36 non-confident detection must use GRCh36 as effective build.
+        from allelix.parsers.vcf import VcfParser
 
-    When detection points to GRCh36 but isn't confident
-    (matched < inspected), the pipeline was falling back to header_build
-    or GRCh37. This bypassed the ClinVar safety guard (no GRCh36 cache)
-    and silently annotated GRCh36 data against GRCh37 coordinates.
-    """
+        mixed = Path(__file__).parent.parent / "fixtures" / "mock_vcf_mixed_contigs.vcf"
+        lifted = tmp_path / "lifted.vcf"
+        lifted.write_text(_vcf_text(["ID=1,length=249250621"], _seed_rows(BUILD_GRCH38)))
+        bare = tmp_path / "bare.vcf"
+        bare.write_text(_vcf_text(["ID=1"], [("1", 1_000_000, ".")]))
+        for vcf in (mixed, lifted, bare):
+            result = run_analysis(vcf, VcfParser(), [], build_override=BUILD_GRCH38)
+            assert result.build == BUILD_GRCH38, vcf.name
+            assert result.build_diagnostics is not None
+            assert result.build_diagnostics.source == "override"
 
-    def _grch36_variants(self, count=3, discordant=1):
-        """Build variants: `count` at GRCh36 positions + `discordant` at junk positions."""
-        variants = []
-        grch36_rsids = [
-            rsid for rsid, builds in KNOWN_SNP_POSITIONS.items() if BUILD_GRCH36 in builds
-        ]
-        for rsid in grch36_rsids[:count]:
-            chrom, pos = KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH36]
-            variants.append(
-                Variant(rsid=rsid, chromosome=chrom, position=pos, allele1="A", allele2="A")
+    def test_variants_carry_the_decided_build(self, tmp_path: Path) -> None:
+        rows = self._seed_chip_rows(BUILD_GRCH38)
+        result = run_analysis(
+            self._chip(tmp_path, None, rows),
+            MyHappyGenesParser(),
+            [],
+            high_value_rsids=set(KNOWN_SNP_POSITIONS),
+        )
+        assert result.build == BUILD_GRCH38
+        assert {v.build for v in result.hv_variants} == {BUILD_GRCH38}
+
+    def test_override_is_recorded(self, tmp_path: Path) -> None:
+        rows = self._seed_chip_rows(BUILD_GRCH38)
+        result = run_analysis(
+            self._chip(tmp_path, "37.1", rows),
+            MyHappyGenesParser(),
+            [],
+            build_override=BUILD_GRCH37,
+        )
+        assert result.build == BUILD_GRCH37
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.override
+
+    def test_lengths_decide_and_late_seeds_are_counted(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = tmp_path / "hg19.vcf"
+        vcf.write_text(
+            _vcf_text(["ID=chr1,length=249250621"], _seed_rows(BUILD_GRCH37, prefix="chr"))
+        )
+        result = run_analysis(vcf, VcfParser(), [])
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert diag.source == "contig_lengths"
+        assert (diag.detected_build, diag.position_confident) == (BUILD_GRCH37, True)
+
+    def test_late_seed_contradiction_stops_after_the_pass(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = tmp_path / "lifted.vcf"
+        vcf.write_text(_vcf_text(["ID=1,length=249250621"], _seed_rows(BUILD_GRCH38)))
+        with pytest.raises(BuildDecisionError, match="annotation pass"):
+            run_analysis(vcf, VcfParser(), [])
+
+    def test_hg19_chrm_records_are_not_annotated(self, tmp_path: Path) -> None:
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = tmp_path / "hg19_mt.vcf"
+        vcf.write_text(
+            _vcf_text(
+                ["ID=chr1,length=249250621", "ID=chrM,length=16571"],
+                [("chr1", 1_000_000, "rs9000001"), ("chrM", 8_800, "rs9000002")],
             )
-        for rsid in grch36_rsids[count : count + discordant]:
-            chrom, _ = KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH36]
-            variants.append(
-                Variant(rsid=rsid, chromosome=chrom, position=99999999, allele1="A", allele2="A")
-            )
-        return variants
-
-    def test_non_confident_grch36_uses_grch36_effective(self):
-        state = _BuildDetectionState(override=None, header_build=None)
-        variants = self._grch36_variants(count=3, discordant=1)
-        for v in variants:
-            state.feed(v)
-        state.flush()
-        assert state.effective_build == BUILD_GRCH36
-
-    def test_non_confident_grch36_with_header_grch37_still_uses_grch36(self):
-        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
-        variants = self._grch36_variants(count=3, discordant=1)
-        for v in variants:
-            state.feed(v)
-        state.flush()
-        assert state.effective_build == BUILD_GRCH36
-
-    def test_confident_grch36_uses_grch36(self):
-        state = _BuildDetectionState(override=None, header_build=None)
-        variants = self._grch36_variants(count=3, discordant=0)
-        for v in variants:
-            state.feed(v)
-        state.flush()
-        assert state.effective_build == BUILD_GRCH36
-
-    def test_diagnostics_report_grch36_as_effective(self):
-        state = _BuildDetectionState(override=None, header_build=None)
-        variants = self._grch36_variants(count=3, discordant=1)
-        for v in variants:
-            state.feed(v)
-        state.flush()
-        diag = state.diagnostics()
-        assert diag.effective_build == BUILD_GRCH36
-        assert diag.detected_build == BUILD_GRCH36
-
-    def test_buffer_limit_with_single_grch36_probe_uses_grch36(self):
-        """Buffer-limit path must apply the same GRCh36 safety as flush().
-
-        Real FTDNA GRCh36 files have 687K+ variants but only 1 probe SNP
-        in the first 100K lines. The buffer-limit fallback must run
-        detect_build and trigger the GRCh36 guard, not hard-fall-back to
-        GRCh37.
-        """
-        state = _BuildDetectionState(override=None, header_build=BUILD_GRCH37)
-        grch36_rsids = [
-            rsid for rsid, builds in KNOWN_SNP_POSITIONS.items() if BUILD_GRCH36 in builds
-        ]
-        rsid = grch36_rsids[0]
-        chrom, pos = KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH36]
-        probe = Variant(rsid=rsid, chromosome=chrom, position=pos, allele1="A", allele2="A")
-        state.feed(probe)
-        filler = [
-            Variant(rsid=f"rs9{i:06d}", chromosome="1", position=i, allele1="A", allele2="A")
-            for i in range(_DETECTION_BUFFER_LIMIT)
-        ]
-        for v in filler:
-            ready, _batch = state.feed(v)
-            if ready:
-                break
-        assert state.effective_build == BUILD_GRCH36
-        diag = state.diagnostics()
-        assert diag.detected_build == BUILD_GRCH36
-
-
-class TestChrPrefixBuildDetection:
-    """chr-prefix on contigs as a tertiary build-detection signal.
-
-    GRCh38 callers (DeepVariant, DRAGEN, GATK HC) use ``chr1`` /
-    ``chrX``; GRCh37 uses bare ``1`` / ``X``. When rsID matching and
-    ``##assembly`` both fail, chr-prefix is the strongest remaining
-    heuristic.
-    """
-
-    def test_chr_prefix_alone_infers_grch38(self) -> None:
-        """No override, no header_build, no rsID matches — chr-prefix → GRCh38."""
-        state = _BuildDetectionState(
-            override=None,
-            header_build=None,
-            chr_prefix_observed=True,
         )
-        state.flush()
-        assert state.effective_build == "GRCh38"
-
-    def test_no_chr_prefix_falls_back_to_grch37(self) -> None:
-        """No chr-prefix signal — preserves the existing GRCh37 fallback."""
-        state = _BuildDetectionState(
-            override=None,
-            header_build=None,
-            chr_prefix_observed=False,
-        )
-        state.flush()
-        assert state.effective_build == "GRCh37"
-
-    def test_override_wins_over_chr_prefix(self) -> None:
-        """``--build grch37`` (override) beats chr-prefix-says-GRCh38."""
-        state = _BuildDetectionState(
-            override="GRCh37",
-            header_build=None,
-            chr_prefix_observed=True,
-        )
-        assert state.effective_build == "GRCh37"
-
-    def test_header_build_wins_over_chr_prefix(self) -> None:
-        """Explicit header build beats chr-prefix heuristic."""
-        state = _BuildDetectionState(
-            override=None,
-            header_build="GRCh37",
-            chr_prefix_observed=True,
-        )
-        state.flush()
-        assert state.effective_build == "GRCh37"
-
-    def test_grch36_detected_still_wins(self) -> None:
-        """doesn't break the GRCh36 safety guard. Detected GRCh36
-        from position data takes priority over the chr-prefix tertiary
-        signal — wrong build assignment from chr-prefix bypassing the
-        guard would silently mis-annotate."""
-        variants = []
-        grch36_rsids = [
-            rsid for rsid, builds in KNOWN_SNP_POSITIONS.items() if BUILD_GRCH36 in builds
-        ]
-        for rsid in grch36_rsids[:3]:
-            chrom, pos = KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH36]
-            variants.append(
-                Variant(rsid=rsid, chromosome=chrom, position=pos, allele1="A", allele2="A")
-            )
-        state = _BuildDetectionState(
-            override=None,
-            header_build=None,
-            chr_prefix_observed=True,
-        )
-        for v in variants:
-            state.feed(v)
-        state.flush()
-        assert state.effective_build == BUILD_GRCH36
-
-    def test_diagnostics_flag_set_when_chr_prefix_picked_build(self) -> None:
-        """chr_prefix_inferred is True exactly when the chr-prefix
-        signal is what picked the effective build — no override, no rsID
-        detection, no header build, and the signal flipped the fallback
-        from GRCh37 to GRCh38. The CLI uses this to print "Inferred
-        GRCh38 from chr-prefixed contig names" instead of the
-        blind-default warning."""
-        state = _BuildDetectionState(
-            override=None,
-            header_build=None,
-            chr_prefix_observed=True,
-        )
-        state.flush()
-        assert state.effective_build == "GRCh38"
-        assert state.diagnostics().chr_prefix_inferred is True
-
-    def test_diagnostics_flag_clear_when_other_signal_picked_build(self) -> None:
-        """chr_prefix_observed but a higher-priority signal won — flag
-        stays False so the CLI doesn't surface a "inferred from chr-prefix"
-        message when the build came from rsID detection or header."""
-        # Header build wins.
-        state = _BuildDetectionState(
-            override=None,
-            header_build="GRCh38",
-            chr_prefix_observed=True,
-        )
-        state.flush()
-        assert state.diagnostics().chr_prefix_inferred is False
-        # Override wins.
-        state = _BuildDetectionState(
-            override="GRCh38",
-            header_build=None,
-            chr_prefix_observed=True,
-        )
-        assert state.diagnostics().chr_prefix_inferred is False
-
-    def test_diagnostics_flag_clear_when_no_chr_prefix(self) -> None:
-        """No chr-prefix signal → bare GRCh37 fallback → flag False."""
-        state = _BuildDetectionState(
-            override=None,
-            header_build=None,
-            chr_prefix_observed=False,
-        )
-        state.flush()
-        assert state.effective_build == "GRCh37"
-        assert state.diagnostics().chr_prefix_inferred is False
+        result = run_analysis(vcf, VcfParser(), [], high_value_rsids={"rs9000002"})
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.mt_skipped == 1
+        assert result.hv_variants == []
 
 
 class TestGnomadEnrichment:
@@ -835,6 +884,7 @@ class TestAlphaMissenseEnrichment:
         import sqlite3
 
         from allelix.annotators.alphamissense import AlphaMissenseAnnotator
+        from allelix.databases._versions import ALPHAMISSENSE_SCHEMA_VERSION
         from allelix.databases.alphamissense_loader import ALPHAMISSENSE_DB_FILENAME
         from allelix.databases.schema import ALPHAMISSENSE_SCHEMA
 
@@ -864,9 +914,16 @@ class TestAlphaMissenseEnrichment:
             )
             conn.execute(
                 "INSERT OR REPLACE INTO database_versions"
-                " (name, source_url, version, downloaded_at, record_count)"
-                " VALUES (?, ?, ?, ?, ?)",
-                ("alphamissense", "test://mock", "2023.2", "2026-01-01", 1),
+                " (name, source_url, version, downloaded_at, record_count, local_version_tag)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "alphamissense",
+                    "test://mock",
+                    "2023.2",
+                    "2026-01-01",
+                    1,
+                    f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",
+                ),
             )
             conn.commit()
 
@@ -1171,7 +1228,7 @@ class TestCaddMultiAllelic:
         assert ann.cadd_phred == pytest.approx(5.0)
 
     def test_alt_less_row_uses_the_single_carried_allele(self) -> None:
-        """an alt-less row (GWAS without a reported risk allele) is
+        """An alt-less row (GWAS without a reported risk allele) is
         enriched only through the allele the user actually carries, never
         the MAX across alts. Carrying one non-reference allele, that is
         unambiguous."""
@@ -1185,14 +1242,14 @@ class TestCaddMultiAllelic:
         assert ann.cadd_phred is None
 
     def test_no_direct_match_returns_none(self) -> None:
-        """no complement fallback. ``T`` is not ``A``; under the old
+        """No complement fallback: ``T`` is not ``A``. Under the old
         code complement("T") = "A" would have stamped 12.5."""
         ann = self._annotation("T", ("C", "T"), ref="C", pos=200)
         self._run([ann], {("1", 200, "C", "A"): 12.5})
         assert ann.cadd_phred is None
 
-    def test_audit_reproduction_skips_enrichment(self) -> None:
-        """reproduction: single-alt site C>T, user carries A."""
+    def test_allele_not_at_site_skips_enrichment(self) -> None:
+        """Single-alt site C>T and the user carries A: nothing is stamped."""
         ann = self._annotation("A", ("C", "A"), ref="C", pos=300)
         self._run([ann], {("1", 300, "C", "T"): 25.0})
         assert ann.cadd_phred is None
@@ -1500,7 +1557,7 @@ class TestRsidlessVcfResolution:
             clinvar.close()
 
         collected = {v.rsid for v in result.hv_variants}
-        # rs1801133 (chr1:11856378 G→A) and rs80357906 (chr17:41209080 G→A)
+        # rs1801133 (chr1:11856378 G→A) and rs80357906 (chr17:41209079 G→A)
         # are both in the rsidless fixture under ID=. and both resolve via
         # the test ClinVar cache.
         assert "rs1801133" in collected
@@ -1563,12 +1620,7 @@ class TestRsidlessVcfResolution:
         parser = VcfParser()
         clinvar = cm_stack.enter_context(ClinVarAnnotator(clinvar_data_dir))
         try:
-            result = run_analysis(
-                fixture_path,
-                parser,
-                [clinvar],
-                build_override="GRCh37",
-            )
+            result = run_analysis(fixture_path, parser, [clinvar])
         finally:
             clinvar.close()
         # Pre-existing fixture has rsIDs; ClinVar should annotate based on

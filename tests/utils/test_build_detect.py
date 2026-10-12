@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
 from allelix.models import Variant
 from allelix.utils.build_detect import (
     BUILD_GRCH36,
@@ -20,6 +25,22 @@ def _v(rsid: str, chrom: str, position: int) -> Variant:
 
 
 class TestDetectBuild:
+    def test_tie_reports_the_tied_builds(self):
+        """Two GRCh37 and two GRCh38 votes: no winner, and the tie is named."""
+        rsids = list(KNOWN_SNP_POSITIONS)
+        variants = [_v(r, *KNOWN_SNP_POSITIONS[r][BUILD_GRCH37]) for r in rsids[:2]] + [
+            _v(r, *KNOWN_SNP_POSITIONS[r][BUILD_GRCH38]) for r in rsids[2:4]
+        ]
+        result = detect_build(variants)
+        assert (result.build, result.matched, result.inspected) == (None, 0, 4)
+        assert (result.tied, result.tied_votes) == ((BUILD_GRCH37, BUILD_GRCH38), 2)
+        assert not result.is_confident
+
+    def test_a_winner_reports_no_tie(self):
+        rsids = list(KNOWN_SNP_POSITIONS)
+        result = detect_build([_v(r, *KNOWN_SNP_POSITIONS[r][BUILD_GRCH38]) for r in rsids[:3]])
+        assert (result.tied, result.tied_votes) == ((), 0)
+
     def test_grch37_positions_detect_grch37(self):
         variants = [
             _v(rsid, *KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH37])
@@ -223,7 +244,7 @@ class TestNormalizeBuildLabel:
 
 
 class TestNormalizeBuildLabelTokenBoundaries:
-    """anchored tokenization, ambiguity rejection.
+    """Build labels use anchored tokenization and reject ambiguity.
 
     The previous implementation was first-substring-wins over a bare
     `"3X" in s` chain. A date like `2038-01-01` would match `38` and
@@ -269,23 +290,24 @@ class TestKnownSnpTable:
     assertion.
     """
 
-    def test_every_entry_has_all_three_builds(self):
+    def test_every_entry_has_grch37_and_grch38(self):
+        """GRCh36 is optional: rs80357906 has no placement in dbSNP b130."""
         for rsid, entry in KNOWN_SNP_POSITIONS.items():
-            assert BUILD_GRCH36 in entry, f"{rsid} missing GRCh36 position"
             assert BUILD_GRCH37 in entry, f"{rsid} missing GRCh37 position"
             assert BUILD_GRCH38 in entry, f"{rsid} missing GRCh38 position"
+        assert sum(BUILD_GRCH36 in entry for entry in KNOWN_SNP_POSITIONS.values()) >= 10
 
     def test_chromosomes_agree_across_builds(self):
         """A SNP's chromosome doesn't change between builds."""
         for rsid, entry in KNOWN_SNP_POSITIONS.items():
-            chroms = {entry[b][0] for b in (BUILD_GRCH36, BUILD_GRCH37, BUILD_GRCH38)}
+            chroms = {chrom for chrom, _ in entry.values()}
             assert len(chroms) == 1, f"{rsid}: chr differs across builds: {chroms}"
 
     def test_positions_differ_between_builds(self):
-        """Positions must be unique across all three builds for each SNP."""
+        """Positions must be unique across the builds of each SNP."""
         for rsid, entry in KNOWN_SNP_POSITIONS.items():
-            positions = [entry[b][1] for b in (BUILD_GRCH36, BUILD_GRCH37, BUILD_GRCH38)]
-            assert len(set(positions)) == 3, (
+            positions = [pos for _, pos in entry.values()]
+            assert len(set(positions)) == len(positions), (
                 f"{rsid}: duplicate position across builds — useless for detection"
             )
 
@@ -300,3 +322,26 @@ class TestKnownSnpTable:
         """
         chroms = {entry[BUILD_GRCH37][0] for entry in KNOWN_SNP_POSITIONS.values()}
         assert len(chroms) >= 5, f"Table covers only {chroms} — need broader spread"
+
+
+FIXTURES = Path(__file__).parent.parent / "fixtures"
+
+
+@pytest.fixture(scope="module")
+def placements() -> dict[str, dict[str, list | None]]:
+    doc = json.loads((FIXTURES / "dbsnp_seed_placements.json").read_text())
+    return doc["placements"]
+
+
+class TestSeedTableAgainstDbsnp:
+    """Every seed matches a dbSNP-derived snapshot (sources in the fixture)."""
+
+    def test_same_seeds(self, placements) -> None:
+        assert set(placements) == set(KNOWN_SNP_POSITIONS)
+
+    @pytest.mark.parametrize("build", [BUILD_GRCH36, BUILD_GRCH37, BUILD_GRCH38])
+    def test_every_placement_matches(self, placements, build: str) -> None:
+        for rsid, entry in KNOWN_SNP_POSITIONS.items():
+            expected = placements[rsid][build]
+            actual = entry.get(build)
+            assert (list(actual) if actual else None) == expected, f"{rsid} {build}"

@@ -114,12 +114,10 @@ class GnomadAnnotator(Annotator):
     def is_ready(self) -> bool:
         """True when the gnomAD SQLite cache exists with current schema version.
 
-        a cache with no ``local_version_tag`` used to be accepted
-        as ready (the previous ``or not tag`` escape). That defeated the
-        whole point of ``GNOMAD_SCHEMA_VERSION``: if it ever gets bumped,
-        every tagless legacy cache would silently pass as the new
-        version. Reject tagless caches so the user is told to re-run
-        ``db update``.
+        A cache with no ``local_version_tag`` is not ready. Accepting it
+        would defeat ``GNOMAD_SCHEMA_VERSION``: after a bump, every
+        untagged legacy cache would silently pass as the new version.
+        Rejecting it tells the user to re-run ``db update``.
         """
         info = get_database_info(self._db_path, "gnomad")
         if info is None:

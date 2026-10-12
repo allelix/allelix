@@ -34,7 +34,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, NO_CALL_MARKER, Variant
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # banner entirely (WGSExtract output, Genetic Lifehacks converter output,
 # privacy-conscious users who delete the comment block) are out of scope
 # for this parser by design — they are handled by ``GenericTsvParser`` at
-# the end of the dispatch chain (planned, see / ). That
+# the end of the dispatch chain (planned; not implemented yet). That
 # two-layer design keeps banner-bearing 23andMe files attributed to
 # "23andMe" and banner-less 23andMe-shape files attributed to "generic-tsv"
 # without guessing a vendor.
@@ -136,24 +136,11 @@ class TwentyThreeAndMeParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract build from header comments. 23andMe files have no sample ID field."""
-        build = DEFAULT_BUILD
-        with file_path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.rstrip("\r\n")
-                if not line.startswith("#"):
-                    break
-                lowered = line.lower()
-                if "build 36" in lowered or "hg18" in lowered:
-                    build = "GRCh36"
-                elif "build 37" in lowered or "grch37" in lowered:
-                    build = "GRCh37"
-                elif "build 38" in lowered or "grch38" in lowered:
-                    build = "GRCh38"
+        """Extract the header's build line. 23andMe files have no sample ID field."""
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=build,
+            build=read_header_build(file_path),
         )
 
 

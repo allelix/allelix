@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""regression tests — rsID-less VCF coverage on the analyze
+"""Regression tests for rsID-less VCF coverage on the analyze
 panel-coverage and extract paths.
 
 Background: DeepVariant / DRAGEN / GIAB GRCh38-benchmark VCFs leave

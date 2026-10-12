@@ -24,8 +24,8 @@ FIXTURES = "tests/fixtures"
 MOCK_VCF = f"{FIXTURES}/mock_vcf.vcf"
 MOCK_GVCF = f"{FIXTURES}/mock_gvcf.g.vcf"
 MOCK_MULTISAMPLE = f"{FIXTURES}/mock_multisample.vcf"
-# full matrix of committed VCF fixtures — the v2.2.0 evaluator's
-# real-data battery exposed that gzipped + non-UTF-8 inputs crashed
+# Full matrix of committed VCF fixtures — a v2.2.0 real-data
+# battery exposed that gzipped + non-UTF-8 inputs crashed
 # can_parse with a raw Python traceback because the test suite only ever
 # carried plain ASCII .vcf files. CI now exercises the four-way matrix:
 # {.vcf, .vcf.gz} x {UTF-8 only, non-UTF-8 header byte}. Each fixture is
@@ -76,8 +76,8 @@ class TestCanParse:
 
 
 class TestRobustInputMatrix:
-    """full matrix of committed-fixture inputs the v2.2.0
-    evaluator's real-data battery showed crashed the parser before this
+    """Full matrix of committed-fixture inputs a v2.2.0
+    real-data battery showed crashed the parser before this
     fix. Every combination of {plain .vcf, .vcf.gz} x {UTF-8 only,
     non-UTF-8 header byte} must:
 
@@ -137,7 +137,7 @@ class TestRobustInputMatrix:
     def test_binary_garbage_does_not_crash_can_parse(self, tmp_path: Path) -> None:
         """A truncated tabix index or other binary file with a gzip
         magic prefix but non-VCF content must return False from
-        can_parse — never escape a traceback. The evaluator's real-data
+        can_parse — never escape a traceback. A real-data
         battery hit this with a mislabeled ``.vcf.gz`` that was
         actually a .tbi index file."""
         f = tmp_path / "fake.vcf.gz"
@@ -305,60 +305,38 @@ class TestGetMetadata:
         )
         assert VcfParser().get_metadata(f)["build"] == "GRCh37"
 
-    def test_chr_prefix_observed_chr1(self, tmp_path: Path) -> None:
-        """chr1 contig signals GRCh38 convention."""
-        f = tmp_path / "chr1.vcf"
+    def test_contig_lengths_are_collected_whatever_the_naming(self, tmp_path: Path) -> None:
+        """ADR-0044: lengths are the evidence; ``chr`` naming is not."""
+        f = tmp_path / "lengths.vcf"
+        f.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=chr1,length=249250621>\n"
+            "##contig=<ID=22,assembly=hg19,length=51304566>\n"
+            "##contig=<ID=chrM,length=16571>\n"
+            "##contig=<ID=chr1_KI270706v1_random,length=175055>\n"
+            "##contig=<ID=chrUn>\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+        )
+        meta = VcfParser().get_metadata(f)
+        assert meta["contig_lengths"] == {
+            "chr1": 249_250_621,
+            "22": 51_304_566,
+            "chrM": 16_571,
+            "chr1_KI270706v1_random": 175_055,
+        }
+        assert meta["build"] == "GRCh37"
+
+    def test_no_assembly_is_no_build(self, tmp_path: Path) -> None:
+        """No ``assembly=``: ``build`` is None, not a default or a guess."""
+        f = tmp_path / "bare.vcf"
         f.write_text(
             "##fileformat=VCFv4.2\n"
             "##contig=<ID=chr1,length=248956422>\n"
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
         )
-        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is True
-
-    def test_chr_prefix_observed_chr_only_after_chr1(self, tmp_path: Path) -> None:
-        """widening: per-chromosome VCFs that omit chr1 still get
-        detected (the previous regex only matched chr1 / chrX)."""
-        for cid in ("chr2", "chr22", "chr10", "chrY", "chrM", "chrMT"):
-            f = tmp_path / f"{cid}.vcf"
-            f.write_text(
-                f"##fileformat=VCFv4.2\n"
-                f"##contig=<ID={cid},length=200000000>\n"
-                f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
-            )
-            assert VcfParser().get_metadata(f)["chr_prefix_observed"] is True, (
-                f"chr-prefix not detected for {cid}"
-            )
-
-    def test_chr_prefix_not_observed_for_alt_contigs(self, tmp_path: Path) -> None:
-        """alt contigs and decoys must NOT flip the signal — they
-        don't disambiguate the build the same way as standard
-        chromosomes do."""
-        f = tmp_path / "decoys.vcf"
-        f.write_text(
-            "##fileformat=VCFv4.2\n"
-            "##contig=<ID=hs37d5,length=35477943>\n"
-            "##contig=<ID=GL000207.1,length=4262>\n"
-            "##contig=<ID=NC_007605,length=171823>\n"
-            "##contig=<ID=chr1_KI270706v1_random,length=175055>\n"
-            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
-        )
-        # chr1_KI270706v1_random has an `ID=chr1_...` prefix but is NOT
-        # a standard chromosome — the terminator `[,>]` in the regex
-        # prevents the match.
-        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is False
-
-    def test_chr_prefix_not_observed_bare_chromosomes(self, tmp_path: Path) -> None:
-        """bare numeric / X / MT chromosomes do NOT signal chr-prefix."""
-        f = tmp_path / "bare.vcf"
-        f.write_text(
-            "##fileformat=VCFv4.2\n"
-            "##contig=<ID=1,length=249250621>\n"
-            "##contig=<ID=22,length=51304566>\n"
-            "##contig=<ID=X,length=155270560>\n"
-            "##contig=<ID=MT,length=16569>\n"
-            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
-        )
-        assert VcfParser().get_metadata(f)["chr_prefix_observed"] is False
+        meta = VcfParser().get_metadata(f)
+        assert meta["build"] is None
+        assert meta["contig_lengths"] == {"chr1": 248_956_422}
 
 
 # ── parse: single-sample plain VCF ─────────────────────────────
@@ -673,7 +651,7 @@ class TestParseGvcf:
     def test_reference_blocks_are_skipped(self) -> None:
         """gVCF reference blocks (<NON_REF> + END) are NOT yielded as variants.
 
-        The brief's original test phrasing said "yielded as homozygous
+        An earlier test phrasing said "yielded as homozygous
         reference" but the corrected v2.0 behavior is SKIP entirely —
         reference blocks match nothing in any annotation database and
         would burn pipeline cycles for zero hits. The

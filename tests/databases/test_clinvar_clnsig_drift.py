@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""R-4: ClinVar CLNSIG vocabulary drift detection.
+"""ClinVar CLNSIG vocabulary drift detection.
 
 Two tiers of coverage:
 

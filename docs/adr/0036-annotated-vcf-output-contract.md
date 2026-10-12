@@ -5,7 +5,7 @@
 
 ## Context
 
-v2.3.0 headline feature adds an annotated VCF
+The v2.3.0 headline feature is an annotated VCF
 output mode alongside the existing HTML and JSON reports. Bioinformatics
 users work in VCF-in / VCF-out pipelines and won't rearchitect around
 HTML or a bespoke JSON schema — an annotated VCF is what slots into
@@ -122,8 +122,8 @@ change does not bump the VCF version and vice versa.
 While the schema is 0.x it is explicitly experimental. Reviewers may
 approve INFO-shape churn without ceremony because 0.x conveys that
 churn is expected. The 1.0.0 graduation is a follow-up ADR after real
-user feedback per the acceptance criteria on it
-will lock the contract and revoke the 0.x churn freedom.
+user feedback; it will lock the contract and revoke the 0.x churn
+freedom.
 
 ### Malformed-row tolerance
 
@@ -149,14 +149,14 @@ partial-line garbage in production files.
   explicitly deferred until a fourth call site materializes (Rule of
   Three plus one — no premature abstraction).
 - **Parser and `AnalysisResult` remain untouched.** The pipeline hook
-  in the follow-up PR builds the annotation dict inside the existing
+  builds the annotation dict inside the existing
   `_flush()` path without model changes.
 - **Multi-sample and gVCF users get correct behavior without extra
   code paths.** Two-pass writer sidesteps the genotype-aware parser
   entirely for the write.
-- **`bcftools view` becomes a CI gate.** The follow-up PR wires
-  `bcftools view` validation into the CI matrix; adds a new tooling
-  dependency but is the standard round-trip check.
+- **`bcftools view` becomes a CI gate.** `bcftools view` validation
+  runs in the CI matrix; it adds a tooling dependency but is the
+  standard round-trip check.
 
 ## Explicit non-goals for v2.3.0
 
@@ -164,7 +164,7 @@ partial-line garbage in production files.
   demand appears; text VCF is what pipelines default to.
 - **`.vcf.gz` compressed output.** Same rationale as BCF — deferred.
 - **Consequence annotation** (missense_variant, synonymous_variant,
-  etc. per SO terms; ). Real VEP-replacement pitch
+  etc. per SO terms). Real VEP-replacement pitch
   eventually includes this; v2.3.0 ships annotation without
   consequence prediction and pitches on that basis honestly.
 - **Full VCF 4.3 §1.6 percent-encoding of INFO values.** The v0.1
@@ -180,8 +180,7 @@ partial-line garbage in production files.
   `##ALLELIX_Attribution` values)
 - ADR-0035 — Variant.ref + per-Annotation alt threading (the field
   the writer keys on for per-allele lookup)
-- Feature issue for annotated VCF output
-- rsID recovery from ClinVar / gnomAD
-  positions (the source of the writer's recovered-rsID input)
-- Variant consequence annotation (explicit
-  non-goal for v2.3.0)
+- ADR-0043 — Shared rsID resolution: rsID recovery from ClinVar /
+  gnomAD positions (the source of the writer's recovered-rsID input)
+- Variant consequence annotation: an explicit non-goal for v2.3.0 (see
+  above)

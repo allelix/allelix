@@ -66,6 +66,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from allelix.databases._versions import ALPHAMISSENSE_SCHEMA_VERSION
 from allelix.databases.schema import ALPHAMISSENSE_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -260,13 +261,15 @@ def build_cache(
 
         conn.execute(
             "INSERT OR REPLACE INTO database_versions "
-            "(name, source_url, version, downloaded_at, record_count) "
-            "VALUES (?, ?, ?, datetime('now'), ?)",
+            "(name, source_url, version, downloaded_at, record_count, "
+            "local_version_tag) "
+            "VALUES (?, ?, ?, datetime('now'), ?, ?)",
             (
                 "alphamissense",
                 "https://zenodo.org/records/10813168",
                 "2023.2",
                 total_records,
+                f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",
             ),
         )
 

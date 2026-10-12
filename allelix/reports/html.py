@@ -28,6 +28,7 @@ from allelix.reports import (
     vcf_quality_lines,
 )
 from allelix.reports._pipeline import rollup_gwas_duplicates
+from allelix.reports.build_text import INCONCLUSIVE, MISMATCH, build_notices, short_source
 from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS, most_severe
 
 if TYPE_CHECKING:
@@ -206,6 +207,7 @@ details.education[open] summary { margin-bottom: .5rem; }
   text-transform: uppercase; letter-spacing: .05em;
 }
 .card .value { font-size: 1.2rem; font-weight: 600; }
+.card .build-source { font-size: .75rem; font-weight: 400; color: var(--text-muted); }
 .card-bad .value { color: #c62828; }
 .card-good .value { color: #2e7d32; }
 
@@ -1185,15 +1187,19 @@ def render_html(
 
     build_warn = ""
     diag = result.build_diagnostics
-    if diag is not None and diag.mismatch:
-        position_verb = "indicates" if diag.position_confident else "tentatively favors"
-        build_warn = (
-            '<div class="notice-warn"><strong>Build mismatch.</strong> '
-            f"File header claims {_escape(diag.header_build or '')} but position data "
-            f"{position_verb} {_escape(diag.detected_build or '')}. "
-            f"This report uses {_escape(diag.effective_build)}. "
-            "Your provider may have mislabeled the genome build.</div>"
-        )
+    if diag is not None:
+        # The same wording as the CLI (ADR-0044); the report shows the label
+        # mismatch and the tie, the notices that change how to read it.
+        for notice in build_notices(diag):
+            if notice.kind in (MISMATCH, INCONCLUSIVE):
+                lead, _, rest = notice.text.partition(": ")
+                build_warn += (
+                    f'<div class="notice-warn"><strong>{_escape(lead)}.</strong> '
+                    f"{_escape(rest)}</div>"
+                )
+    build_card = _escape(result.build)
+    if diag is not None:
+        build_card += f'<div class="build-source">{_escape(short_source(diag))}</div>'
 
     diff_banner = ""
     if diff is not None:
@@ -1297,7 +1303,7 @@ def render_html(
         for label, value, css in [
             ("Sample", _escape(result.sample_id) or "(unknown)", ""),
             ("Format", _escape(result.parser_display_name), ""),
-            ("Build", _escape(result.build), ""),
+            ("Build", build_card, ""),
             ("Variants", f"{len(sorted_groups):,}", ""),
             ("Bad", str(bad_count), " card-bad"),
             ("Good", str(good_count), " card-good"),

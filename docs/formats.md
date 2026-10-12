@@ -58,8 +58,9 @@ that name MyHeritage, for example:
 RSID,CHROMOSOME,POSITION,RESULT
 ```
 
-The file declares no machine-readable build, so Allelix detects it from
-positions (GRCh37 by default).
+Allelix reads the "human reference build 37" sentence as the file's build
+label (also when a spreadsheet stripped its `#`), and checks it against the
+positions of well-known SNPs across the whole file (ADR-0044).
 
 If the file was opened in a spreadsheet and saved again, it still works.
 Allelix recognises all of these re-save changes:
@@ -92,9 +93,9 @@ What Allelix does with it:
   The HTML report's array caveat is replaced by an imputation caveat.
   Imputation is accurate for common variants and least reliable for rare
   ones, so confirm any finding by direct genotyping before acting on it.
-- **`##reference=build37`**: an explicit header build (GRCh37). It is used
-  as the header signal in build detection; position evidence can still
-  override it.
+- **`##reference=build37`**: an explicit header build (GRCh37). It is the
+  file's label in the build decision; confident position evidence can still
+  override it, and contradicting tentative evidence stops the run (ADR-0044).
 - **Not in the file:** Y-chromosome and mitochondrial genotypes. The X
   chromosome is included.
 
@@ -105,6 +106,7 @@ has been announced but is not available.
 
 Tab-delimited, five columns. The header states the build as "37.1", but
 real exports have shipped GRCh38 coordinates under that label. Allelix
-therefore never trusts the header build for this format. It detects the
-build from the positions of well-known SNPs and warns when the header and
-the data disagree (ADR-0021).
+therefore checks the label against the positions of well-known SNPs across
+the whole file: confident positions win, with a warning when they disagree
+with the header; weaker evidence against the header stops the run and asks
+for `--build` (ADR-0021, ADR-0044).

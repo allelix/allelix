@@ -46,7 +46,7 @@ CPIC_API_BASE = "https://api.cpicpgx.org/v1"
 CPIC_TIMEOUT_SECONDS = 60
 CPIC_MAX_ROWS = 99_999  # PostgREST defaults to limit=1000 without explicit Range.
 
-# M-1: retry on transient failures. CPIC's PostgREST API is generally
+# Retry on transient failures. CPIC's PostgREST API is generally
 # reliable but TCP RSTs and brief 5xx blips do happen; one retry burst
 # saves the user from a manual `db update --force` rerun. Backoff is
 # capped low because the loader runs interactively at db-update time.
@@ -90,7 +90,7 @@ def _classify_cpic_status(status: str | None) -> str | None:
 def fetch_cpic_remote_signal(api_base: str = CPIC_API_BASE) -> str | None:
     """Return a freshness signal for CPIC's data, or None on failure.
 
-    M-2: ClinPGx's bulk-download Last-Modified header tells us nothing
+    ClinPGx's bulk-download Last-Modified header tells us nothing
     about CPIC's curation database. CPIC publishes a `change_log` table
     with one row per curated change; the most recent date is a stable,
     cheap freshness proxy. The signal format is `lastchange:{date}`.
@@ -129,7 +129,7 @@ def _http_get_json(url: str, timeout: float = CPIC_TIMEOUT_SECONDS) -> list[dict
 
     Sends `Range: 0-N` to bypass PostgREST's default 1000-row cap.
     Retries up to `CPIC_RETRY_ATTEMPTS` times with exponential backoff
-    on transient transport failures (M-1). Raises the last exception
+    on transient transport failures. Raises the last exception
     after the final attempt so the caller surfaces a clear failure
     instead of silently producing an empty lookup.
     """

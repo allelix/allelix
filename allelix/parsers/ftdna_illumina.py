@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import normalize_chromosome, split_genotype
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -143,9 +143,12 @@ class FTDNAIlluminaParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """FTDNA Illumina raw files carry no sample-ID metadata header."""
+        """FTDNA Illumina raw files carry no sample-ID metadata header.
+
+        The build is the header's build line, or None (ADR-0044).
+        """
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=DEFAULT_BUILD,
+            build=read_header_build(file_path),
         )

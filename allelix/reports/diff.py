@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6", "7"}
+_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6", "7", "8"}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -44,7 +44,7 @@ class ChangedAnnotation:
     ``previous_magnitude`` is ``None`` when the baseline entry had no
     magnitude recorded (legacy or partial baseline). Treating absence as
     ``0.0`` would flag every such entry as "changed" against any nonzero
-    current magnitude — see .
+    current magnitude.
     """
 
     current: Annotation

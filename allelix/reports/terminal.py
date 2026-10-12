@@ -70,7 +70,7 @@ def render_terminal(
 def _print_regulatory_notice(console: Console) -> None:
     """Emit the ADR-0003 regulatory notice in terminal output.
 
-    Evaluator defect 1: HTML and JSON already carry the same notice.
+    HTML and JSON already carry the same notice.
     The terminal is the default analyze output; without this line the
     disclaimer that lives in the other surfaces is missing from the
     most common one.
@@ -88,7 +88,7 @@ def _print_panel_coverage_warning(
     """Surface panel rsIDs that weren't in the user's input file.
 
     "Not on your chip" is critically different from "homozygous reference"
-    — making this invisible was the original audit complaint. Quiet when
+    — so the gap must be visible, never silent. Quiet when
     no panel was supplied, or when every panel rsID was genotyped.
 
     the post-filter annotation list is threaded through so

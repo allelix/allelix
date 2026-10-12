@@ -22,9 +22,9 @@ from allelix.databases.pharmgkb_loader import (
 from allelix.databases.schema import CLINVAR_SCHEMA
 
 # Synthetic ClinVar cache rows used by clinvar_data_dir and
-# all_annotators_data_dir. Pre-stage-C this content lived in
+# all_annotators_data_dir. Before v2.2 this content lived in
 # tests/fixtures/mock_clinvar_grch{37,38}.vcf and was parsed by
-# iter_clinvar_records. Stage C removes the VCF loader, so the
+# iter_clinvar_records. v2.2 removed the VCF loader, so the
 # data is encoded directly in Python and inserted into the cache
 # via SQLite. The biology is identical to the prior VCFs — every
 # test that depends on these records keeps its semantics.
@@ -107,7 +107,7 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     (
         "rs80357906",
         "17",
-        41209080,
+        41209079,
         "G",
         "A",
         "Pathogenic",
@@ -198,8 +198,8 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     # earlier fixes).
     #
     # rs999000111 — three identical SCV rows for the same (variant,
-    # sig, condition, gene) quadruple. On today's dev tip the
-    # annotator emits three identical Annotation objects (the dedup
+    # sig, condition, gene) quadruple. Without the dedup the
+    # annotator emitted three identical Annotation objects (the dedup
     # regression — visible in terminal/HTML/JSON). The fix
     # collapses to one Annotation while preserving the strongest
     # review_status and the union of references.
@@ -268,8 +268,8 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
         100041,
     ),
     # rs999000333 — sub-floor: the only annotation maps to magnitude
-    # 2.0 (Likely_benign), below the 5.0 analyze floor. On today's
-    # dev tip this rsid lands in panel_coverage.found and vanishes
+    # 2.0 (Likely_benign), below the 5.0 analyze floor. Before the fix
+    # this rsid landed in panel_coverage.found and vanished
     # from every rendered surface — the accounting lie. The
     # fix reroutes it to no_findings.
     (
@@ -302,7 +302,7 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
     ),
     # rs999000555 — multi-allelic site with two SCV rows that share
     # (significance, condition, gene) but differ ONLY on alt. Pinned
-    # for Finding 1: the dedup key MUST include alt or these
+    # because the dedup key MUST include alt or these
     # rows collapse and the surviving annotation mis-attaches its
     # `alt` field downstream — breaking the exact-(rsid, alt) lookup
     # gnomAD / AlphaMissense / CADD use for allele-specific
@@ -411,7 +411,7 @@ _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
     (
         "rs80357906",
         "17",
-        43057063,
+        43057062,
         "G",
         "A",
         "Pathogenic",
@@ -618,7 +618,7 @@ def _build_synthetic_clinvar_cache(
 ) -> None:
     """Build a per-build ClinVar SQLite cache from the synthetic rows above.
 
-    Stage C removed load_clinvar_vcf; this helper replaces it for
+    v2.2 removed load_clinvar_vcf; this helper replaces it for
     tests that just need a populated cache. The rows are identical to
     what the prior mock_clinvar_grch{37,38}.vcf fixtures parsed into.
     Stamps the current CLINVAR_INTERPRETER_VERSION so the annotator's
@@ -655,7 +655,7 @@ def _build_synthetic_clinvar_cache(
 def build_synthetic_clinvar_cache():
     """Provide the synthetic ClinVar cache builder to tests outside conftest.
 
-    Stage C replaced the VCF loader with a TSV loader; production
+    v2.2 replaced the VCF loader with a TSV loader; production
     tests that previously called `load_clinvar_vcf(...)` against a VCF
     to pre-populate a cache for unit tests now request this fixture and
     call it as `build_synthetic_clinvar_cache(db_path, build)`. Same
@@ -667,7 +667,7 @@ def build_synthetic_clinvar_cache():
 
 @pytest.fixture(autouse=True)
 def _bypass_loader_row_floors(monkeypatch):
-    """production loaders enforce a row-count floor against truncated
+    """Production loaders enforce a row-count floor against truncated
     downloads (``GWAS_MIN_ROWS``, ``PHARMGKB_MIN_ROWS``). Mock fixtures only
     have a handful of rows, so every test that runs an annotator ``setup()``
     or auto-reingest path against mock data would trip the floor. Patch both

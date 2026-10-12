@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Tests for atomic, timeout-bounded downloads (M-2)."""
+"""Tests for atomic, timeout-bounded downloads."""
 
 from __future__ import annotations
 
@@ -215,7 +215,7 @@ class _SlowHandler(http.server.BaseHTTPRequestHandler):
 
 
 class TestDownloadTimeout:
-    """m-timeout: a hung server must trip the configured timeout, not block forever."""
+    """A hung server must trip the configured timeout, not block forever."""
 
     def test_slow_response_triggers_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(manager, "DOWNLOAD_TIMEOUT_SECONDS", 0.5)
@@ -230,5 +230,5 @@ class TestDownloadTimeout:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
-        # Cleanup invariant from M-2 still holds under timeout.
+        # The cleanup invariant still holds under timeout.
         assert not (tmp_path / "out.bin.part").exists()

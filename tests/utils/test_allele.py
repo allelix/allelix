@@ -56,7 +56,7 @@ class TestIsStrandAmbiguous:
 
 
 class TestResolveStrand:
-    """complement-resolution is intentionally NOT performed.
+    """Complement resolution is intentionally NOT performed.
 
     At multi-allelic sites, the complement of the user's true forward
     allele can coincidentally equal a different alt at the same
@@ -77,8 +77,8 @@ class TestResolveStrand:
         assert resolve_strand("T", "A", "G") is None
         assert resolve_strand("C", "A", "G") is None
 
-    def test_audit_reproduction_no_false_complement(self):
-        # reproduction: user "A" at a C→T site.
+    def test_uncarried_allele_no_false_complement(self):
+        # User "A" at a C→T site.
         # Old code returned "T" (complement) and the consumer stamped a
         # CADD score for the C→T transition onto an annotation describing
         # the user's "A" carrier. Now returns None and enrichment is
@@ -102,7 +102,7 @@ class TestResolveStrand:
 
 
 class TestStrandAwareCarrierMatch:
-    """ADR-0035 PR 4: per-row carrier match for ClinVar-style {ref, alt} rows."""
+    """ADR-0035: per-row carrier match for ClinVar-style {ref, alt} rows."""
 
     def test_direct_alt_match(self):
         from allelix.utils.allele import strand_aware_carrier_match
@@ -152,7 +152,7 @@ class TestStrandAwareCarrierMatch:
         from allelix.utils.allele import strand_aware_carrier_match
 
         # User T/T, variant_ref=C (disagrees with A and complement(A)=T).
-        # The audit-reproduction shape: complement(user)=A coincides
+        # The trap shape: complement(user)=A coincides
         # with source_ref but the user isn't reverse-stranded — abstain.
         assert strand_aware_carrier_match("C", "T", "T", "A", "G") is False
 
@@ -167,7 +167,7 @@ class TestStrandAwareCarrierMatch:
 
 
 class TestStrandAwareGenotypeMatch:
-    """ADR-0035 PR 4: per-diploid carrier match for ClinPGx / SNPedia."""
+    """ADR-0035: per-diploid carrier match for ClinPGx / SNPedia."""
 
     def test_direct_match(self):
         from allelix.utils.allele import strand_aware_genotype_match
@@ -220,7 +220,7 @@ class TestStrandAwareGenotypeMatch:
 
 
 class TestStrandAwareGenotypeMatchHomozygousPalindrome:
-    """the palindrome guard must be site-level, not genotype-level.
+    """The palindrome guard must be site-level, not genotype-level.
 
     For a homozygous source genotype, set("GG") == {"G"} never equals the
     two-allele palindromic pair, so a C/G or A/T site slipped through and a
@@ -253,7 +253,7 @@ class TestStrandAwareGenotypeMatchHomozygousPalindrome:
         assert strand_aware_genotype_match("C", "T", "AG", "T") is True
 
     def test_multiallelic_palindromic_site_rejects_complement(self):
-        """residual: multi-allelic palindromic site rejects complement."""
+        """A multi-allelic palindromic site rejects the complement."""
         from allelix.utils.allele import strand_aware_genotype_match
 
         # rs2298383 scenario: user CT, source AG, ref C. Identity table flags palindromic.
@@ -365,10 +365,10 @@ class TestStrandAwareGenotypeMatchLowercase:
 
 
 class TestDeriveAltFromDiploid:
-    """ADR-0035 PR 2: alt derivation for SNPedia / ClinPGx matched genotypes."""
+    """ADR-0035: alt derivation for SNPedia / ClinPGx matched genotypes."""
 
     def test_none_ref_returns_empty(self):
-        """Array data prior to PR 4's ref population has no reference context."""
+        """Array data without ref population has no reference context."""
         from allelix.utils.allele import derive_alt_from_diploid
 
         assert derive_alt_from_diploid(None, "A", "G") == ""

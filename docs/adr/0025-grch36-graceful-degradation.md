@@ -7,10 +7,10 @@
 
 Real genotype files from ~2010–2012 (early FTDNA, 23andMe) use GRCh36 (hg18)
 coordinates. Allelix detects these files correctly via position-based build
-detection (P-B, shipped v1.1.0) and warns the user that ClinVar annotations
+detection (shipped v1.1.0) and warns the user that ClinVar annotations
 will be skipped (v1.0.0+).
 
-The original roadmap (R-12 sub-item 2) proposed shipping a GRCh36 ClinVar
+The original roadmap proposed shipping a GRCh36 ClinVar
 cache — either by downloading NCBI's GRCh36-mapped ClinVar VCF or by building
 a liftover pipeline (GRCh36 → GRCh37 coordinates). Both approaches have
 significant costs:
@@ -51,7 +51,7 @@ pipeline. Instead, it implements graceful degradation:
 
 ## Consequences
 
-- R-12 sub-item 2 (GRCh36 ClinVar cache) is removed from the roadmap entirely.
+- The GRCh36 ClinVar cache is removed from the roadmap entirely.
   It is not deferred — it is cancelled.
 - No liftover dependency is added to allelix's install footprint.
 - Users with GRCh36 files get partial but accurate results, with a clear path

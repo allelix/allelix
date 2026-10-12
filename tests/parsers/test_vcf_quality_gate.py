@@ -110,8 +110,8 @@ _QUAL_HEADER = (
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE1\n"
 )
 
-# The issue's fixture: four hets at ClinVar positions with PASS, ".",
-# LowQual and a VQSR tranche, plus a PASS het with GQ 5.
+# The quality-gate fixture: four hets at ClinVar positions with PASS, ".",
+# LowQual and a VQSR tranche FILTER value, plus a PASS het with GQ 5.
 _GATE_SITES = (
     ("rs900740001", 3_900_100, "G", "A", "PASS", "0/1:99:30"),
     ("rs900740002", 3_900_200, "C", "T", ".", "0/1:99:30"),
@@ -376,7 +376,7 @@ class TestCallerFilterEndToEnd:
         assert json.loads(out.read_text())["input"]["vcf_quality"] is None
 
 
-# ── Reviewer additions: GQ boundary, every command honours the gate ──
+# ── GQ boundary, every command honours the gate ──
 
 
 class TestGateBoundaryAndCommands:

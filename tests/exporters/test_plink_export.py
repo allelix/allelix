@@ -8,7 +8,7 @@ import shutil
 
 import pytest
 
-from allelix.exporters.plink import _orient_genotype, export_plink
+from allelix.exporters.plink import EmptyPlinkSetError, _orient_genotype, export_plink
 from allelix.models import Variant
 
 
@@ -267,17 +267,11 @@ class TestPalindromicRefAltFallsBack:
 
 class TestEmptyVariantList:
     def test_empty_variant_list(self, tmp_path):
-        """Empty input produces valid PLINK files with zero variants."""
+        """Empty input is refused: no PLINK set with zero variants is written."""
         prefix = tmp_path / "out"
-        written, skipped, indel_skip, mono = export_plink(iter([]), prefix, "GRCh37")
-        assert written == 0
-        assert skipped == 0
-        assert indel_skip == 0
-        assert mono == 0
-        assert (tmp_path / "out.fam").exists()
-        bed = (tmp_path / "out.bed").read_bytes()
-        assert bed == bytes([0x6C, 0x1B, 0x01])
-        assert (tmp_path / "out.bim").read_text() == ""
+        with pytest.raises(EmptyPlinkSetError):
+            export_plink(iter([]), prefix, "GRCh37")
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestMultiAllelicStrandCollision:
@@ -350,11 +344,10 @@ class TestExporterPreservesInputOrder:
 
 class TestAllNoCalls:
     def test_all_no_calls(self, tmp_path):
-        """All no-call input produces magic-only .bed and empty .bim."""
+        """All no-call input is refused, with the skipped count; no files remain."""
         prefix = tmp_path / "out"
         variants = [_v("rs1", a1="-", a2="-"), _v("rs2", a1="A", a2="-")]
-        written, skipped, _, _ = export_plink(iter(variants), prefix, "GRCh37")
-        assert written == 0
-        assert skipped == 2
-        bed = (tmp_path / "out.bed").read_bytes()
-        assert len(bed) == 3
+        with pytest.raises(EmptyPlinkSetError) as exc:
+            export_plink(iter(variants), prefix, "GRCh37")
+        assert (exc.value.no_calls, exc.value.indels) == (2, 0)
+        assert list(tmp_path.iterdir()) == []

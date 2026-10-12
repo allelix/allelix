@@ -4,14 +4,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from allelix.parsers.myheritage import MyHeritageParser
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @pytest.fixture
@@ -216,11 +213,22 @@ class TestParse:
 
 
 class TestMetadata:
-    def test_default_build_37(self, parser: MyHeritageParser, mock_myheritage_path: Path) -> None:
+    def test_no_build_statement_is_none(
+        self, parser: MyHeritageParser, mock_myheritage_path: Path
+    ) -> None:
         meta = parser.get_metadata(mock_myheritage_path)
-        assert meta["build"] == "GRCh37"
+        assert meta["build"] is None
         assert meta["format"] == "myheritage"
         assert meta["sample_id"] == ""
+
+    @pytest.mark.parametrize(
+        "name", ["myheritage_tab_delimited.txt", "myheritage_spreadsheet_resaved.csv"]
+    )
+    def test_prose_build_line_is_the_label(self, parser: MyHeritageParser, name: str) -> None:
+        """'... with respect to the human reference build 37.', with or without
+        the '#' a spreadsheet strips."""
+        meta = parser.get_metadata(Path(__file__).parent.parent / "fixtures" / name)
+        assert meta["build"] == "GRCh37"
 
     def test_metadata_has_no_snp_count_field(
         self, parser: MyHeritageParser, mock_myheritage_path: Path

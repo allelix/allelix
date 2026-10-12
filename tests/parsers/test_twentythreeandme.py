@@ -314,13 +314,13 @@ class TestMetadata:
         meta = parser.get_metadata(f)
         assert meta["build"] == "GRCh38"
 
-    def test_defaults_to_grch37(self, parser: TwentyThreeAndMeParser, tmp_path: Path) -> None:
+    def test_no_build_line_is_none(self, parser: TwentyThreeAndMeParser, tmp_path: Path) -> None:
         f = _write(
             tmp_path,
             "# 23andMe\nrs1\t1\t100\tAG\n",
         )
         meta = parser.get_metadata(f)
-        assert meta["build"] == "GRCh37"
+        assert meta["build"] is None
 
     def test_metadata_has_no_snp_count_field(
         self, parser: TwentyThreeAndMeParser, mock_23andme_path: Path

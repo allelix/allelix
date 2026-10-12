@@ -243,9 +243,10 @@ class TestParse:
 
 
 class TestMetadata:
-    def test_default_build_37(self, parser: FTDNAParser, mock_ftdna_path: Path) -> None:
+    def test_no_build_statement_is_none(self, parser: FTDNAParser, mock_ftdna_path: Path) -> None:
+        """ADR-0044: no default here; the build decision applies it."""
         meta = parser.get_metadata(mock_ftdna_path)
-        assert meta["build"] == "GRCh37"
+        assert meta["build"] is None
         assert meta["format"] == "ftdna"
         assert meta["sample_id"] == ""
 

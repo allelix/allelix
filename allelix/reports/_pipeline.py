@@ -6,23 +6,36 @@ The CLI builds an `AnalysisResult` once and hands it to a renderer
 (terminal, JSON, HTML). Renderers never query the database or re-iterate
 the parser — they receive a fully-populated value object.
 
-ADR-0021: this pipeline owns build detection. Parsers report the
-header-claimed build; the pipeline replaces each variant's `build`
-with the build detected from position data (or the user's `--build`
-override) before annotators see the variant.
+ADR-0044: the build is decided once, before any annotation, from the
+evidence the file carries (``decide_file_build``). Parsers report the
+build the file states, if any; the pipeline sets each variant's `build`
+to the decided build before annotators see it, or stops.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
+import threading
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from allelix.annotators._resolution import resolve_batch
+from allelix.models import DEFAULT_BUILD
 from allelix.utils.build_detect import (
-    BUILD_GRCH36,
     BUILD_GRCH37,
     BUILD_GRCH38,
+    KIND_ARRAY,
+    KIND_VCF,
+    NO_SEEDS,
+    SOURCE_CONTIG_LENGTHS,
+    SOURCE_OVERRIDE,
+    BuildDecision,
+    BuildDecisionError,
+    BuildDetectionResult,
+    check_late_seeds,
+    contig_length_verdict,
+    decide_build,
     detect_build,
     known_snp_seed,
     normalize_build_label,
@@ -49,13 +62,6 @@ if TYPE_CHECKING:
     from allelix.reports.vcf import VcfWriteInputs
 
 
-# How many input variants to buffer while waiting for detection to
-# converge. Detection completes once every entry in KNOWN_SNP_POSITIONS
-# has been seen; typical files cover the table within the first ~5000
-# probes. Cap so a file with no known SNPs doesn't buffer the whole
-# input.
-_DETECTION_BUFFER_LIMIT = 100_000
-
 # How many variants to accumulate before flushing to each annotator's
 # batch_annotate. Each annotator further chunks internally for SQL
 # parameter limits, so this is a Python-side batch boundary, not an
@@ -67,56 +73,96 @@ _BATCH_SIZE = 5000
 
 @dataclass
 class BuildDiagnostics:
-    """What the pipeline learned about the file's genome build.
+    """How the run's genome build was decided (ADR-0044).
 
-    `header_build` is the build claimed by the file header (normalized
-    to GRCh37/GRCh38 via `normalize_build_label`; may be None if the
-    header doesn't say or uses an unrecognized label).
-
-    `detected_build` is the leading position-data signal (None if no
-    known SNPs appeared in the input). It may be tentative; consult
-    `position_confident` before describing it as authoritative.
-
-    `effective_build` is what was actually used for annotation — either
-    a CLI `--build` override, the detected build, or a fallback. Always
-    set when the pipeline ran on any data.
-
-    `mismatch` is True when header_build and detected_build disagree
-    AND no override was supplied. The CLI surfaces this as a warning.
-
-    `chr_prefix_inferred`: True when the effective build was
-    picked using the ``chr``-prefixed contig heuristic (GRCh38
-    convention). False whenever rsID detection or an explicit header
-    build chose the answer, or when no chr-prefix signal was seen.
-    Lets the CLI surface "inferred from chr-prefix" instead of the
-    blind-default warning text.
-
-    `position_confident` records whether the position signal cleared
-    ADR-0037's minimum-match and winning-ratio thresholds. It is internal
-    pipeline provenance, not part of the versioned JSON report schema.
+    `effective_build` is the build used for annotation. `source` is one of
+    ``allelix.utils.build_detect.BUILD_SOURCES``. `file_label` is the build
+    the file states (None when it states none). `detected_build`,
+    `matched_count`, `inspected_count` and `position_confident` describe the
+    known-SNP evidence (from the whole-file pre-scan, or from the annotation
+    pass when contig lengths decided). `lengths_status` / `lengths_detail`
+    describe a VCF's contig lengths (None for other inputs).
+    `label_overridden` is True when confident position evidence replaced a
+    label the file stated; `tentative_grch36` marks the ADR-0025 fail-safe;
+    `mt_skipped` counts MT records left out because chrM has the hg19
+    length.
     """
 
-    header_build: str | None
-    detected_build: str | None
     effective_build: str
-    override: bool
+    source: str
+    file_label: str | None
+    detected_build: str | None
     matched_count: int
     inspected_count: int
-    chr_prefix_inferred: bool = False
-    position_confident: bool = False
+    position_confident: bool
+    lengths_status: str | None = None
+    lengths_detail: str | None = None
+    label_overridden: bool = False
+    tentative_grch36: bool = False
+    mt_skipped: int = 0
+    tied_builds: tuple[str, ...] = ()
+    tied_votes: int = 0
+
+    @property
+    def inconclusive(self) -> bool:
+        """True when the known-SNP positions tied and the build is one of the tied builds."""
+        return bool(self.tied_builds) and not self.override
+
+    @property
+    def override(self) -> bool:
+        """True when ``--build`` forced the build."""
+        return self.source == SOURCE_OVERRIDE
 
     @property
     def mismatch(self) -> bool:
-        return (
-            not self.override
-            and self.header_build is not None
-            and self.detected_build is not None
-            and self.header_build != self.detected_build
+        """True when position evidence replaced the build the file states."""
+        return self.label_overridden
+
+    @classmethod
+    def from_decision(
+        cls,
+        decision: BuildDecision,
+        seeds: BuildDetectionResult | None = None,
+        mt_skipped: int = 0,
+    ) -> BuildDiagnostics:
+        """Diagnostics for ``decision``; ``seeds`` replaces its seed evidence when given."""
+        evidence = decision.seeds if seeds is None else seeds
+        lengths = decision.lengths
+        return cls(
+            effective_build=decision.build,
+            source=decision.source,
+            file_label=decision.file_label,
+            detected_build=evidence.build,
+            matched_count=evidence.matched,
+            inspected_count=evidence.inspected,
+            position_confident=evidence.is_confident,
+            lengths_status=None if lengths is None else lengths.status,
+            lengths_detail=None if lengths is None else lengths.detail,
+            label_overridden=decision.label_overridden,
+            tentative_grch36=decision.tentative_grch36,
+            mt_skipped=mt_skipped,
+            tied_builds=evidence.tied,
+            tied_votes=evidence.tied_votes,
         )
+
+    def evidence(self) -> dict[str, object]:
+        """JSON-ready evidence record (``input.build_evidence``)."""
+        return {
+            "file_label": self.file_label,
+            "contig_lengths": self.lengths_status,
+            "contig_lengths_detail": self.lengths_detail,
+            "seeds_build": self.detected_build,
+            "seeds_matched": self.matched_count,
+            "seeds_inspected": self.inspected_count,
+            "seeds_confident": self.position_confident,
+            "label_overridden": self.label_overridden,
+            "mt_records_skipped": self.mt_skipped,
+            "seeds_tied": list(self.tied_builds),
+        }
 
 
 class PanelCoverage(TypedDict):
-    """shape returned by AnalysisResult.panel_coverage().
+    """Shape returned by AnalysisResult.panel_coverage().
 
     Same shape lands in the JSON report under ``panel_coverage`` and
     drives the HTML Panel Coverage section.
@@ -323,15 +369,15 @@ class AnalysisResult:
         return out
 
 
-# ADR-0035 PR 3 closed the structural-half: GWAS rollup now reads
-# trait / phecode / p_value from structured Annotation fields instead of
-# regex-parsing the rendered ``description`` prose. The previous
-# ``_gwas_base_trait`` / ``_gwas_phecode_parent`` / ``_gwas_p_value`` helpers
-# and the ``_PHECODE_DELIM`` shared-delimiter constant (the v2.0.1 suppress-
-# half) are gone — rollup keys directly off ``a.trait``, ``a.phecode``,
-# ``a.p_value``. MTAG suffix still lives in ``description`` for display and
-# is detected with ``"(MTAG)" in a.description``; promoting that to a
-# structured flag is outside the ADR-0035 cluster manifest.
+# ADR-0035: GWAS rollup reads trait / phecode / p_value from structured
+# Annotation fields instead of regex-parsing the rendered ``description``
+# prose. The prose helpers ``_gwas_base_trait`` and ``_gwas_p_value`` and the
+# ``_PHECODE_DELIM`` shared-delimiter constant (the v2.0.1 suppress-half) are
+# gone; rollup keys directly off ``a.trait``, ``a.phecode`` and ``a.p_value``,
+# and ``_gwas_phecode_parent`` below takes the structured ``a.phecode``. The
+# MTAG suffix still lives in ``description`` for display and is detected with
+# ``"(MTAG)" in a.description``; promoting that to a structured flag is outside
+# the ADR-0035 cluster manifest.
 
 
 def _gwas_phecode_parent(phecode: str) -> str | None:
@@ -570,16 +616,14 @@ def run_analysis(
 
     Two phases over a single pass through the parser:
 
-      Phase 1 — Build detection prelude. The first variants are
-      buffered in `_BuildDetectionState` until the position-based
-      detector converges (ADR-0021) or the detection buffer cap is
-      hit. When the cap is hit without convergence, the prelude
-      drains its buffer and the pipeline locks in the best-effort
-      effective build.
+      Phase 1 — Build decision (ADR-0044), before any annotation:
+      ``decide_file_build`` reads the evidence the file carries (contig
+      lengths, or known-SNP positions from a whole-file pre-scan) and
+      either decides the build or raises ``BuildDecisionError``.
 
-      Phase 2 — Batched annotation. Each variant emerging from the
-      build-detection phase (whether from the prelude drain or steady
-      state) is appended to a batch buffer of `_BATCH_SIZE` variants.
+      Phase 2 — Batched annotation. Each variant, with its build set to
+      the decided build, is appended to a batch buffer of `_BATCH_SIZE`
+      variants.
       On every fill, the buffer is handed to each ready rsID-based
       annotator's `batch_annotate()` and cleared. EOF flushes the
       final partial batch.
@@ -597,22 +641,16 @@ def run_analysis(
     zygosity x gnomAD plausibility flag (ADR-0041), applied after gnomAD
     enrichment.
 
-    `build_override` short-circuits build detection: every variant
-    gets that build and the position-data detector is skipped.
+    `build_override` short-circuits the decision: every variant gets
+    that build. When contig lengths decided, the known-SNP positions met
+    during the pass are checked afterwards; a contradiction raises
+    ``BuildDecisionError`` before anything is returned or written.
 
     Annotators are entered into a `contextlib.ExitStack` so their
     resources (e.g., SQLite connections) are deterministically closed.
     """
     metadata = parser.get_metadata(file_path)
-    header_build = normalize_build_label(metadata.get("build"))
-    # chr-prefix on contigs is the strongest remaining heuristic
-    # for the increasingly common case of rsID-less VCFs from modern
-    # callers (DeepVariant / DRAGEN / GATK HC) that also lack
-    # ``##contig assembly=`` tags. GRCh38 conventionally uses
-    # ``chr1, chrX, chrM``; GRCh37 uses bare ``1, X, MT``. Only VCF
-    # parsers populate this signal — consumer arrays always use bare
-    # names regardless of build.
-    chr_prefix_observed = bool(metadata.get("chr_prefix_observed", False))
+    decision = decide_file_build(parser, file_path, metadata, override=build_override)
 
     annotations: list[Annotation] = []
     hv_variants: list[Variant] = []
@@ -635,13 +673,14 @@ def run_analysis(
     no_ref_total = 0
     rsidless_total = 0
     total = 0
-    diag = _BuildDetectionState(
-        override=build_override,
-        header_build=header_build,
-        chr_prefix_observed=chr_prefix_observed,
-    )
+    effective_build = decision.build
+    # Known-SNP records met during the pass; only kept when contig lengths
+    # decided, so check_late_seeds can compare them with the lengths.
+    late_seeds: list[Variant] = []
+    track_seeds = decision.source == SOURCE_CONTIG_LENGTHS
+    mt_skipped = 0
     # Coords for rsIDs the pipeline resolved on the fly (real-world VCFs from
-    # variant callers emit ID=. — see ). Lets the enrichment phase fall
+    # variant callers emit ID=.). Lets the enrichment phase fall
     # back to position-keyed gnomAD / AlphaMissense lookups for resolved
     # rsIDs that don't appear in those caches' rsid index.
     resolved_coords: dict[str, tuple[str, int, str, str]] = {}
@@ -682,7 +721,7 @@ def run_analysis(
             )
             # High-value rsID match runs AFTER resolution so a variant
             # entering as ID=. that resolves to a high-value rsID is still
-            # caught. .
+            # caught.
             if hv_set:
                 hv_variants.extend(v for v in batch_buf if v.rsid in hv_set)
             if panel_rsids:
@@ -736,20 +775,19 @@ def run_analysis(
         try:
             for variant in parser.parse(file_path):
                 total += 1
-                ready, batch = diag.feed(variant)
-                if not ready:
+                if decision.skip_mt and variant.chromosome == "MT":
+                    mt_skipped += 1
                     continue
-                for v in batch:
-                    _accept(v)
+                if track_seeds and known_snp_seed(variant) is not None:
+                    late_seeds.append(variant)
+                _accept(replace(variant, build=effective_build))
         finally:
             if hv_placements is not None:
                 cast("VcfParser", parser).watch(set(), set())
-        # End of stream: drain the build-detection buffer with the best
-        # effective build we can resolve (detected → header → default),
-        # then flush the final annotation batch.
-        for v in diag.flush():
-            _accept(v)
         _flush()
+        late = detect_build(late_seeds) if track_seeds else None
+        if late is not None:
+            check_late_seeds(decision, late, file_path.name)
 
     # ADR-0040: one enrichment step for every build. Each annotation gets a
     # GRCh38 ``(chrom, pos, ref, alt)`` key from its own locus (GRCh38
@@ -757,14 +795,14 @@ def run_analysis(
     # reference-swapped alleles abstain), and gnomAD / AlphaMissense / CADD
     # are all queried by that key. No rsID-keyed or MAX lookups:
     # an annotation without an allele-specific key gets no value.
-    enrichment_keys = _enrichment_keys(annotations, diag.effective_build, identity)
+    enrichment_keys = _enrichment_keys(annotations, effective_build, identity)
     enriched_by = _enrich(enrichment_keys, gnomad, alphamissense, cadd)
     # ADR-0041: zygosity x gnomAD frequency, only where gnomAD was queried.
     if gnomad in enriched_by:
         _flag_plausibility(enrichment_keys, plausibility)
 
     annotators_used = [(a.name, a.version()) for a in annotators]
-    if identity is not None and identity.is_ready() and diag.effective_build in _IDENTITY_BUILDS:
+    if identity is not None and identity.is_ready() and effective_build in _IDENTITY_BUILDS:
         annotators_used.append((identity.name, identity.version()))
     annotators_used.extend((e.name, e.version()) for e in enriched_by)
 
@@ -804,12 +842,12 @@ def run_analysis(
         parser_display_name=parser.display_name,
         sample_id=metadata["sample_id"],
         input_method=metadata.get("method", ""),
-        build=diag.effective_build,
+        build=effective_build,
         total_variants=total,
         skipped_count=skipped_count_provider(),
         annotators_used=annotators_used,
         annotations=annotations,
-        build_diagnostics=diag.diagnostics(),
+        build_diagnostics=BuildDiagnostics.from_decision(decision, late, mt_skipped),
         hv_variants=hv_variants,
         panel_rsids=result_panel,
         genotyped_panel_rsids=result_genotyped,
@@ -820,187 +858,210 @@ def run_analysis(
         vcf_write_inputs=vcf_write_inputs,
         vcf_quality=getattr(parser, "quality_stats", None),
         high_value_vcf_states=high_value_states(
-            getattr(parser, "quality_stats", None), hv_placements, hv_set, diag.effective_build
+            getattr(parser, "quality_stats", None), hv_placements, hv_set, effective_build
         ),
     )
+
+
+# The pre-scan parses the file once more; its malformed-line warnings would
+# repeat the ones the real pass reports. A thread-local flag (not a global
+# logging switch) keeps another thread's parser warnings intact.
+_PRESCAN = threading.local()
+
+
+class _PrescanFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(_PRESCAN, "active", False)
+
+
+_PRESCAN_FILTER = _PrescanFilter()
+
+
+@contextlib.contextmanager
+def _quiet_prescan() -> Iterator[None]:
+    """Drop ``allelix.parsers`` log records raised by this thread inside the block."""
+    for name in list(logging.Logger.manager.loggerDict):
+        if name == "allelix.parsers" or name.startswith("allelix.parsers."):
+            parser_logger = logging.getLogger(name)
+            if _PRESCAN_FILTER not in parser_logger.filters:
+                parser_logger.addFilter(_PRESCAN_FILTER)
+    _PRESCAN.active = True
+    try:
+        yield
+    finally:
+        _PRESCAN.active = False
+
+
+class UnusableInputError(ValueError):
+    """The file cannot be used whatever its build; raised before the build decision."""
+
+
+def structural_only_message(stats: VcfQualityStats) -> str:
+    """The error for a VCF of structural-variant / copy-number records only."""
+    kinds = ", ".join(f"<{kind}>" for kind, _n in stats.symbolic_kinds.most_common(4))
+    return (
+        f"This VCF contains only structural-variant / copy-number records ({kinds}; "
+        f"{stats.symbolic_rows:,} record(s)). Allelix annotates SNVs and indels; "
+        "for Sequencing.com, upload the snp-indel.genome.vcf.gz file."
+    )
+
+
+def reject_unusable_input(parser: GenotypeParser, file_path: Path, records: int) -> None:
+    """Raise ``UnusableInputError`` when a read that yielded ``records`` found nothing usable.
+
+    That is a VCF of structural-variant / copy-number records only, or a
+    file with no genotype records. A VCF whose records were all dropped by
+    the quality gate is not empty and passes. Used before the build
+    decision (pre-scan) and after a read the build did not need.
+    """
+    if records:
+        return
+    stats = getattr(parser, "quality_stats", None)
+    if stats is not None and stats.symbolic_rows:
+        raise UnusableInputError(structural_only_message(stats))
+    if stats is not None and (stats.filtered_rows or stats.low_quality_calls):
+        return  # records exist but the quality gate dropped them; not an empty file
+    raise UnusableInputError(f"{file_path.name} contains no genotype records.")
+
+
+def decide_file_build(
+    parser: GenotypeParser,
+    file_path: Path,
+    metadata: GenotypeMetadata,
+    *,
+    override: str | None,
+    variants: list[Variant] | None = None,
+) -> BuildDecision:
+    """Decide ``file_path``'s build (ADR-0044); the one entry point for every command.
+
+    Contig lengths decide a VCF without reading its records. Otherwise the
+    known-SNP positions of the whole file are collected first (a pre-scan
+    through the parser, or ``variants`` when the caller already holds
+    them), so evidence far into a chromosome-sorted file counts. Raises
+    ``BuildDecisionError`` when the run must stop.
+
+    "Wrong file" errors come first (ADR-0044): when the scan finds no
+    genotype record at all, ``UnusableInputError`` says so (a VCF of
+    structural-variant / copy-number records only, or a file with no data
+    rows) instead of asking for a build the file could not use anyway.
+    When the header alone stops the decision (contig lengths that are
+    mixed, unsupported or against ``assembly=``), the records are read up
+    to the first usable one before the stop is raised.
+    """
+    kind = KIND_VCF if parser.name == "vcf" else KIND_ARRAY
+    lengths = (
+        contig_length_verdict(dict(metadata.get("contig_lengths") or {}))
+        if kind == KIND_VCF
+        else None
+    )
+    file_label = normalize_build_label(metadata.get("build"))
+    checked = False  # whether the records were already checked for a wrong file
+    if override or (lengths is not None and lengths.status != "none"):
+        seeds = NO_SEEDS
+    elif variants is not None:
+        reject_unusable_input(parser, file_path, len(variants))
+        checked = True
+        seeds = detect_build(variants)
+    else:
+        count = [0]
+
+        def _counted() -> Iterator[Variant]:
+            for variant in parser.parse(file_path):
+                count[0] += 1
+                yield variant
+
+        with _quiet_prescan():
+            seeds = detect_build(_counted())
+        reject_unusable_input(parser, file_path, count[0])
+        checked = True
+    try:
+        return decide_build(
+            file_name=file_path.name,
+            kind=kind,
+            override=override,
+            file_label=file_label,
+            default=DEFAULT_BUILD if kind == KIND_ARRAY else None,
+            lengths=lengths,
+            seeds=seeds,
+        )
+    except BuildDecisionError:
+        if not checked:
+            _reject_without_a_record(parser, file_path, variants)
+        raise
+
+
+def _reject_without_a_record(
+    parser: GenotypeParser, file_path: Path, variants: list[Variant] | None
+) -> None:
+    """Before a stop on header evidence: a wrong file gets its own error.
+
+    Reads up to the first usable genotype record (normally the first
+    record); only a file without one is read to the end.
+    """
+    if variants is not None:
+        reject_unusable_input(parser, file_path, len(variants))
+        return
+    stream = parser.parse(file_path)
+    try:
+        with _quiet_prescan():
+            first = next(stream, None)
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
+    reject_unusable_input(parser, file_path, 0 if first is None else 1)
+
+
+@dataclass
+class StreamBuild:
+    """What ``with_effective_build`` learnt while streaming, for the build notices.
+
+    ``late`` is the known-SNP evidence met during the stream when contig
+    lengths decided (None otherwise); ``mt_skipped`` counts dropped MT
+    records. ``diagnostics()`` gives the same record ``analyze`` reports.
+    """
+
+    decision: BuildDecision
+    late: BuildDetectionResult | None = None
+    mt_skipped: int = 0
+
+    def diagnostics(self) -> BuildDiagnostics:
+        return BuildDiagnostics.from_decision(self.decision, self.late, self.mt_skipped)
 
 
 def with_effective_build(
     variants: Iterable[Variant],
     *,
-    metadata: GenotypeMetadata,
-    build_override: str | None = None,
+    decision: BuildDecision,
+    file_name: str,
+    record: StreamBuild | None = None,
 ) -> Iterator[Variant]:
-    """Yield ``variants`` with ``build`` set to the effective build (ADR-0021).
+    """Yield ``variants`` with ``build`` set to ``decision.build`` (ADR-0044).
 
-    The same detection ``run_analysis`` uses (``_BuildDetectionState``):
-    override > position-based seeds > header > chr-prefix > GRCh37. For
-    command paths that need the build before rsID-less resolution
-    (``stats``, ``extract``, ``export plink``; ). Order is kept.
+    For command paths that need the build before rsID-less resolution
+    (``stats``, ``extract``, ``export plink``). Order is kept. MT records
+    are dropped when chrM has the hg19 length. When contig lengths decided,
+    the known-SNP records met on the way are checked after the last
+    variant; a contradiction raises ``BuildDecisionError``, so callers must
+    not finalise any output before the iterator is exhausted. ``record``, when
+    given, receives the late evidence (including a tie that let the run
+    proceed) and the MT count, so the caller can show the build notices.
     """
-    diag = _BuildDetectionState(
-        override=build_override,
-        header_build=normalize_build_label(metadata.get("build")),
-        chr_prefix_observed=bool(metadata.get("chr_prefix_observed", False)),
-    )
+    track = decision.source == SOURCE_CONTIG_LENGTHS
+    seen: list[Variant] = []
     for variant in variants:
-        ready, batch = diag.feed(variant)
-        if ready:
-            yield from batch
-    yield from diag.flush()
-
-
-class _BuildDetectionState:
-    """Buffer-and-flush state machine for build detection during streaming.
-
-    `feed(variant)` returns (ready, batch). When `ready` is False, the
-    variant has been buffered and the caller should keep streaming.
-    When True, `batch` contains one or more variants with their build
-    field set to the effective build, ready to be annotated.
-
-    `flush()` is called at end of stream to drain anything still
-    buffered (which only happens when detection never converged).
-    """
-
-    def __init__(
-        self,
-        *,
-        override: str | None,
-        header_build: str | None,
-        chr_prefix_observed: bool = False,
-    ) -> None:
-        self.header_build = header_build
-        self.override = override
-        # ``chr``-prefixed contig names indicate GRCh38 in modern
-        # variant callers. Tertiary signal — falls in priority after
-        # override > rsID detection > header_build, ahead of the bare
-        # GRCh37 fallback.
-        self.chr_prefix_observed = chr_prefix_observed
-        # Effective build: starts as override (if given), else None until detection runs.
-        self.effective: str | None = override
-        self.detected: str | None = None
-        self.position_confident = False
-        self.matched_count = 0
-        self.inspected_count = 0
-        self._buffer: list[Variant] = []
-
-    @property
-    def effective_build(self) -> str:
-        """Best-effort effective build at flush time.
-
-        Priority order:
-        1. ``override`` (--build flag) — already applied to ``self.effective`` at init.
-        2. Position-based ``detected`` (set by ``feed()`` / ``flush()``).
-        3. ``header_build`` (``##contig assembly=...`` tag normalized).
-        4. ``chr_prefix_observed`` → GRCh38.
-        5. ``BUILD_GRCH37`` fallback.
-        """
-        if self.effective:
-            return self.effective
-        if self.header_build:
-            return self.header_build
-        if self.chr_prefix_observed:
-            return BUILD_GRCH38
-        return BUILD_GRCH37
-
-    def feed(self, variant: Variant) -> tuple[bool, list[Variant]]:
-        if self.effective is not None:
-            return True, [replace(variant, build=self.effective)]
-        # Buffering until detection converges or we hit the cap.
-        self._buffer.append(variant)
-        # rsID-less records at a seed coordinate count too.
-        if known_snp_seed(variant) is not None:
-            result = detect_build(self._buffer)
-            if result.is_confident:
-                assert result.build is not None  # is_confident ⇒ build set
-                self.detected = result.build
-                self.position_confident = True
-                self.matched_count = result.matched
-                self.inspected_count = result.inspected
-                self.effective = result.build
-                batch = [replace(v, build=result.build) for v in self._buffer]
-                self._buffer.clear()
-                return True, batch
-        if len(self._buffer) >= _DETECTION_BUFFER_LIMIT:
-            # Buffer full before detection converged. Run partial detection
-            # so the GRCh36 safety guard can fire (same logic as flush()).
-            result = detect_build(self._buffer)
-            if result.build is not None:
-                self.detected = result.build
-            self.matched_count = result.matched
-            self.inspected_count = result.inspected
-            self.position_confident = result.is_confident
-            if result.is_confident:
-                assert result.build is not None
-                self.effective = result.build
-            elif result.build == BUILD_GRCH36:
-                self.effective = BUILD_GRCH36
-            else:
-                # Fallback priority matches `effective_build` property:
-                # header_build > chr_prefix_observed (GRCh38) > GRCh37.
-                self.effective = self.header_build or (
-                    BUILD_GRCH38 if self.chr_prefix_observed else BUILD_GRCH37
-                )
-            batch = [replace(v, build=self.effective) for v in self._buffer]
-            self._buffer.clear()
-            return True, batch
-        return False, []
-
-    def flush(self) -> list[Variant]:
-        if not self._buffer:
-            return []
-        # Detection never converged. Re-run on the full buffer to capture
-        # partial counts even if not confident.
-        result = detect_build(self._buffer)
-        self.position_confident = result.is_confident
-        if result.is_confident:
-            self.detected = result.build
-            self.effective = result.build
-        else:
-            if result.build is not None:
-                self.detected = result.build
-            # GRCh36 must fail safe: there is no GRCh36 ClinVar cache,
-            # so falling back to GRCh37 would silently query wrong
-            # coordinates and bypass the GRCh36 safety guard.
-            if result.build == BUILD_GRCH36:
-                self.effective = BUILD_GRCH36
-            else:
-                # Fallback priority matches `effective_build` property:
-                # header_build > chr_prefix_observed (GRCh38) > GRCh37.
-                self.effective = self.header_build or (
-                    BUILD_GRCH38 if self.chr_prefix_observed else BUILD_GRCH37
-                )
-        self.matched_count = result.matched
-        self.inspected_count = result.inspected
-        assert self.effective is not None  # all branches above set it
-        out = [replace(v, build=self.effective) for v in self._buffer]
-        self._buffer.clear()
-        return out
-
-    def diagnostics(self) -> BuildDiagnostics:
-        # chr_prefix_inferred is True only when the
-        # chr-prefix signal is what actually picked the effective
-        # build — i.e., no override, no rsID detection, no header
-        # build, and the chr-prefix signal flipped the fallback from
-        # GRCh37 to GRCh38. Matches the priority order in the
-        # ``effective_build`` property.
-        chr_prefix_inferred = (
-            self.override is None
-            and not self.position_confident
-            and self.header_build is None
-            and self.chr_prefix_observed
-            and self.effective_build == BUILD_GRCH38
-        )
-        return BuildDiagnostics(
-            header_build=self.header_build,
-            detected_build=self.detected,
-            effective_build=self.effective_build,
-            override=self.override is not None,
-            matched_count=self.matched_count,
-            inspected_count=self.inspected_count,
-            chr_prefix_inferred=chr_prefix_inferred,
-            position_confident=self.position_confident,
-        )
+        if decision.skip_mt and variant.chromosome == "MT":
+            if record is not None:
+                record.mt_skipped += 1
+            continue
+        if track and known_snp_seed(variant) is not None:
+            seen.append(variant)
+        yield replace(variant, build=decision.build)
+    if track:
+        late = detect_build(seen)
+        check_late_seeds(decision, late, file_name)
+        if record is not None:
+            record.late = late
 
 
 __all__ = [
@@ -1008,6 +1069,8 @@ __all__ = [
     "BUILD_GRCH38",
     "AnalysisResult",
     "BuildDiagnostics",
+    "decide_file_build",
     "rollup_gwas_duplicates",
     "run_analysis",
+    "with_effective_build",
 ]

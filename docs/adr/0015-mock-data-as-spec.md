@@ -5,7 +5,7 @@
 
 ## Context
 
-Across v0.4.x and v0.5.0, four categorical clinical-safety bugs shipped despite 250+ tests and 6 rounds of code review:
+Across v0.4.x and v0.5.0, four categorical clinical-safety bugs shipped despite 250+ tests:
 
 - **Indel-anchor false positives** (ADR-0011): ClinVar's anchor-base indels matched single-base array readouts, emitting hundreds of false-positive "Pathogenic" calls in cancer-predisposition genes.
 - **PharmGKB non-findings as findings** (ADR-0013): wild-type rows ("do not have a copy of") emitted at the same magnitude as real findings.

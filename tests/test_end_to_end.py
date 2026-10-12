@@ -141,11 +141,10 @@ class TestEndToEndAgainstMockGenerators:
         """ADR-0021 regression: NIPA1 rs104894490 G/G on a GRCh38 file
         must NOT emit a pathogenic ClinVar annotation.
 
-        Real-world bug history: user's MHG file labeled "build 37.1" was
-        actually GRCh38. The annotator was correctly checking the
-        carrier rule, but against the GRCh37 VCF whose REF/ALT are
-        strand-inverted at this position (REF=C ALT=G). User's G/G
-        matched ALT=G → false pathogenic call.
+        The failure mode: an MHG export labeled "build 37.1" can carry
+        GRCh38 positions. Checked against GRCh37, whose REF/ALT are
+        strand-inverted at this position (REF=C ALT=G), a G/G call
+        matched ALT=G and gave a false pathogenic call.
 
         The mock MHG default fixture uses GRCh38 positions (matching
         real MHG behavior). Build-detect identifies GRCh38; the
@@ -452,7 +451,7 @@ _REAL_GWAS_URL = (
 class TestRealDataGwasSanity:
     """Sanity checks against the real GWAS Catalog (test_data/, gitignored).
 
-    the fixture is auto-fetched on first use and cached locally so
+    The fixture is auto-fetched on first use and cached locally so
     the tests run on every machine. The previous ``pytest.skip`` on missing
     fixture silently let a ship gate pass without exercising these
     real-data invariants.

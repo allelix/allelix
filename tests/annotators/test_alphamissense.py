@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from allelix.annotators.alphamissense import AlphaMissenseAnnotator
+from allelix.databases._versions import ALPHAMISSENSE_SCHEMA_VERSION
 from allelix.databases.schema import ALPHAMISSENSE_SCHEMA
 from allelix.models import Variant
 
@@ -46,8 +47,10 @@ def _build_db(tmp_path: Path) -> Path:
         ],
     )
     conn.execute(
-        "INSERT INTO database_versions (name, source_url, version, downloaded_at, record_count) "
-        "VALUES ('alphamissense', 'https://test', '2023.1', '2026-06-08', 4)",
+        "INSERT INTO database_versions (name, source_url, version, downloaded_at, record_count, "
+        "local_version_tag) "
+        "VALUES ('alphamissense', 'https://test', '2023.1', '2026-06-08', 4, ?)",
+        (f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",),
     )
     conn.commit()
     conn.close()

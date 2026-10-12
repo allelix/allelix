@@ -21,12 +21,23 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
+from allelix.reports._pipeline import BuildDiagnostics, UnusableInputError
+from allelix.reports.build_text import short_source
+from allelix.utils.build_detect import (
+    BUILD_GRCH38,
+    SOURCE_CONTIG_LENGTHS,
+    SOURCE_OVERRIDE,
+    BuildDecisionError,
+    check_late_seeds,
+    detect_build,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
+    from allelix.utils.build_detect import BuildDecision
 
 
 @main.command()
@@ -34,7 +45,10 @@ if TYPE_CHECKING:
 @_FORMAT_OPT
 @_SAMPLE_OPT
 @_DATA_DIR_OPT
-def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path | None) -> None:
+@_BUILD_OPT
+def stats(
+    file_path: Path, fmt: str | None, sample: str | None, data_dir: Path | None, build: str
+) -> None:
     """Show summary statistics for a genotype file.
 
     High-value no-call warnings cover rsID-less VCF records too: calls are
@@ -56,12 +70,14 @@ def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path |
     chrom_counts: dict[str, int] = {}
     try:
         metadata = parser.get_metadata(file_path)
-        build = ""
         with _helpers._resolved_variants(
-            parser, file_path, data_dir=data_dir, high_value=hv_rsids
+            parser,
+            file_path,
+            data_dir=data_dir,
+            build_override=_helpers._normalize_cli_build(build),
+            high_value=hv_rsids,
         ) as resolved:
             for variant in resolved.variants:
-                build = variant.build
                 total += 1
                 if variant.rsid in hv_rsids:
                     hv_variants.append(variant)
@@ -80,21 +96,10 @@ def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path |
     summary.add_column("Value", style="green")
     summary.add_row("Format", parser.display_name)
     summary.add_row("Sample ID", metadata["sample_id"] or "(unknown)")
-    # ``metadata["build"]`` is blank on every VCF that doesn't declare
-    # ``##reference=`` in the header — i.e. most caller outputs
-    # (DeepVariant / DRAGEN / GIAB GRCh38 benchmark). A blank cell read
-    # as broken on the v2.2.1 battery; ``stats`` deliberately does not
-    # run build detection (that's an ``analyze`` job per the protocol),
-    # so the honest display when no header build is declared is an em
-    # dash plus the chr-prefix hint when available. The user can run
-    # ``analyze`` to get the real detected build.
-    if metadata["build"]:
-        build_display = metadata["build"]
-    elif metadata.get("chr_prefix_observed"):
-        build_display = "— (chr-prefixed contigs; run `analyze` to confirm)"
-    else:
-        build_display = "—"
-    summary.add_row("Build", build_display)
+    decision = resolved.decision
+    diag = resolved.build_diagnostics()
+    # The same decision as ``analyze`` (ADR-0044), with where it came from.
+    summary.add_row("Build", f"{diag.effective_build} ({short_source(diag)})")
     summary.add_row("Total SNPs", f"{total:,}")
     summary.add_row("No-calls", f"{no_calls:,} ({_helpers._percent(no_calls, total)})")
     summary.add_row("Heterozygous", f"{het:,} ({_helpers._percent(het, total)})")
@@ -105,13 +110,16 @@ def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path |
             f"[yellow]{counter.count:,}[/yellow] (see warnings on stderr)",
         )
 
-    hv_warnings = scan_no_calls(hv_variants, high_value, resolved.high_value_states(build))
+    hv_warnings = scan_no_calls(
+        hv_variants, high_value, resolved.high_value_states(decision.build)
+    )
     if hv_warnings:
         summary.add_row(
             "High-value no-calls",
             f"[red]{len(hv_warnings)}[/red]",
         )
     console.print(summary)
+    _helpers._emit_build_notices(diag, banner=False)
 
     if hv_warnings:
         for line in format_warnings(hv_warnings):
@@ -135,12 +143,14 @@ def stats(file_path: Path, fmt: str | None, sample: str | None, data_dir: Path |
 )
 @_DATA_DIR_OPT
 @_SAMPLE_OPT
+@_BUILD_OPT
 def extract(
     file_path: Path,
     fmt: str | None,
     snps: str,
     data_dir: Path | None,
     sample: str | None,
+    build: str,
 ) -> None:
     """Print diploid genotypes for specific rsIDs — spot-check carrier status.
 
@@ -160,10 +170,14 @@ def extract(
     if not wanted:
         raise click.ClickException("--snps cannot be empty.")
 
-    found = _try_tabix_extract(file_path, wanted, sample, data_dir)
+    build_override = _helpers._normalize_cli_build(build)
+    try:
+        found = _try_tabix_extract(file_path, wanted, sample, data_dir, build_override)
+    except BuildDecisionError as exc:
+        raise click.ClickException(str(exc)) from exc
     if found is None:
         # Sequential fallback — works for any parser.
-        found = _sequential_extract(parser, file_path, wanted, data_dir)
+        found = _sequential_extract(parser, file_path, wanted, data_dir, build_override)
         _maybe_print_vcf_index_hint(file_path)
 
     _render_extract_table(file_path, wanted, found)
@@ -174,11 +188,14 @@ def _sequential_extract(
     file_path: Path,
     wanted: set[str],
     data_dir: Path | None = None,
+    build_override: str | None = None,
 ) -> dict[str, Variant]:
     """Stream the file once; collect Variants whose rsID is in ``wanted``.
 
     Streaming early-exit once all wanted rsIDs are found — for arrays
-    that yield <1 M variants this is fast enough on any input.
+    that yield <1 M variants this is fast enough on any input. No early
+    exit when contig lengths decided the build: the known-SNP check at
+    the end of the stream must run before anything is printed (ADR-0044).
 
     Variant callers emit ``ID=.`` or positional pseudo-IDs
     (DeepVariant, DRAGEN, the GIAB GRCh38 benchmark). The stream goes
@@ -189,12 +206,15 @@ def _sequential_extract(
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
     found: dict[str, Variant] = {}
     try:
-        with _helpers._resolved_variants(parser, file_path, data_dir=data_dir) as resolved:
+        with _helpers._resolved_variants(
+            parser, file_path, data_dir=data_dir, build_override=build_override
+        ) as resolved:
             for variant in resolved.variants:
                 if variant.rsid in wanted and variant.rsid not in found:
                     found[variant.rsid] = variant
-                    if len(found) == len(wanted):
+                    if len(found) == len(wanted) and not resolved.must_exhaust:
                         break
+            _helpers._emit_build_notices(resolved.build_diagnostics())
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
     return found
@@ -205,6 +225,7 @@ def _try_tabix_extract(
     wanted: set[str],
     sample: str | None,
     data_dir: Path | None,
+    build_override: str | None = None,
 ) -> dict[str, Variant] | None:
     """Fast-path VCF lookup via pysam tabix. Returns None if not viable.
 
@@ -229,11 +250,11 @@ def _try_tabix_extract(
         return None
 
     # The remaining body requires pysam + gnomAD ready, neither of which
-    # the test environment has. Exercised in integration / manual
-    # validation on the droplet; unit tests cover the not-viable
-    # return-None paths above.
+    # the test environment has. The tabix fetch was validated manually
+    # with pysam installed and a gnomAD cache present; unit tests cover
+    # the not-viable return-None paths above.
     return _execute_tabix_extract(  # pragma: no cover
-        file_path, wanted, sample, data_dir, pysam
+        file_path, wanted, sample, data_dir, pysam, build_override
     )
 
 
@@ -243,6 +264,7 @@ def _execute_tabix_extract(
     sample: str | None,
     data_dir: Path | None,
     pysam: Any,  # noqa: ANN401 — pysam ships no type stubs
+    build_override: str | None = None,
 ) -> dict[str, Variant] | None:
     """Real tabix execution.
 
@@ -252,7 +274,14 @@ def _execute_tabix_extract(
     etc.) so the caller falls back to sequential scan.
 
     gnomAD gives each wanted rsID's GRCh38 coordinates, which is where
-    the rows are fetched. The fetched rows then go through the shared
+    the rows are fetched, so the fast path runs only on a VCF whose build
+    is GRCh38: forced with ``--build``, or decided by its contig lengths
+    (``_tabix_fast_path_allowed``, ADR-0044). Any other VCF, including one
+    labelled ``assembly=GRCh38`` without contig lengths and one whose header
+    evidence stops the run, falls back to the sequential scan, which applies
+    the full decision. When the lengths decided, the rows at the known-SNP
+    positions are fetched and checked against them; a contradiction
+    raises ``BuildDecisionError``. The fetched rows then go through the shared
     rsID-less resolution step: a row matches a wanted rsID
     when the file names it or a resolver recovers it at that locus. The
     same rule applies here as in every other command, rather than a
@@ -263,10 +292,31 @@ def _execute_tabix_extract(
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
     from allelix.parsers.vcf import _open_vcf, _parse_data_line, _read_header
-    from allelix.utils.build_detect import BUILD_GRCH38
+    from allelix.utils.build_detect import (
+        KIND_VCF,
+        NO_SEEDS,
+        check_late_seeds,
+        contig_length_verdict,
+        decide_build,
+        known_seed_loci,
+    )
 
     with _open_vcf(file_path) as handle:
         header = _read_header(handle)
+    try:
+        decision = decide_build(
+            file_name=file_path.name,
+            kind=KIND_VCF,
+            override=build_override,
+            file_label=header.build,
+            default=None,
+            lengths=contig_length_verdict(header.contig_lengths),
+            seeds=NO_SEEDS,
+        )
+    except BuildDecisionError:
+        return None
+    if not _tabix_fast_path_allowed(decision):
+        return None
     if not header.samples:
         sample_idx = -1
     elif sample is not None:
@@ -291,6 +341,11 @@ def _execute_tabix_extract(
             return None
         tabix_file = pysam.TabixFile(str(file_path))
         try:
+            seed_rows: list[Variant] = []
+            for chrom, pos in known_seed_loci():
+                seed_rows.extend(_fetch_rows(tabix_file, chrom, pos, sample_idx, _parse_data_line))
+            late = detect_build(seed_rows)
+            check_late_seeds(decision, late, file_path.name)
             for rsid, coords in coord_map.items():
                 for chrom, pos, _ref, _alt in coords:
                     hit = _fetch_resolved(
@@ -313,7 +368,27 @@ def _execute_tabix_extract(
     finally:
         for source in (clinvar, gnomad, identity):
             source.close()
+    late_record = late if decision.source == SOURCE_CONTIG_LENGTHS else None
+    _helpers._emit_build_notices(BuildDiagnostics.from_decision(decision, late_record))
     return found
+
+
+def _tabix_fast_path_allowed(decision: BuildDecision) -> bool:
+    """Whether the indexed extract may fetch rows at GRCh38 coordinates.
+
+    Only for a GRCh38 build that came from ``--build`` or from the VCF's
+    contig lengths. The fast path reads no records before fetching, so a
+    build that rests on the ``assembly=`` label alone (or on seeds, which
+    it never collects) is not enough: such a file goes through the
+    sequential scan, which applies the full decision (ADR-0044). So does a
+    file whose chrM has the hg19 length: the scan drops its MT records and
+    reports them with the chrM note.
+    """
+    return (
+        decision.build == BUILD_GRCH38
+        and decision.source in (SOURCE_OVERRIDE, SOURCE_CONTIG_LENGTHS)
+        and not decision.skip_mt
+    )
 
 
 def _fetch_resolved(
@@ -333,21 +408,36 @@ def _fetch_resolved(
     so both spellings are tried. Fetched rows take ``build`` (the
     coordinates' build) before resolution.
     """
+    variants = [
+        replace(v, build=build) for v in _fetch_rows(tabix_file, chrom, pos, sample_idx, parse_row)
+    ]
+    resolve(variants)
+    for variant in variants:
+        if variant.rsid == rsid:
+            return variant
+    return None
+
+
+def _fetch_rows(
+    tabix_file: Any,  # noqa: ANN401 — pysam.TabixFile, no type stubs
+    chrom: str,
+    pos: int,
+    sample_idx: int,
+    parse_row: Callable[[str, int], Variant | None],
+) -> list[Variant]:
+    """Parsed rows at ``chrom:pos``, trying the bare and ``chr`` contig spellings."""
+    found: list[Variant] = []
     for chrom_candidate in (chrom, f"chr{chrom}"):
         try:
             rows = list(tabix_file.fetch(chrom_candidate, pos - 1, pos))
         except (ValueError, OSError):
             continue
-        variants = [
-            replace(v, build=build)
+        found.extend(
+            v
             for v in (parse_row(row, sample_idx) for row in rows)
             if v is not None and v.position == pos
-        ]
-        resolve(variants)
-        for variant in variants:
-            if variant.rsid == rsid:
-                return variant
-    return None
+        )
+    return found
 
 
 def _maybe_print_vcf_index_hint(file_path: Path) -> None:
@@ -404,6 +494,24 @@ def _render_extract_table(file_path: Path, wanted: set[str], found: dict[str, Va
 @click.option("--format2", "fmt2", default=None, help="Force parser for file 2.")
 @click.option("--sample1", default=None, help="VCF sample column for file 1 (multi-sample VCFs).")
 @click.option("--sample2", default=None, help="VCF sample column for file 2 (multi-sample VCFs).")
+@click.option(
+    "--build1",
+    type=click.Choice(["grch37", "grch38", "grch36", "auto"], case_sensitive=False),
+    default="auto",
+    help=(
+        "Genome build of file 1: grch37, grch38 or grch36 ('auto' decides from "
+        "the file's evidence)."
+    ),
+)
+@click.option(
+    "--build2",
+    type=click.Choice(["grch37", "grch38", "grch36", "auto"], case_sensitive=False),
+    default="auto",
+    help=(
+        "Genome build of file 2: grch37, grch38 or grch36 ('auto' decides from "
+        "the file's evidence)."
+    ),
+)
 def compare(
     file1: Path,
     file2: Path,
@@ -411,6 +519,8 @@ def compare(
     fmt2: str | None,
     sample1: str | None,
     sample2: str | None,
+    build1: str,
+    build2: str,
 ) -> None:
     """Compare two genotype files — coverage overlap and concordance.
 
@@ -419,19 +529,47 @@ def compare(
     discordant calls, and strand-ambiguous positions.
     """
     from allelix.compare import compare_variants
-    from allelix.utils.build_detect import detect_build
+    from allelix.reports._pipeline import decide_file_build
 
     parser1 = _helpers._resolve_parser(file1, fmt1, sample=sample1)
     parser2 = _helpers._resolve_parser(file2, fmt2, sample=sample2)
     variants1 = list(parser1.parse(file1))
     variants2 = list(parser2.parse(file2))
 
-    det1 = detect_build(variants1)
-    det2 = detect_build(variants2)
-    build1 = det1.build or parser1.get_metadata(file1).get("build", "unknown")
-    build2 = det2.build or parser2.get_metadata(file2).get("build", "unknown")
+    # The same decision as every other command (ADR-0044); a file that
+    # must stop stops here rather than taking a tentative winner.
+    decided: list[str] = []
+    for number, flag, parser, path, variants, choice in (
+        (1, "--build1", parser1, file1, variants1, build1),
+        (2, "--build2", parser2, file2, variants2, build2),
+    ):
+        # A structural-only VCF or a file with no genotype records gets its own
+        # error whatever decides the build.
+        _helpers._reject_unusable(parser, path, len(variants))
+        try:
+            decision = decide_file_build(
+                parser,
+                path,
+                parser.get_metadata(path),
+                override=_helpers._normalize_cli_build(choice),
+                variants=variants,
+            )
+            late = detect_build(variants)
+            check_late_seeds(decision, late, path.name)
+        except UnusableInputError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except BuildDecisionError as exc:
+            raise click.ClickException(
+                f"{exc} For compare, give the build of this file with {flag}."
+            ) from exc
+        late_record = late if decision.source == SOURCE_CONTIG_LENGTHS else None
+        _helpers._emit_build_notices(
+            BuildDiagnostics.from_decision(decision, late_record),
+            heading=f"File {number} ({path.name})",
+        )
+        decided.append(decision.build)
 
-    result = compare_variants(variants1, variants2, build1=build1, build2=build2)
+    result = compare_variants(variants1, variants2, build1=decided[0], build2=decided[1])
 
     if result.build1 != result.build2:
         console.print(
@@ -520,7 +658,11 @@ def export_plink_cmd(
     coding when available; falls back to monomorphic (A2=0) for positions
     without gnomAD coverage.
     """
-    from allelix.exporters.plink import export_plink, resolve_ref_alt_via_gnomad
+    from allelix.exporters.plink import (
+        EmptyPlinkSetError,
+        export_plink,
+        resolve_ref_alt_via_gnomad,
+    )
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     prefix = output_prefix if output_prefix else file_path.with_suffix("")
@@ -534,7 +676,9 @@ def export_plink_cmd(
         parser, file_path, data_dir=resolved, build_override=build_override
     ) as resolved_stream:
         variants = list(resolved_stream.variants)
-    effective_build = variants[0].build if variants else (build_override or "GRCh37")
+        effective_build = resolved_stream.decision.build
+        diagnostics = resolved_stream.build_diagnostics()
+        _helpers._emit_build_notices(diagnostics)
 
     # Sort by chromosome then position so the .bim has contiguous
     # chromosome blocks — PLINK1.9 rejects split chromosomes.
@@ -554,9 +698,21 @@ def export_plink_cmd(
         )
         ref_alt_map = {}
 
-    written, skipped, indel_skip, mono = export_plink(
-        iter(variants), prefix, effective_build, ref_alt_map or None
-    )
+    try:
+        written, skipped, indel_skip, mono = export_plink(
+            iter(variants), prefix, effective_build, ref_alt_map or None
+        )
+    except EmptyPlinkSetError as exc:
+        reasons = [f"{exc.no_calls:,} no-calls", f"{exc.indels:,} indels"]
+        if diagnostics.mt_skipped:
+            reasons.append(
+                f"{diagnostics.mt_skipped:,} mitochondrial records not exported "
+                "(chrM has the hg19 length)"
+            )
+        raise click.ClickException(
+            f"Nothing to export from {file_path.name}: no variant can be written to a "
+            f"PLINK set (skipped: {'; '.join(reasons)}). No files were written."
+        ) from exc
     skip_parts = []
     if skipped:
         skip_parts.append(f"{skipped:,} no-calls")

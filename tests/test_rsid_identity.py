@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Cross-build rsID identity table (ADR-0040, release 2.4 item 2).
+"""Cross-build rsID identity table (ADR-0040).
 
 Covers the builder logic (RefSeq accession mapping, dbSNP line parsing,
 cross-build allele pairing), the annotator's locus-keyed queries, and the

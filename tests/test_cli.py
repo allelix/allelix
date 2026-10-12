@@ -32,11 +32,11 @@ class TestStatsCommand:
         assert result.exit_code == 0, result.output
 
     def test_stats_counts_match_fixture_exactly(self, mock_mhg_path):
-        """C-3: pin specific numeric counts so a `+= 0` mutation fails the suite."""
+        """Pin specific numeric counts so a `+= 0` mutation fails the suite."""
         runner = CliRunner(env={"COLUMNS": "200"})
         result = runner.invoke(main, ["stats", str(mock_mhg_path)])
         assert result.exit_code == 0, result.output
-        # Generated mock fixture (Round 23 / ADR-0021: rs104894490 NIPA1 added):
+        # Generated mock fixture (ADR-0021: rs104894490 NIPA1 added):
         #   2,016 SNPs / 103 no-call (5.11%) / 563 het (27.93%) / 1,350 hom (66.96%).
         assert "2,016" in result.output
         assert "5.11%" in result.output
@@ -67,48 +67,48 @@ class TestStatsCommand:
         assert result.exit_code != 0
         assert "Unknown parser" in result.output
 
-    def test_stats_build_column_falls_back_to_em_dash_with_hint_on_vcf(self, tmp_path):
-        """v2.2.1 battery flagged a blank ``Build`` cell on caller-output
-        VCFs (DeepVariant / DRAGEN / GIAB GRCh38 benchmark) — those
-        don't carry ``##reference=`` in the header, so the parser
-        returns ``build=""`` and the cell rendered as nothing at all,
-        reading as broken. The stats command does NOT run build
-        detection (that's an ``analyze`` job per the protocol), so the
-        honest display is an em dash plus a chr-prefix hint when the
-        contigs suggest GRCh38."""
+    def test_stats_build_comes_from_the_decision(self, tmp_path):
+        """``stats`` shows the build ``analyze`` would use, and where it came
+        from (ADR-0044): here hg19 contig lengths under chr-prefixed names."""
         runner = CliRunner(env={"COLUMNS": "200"})
-        # Minimal chr-prefixed VCF — no ##reference, so build is blank,
-        # but chr_prefix_observed is True.
         vcf = tmp_path / "minimal_chr.vcf"
         vcf.write_text(
             "##fileformat=VCFv4.2\n"
             "##contig=<ID=chr1,length=249250621>\n"
             '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
-            "chr1\t11796321\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+            "chr1\t11856378\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
         )
         result = runner.invoke(main, ["stats", str(vcf)])
         assert result.exit_code == 0, result.output
-        assert "chr-prefixed contigs" in result.output
-        assert "run `analyze` to confirm" in result.output
+        assert "GRCh37 (from the contig lengths)" in result.output
 
-    def test_stats_build_column_em_dash_only_when_no_chr_prefix(self, tmp_path):
-        """A bare VCF (no chr-prefixed contigs, no ##reference) gets
-        a plain em dash with no hint — there's nothing to suggest."""
+    def test_stats_build_override(self, tmp_path):
         runner = CliRunner(env={"COLUMNS": "200"})
-        vcf = tmp_path / "minimal_bare.vcf"
+        vcf = tmp_path / "bare.vcf"
         vcf.write_text(
             "##fileformat=VCFv4.2\n"
-            "##contig=<ID=1,length=249250621>\n"
             '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
-            "1\t11796321\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+            "1\t1000\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
+        )
+        result = runner.invoke(main, ["stats", str(vcf), "--build", "grch38"])
+        assert result.exit_code == 0, result.output
+        assert "GRCh38 (forced with --build)" in result.output
+
+    def test_stats_stops_on_a_vcf_without_build_evidence(self, tmp_path):
+        runner = CliRunner(env={"COLUMNS": "200"})
+        vcf = tmp_path / "bare.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+            "1\t1000\t.\tG\tA\t.\tPASS\t.\tGT\t0/1\n"
         )
         result = runner.invoke(main, ["stats", str(vcf)])
-        assert result.exit_code == 0, result.output
-        # Em dash present, hint absent.
-        assert "—" in result.output
-        assert "chr-prefixed contigs" not in result.output
+        assert result.exit_code != 0
+        assert "Cannot use bare.vcf" in result.output
+        assert "Total SNPs" not in result.output
 
     def test_stats_unrecognized_file_errors(self, tmp_path):
         f = tmp_path / "garbage.txt"
@@ -125,12 +125,12 @@ class TestStatsCommand:
 
 
 class TestSkippedLineReporting:
-    """Pin C3: malformed lines must surface to the user, not vanish silently."""
+    """Malformed lines must surface to the user, not vanish silently."""
 
     def _dirty_file(self, tmp_path):
         f = tmp_path / "dirty.txt"
         f.write_text(
-            "# MyHappyGenes [TEMPUS]\n"
+            "# MyHappyGenes [TEMPUS], human reference build 37.1 coordinates\n"
             "# Sample ID\tMHG_X\n"
             "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
             "rs1\t1\t100\tA\tG\n"
@@ -158,7 +158,7 @@ class TestSkippedLineReporting:
         assert result.stderr == ""
 
     def test_stats_restores_logger_state(self, tmp_path):
-        """m12/m13: do not leak logger level or propagate setting across calls."""
+        """Do not leak logger level or propagate setting across calls."""
         f = self._dirty_file(tmp_path)
         parser_logger = logging.getLogger("allelix.parsers")
         prev_level = parser_logger.level
@@ -175,6 +175,57 @@ class TestSkippedLineReporting:
 
 
 class TestAnalyzeCommand:
+    def test_analyze_stops_on_zero_vote_seeds(self, tmp_path, clinvar_data_dir: Path):
+        """Through the CLI: a labelled chip whose seeds sit on no build stops."""
+        chip = tmp_path / "nowhere.txt"
+        chip.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            "# using human reference build 37.1 coordinates.\n"
+            "# Sample ID\tMHG_X\n"
+            "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            "rs1801133\t1\t7\tA\tG\n"
+            "rs4680\t22\t7\tA\tG\n"
+        )
+        out = tmp_path / "report.json"
+        runner = CliRunner(env={"COLUMNS": "200"})
+        result = runner.invoke(
+            main,
+            ["analyze", str(chip), "--data-dir", str(clinvar_data_dir), "--no-update",
+             "--output", str(out)],
+        )  # fmt: skip
+        assert result.exit_code != 0
+        flat = " ".join(result.output.split())
+        assert (
+            "Cannot use nowhere.txt: its known-SNP positions match none of the supported" in flat
+        )
+        assert "2 known-SNP position(s) found, none at any supported build's coordinate" in flat
+        assert not out.exists()
+
+    def test_analyze_stops_on_an_unlabelled_chip_without_seeds(
+        self, tmp_path, clinvar_data_dir: Path
+    ):
+        """An unlabelled chip with no seeds, through the CLI: exit non-zero, say why,
+        write nothing."""
+        chip = tmp_path / "x_only.txt"
+        chip.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            "# Sample ID\tMHG_X\n"
+            "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            + "".join(f"rs99{n:05d}\tX\t{2_700_000 + n}\tA\tG\n" for n in range(20))
+        )
+        out = tmp_path / "report.json"
+        runner = CliRunner(env={"COLUMNS": "200"})
+        args = ["analyze", str(chip), "--data-dir", str(clinvar_data_dir), "--no-update"]
+        result = runner.invoke(main, [*args, "--output", str(out)])
+        assert result.exit_code != 0
+        flat = " ".join(result.output.split())
+        assert "Cannot use x_only.txt: the file states no genome build" in flat
+        assert "no known-SNP positions in the file" in flat
+        assert not out.exists()
+        forced = runner.invoke(main, [*args, "--build", "grch37", "--output", str(out)])
+        assert forced.exit_code == 0, forced.output
+        assert out.exists()
+
     def test_errors_when_no_annotators_ready(self, mock_mhg_path, tmp_path: Path):
         runner = CliRunner()
         empty_dir = tmp_path / "empty"
@@ -214,7 +265,7 @@ class TestAnalyzeCommand:
         assert "rs121918506" not in result.output
 
     def test_analyze_uses_env_var_data_dir(self, mock_mhg_path, clinvar_data_dir: Path):
-        """M-5: default data-dir resolution via $ALLELIX_DATA_DIR works in the CLI."""
+        """Default data-dir resolution via $ALLELIX_DATA_DIR works in the CLI."""
         runner = CliRunner(env={"COLUMNS": "200", "ALLELIX_DATA_DIR": str(clinvar_data_dir)})
         result = runner.invoke(main, ["analyze", str(mock_mhg_path)])
         assert result.exit_code == 0, result.output
@@ -240,8 +291,7 @@ class TestAnalyzeCommand:
         # console.print which respects the runtime width.
         flat = " ".join(result.output.split())
         assert "Build mismatch" in flat
-        assert "header claims GRCh37" in flat
-        assert "position data is GRCh38" in flat
+        assert "the file says GRCh37, but its known-SNP positions say GRCh38" in flat
         assert "Using GRCh38" in flat
 
     def test_analyze_no_warning_on_clean_grch37(
@@ -280,10 +330,10 @@ class TestAnalyzeCommand:
         )
         assert result.exit_code == 0, result.output
         assert "Build mismatch" not in result.output
-        assert "Build: GRCh37 (override" in result.output
+        assert "Build: GRCh37 (forced with --build)" in result.output
 
     def test_analyze_unknown_format_errors(self, mock_mhg_path, clinvar_data_dir: Path):
-        """M-5: cover the ParserNotFoundError branch in analyze."""
+        """Cover the ParserNotFoundError branch in analyze."""
         runner = CliRunner()
         result = runner.invoke(
             main,
@@ -302,13 +352,13 @@ class TestAnalyzeCommand:
     def test_analyze_reports_skipped_lines_on_dirty_input(
         self, tmp_path: Path, clinvar_data_dir: Path
     ):
-        """M-5: malformed-line warnings surface in the analyze command too."""
+        """Malformed-line warnings surface in the analyze command too."""
         f = tmp_path / "dirty.txt"
         f.write_text(
             "# MyHappyGenes [TEMPUS]\n"
             "# Sample ID\tMHG_X\n"
             "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
-            "rs1801133\t1\t11796321\tG\tA\n"
+            "rs1801133\t1\t11856378\tG\tA\n"
             "this_is_garbage\n",
             encoding="utf-8",
         )
@@ -455,7 +505,7 @@ class TestDbCommands:
         assert result.exit_code == 0
         assert "ClinVar" in result.output
         assert "yes" in result.output
-        assert "20260101" in result.output  # m-6: version from VCF ##fileDate
+        assert "20260101" in result.output  # version from VCF ##fileDate
         # ADR-0021: clinvar_data_dir populates both build caches.
         # 13 records per build x 2 builds = 26 composite total.
         assert "26" in result.output
@@ -565,7 +615,7 @@ class TestDbCommands:
         build_synthetic_clinvar_cache,
         monkeypatch,
     ):
-        """M-3: download+ingest path runs end-to-end against file:// URLs.
+        """Download+ingest path runs end-to-end against file:// URLs.
 
         All annotators must succeed -- `db update` iterates the whole registry,
         so each needs a local file:// URL or mock fixture. ClinVar setup is
@@ -588,7 +638,7 @@ class TestDbCommands:
         pharmgkb_url = f"file:{pathname2url(str(pharmgkb_zip.resolve()))}"
         monkeypatch.setattr(pharmgkb_module, "PHARMGKB_CLINICAL_URL", pharmgkb_url)
 
-        # C-1: never hit the real CPIC API from the test suite. The annotator
+        # Never hit the real CPIC API from the test suite. The annotator
         # imports fetch_cpic_allele_functions by name, so patching it on the
         # pharmgkb module is what setup() actually resolves at call time.
         monkeypatch.setattr(
@@ -620,7 +670,7 @@ class TestDbCommands:
                 build_synthetic_clinvar_cache(
                     self._db_paths[build],
                     build,
-                    source_url="test://stage-c-mock",
+                    source_url="test://clinvar-mock",
                     remote_signal="md5:test_signal",
                 )
 
@@ -682,7 +732,7 @@ class TestDbCommands:
             # grew the fixture set: 13 → 20 (added 3 identical-SCV
             # rows for rs999000111, 2 conflicting-SCV rows for rs999000222,
             # 1 sub-floor row for rs999000333, 1 unmapped-CLNSIG row for
-            # rs999000444). Cross-PR review (Finding 1) added 2 more
+            # rs999000444). The multi-allelic dedup fix added 2 more
             # rows for rs999000555 (multi-allelic distinct-alt dedup
             # guard) → 22 total. Cache row count stays at 22 even after
             # the dedup — dedup is annotator-side, not loader-side.
@@ -706,7 +756,7 @@ class TestDbCommands:
     def test_db_update_bad_url_leaves_old_cache_intact(
         self, clinvar_data_dir: Path, mock_gnomad_gz: Path, monkeypatch
     ):
-        """M-1+M-2: a failed update must not destroy a working cache.
+        """A failed update must not destroy a working cache.
 
         Uses --force because the cache is already ready; without it
         `db update` would correctly skip the download and the bad URL
@@ -721,9 +771,9 @@ class TestDbCommands:
         info_before = get_database_info(sqlite_path, clinvar_record_name("GRCh37"))
         assert info_before is not None
 
-        # Stage B: the annotator downloads variant_summary +
+        # The annotator downloads variant_summary +
         # submission_summary instead of the per-build VCF. Pointing
-        # either at a refused connection still exercises the M-1+M-2
+        # either at a refused connection still exercises the
         # "failure preserves cache" invariant.
         monkeypatch.setattr(
             manager_module,
@@ -982,7 +1032,7 @@ class TestDbCommands:
     def test_db_update_legacy_cache_redownloads(
         self, tmp_path: Path, mock_gnomad_gz: Path, monkeypatch
     ):
-        """a cache with no stored signal predates the signal mechanism
+        """A cache with no stored signal predates the signal mechanism
         (i.e., is old). It must be re-downloaded, NOT silently stamped as
         current — the previous behavior permanently marked stale caches as
         fresh."""
@@ -1114,7 +1164,7 @@ class TestDbCommands:
     def test_db_update_bad_url_shows_friendly_error(
         self, clinvar_data_dir: Path, mock_gnomad_gz: Path, monkeypatch
     ):
-        """W-2: failure path prints a friendly error — not propagate the raw error.
+        """Failure path prints a friendly error — not propagate the raw error.
 
         Pinned facts:
           1. The error message appears in output with the annotator name prefix.
@@ -1129,9 +1179,8 @@ class TestDbCommands:
         from allelix.annotators.alphamissense import AlphaMissenseAnnotator
         from allelix.databases import manager as manager_module
 
-        # Stage B: TSV URLs replace the per-build VCF map. Refused-
-        # connection URLs on both files still exercise the W-2 friendly-
-        # error invariant.
+        # TSV URLs replace the per-build VCF map. Refused-connection
+        # URLs on both files still exercise the friendly-error invariant.
         monkeypatch.setattr(
             manager_module,
             "CLINVAR_VARIANT_SUMMARY_URL",
@@ -1337,7 +1386,7 @@ class TestDbCommands:
         assert result.exit_code == 1
         # Normalize whitespace so the assertion survives any line-wrapping —
         # the resolved tmp_path can push the phrase across terminal-width
-        # boundaries on narrow runners. (PR 1 lesson: console.print() was
+        # boundaries on narrow runners. (console.print() was
         # Rich-wrapping mid-phrase under CliRunner's 80-col default.)
         stderr_flat = " ".join(result.stderr.split())
         assert "doesn't look like an allelix cache" in stderr_flat
@@ -1384,7 +1433,7 @@ class TestDbCommands:
         assert "doesn't look like an allelix cache" in stderr_flat
 
     def test_db_clean_refuses_dir_with_only_generic_config_toml(self, tmp_path: Path):
-        """a `config.toml` alongside non-allelix content (the
+        """A `config.toml` alongside non-allelix content (the
         Rust / Hugo / Rocket / etc. project shape) must NOT pass the
         guard. Previously, the guard accepted any dir with a config.toml
         — so a typo'd `--data-dir ~/my-rust-project` could trigger
@@ -1561,7 +1610,7 @@ class TestMethylationCommand:
         # box-drawing chars and whitespace from neighboring columns
         # interleave between the two words). Strip everything except
         # letters and spaces, then collapse whitespace, then check.
-        # See the PR 81 / cli/db.py lesson about width-fragile assertions.
+        # Assertions on wrapped Rich output are width-fragile (see cli/db.py).
         import re
 
         letters_only = re.sub(r"[^A-Za-z ]+", " ", result.output)
@@ -2217,7 +2266,7 @@ class TestFilterFileOnAnalyze:
         """Empty filter file (only comments/blanks) threads empty frozensets through.
 
         The empty-set → match-nothing semantic on AnalysisResult.filter()
-        is covered by a direct unit test in tests/test_pipeline_filter.py;
+        is covered by a direct unit test in tests/reports/test_pipeline.py;
         here we verify only that the CLI layer forwards empty frozensets,
         not None.
         """
@@ -2849,16 +2898,11 @@ class TestExportPlinkCommand:
         assert chroms == ["1", "1", "2"], f"Expected contiguous chroms, got {chroms}"
 
 
-class TestBuildDiagnosticsFallback:
-    """The CLI loudly recommends --build when auto-detect has no signal.
+class TestBuildDiagnosticsMessages:
+    """What the CLI prints about the build decision (ADR-0044)."""
 
-    Real VCFs from variant callers (GATK / DeepVariant) emit ID=. and skip
-    the ##contig assembly tag, so both auto-detect paths come up empty.
-    Defaulting silently makes annotation positions diverge from reality —
-    the user must be told to pass --build explicitly.
-    """
-
-    def test_no_signal_fires_yellow_warning(self) -> None:
+    @staticmethod
+    def _emit(**overrides) -> str:
         from io import StringIO
 
         from rich.console import Console
@@ -2866,238 +2910,158 @@ class TestBuildDiagnosticsFallback:
         from allelix.cli import _helpers
         from allelix.reports._pipeline import BuildDiagnostics
 
-        diag = BuildDiagnostics(
-            header_build=None,
-            detected_build=None,
-            effective_build="GRCh37",
-            override=False,
-            matched_count=0,
-            inspected_count=0,
-        )
+        fields = {
+            "effective_build": "GRCh37",
+            "source": "seeds",
+            "file_label": None,
+            "detected_build": "GRCh37",
+            "matched_count": 10,
+            "inspected_count": 10,
+            "position_confident": True,
+        }
+        fields.update(overrides)
 
         class _R:
-            build_diagnostics = diag
+            build_diagnostics = BuildDiagnostics(**fields)
 
-        # Swap the module-level console for a recording one so we can read output.
         buf = StringIO()
         original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
+        _helpers.console = Console(file=buf, force_terminal=False, width=400)
         try:
             _helpers._emit_build_diagnostics(_R())
         finally:
             _helpers.console = original
+        return " ".join(buf.getvalue().split())
 
-        output = buf.getvalue()
-        assert "Could not auto-detect" in output
-        assert "--build grch37" in output and "--build grch38" in output
+    def test_seeds(self) -> None:
+        out = self._emit()
+        assert "Build: GRCh37 (from known-SNP positions: 10/10 match GRCh37)" in out
+        assert "mismatch" not in out
 
-    def test_override_does_not_warn(self) -> None:
-        """When the user explicitly passed --build, no warning should fire."""
-        from io import StringIO
+    def test_override(self) -> None:
+        out = self._emit(source="override", file_label="GRCh37", effective_build="GRCh38")
+        assert "Build: GRCh38 (forced with --build; the file says GRCh37)" in out
+        assert "mismatch" not in out
 
-        from rich.console import Console
+    def test_contig_lengths(self) -> None:
+        out = self._emit(source="contig_lengths", lengths_detail="2 contig length(s) match GRCh37")
+        assert "Build: GRCh37 (from the contig lengths: 2 contig length(s) match GRCh37)" in out
 
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
+    def test_assembly_header_and_file_label(self) -> None:
+        for source, wording in (
+            ("assembly_header", "from the VCF assembly header"),
+            ("file_label", "from the file's build line"),
+        ):
+            out = self._emit(source=source, file_label="GRCh37")
+            assert wording in out
+            # The label decided and nothing contradicted it: no notice.
+            assert "mismatch" not in out
+            assert "Note:" not in out
 
-        diag = BuildDiagnostics(
-            header_build=None,
-            detected_build=None,
-            effective_build="GRCh38",
-            override=True,
-            matched_count=0,
-            inspected_count=0,
-        )
-
-        class _R:
-            build_diagnostics = diag
-
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        assert "Could not auto-detect" not in buf.getvalue()
-
-    def test_header_only_does_not_warn(self) -> None:
-        """When the header has an assembly tag, the dim status line is enough."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
-
-        diag = BuildDiagnostics(
-            header_build="GRCh38",
-            detected_build=None,
-            effective_build="GRCh38",
-            override=False,
-            matched_count=0,
-            inspected_count=0,
-        )
-
-        class _R:
-            build_diagnostics = diag
-
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        assert "Could not auto-detect" not in buf.getvalue()
-
-    def test_below_threshold_mismatch_reports_header_as_effective(self) -> None:
-        """A tentative position majority must not claim detection won."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
-
-        diag = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build="GRCh38",
-            effective_build="GRCh37",
-            override=False,
+    def test_below_threshold_seeds_under_a_label_are_not_called_the_source(self) -> None:
+        """3/4 agreeing with the label: the banner credits the label, with the counts."""
+        out = self._emit(
+            source="file_label",
+            file_label="GRCh37",
             matched_count=3,
             inspected_count=4,
-        )
-
-        class _R:
-            build_diagnostics = diag
-
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        output = " ".join(buf.getvalue().split())
-        assert "Build: GRCh37 (header (position signal below confidence)" in output
-        assert "position data tentatively favors GRCh38" in output
-        assert "Using GRCh37" in output
-        assert "Using GRCh38" not in output
-
-    def test_tentative_signal_matching_fallback_is_not_called_detected(self) -> None:
-        """A 2/2 signal may coincide with GRCh37 fallback without choosing it."""
-        from io import StringIO
-
-        from rich.console import Console
-
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
-
-        diag = BuildDiagnostics(
-            header_build=None,
-            detected_build="GRCh37",
-            effective_build="GRCh37",
-            override=False,
-            matched_count=2,
-            inspected_count=2,
             position_confident=False,
         )
-
-        class _R:
-            build_diagnostics = diag
-
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        output = " ".join(buf.getvalue().split())
-        assert "fallback (position signal below confidence)" in output
-        assert "(detected;" not in output
-
-    def test_tied_position_data_with_header_fires_inconclusive_warning(self) -> None:
-        """tie or no-winner in position detection with a header set
-        must fire a yellow warning, not silently route through header_build.
-
-        Trigger: position detection inspected rsIDs (`inspected_count > 0`)
-        but couldn't pick a build (`detected_build is None`), header is set.
-        Pre-fix, this was the silent-coords trap — a GRCh36 file with a
-        GRCh37-mislabeled header would silently get the GRCh37 ClinVar cache.
-        """
-        from io import StringIO
-
-        from rich.console import Console
-
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
-
-        diag = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build=None,
-            effective_build="GRCh37",
-            override=False,
-            matched_count=0,
-            inspected_count=4,  # we DID see rsIDs; they just didn't agree
+        assert (
+            "Build: GRCh37 (from the file's build line; 3/4 known-SNP positions match GRCh37, "
+            "tentative)" in out
         )
+        assert "from known-SNP positions" not in out
 
-        class _R:
-            build_diagnostics = diag
-
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        output = buf.getvalue()
-        assert "Build detection inconclusive" in output
-        assert "4 known-rsID position checks" in output
-        assert "--build grch37" in output and "--build grch38" in output
-        # Must not also fire the "no rsIDs in input" warning
-        assert "Could not auto-detect" not in output
-
-    def test_header_set_zero_inspected_does_not_fire_inconclusive(self) -> None:
-        """When the header is set and zero rsIDs were inspected (no rsIDs
-        in input), the new "inconclusive" warning must NOT fire — that case
-        is a legitimate header-only build determination, not a tied vote.
-        """
-        from io import StringIO
-
-        from rich.console import Console
-
-        from allelix.cli import _helpers
-        from allelix.reports._pipeline import BuildDiagnostics
-
-        diag = BuildDiagnostics(
-            header_build="GRCh38",
+    def test_tie_including_the_build_keeps_the_inconclusive_warning(self) -> None:
+        """A tie that includes the deciding build: proceed on it, and warn."""
+        out = self._emit(
+            source="file_label",
+            file_label="GRCh37",
             detected_build=None,
+            matched_count=0,
+            inspected_count=4,
+            position_confident=False,
+            tied_builds=("GRCh37", "GRCh38"),
+            tied_votes=2,
+        )
+        assert "Build: GRCh37 (from the file's build line" in out
+        assert (
+            "Build evidence inconclusive: the known-SNP positions are tied between GRCh37 "
+            "and GRCh38 (2 each of 4). Using GRCh37, which the file's build line states; it "
+            "is one of the tied builds." in out
+        )
+        assert "the other build" not in out
+        assert "--build grch37 or --build grch38" in out
+
+    def test_grch36_tie_mismatch_notice(self) -> None:
+        out = self._emit(
+            effective_build="GRCh36",
+            source="seeds",
+            file_label="GRCh37",
+            detected_build=None,
+            matched_count=0,
+            inspected_count=4,
+            position_confident=False,
+            label_overridden=True,
+            tentative_grch36=True,
+            tied_builds=("GRCh36", "GRCh38"),
+            tied_votes=2,
+        )
+        assert (
+            "Build mismatch: the file says GRCh37, but its known-SNP positions are tied "
+            "between GRCh36 and GRCh38 (2 each of 4). Using GRCh36 as the safe choice" in out
+        )
+        assert "say None" not in out
+        assert "Build evidence inconclusive" in out
+        assert "GRCh36 (hg18) was chosen as the safe option" in out
+        assert "detected" not in out
+
+    def test_override_with_a_tie_does_not_warn(self) -> None:
+        out = self._emit(source="override", tied_builds=("GRCh37", "GRCh38"), tied_votes=2)
+        assert "inconclusive" not in out
+
+    def test_default_prints_a_visible_note(self) -> None:
+        out = self._emit(source="default", detected_build=None, matched_count=0, inspected_count=0)
+        assert "this format's default; the file states no build" in out
+        assert "Note: the file states no genome build" in out
+        assert "--build grch37 or --build grch38" in out
+
+    def test_confident_mismatch_notice(self) -> None:
+        out = self._emit(
             effective_build="GRCh38",
-            override=False,
-            matched_count=0,
-            inspected_count=0,  # no rsIDs seen
+            file_label="GRCh37",
+            detected_build="GRCh38",
+            matched_count=9,
+            label_overridden=True,
         )
+        assert (
+            "Build mismatch: the file says GRCh37, but its known-SNP positions say GRCh38" in out
+        )
+        assert "Using GRCh38" in out
 
-        class _R:
-            build_diagnostics = diag
+    def test_tentative_grch36_mismatch_notice(self) -> None:
+        out = self._emit(
+            effective_build="GRCh36",
+            file_label="GRCh37",
+            detected_build="GRCh36",
+            matched_count=3,
+            inspected_count=4,
+            position_confident=False,
+            label_overridden=True,
+            tentative_grch36=True,
+        )
+        assert "positions tentatively say GRCh36 (3/4)" in out
+        assert (
+            "GRCh36 (hg18) was chosen as the safe option: the known-SNP positions lean to it (3/4)"
+            in out
+        )
+        assert "detected" not in out
 
-        buf = StringIO()
-        original = _helpers.console
-        _helpers.console = Console(file=buf, force_terminal=False, width=200)
-        try:
-            _helpers._emit_build_diagnostics(_R())
-        finally:
-            _helpers.console = original
-
-        assert "Build detection inconclusive" not in buf.getvalue()
+    def test_hg19_chrm_note(self) -> None:
+        out = self._emit(source="contig_lengths", lengths_detail="x", mt_skipped=12)
+        assert "chrM is declared with the hg19 length (16,571 bp)" in out
+        assert "12 mitochondrial record(s) were not annotated" in out
 
 
 class TestRuntimeNudges:
@@ -3105,7 +3069,7 @@ class TestRuntimeNudges:
     strand-aware-inactive (array input + no ref) and GRCh38 rsID-less
     undercount cases. Both are once-per-run and side-effect-only."""
 
-    def _capture(self, result) -> str:
+    def _capture(self, result, missing: tuple[str, ...] = ()) -> str:
         from io import StringIO
 
         from rich.console import Console
@@ -3116,7 +3080,7 @@ class TestRuntimeNudges:
         original = _helpers.console
         _helpers.console = Console(file=buf, force_terminal=False, width=200)
         try:
-            _helpers._emit_runtime_nudges(result)
+            _helpers._emit_runtime_nudges(result, missing)
         finally:
             _helpers.console = original
         return buf.getvalue()
@@ -3132,10 +3096,10 @@ class TestRuntimeNudges:
             no_ref_variant_count=0,
             rsidless_variant_count=0,
             build_diagnostics=BuildDiagnostics(
-                header_build=None,
+                file_label=None,
                 detected_build="GRCh37",
                 effective_build="GRCh37",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,
@@ -3167,10 +3131,10 @@ class TestRuntimeNudges:
         result = self._result(
             no_ref_variant_count=1000,
             build_diagnostics=BuildDiagnostics(
-                header_build="GRCh36",
+                file_label="GRCh36",
                 detected_build="GRCh36",
                 effective_build="GRCh36",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,
@@ -3187,10 +3151,10 @@ class TestRuntimeNudges:
         result = self._result(
             no_ref_variant_count=1000,
             build_diagnostics=BuildDiagnostics(
-                header_build="GRCh38",
+                file_label="GRCh38",
                 detected_build="GRCh38",
                 effective_build="GRCh38",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,
@@ -3231,17 +3195,43 @@ class TestRuntimeNudges:
             total_variants=1000,
             rsidless_variant_count=900,
             build_diagnostics=BuildDiagnostics(
-                header_build="GRCh38",
+                file_label="GRCh38",
                 detected_build="GRCh38",
                 effective_build="GRCh38",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,
             ),
         )
-        out = self._capture(result)
+        out = self._capture(result, ("the rsID identity table",))
         assert "GRCh38 input without rsIDs" in out
+        assert "the rsID identity table not ready" in out
+        assert "Run `allelix db update`" in out
+        # The measured coverage is equal once both are installed; no claim
+        # that GRCh37 surfaces more.
+        assert "GRCh37" not in out
+
+    def test_grch38_rsidless_with_resolvers_ready_is_quiet(self):
+        """With the identity table and gnomAD installed, coverage matches
+        GRCh37, so the notice is not shown."""
+        from allelix.reports._pipeline import BuildDiagnostics
+
+        result = self._result(
+            parser_name="vcf",
+            total_variants=1000,
+            rsidless_variant_count=900,
+            build_diagnostics=BuildDiagnostics(
+                file_label="GRCh38",
+                detected_build="GRCh38",
+                effective_build="GRCh38",
+                source="seeds",
+                matched_count=10,
+                inspected_count=10,
+                position_confident=True,
+            ),
+        )
+        assert "GRCh38 input without rsIDs" not in self._capture(result, ())
 
     def test_grch38_with_rsids_no_warning(self):
         """GRCh38 VCF where most rows carry rsIDs (rare but real for
@@ -3253,10 +3243,10 @@ class TestRuntimeNudges:
             total_variants=1000,
             rsidless_variant_count=100,
             build_diagnostics=BuildDiagnostics(
-                header_build="GRCh38",
+                file_label="GRCh38",
                 detected_build="GRCh38",
                 effective_build="GRCh38",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,
@@ -3287,10 +3277,10 @@ class TestRuntimeNudges:
             total_variants=1000,
             rsidless_variant_count=0,
             build_diagnostics=BuildDiagnostics(
-                header_build="GRCh38",
+                file_label="GRCh38",
                 detected_build="GRCh38",
                 effective_build="GRCh38",
-                override=False,
+                source="seeds",
                 matched_count=10,
                 inspected_count=10,
                 position_confident=True,

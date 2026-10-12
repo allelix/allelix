@@ -150,12 +150,15 @@ _NO_CADD_OPT = click.option(
 )
 _BUILD_OPT = click.option(
     "--build",
-    type=click.Choice(["grch37", "grch38", "auto"], case_sensitive=False),
+    type=click.Choice(["grch37", "grch38", "grch36", "auto"], case_sensitive=False),
     default="auto",
     help=(
-        "Genome build of the input file. 'auto' detects from position data "
-        "and ignores the file header. 'grch37' / 'grch38' force a "
-        "specific build, skipping detection."
+        "Genome build of the input file. 'auto' decides from the evidence "
+        "the file carries (VCF contig lengths, known-SNP positions) and stops "
+        "when that evidence contradicts the file's label or is missing. "
+        "'grch37' / 'grch38' force a specific build, skipping detection; "
+        "'grch36' forces an old GRCh36 / hg18 file, with position-keyed "
+        "lookups off (see docs/grch36-liftover.md)."
     ),
 )
 _SAMPLE_OPT = click.option(

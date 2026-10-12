@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Allelix
 """Tests for GWAS MTAG + PheCode rollup (ADR-0024).
 
-ADR-0035 PR 3: rollup now reads ``trait`` / ``phecode`` / ``p_value`` from
+ADR-0035: rollup reads ``trait`` / ``phecode`` / ``p_value`` from
 structured Annotation fields. Tests construct GWAS rows with the structured
 fields populated and let the helper render a matching ``description`` so
 MTAG-via-description detection still works.
@@ -125,7 +125,7 @@ def test_non_gwas_pass_through_untouched():
 
 
 def test_real_data_rs10455872_collapses_8_to_5():
-    """Reviewer-flagged case: 8 LPA rows collapse to 5 distinct findings."""
+    """Regression case: 8 LPA rows collapse to 5 distinct findings."""
     rows = [
         _mk("rs10455872", "Aortic stenosis", 4.0e-130),
         _mk("rs10455872", "Aortic stenosis", 4.0e-140, mtag=True),

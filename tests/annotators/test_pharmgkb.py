@@ -52,34 +52,60 @@ class TestSignalGuard:
 class TestInterpreterVersionStamp:
     """Verify the cache self-heals on interpreter version bumps."""
 
-    def test_stale_stamp_reingests_from_cached_zip(self, tmp_path: Path, mock_pharmgkb_dir: Path):
-        """Simulates PHARMGKB_INTERPRETER_VERSION bumping: stale iv:0 → auto-reingest."""
+    def test_interpreter_bump_rebuilds_only_in_db_update(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, monkeypatch
+    ):
+        """A cache from an older interpreter version is not ready, and is_ready()
+        makes no network call even with the ZIP on disk (analyze stays offline).
+        setup(), which db update runs, rebuilds it with the CPIC table fetched
+        again."""
         import sqlite3
+        import zipfile
 
+        from allelix.annotators import pharmgkb as pharmgkb_module
         from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv
 
         db_path = tmp_path / "pharmgkb.sqlite"
-        load_pharmgkb_tsv(mock_pharmgkb_dir, db_path, remote_signal="test-signal")
-
-        zip_path = tmp_path / "clinicalAnnotations.zip"
-        import zipfile
-
-        with zipfile.ZipFile(zip_path, "w") as zf:
+        load_pharmgkb_tsv(
+            mock_pharmgkb_dir,
+            db_path,
+            remote_signal="test-signal",
+            allele_function_lookup={("rs1", "A"): "no_function"},
+        )
+        with zipfile.ZipFile(tmp_path / "clinicalAnnotations.zip", "w") as zf:
             for f in mock_pharmgkb_dir.iterdir():
                 zf.write(f, f.name)
-
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
                 "UPDATE database_versions SET local_version_tag = 'iv:0' WHERE name = 'pharmgkb'"
             )
             conn.commit()
 
-        ann = PharmGKBAnnotator(tmp_path)
-        try:
+        def no_network(*_args, **_kwargs):
+            raise AssertionError("is_ready() must not reach the network")
+
+        monkeypatch.setattr(pharmgkb_module, "fetch_cpic_allele_functions", no_network)
+        monkeypatch.setattr(pharmgkb_module, "download", no_network)
+        with PharmGKBAnnotator(tmp_path) as ann:
+            assert ann.is_ready() is False
+
+        monkeypatch.setattr(
+            pharmgkb_module, "fetch_cpic_allele_functions", lambda: {("rs2", "G"): "normal"}
+        )
+        monkeypatch.setattr(
+            pharmgkb_module,
+            "download",
+            lambda url, dest: _fake_download(mock_pharmgkb_dir, url, dest),
+        )
+        with PharmGKBAnnotator(tmp_path) as ann:
+            monkeypatch.setattr(ann, "fetch_remote_signal", lambda: "pgkb:etag:x|cpic:y")
+            ann.setup()
             assert ann.is_ready() is True
-            assert ann.record_count() == 16
-        finally:
-            ann.close()
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT rsid, allele, function_class FROM pharmgkb_allele_function"
+            ).fetchall()
+        assert rows == [("rs2", "G", "normal")]
 
     def test_stale_stamp_no_zip_returns_false(self, tmp_path: Path, mock_pharmgkb_dir: Path):
         """Stale stamp without a retained ZIP → not ready."""
@@ -103,9 +129,11 @@ class TestInterpreterVersionStamp:
             ann.close()
 
     def test_legacy_no_stamp_self_heals(self, tmp_path: Path, mock_pharmgkb_dir: Path):
-        """Pre-mechanism cache (no local_version_tag) gets stamped without reingest."""
+        """Pre-mechanism cache (no local_version_tag, current ``|iv:N`` baked into
+        remote_signal) gets stamped without reingest."""
         import sqlite3
 
+        from allelix.databases._versions import PHARMGKB_INTERPRETER_VERSION
         from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv
 
         db_path = tmp_path / "pharmgkb.sqlite"
@@ -113,7 +141,9 @@ class TestInterpreterVersionStamp:
 
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
-                "UPDATE database_versions SET local_version_tag = NULL WHERE name = 'pharmgkb'"
+                "UPDATE database_versions SET local_version_tag = NULL, remote_signal = ? "
+                "WHERE name = 'pharmgkb'",
+                (f"test-signal|iv:{PHARMGKB_INTERPRETER_VERSION}",),
             )
             conn.commit()
 
@@ -161,7 +191,7 @@ class TestGenotypeMatching:
         assert annotator.annotate(v) == []
 
     def test_asymmetric_no_call_does_not_trigger(self, annotator: PharmGKBAnnotator):
-        """r-2: one good allele + one no-call must short-circuit before lookup."""
+        """One good allele + one no-call must short-circuit before lookup."""
         v_left = Variant("rs1801133", "1", 11796321, "-", "A")
         v_right = Variant("rs1801133", "1", 11796321, "A", "-")
         assert annotator.annotate(v_left) == []
@@ -177,7 +207,7 @@ class TestGenotypeMatching:
         assert annotator.annotate(v) == []
 
     def test_alt_threading_with_ref_heterozygous(self, annotator: PharmGKBAnnotator):
-        """ADR-0035 PR 2: REF=A, user is A/G → annotation.alt = "G"."""
+        """ADR-0035: REF=A, user is A/G → annotation.alt = "G"."""
         v = Variant("rs1801133", "1", 11796321, "G", "A", ref="A")
         results = annotator.annotate(v)
         assert results
@@ -406,7 +436,7 @@ class TestSchemaMigration:
 
 
 class TestRemoteSignal:
-    """Composite freshness signal: ClinPGx (ETag/Last-Modified) + CPIC (M-2)."""
+    """Composite freshness signal: ClinPGx (ETag/Last-Modified) + CPIC."""
 
     def test_etag_preferred_when_present(self, annotator: PharmGKBAnnotator, monkeypatch):
         from allelix.annotators import pharmgkb as pharmgkb_module
@@ -459,7 +489,7 @@ class TestRemoteSignal:
     def test_returns_unavailable_when_cpic_probe_fails(
         self, annotator: PharmGKBAnnotator, monkeypatch
     ):
-        """R-5: CPIC probe failure is non-fatal — signal carries cpic:unavailable."""
+        """CPIC probe failure is non-fatal — signal carries cpic:unavailable."""
         from allelix.annotators import pharmgkb as pharmgkb_module
 
         monkeypatch.setattr(
@@ -509,7 +539,7 @@ class TestCloseable:
 
 
 class TestCpicFallback:
-    """R-5: ClinPGx setup succeeds when CPIC API is down."""
+    """ClinPGx setup succeeds when CPIC API is down."""
 
     def test_setup_succeeds_when_cpic_down(self, tmp_path: Path, mock_pharmgkb_dir: Path):
         ann = PharmGKBAnnotator(tmp_path)

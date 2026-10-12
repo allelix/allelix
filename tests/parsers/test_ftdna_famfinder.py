@@ -180,7 +180,7 @@ class TestParse:
         assert variants[0].rsid == "rs_good"
 
     def test_haploid_4_column_line(self, parser: FTDNAFamFinderParser, tmp_path: Path) -> None:
-        """a 4-column line (missing ALLELE2 column entirely)
+        """A 4-column line (missing ALLELE2 column entirely)
         is a haploid MT/Y call in the FamFinder convention. Parser
         emits a hemizygous Variant where allele1 == allele2 == the
         called base — NOT a half no-call.
@@ -213,7 +213,7 @@ class TestParse:
     def test_haploid_shape_on_autosome_skipped_as_truncated_diploid(
         self, parser: FTDNAFamFinderParser, tmp_path: Path
     ) -> None:
-        """cross-PR review (): the haploid shape (4-col
+        """The haploid shape (4-col
         line OR 5-col with empty ALLELE2) is accepted ONLY on MT and Y.
         FTDNA does not publish haploid calls on autosomes or X — the
         same shape on chr1 is almost certainly a truncated diploid
@@ -221,10 +221,10 @@ class TestParse:
         would silently double the surviving allele and synthesize a
         wrong-zygosity genotype. The parser warns-and-skips instead.
 
-        Pre-review the parser accepted the autosomal 4-col line as
-        haploid → `(A, A)`, silently mis-reporting a truncated `A?`
-        as a homozygous AA call. Post-review the row is dropped with
-        a warning, matching the canonical published FamFinder shape.
+        Accepting the autosomal 4-col line as haploid → `(A, A)` would
+        silently mis-report a truncated `A?` as a homozygous AA call.
+        The row is dropped with a warning instead, matching the
+        canonical published FamFinder shape.
         """
         f = _write(
             tmp_path,
@@ -276,7 +276,7 @@ class TestParse:
     def test_empty_allele2_cell_treated_as_haploid(
         self, parser: FTDNAFamFinderParser, tmp_path: Path
     ) -> None:
-        """a 5-column line with an empty trailing ALLELE2 cell
+        """A 5-column line with an empty trailing ALLELE2 cell
         is also the haploid shape — same biology as the 4-column line,
         just from a writer that emitted the trailing tab. Both must
         parse the same way: hemizygous, not half no-call.

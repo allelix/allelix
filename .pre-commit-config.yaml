@@ -4,8 +4,8 @@
 #   pip install -e ".[dev]"
 #   pre-commit install --hook-type pre-commit
 #
-# Version-tag guard is a raw .git/hooks/pre-push script installed by
-# scripts/tag-release.sh flow — not managed by pre-commit.
+# Version-tag guard is the raw pre-push hook in .githooks/ (enabled with
+# `git config core.hooksPath .githooks`) — not managed by pre-commit.
 #
 # `language: system` means hooks run via PATH — works as long as your
 # venv (which contains ruff and pytest) is activated.

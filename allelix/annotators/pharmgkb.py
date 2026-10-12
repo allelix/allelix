@@ -122,9 +122,9 @@ class PharmGKBAnnotator(Annotator):
         per-allele function table is the secondary fallback for rsids
         ClinVar doesn't catalog.
 
-        The ZIP is retained on disk so ``is_ready()`` can auto-reingest
-        when the interpreter version bumps — mirroring the GWAS TSV
-        retention pattern.
+        This is also how a cache built by an older interpreter version is
+        rebuilt: ``is_ready()`` reports it stale and ``db update`` calls
+        this, so the CPIC table is fetched again with the annotations.
         """
         url = PHARMGKB_CLINICAL_URL
         signal = self.fetch_remote_signal()
@@ -162,13 +162,15 @@ class PharmGKBAnnotator(Annotator):
     def is_ready(self) -> bool:
         """True iff a ClinPGx SQLite cache exists with current schema and interpreter stamp.
 
-        When the interpreter version has bumped and the raw ZIP is still
-        on disk (retained since the last ``db update``), auto-reingests
-        from the cached ZIP using the existing CPIC allele-function data —
-        mirroring the GWAS auto-reingest pattern.
+        Never touches the network, so ``analyze`` stays offline. When the
+        interpreter version has bumped, the cache is not ready and
+        ``allelix db update`` rebuilds it, fetching the ClinPGx annotations
+        and the CPIC allele-function table again (``setup``).
 
-        Pre-mechanism caches (tag missing or baked into ``remote_signal``)
-        are self-healed with a one-shot stamp update.
+        Pre-mechanism caches (tag missing, version baked into
+        ``remote_signal``) are self-healed with a one-shot stamp update
+        when the baked version is the current one; otherwise they are not
+        ready either.
         """
         info = get_database_info(self._db_path, "pharmgkb")
         if info is None:
@@ -178,9 +180,7 @@ class PharmGKBAnnotator(Annotator):
         tag = info.get("local_version_tag") or ""
         if tag == f"iv:{PHARMGKB_INTERPRETER_VERSION}":
             return True
-        if not tag:
-            return _stamp_existing_pharmgkb_cache(self._db_path)
-        return _reingest_pharmgkb_from_cached_zip(self._db_path, self.data_dir)
+        return not tag and _stamp_existing_pharmgkb_cache(self._db_path)
 
     def version(self) -> str | None:
         """Cached database version (download date, or version supplied to load)."""
@@ -199,7 +199,7 @@ class PharmGKBAnnotator(Annotator):
             self._conn = None
 
     def fetch_remote_signal(self) -> str | None:
-        """Composite freshness signal for ClinPGx + CPIC (M-2, ADR-0020).
+        """Composite freshness signal for ClinPGx + CPIC (ADR-0020).
 
         The signal format is `pgkb:<pgkb-signal>|cpic:<cpic-signal>`.
 
@@ -269,7 +269,7 @@ class PharmGKBAnnotator(Annotator):
         if is_clinvar_homref(variant, self._clinvar_ref_provider):
             return []
 
-        # ADR-0035 PR 4: fetch all rows for the rsid (typically <5) and apply
+        # ADR-0035: fetch all rows for the rsid (typically <5) and apply
         # strand-aware genotype match in Python. Forward-stranded users hit
         # the same set of rows as the v0.7-era ``WHERE genotype = ?`` SQL;
         # reverse-stranded users now also match when Variant.ref confirms
@@ -402,7 +402,7 @@ class PharmGKBAnnotator(Annotator):
                     _score,
                     pgkb_annotation_id,
                 ) = row
-                # ADR-0035 PR 4: strand-aware genotype match. See annotate() for
+                # ADR-0035: strand-aware genotype match. See annotate() for
                 # the safety rationale (palindrome guard + variant.ref orientation).
                 if not strand_aware_genotype_match(
                     variant.allele1,
@@ -458,12 +458,15 @@ def _stamp_existing_pharmgkb_cache(db_path: Path) -> bool:
     """One-shot migration: stamp ``local_version_tag`` on a ClinPGx cache.
 
     Handles legacy caches with ``|iv:N`` baked into ``remote_signal``
-    by moving the tag and cleaning the signal. Returns True if the
-    current interpreter version is now stamped.
+    by moving the tag and cleaning the signal, but only when ``N`` is the
+    current interpreter version. A cache without the marker, or with
+    another ``N``, has unknown or old data: it is left unstamped and the
+    caller re-ingests or re-downloads it. Returns True if the current
+    interpreter version is now stamped.
     """
     import contextlib
 
-    from allelix.databases.manager import _ensure_local_version_tag_column
+    from allelix.databases.manager import _ensure_local_version_tag_column, parse_baked_version
 
     if not db_path.exists():
         return False
@@ -480,6 +483,10 @@ def _stamp_existing_pharmgkb_cache(db_path: Path) -> bool:
             sig, existing_tag = row
             if existing_tag == tag:
                 return True
+            if existing_tag is not None:
+                return False
+            if parse_baked_version(sig, "iv") != PHARMGKB_INTERPRETER_VERSION:
+                return False
             clean_signal = (sig or "").split("|iv:")[0]
             conn.execute(
                 "UPDATE database_versions "
@@ -491,57 +498,3 @@ def _stamp_existing_pharmgkb_cache(db_path: Path) -> bool:
         return True
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return False
-
-
-def _read_cached_cpic_lookup(db_path: Path) -> dict[tuple[str, str], str]:
-    """Extract the CPIC allele-function table from an existing ClinPGx cache."""
-    import contextlib
-
-    lookup: dict[tuple[str, str], str] = {}
-    try:
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
-            rows = conn.execute(
-                "SELECT rsid, allele, function_class FROM pharmgkb_allele_function"
-            ).fetchall()
-            for rsid, allele, function_class in rows:
-                lookup[(rsid, allele)] = function_class
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        pass
-    return lookup
-
-
-def _reingest_pharmgkb_from_cached_zip(db_path: Path, data_dir: Path) -> bool:
-    """Re-ingest ClinPGx from the retained ZIP when the interpreter version bumps.
-
-    Reads the existing CPIC allele-function data from the current cache
-    before replacing it — no network required for the reingest. Preserves
-    the original source URL and version from the previous cache.
-    """
-    zip_path = data_dir / "clinicalAnnotations.zip"
-    if not zip_path.exists():
-        return False
-    info = get_database_info(db_path, "pharmgkb")
-    if info is None:
-        return False
-    old_signal = info.get("remote_signal") or ""
-    old_version = info.get("version") or ""
-    old_source_url = info.get("source_url") or ""
-    cpic_lookup = _read_cached_cpic_lookup(db_path)
-    logger.info("ClinPGx interpreter changed — re-ingesting from cached ZIP...")
-    try:
-        load_pharmgkb_tsv(
-            zip_path,
-            db_path,
-            source_url=old_source_url,
-            version=old_version,
-            remote_signal=old_signal,
-            allele_function_lookup=cpic_lookup,
-            min_rows=PHARMGKB_MIN_ROWS,
-        )
-    except Exception:
-        logger.warning("Auto-reingest from cached ZIP failed", exc_info=True)
-        return False
-    new_info = get_database_info(db_path, "pharmgkb")
-    if new_info is None:
-        return False
-    return (new_info.get("local_version_tag") or "") == f"iv:{PHARMGKB_INTERPRETER_VERSION}"

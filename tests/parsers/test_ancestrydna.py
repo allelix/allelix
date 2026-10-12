@@ -236,7 +236,8 @@ class TestMetadata:
     ) -> None:
         meta = parser.get_metadata(mock_ancestrydna_path)
         assert meta["format"] == "ancestrydna"
-        assert meta["build"] == "GRCh37"
+        # The mock header states no build; the default is the decision's job.
+        assert meta["build"] is None
         assert meta["sample_id"] == ""
 
     def test_metadata_has_no_snp_count_field(

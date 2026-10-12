@@ -26,6 +26,7 @@ from allelix.databases.manager import (
     download,
     get_database_info,
     head_request_headers,
+    parse_baked_version,
 )
 from allelix.models import Annotation
 
@@ -57,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
-# ADR-0035 PR 3: PheCode often arrives embedded in the upstream DISEASE/TRAIT
+# ADR-0035: PheCode often arrives embedded in the upstream DISEASE/TRAIT
 # field (e.g. ``"Type 2 diabetes (PheCode 250.2)"``). The annotator extracts it
 # at the boundary so downstream code reads ``Annotation.phecode`` as a
 # structured field instead of regex-parsing prose. The trimmed trait flows into
@@ -504,8 +505,11 @@ def _stamp_existing_gwas_cache(db_path: Path) -> bool:
     """One-shot migration: stamp ``local_version_tag`` on a GWAS cache.
 
     Handles legacy caches with ``|cv:N`` baked into ``remote_signal``
-    by moving the tag and cleaning the signal. Returns True if the
-    current categorizer version is now stamped.
+    by moving the tag and cleaning the signal, but only when ``N`` is the
+    current categorizer version. A cache without the marker, or with
+    another ``N``, has unknown or old data: it is left unstamped and the
+    caller re-ingests or re-downloads it. Returns True if the current
+    categorizer version is now stamped.
     """
     if not db_path.exists():
         return False
@@ -522,6 +526,8 @@ def _stamp_existing_gwas_cache(db_path: Path) -> bool:
             if existing_tag == tag:
                 return True
             if existing_tag is not None:
+                return False
+            if parse_baked_version(sig, "cv") != _CATEGORIZER_VERSION:
                 return False
             clean_signal = (sig or "").split("|cv:")[0]
             conn.execute(

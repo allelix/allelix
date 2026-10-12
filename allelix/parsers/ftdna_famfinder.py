@@ -8,8 +8,7 @@ variant in ``ftdna_illumina.py``. The FamFinder export splits the
 diploid call across **separate ALLELE1 / ALLELE2 columns** instead
 of concatenating into a single RESULT.
 
-Format reference (per CLAUDE.md "Parser Format Specifications" — FTDNA
-section, FamFinder paragraph):
+Format reference (FTDNA FamFinder export):
 
     # Family Tree DNA - FamFinder
     # Build 37
@@ -41,8 +40,8 @@ Specifics:
       X is almost certainly a truncated diploid that lost an
       allele in transit — promoting it to hemizygous would silently
       double the surviving allele and synthesize a wrong-zygosity
-      genotype. The parser warns-and-skips that case instead.
-      Tightened against the v2.2.1 cross-PR review on .
+      genotype. The parser warns-and-skips that case instead
+      (tightened in v2.2.1).
     - No-calls: ``-`` in one or both allele columns (with both
       columns present and ALLELE1 != empty).
     - Build 37 (GRCh37) on every export observed.
@@ -64,7 +63,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import normalize_chromosome
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -182,10 +181,10 @@ class FTDNAFamFinderParser(GenotypeParser):
                 # call is represented as allele1 == allele2 (the
                 # convention shared by 23andMe / _helpers.split_genotype),
                 # NOT allele2 = NO_CALL_MARKER (which would render as a
-                # half no-call and surface the reporter's
-                # "lab-spec MT/Y vanishes" behavior).
+                # half no-call and make MT/Y calls vanish from the
+                # report).
                 #
-                # cross-PR review: only accept the
+                # Only accept the
                 # haploid shape on MT and Y — the only chromosomes FTDNA
                 # publishes haploid calls on. A 4-column line (or
                 # 5-column-empty-ALLELE2) on an autosome or X is almost
@@ -239,9 +238,12 @@ class FTDNAFamFinderParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """FamFinder exports carry no structured sample-ID metadata."""
+        """FamFinder exports carry no structured sample-ID metadata.
+
+        The build is the header's build line, or None (ADR-0044).
+        """
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=DEFAULT_BUILD,
+            build=read_header_build(file_path),
         )

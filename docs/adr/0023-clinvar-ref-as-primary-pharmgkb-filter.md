@@ -50,7 +50,7 @@ A second, smaller change ships in the same release: both annotators set `Annotat
 
 - **CFTR's ~30+ "do not have a copy of the variant" rows disappear** from real-data output. ClinVar has REF for every CFTR rsID we've seen in the v0.7.3 leak; the homozygous-reference check fires cleanly.
 - **MTHFR, F2, F5 reference-genotype residuals also disappear** for rsids ClinVar knows about. ADR-0022's scope is now meaningfully smaller: it covers only rsids where neither ClinVar nor CPIC has data. We expect this to be a true tiny residual.
-- **Known-carrier emissions are unchanged.** rs1801133 AG, rs1799853 CT, rs4244285 GG (real DPYD carriers, etc.) all still emit because the user is not homozygous reference per ClinVar.
+- **Known-carrier emissions are unchanged.** rs1801133 AG, rs1799853 CT, rs4244285 GG (MTHFR, CYP2C9 and CYP2C19 carriers) all still emit because the user is not homozygous reference per ClinVar.
 - **The v0.7.1 CPIC join survives as the secondary tier.** Code is not removed; the cache's `is_nonfinding` flag is still pre-computed at load time. The primary tier supersedes it but the secondary path catches whatever ClinVar misses.
 - **Reports show consistent genotype columns.** ClinVar rows previously showed `"A"` (the matched ALT); they now show `"AG"` (the user's diploid). PharmGKB rows already showed `"AG"`.
 - **ADR-0022 is reduced in scope.** It still applies, but only to rsids where both ClinVar and CPIC lack data. Annotations on those rsids continue to surface honestly with the README note.

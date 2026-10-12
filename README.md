@@ -8,7 +8,7 @@
 
 [![python](https://img.shields.io/pypi/pyversions/allelix.svg)](https://www.python.org/downloads/)
 [![pypi](https://img.shields.io/pypi/v/allelix.svg)](https://pypi.org/project/allelix/)
-[![license](https://img.shields.io/pypi/l/allelix.svg)](LICENSE)
+[![license](https://img.shields.io/pypi/l/allelix.svg)](https://github.com/allelix/allelix/blob/main/LICENSE)
 [![CI](https://github.com/allelix/allelix/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/allelix/allelix/actions/workflows/ci.yml)
 [![privacy: local-first](https://img.shields.io/badge/privacy-local--first-success)](#privacy)
 
@@ -16,7 +16,7 @@
 
 # Allelix
 
-> **Status:** Production. Nine parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three GRCh38 enrichment sources (gnomAD + AlphaMissense + CADD) reached from GRCh37 input through a cross-build rsID identity table, licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports and annotated VCF output for pipeline integration (v2.3.0+), methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. Modern-build position detection requires at least three concordant seed SNPs and an 80% winning ratio before it overrides a fallback or header signal; a tentative GRCh36 signal instead fails closed to GRCh36 because no modern position cache is safe for it (ADR-0025, ADR-0037). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
+> **Status:** Production. Nine parser formats (including VCF + gVCF), four annotators (ClinVar + ClinPGx + GWAS Catalog + SNPedia), three GRCh38 enrichment sources (gnomAD + AlphaMissense + CADD) reached from GRCh37 input through a cross-build rsID identity table, licensable-source gating for commercial users, dual-build ClinVar caches (GRCh37 + GRCh38), HTML/JSON/terminal reports and annotated VCF output for pipeline integration (v2.3.0+), methylation + pharmacogenomics focused commands, report diffing, persistent config with commercial-mode safety switch. The genome build is decided before annotation from the evidence the file carries: VCF contig lengths, or known-SNP positions from the whole file. Evidence that contradicts the file's label, or a VCF with no usable evidence, stops the run and asks for `--build` instead of producing a report on the wrong build; a tentative GRCh36 signal fails closed to GRCh36 because no modern position cache is safe for it (ADR-0025, ADR-0037, ADR-0044). No regex on prose anywhere in production. The [Changelog](https://github.com/allelix/allelix/blob/main/CHANGELOG.md) tracks every release.
 
 ## Quickstart
 
@@ -60,14 +60,14 @@ See [Development](#development) for source installs and running tests, [Managing
 
 | Format | Status | Notes |
 |---|---|---|
-| MyHappyGenes (Tempus) | ✓ | Tab-delimited, 5 columns. **Build is auto-detected** — real-world MHG exports mislabel the header as "build 37.1" while shipping GRCh38 coordinates. Allelix detects from position data and warns on header/data disagreement (ADR-0021). See [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#myhappygenes-tempus). |
+| MyHappyGenes (Tempus) | ✓ | Tab-delimited, 5 columns. **Build is auto-detected** — real-world MHG exports mislabel the header as "build 37.1" while shipping GRCh38 coordinates. Allelix decides the build from position data and warns on header/data disagreement (ADR-0021, ADR-0044). See [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#myhappygenes-tempus). |
 | 23andMe | ✓ | Tab-delimited, 4 columns, concatenated genotype. Supports build 36/37/38 from header. I-prefixed probe IDs passed through. |
 | AncestryDNA | ✓ | Tab-delimited, 5 columns. Chromosome mapping: 23→X, 24→Y, 25→X (PAR), 26→MT. V1 and V2 chip layouts. |
-| Family Tree DNA | ✓ | CSV, double-quoted fields, concatenated genotype. Build 37 default. |
+| Family Tree DNA | ✓ | CSV, double-quoted fields, concatenated genotype. Build 37 default when known-SNP positions are present but do not decide; with none at all and no build line, the run stops (ADR-0044). |
 | MyHeritage DNA | ✓ | CSV, same structure as FTDNA. Detected by "MyHeritage" in the file's preamble. Handles double-double-quoted fields and files re-saved through a spreadsheet (padded rows, signature not on line 1, tab-delimited copies). Two exports: the **array** export (pre-2026 kits) and the **low-pass WGS** export (kits from January 2026; genotypes imputed from about 2x coverage), which the report labels as imputed and whose `##reference=build37` line is used as the header build. See [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#myheritage). |
 | Living DNA | ✓ | Tab-delimited despite `.csv` extension. Handles AX-, AFFX-prefixed and CHR:POS positional SNP IDs. |
-| FTDNA Illumina raw | ✓ | Tab-delimited variant of the FTDNA export (distinct from the CSV format above). `RSID/CHROMOSOME/POSITION/RESULT` columns. Build 37 default. |
-| FTDNA FamFinder | ✓ | Third FTDNA file shape: tab-delimited with **separate `ALLELE1` / `ALLELE2` columns** instead of a concatenated `RESULT`. Detected by the `famfinder` substring in the file header plus the 5-column canonical header. Build 37 default. |
+| FTDNA Illumina raw | ✓ | Tab-delimited variant of the FTDNA export (distinct from the CSV format above). `RSID/CHROMOSOME/POSITION/RESULT` columns. Build 37 default when known-SNP positions are present but do not decide. |
+| FTDNA FamFinder | ✓ | Third FTDNA file shape: tab-delimited with **separate `ALLELE1` / `ALLELE2` columns** instead of a concatenated `RESULT`. Detected by the `famfinder` substring in the file header plus the 5-column canonical header. Build 37 default when known-SNP positions are present but do not decide. |
 | VCF / gVCF | ✓ | REF/ALT encoding, `0/1` genotype notation. Plain VCF: absence at a position means reference. gVCF: explicit reference blocks (lines with `<NON_REF>` ALT and `END=` INFO) are not annotated — they match nothing in any annotation database — but they are read at high-value positions: a block with low genotype quality or no reads there makes the position a no-call, and so does a gVCF position no record covers. High-value no-calls list the reason (for example `low_gq_block`, `no_coverage`, `filtered`, `low_gq_call`). A plain VCF has no reference blocks, so a position without a record is reported as unknown rather than as reference or as a no-call. Multi-sample files require `--sample <ID>`. Rows the variant caller rejected (FILTER other than `PASS` or `.`) are skipped and counted in the report; `--keep-filtered` keeps them. A call with genotype quality below `--min-gq` (default 20) or with no reads (DP 0) is reported as a no-call. The spanning-deletion allele `*` is treated as symbolic. A VCF that holds only structural-variant or copy-number records (such as a provider's separate `sv` / `cnv` file) is rejected with a message naming the file to use instead; see [docs/formats.md](https://github.com/allelix/allelix/blob/main/docs/formats.md#sequencingcom-30x-whole-genome) for per-provider deliverables. Streams via stdlib; `.vcf.gz` handled transparently. Optional `pip install allelix[vcf-index]` enables pysam-backed tabix random access for fast `extract --snps` on huge VCFs. |
 
 Adding a new format means adding one file to `allelix/parsers/` and registering an instance in the `PARSERS` list in `allelix/parsers/__init__.py`.
@@ -87,7 +87,7 @@ Issues and milestones are tracked at [github.com/allelix/allelix/issues](https:/
 
 | Database | Status | Notes |
 |---|---|---|
-| ClinVar (GRCh37 + GRCh38) | ✓ | Public domain (NCBI). SNVs + indels + multi-allelic sites. **Both builds cached**; `analyze` dispatches by detected build (ADR-0021). Rows are matched by chromosome, position, REF and ALT, never by rsID alone, and reference-allele records (REF = ALT) are never reported (ADR-0039). Carrier rule (ADR-0007) requires the user to carry the ALT allele. Indel-anchor protection (ADR-0011) prevents single-base array readouts from matching anchor-base indels. |
+| ClinVar (GRCh37 + GRCh38) | ✓ | Public domain (NCBI). SNVs + indels + multi-allelic sites. **Both builds cached**; `analyze` dispatches by the decided build (ADR-0044). Rows are matched by chromosome, position, REF and ALT, never by rsID alone, and reference-allele records (REF = ALT) are never reported (ADR-0039). Carrier rule (ADR-0007) requires the user to carry the ALT allele. Indel-anchor protection (ADR-0011) prevents single-base array readouts from matching anchor-base indels. |
 | ClinPGx (formerly PharmGKB) | ✓ | CC BY-SA 4.0. Clinical annotations only — single-rsid SNVs; star alleles and haplotypes deferred (ADR-0009). **Primary non-finding filter is the ClinVar REF carrier rule (ADR-0023):** if ClinVar publishes a single-base REF for the rsid and the user is homozygous for it, the row is suppressed. CPIC's `(rsid, base) → function_class` join (ADR-0020) survives as a secondary tier for rsids ClinVar doesn't catalog. Earlier prose tiers (ADR-0013, ADR-0017, ADR-0018) are superseded. |
 | CPIC (per-allele function table) | ✓ | Internal data source for the ClinPGx filter. Fetched from `api.cpicpgx.org` at `db update` time. Used to populate the `pharmgkb_allele_function` table — not surfaced to end users as its own annotator. |
 | SNPedia | ✓ | CC BY-NC-SA 3.0 US. Pre-built cache downloaded via `db update` (~216K wiki pages, ~105K genotype rows). The cache carries SNPedia's orientation metadata: minus-strand alleles are complemented before matching, while unknown-orientation palindromic genotypes abstain rather than risk a false match. If the database is absent, analysis runs without it. For commercial use, pass `--exclude-snpedia`. The cache can also be rebuilt from source via `scripts/scrape_snpedia.py` + `scripts/parse_snpedia.py`. |
@@ -344,11 +344,27 @@ If the failure is a network timeout on the same source repeatedly, the issue is 
 
 Almost always a schema or interpreter version bump in a recent allelix release that invalidates the pre-bump cache. The fix is `allelix db update` — it'll re-ingest only the affected annotators (everything else signal-skips). See the relevant `CHANGELOG.md` entry for "Cache invalidation" notes per release.
 
-### Build mismatch warning when analyzing a known-good file
+### How the genome build is decided, and why a run can stop
 
-Either: (a) the file's header claims one build and the position data confidently indicates another (real-world MHG / Tempus exports do this — header says 37, positions are 38), or (b) the position signal is too small or mixed to be authoritative. Allelix requires at least three concordant seed SNPs and an 80% winning ratio. A VCF record without an rsID counts as a seed when it sits at that seed's position on a build, so variant-caller output with an empty ID column is detected by position too. Weaker GRCh37/38 evidence is reported as tentative and the header or fallback remains effective. A tentative GRCh36 winner is the safety exception: Allelix uses GRCh36 so it cannot accidentally query a modern position cache. Modern position-keyed caches are unavailable for that build (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)).
+Before anything is annotated, Allelix decides the file's genome build from the evidence the file itself carries (ADR-0044):
 
-If you trust the file's header more than allelix's detection, force the build: `--build grch37` or `--build grch38`. The build banner in the analyze output will reflect what was actually used.
+- **VCF contig lengths.** Every nuclear chromosome has a different length in GRCh37 and GRCh38, so the `##contig` lengths settle the build whatever the contig names look like (`chr1` or `1`). If chrM has the old hg19 length, mitochondrial records are not annotated and a note says so.
+- **Known-SNP positions across the whole file.** A set of well-known SNPs sits at different positions in each build. Allelix reads the whole file for them before annotating (a few seconds on a full chip). At least three concordant positions and an 80% majority make the evidence confident (ADR-0037). A VCF record without an rsID counts when it sits at such a position.
+- **The file's own label** (a build line in an array header, or a VCF `assembly=`) is used only when the evidence does not contradict it.
+
+The banner says where the build came from, for example `Build: GRCh38 (from the contig lengths: 24 contig length(s) match GRCh38)`. If confident positions contradict the label (real-world MHG / Tempus exports say 37 and ship 38), Allelix uses the positions and prints a **Build mismatch** notice. An unlabelled chip whose known-SNP positions do not decide uses its format's documented default, with a visible note, provided at least one of those positions matches a build and the build most of them match is the default (a few that disagree do not stop it); the note gives the counts. A tentative GRCh36 winner is the safety exception: Allelix uses GRCh36 so it cannot query a modern position cache (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)).
+
+**The run stops** instead of guessing when:
+
+- a VCF's contig lengths contradict its `assembly=`, contradict each other, or match no supported assembly;
+- weaker (tentative) position evidence contradicts the file's label, or points an unlabelled chip away from its default;
+- the known-SNP positions are tied between builds and the build that would otherwise decide (the label, the format default, or the contig-length build) is not one of them. When it is one of them, Allelix proceeds on it and prints an "inconclusive" warning, also shown in the HTML report. Without contig lengths, a tie that includes GRCh36 instead takes the GRCh36 safety exception described above, with the same warning;
+- a VCF has no contig lengths, no assembly and too few known-SNP positions;
+- a chip states no build and carries none of the known-SNP positions at all (for example an X-chromosome-only export, since they are all on autosomes);
+- the file has known-SNP positions but none of them sits at any supported build's coordinate, whether or not it states a build (contig lengths, when a VCF declares them, still decide);
+- contig lengths decided, but the known-SNP positions met while annotating point to the other build (for example a lifted-over file that kept its old header). The message says the annotation pass ran; nothing is written.
+
+The message names the evidence and asks you to say which build the file uses: `--build grch37` or `--build grch38`, or `--build grch36` for an old GRCh36 / hg18 file, which then runs with position-keyed lookups off (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)). For `compare`, use `--build1` / `--build2`. A stop leaves no report, annotated VCF, diff, PLINK files or extract table behind. A forced build is recorded as such in every report.
 
 ### Is my database stale? How fresh is the data?
 
@@ -380,6 +396,7 @@ Notable load-bearing ADRs:
 - **ADR-0038 — GWAS effect-modifier disambiguation.** Only positively identified odds ratios receive an effect-size modifier; beta and ambiguous effects abstain.
 - **ADR-0042 — VCF quality gate.** The variant caller's FILTER and genotype quality are honoured, low-quality reference blocks are no-calls, and every exclusion is counted in the report.
 - **ADR-0043 — One rsID-recovery step.** Every command that needs rsIDs recovers them for rsID-less input through the same shared step; build detection votes by position instead.
+- **ADR-0044 — Evidence before labels.** The build is decided before annotation from contig lengths or whole-file known-SNP positions; evidence that contradicts the label, or no usable evidence, stops the run instead of producing a report on the wrong build.
 - **ADR-0041 — Plausibility flag.** Very rare homozygous calls and heterozygous calls with no gnomAD carriers are flagged for review, never suppressed.
 
 Release history: see [`CHANGELOG.md`](https://github.com/allelix/allelix/blob/main/CHANGELOG.md).
@@ -400,7 +417,7 @@ pytest
 
 The pre-commit hook enforces `ruff check` + `ruff format --check`. If a commit is blocked, fix the underlying problem rather than skipping the hook.
 
-For the full real-data release-validation battery — every parser format, VCF/gVCF, PLINK round-trip, edge cases, the GIAB/1000G corpus — see [`test_data/FULL_TEST_PROTOCOL.md`](test_data/FULL_TEST_PROTOCOL.md). That document is the project's real-data testing story; running `pytest` covers the fast suite that gates every commit.
+For the full real-data release-validation battery — every parser format, VCF/gVCF, PLINK round-trip, edge cases, the GIAB/1000G corpus — see [`test_data/FULL_TEST_PROTOCOL.md`](https://github.com/allelix/allelix/blob/main/test_data/FULL_TEST_PROTOCOL.md). That document is the project's real-data testing story; running `pytest` covers the fast suite that gates every commit.
 
 ## License
 

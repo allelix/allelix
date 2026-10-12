@@ -230,7 +230,7 @@ class TestAnnotateGenotype:
         ann.close()
 
     def test_alt_threading_with_ref_heterozygous(self, snpedia_data_dir: Path) -> None:
-        """ADR-0035 PR 2: REF=C, user is C/T → annotation.alt = "T"."""
+        """ADR-0035: REF=C, user is C/T → annotation.alt = "T"."""
         ann = SNPediaAnnotator(snpedia_data_dir)
         v = Variant(
             rsid="rs1801133",
@@ -583,7 +583,7 @@ class TestADR0023HomRefSuppression:
         ann.close()
 
     def test_emits_when_no_clinvar_ref(self, snpedia_data_dir: Path) -> None:
-        """rsid not in ClinVar — no suppression, SNPedia annotation emits."""
+        """An rsID absent from ClinVar — no suppression, SNPedia annotation emits."""
         ann = SNPediaAnnotator(
             snpedia_data_dir,
             clinvar_ref_provider=lambda rsid, build: None,

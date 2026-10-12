@@ -12,7 +12,7 @@
 # We are using reference human assembly build 37 (also known as Annotation Release 104).
 # Note that it is possible that data downloaded at different times may be different due to ongoing
 # improvements in our ability to call genotypes. More information about these changes can be found at:
-# https://you.23andme.com/p/fcfe09c988dbb008/tools/data/download/
+# https://you.23andme.com/p/0000000000000000/tools/data/download/
 #
 # More information on reference human assembly builds:
 # https://www.ncbi.nlm.nih.gov/assembly/GCF_000001405.13/

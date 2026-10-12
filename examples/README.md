@@ -3,7 +3,7 @@
 Pre-generated sample reports demonstrating Allelix output. The committed
 reports are a historical v1.8.2 snapshot generated on 2026-06-12; they let
 you inspect a self-contained output without your own genotype file or
-downloaded databases, but current v2.3.1 output differs as schemas, source
+downloaded databases, but current 2.4.x output differs as schemas, source
 names, database snapshots, and correctness rules have evolved.
 
 ## Quick Start
@@ -60,10 +60,11 @@ same subset.
 Self-contained HTML report. Inline CSS, no external dependencies, opens
 in any browser. The committed v1.8.2 / 2026-06-12 snapshot contains 358
 annotations across ClinVar (239), the then-named PharmGKB source (26), and
-GWAS Catalog (93). These point-in-time counts drift with database updates;
-v2.3.1 also suppresses ambiguous GWAS effect modifiers and all GRCh38-only
-gnomAD / AlphaMissense / CADD enrichment on this GRCh37 input. Run
-`./regenerate.sh` for current output.
+GWAS Catalog (93). These point-in-time counts drift with database updates.
+Since v2.3.1, ambiguous GWAS effect types get no effect modifier. Since
+v2.4.0, gnomAD / AlphaMissense / CADD values reach this GRCh37 input
+through the cross-build rsID identity table (ADR-0040), so they can differ
+from the snapshot's. Run `./regenerate.sh` for current output.
 
 ### `sample_reports/demo_report.json`
 

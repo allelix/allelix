@@ -149,7 +149,7 @@ class TestIsNonfindingByAlleleLookup:
         assert is_nonfinding_by_allele_lookup("rs116855232", "TT", lookup) is False
 
     def test_dpyd_cluster_reference_homozygotes(self):
-        # The v0.6.1 reviewer's cited leakers — must be non-findings.
+        # Reference homozygotes v0.6.1 wrongly reported — must be non-findings.
         lookup = {
             ("rs115232898", "T"): FUNCTION_CLASS_NORMAL,
             ("rs115232898", "C"): FUNCTION_CLASS_DECREASED,
@@ -460,7 +460,7 @@ class TestLoadPharmgkbTsv:
 
 
 class TestMinRowsFloor:
-    """post-load row-count sanity gate catches mid-stream truncation.
+    """The post-load row-count sanity gate catches mid-stream truncation.
 
     Production callers pass ``min_rows=PHARMGKB_MIN_ROWS``. A truncated
     download produces a parseable-but-short cache that previously committed

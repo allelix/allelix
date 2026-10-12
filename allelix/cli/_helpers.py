@@ -26,12 +26,16 @@ from allelix.annotators import get_annotators
 from allelix.databases import resolve_data_dir
 from allelix.parsers import ParserNotFoundError, detect_parser, get_parser_by_name
 from allelix.reports import input_method_label, is_imputed, vcf_quality_lines
-from allelix.reports._pipeline import rollup_gwas_duplicates, run_analysis
+from allelix.reports._pipeline import UnusableInputError, rollup_gwas_duplicates, run_analysis
 from allelix.reports.diff import compute_diff, load_previous_report
 from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
 from allelix.reports.html import render_html
 from allelix.reports.json_report import render_json
 from allelix.reports.terminal import render_terminal, render_terminal_diff
+from allelix.utils.build_detect import (
+    SOURCE_CONTIG_LENGTHS,
+    BuildDecisionError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -44,7 +48,9 @@ if TYPE_CHECKING:
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
     from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
-    from allelix.parsers.vcf import VcfParser, VcfQualityStats
+    from allelix.parsers.vcf import VcfParser
+    from allelix.reports._pipeline import BuildDiagnostics, StreamBuild
+    from allelix.utils.build_detect import BuildDecision
 
 console = Console()
 
@@ -150,21 +156,23 @@ def _resolve_parser(
         VcfParser,
     )
 
+    # Every call gets its own parser instance. The registry holds one shared
+    # instance per format, and a parser keeps per-parse state (the VCF
+    # quality stats, watched loci); two files read by one command (compare)
+    # must not see each other's.
     if isinstance(parser, VcfParser):
-        bound = parser
-        if sample is not None or keep_filtered or min_gq is not None:
-            bound = VcfParser(
-                sample=sample,
-                keep_filtered=keep_filtered,
-                min_gq=DEFAULT_MIN_GQ if min_gq is None else min_gq,
-            )
+        bound = VcfParser(
+            sample=sample,
+            keep_filtered=keep_filtered,
+            min_gq=DEFAULT_MIN_GQ if min_gq is None else min_gq,
+        )
         try:
             bound.validate_sample(file_path)
         except (MultiSampleError, SampleNotFoundError) as exc:
             raise click.ClickException(str(exc)) from exc
         return bound
 
-    return parser
+    return type(parser)()
 
 
 def _ready_annotators(
@@ -200,7 +208,12 @@ _STALENESS_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 
 class _ResolvedStream:
-    """Variants from ``_resolved_variants``, plus the high-value watch results."""
+    """Variants from ``_resolved_variants``, the build decision, and the high-value watch results.
+
+    When contig lengths decided the build, the known-SNP positions are
+    checked after the last variant, so a consumer must exhaust
+    ``variants`` (``must_exhaust``) before it writes or prints a result.
+    """
 
     def __init__(
         self,
@@ -208,11 +221,24 @@ class _ResolvedStream:
         parser: GenotypeParser,
         placements: dict[str, dict[str, tuple[str, int]]] | None,
         high_value: set[str],
+        decision: BuildDecision,
+        record: StreamBuild,
     ) -> None:
         self.variants = variants
+        self.decision = decision
+        self._record = record
         self._parser = parser
         self._placements = placements
         self._high_value = high_value
+
+    def build_diagnostics(self) -> BuildDiagnostics:
+        """The build decision with what the stream learnt; call after exhausting it."""
+        return self._record.diagnostics()
+
+    @property
+    def must_exhaust(self) -> bool:
+        """True when stopping early would skip the late known-SNP check."""
+        return self.decision.source == SOURCE_CONTIG_LENGTHS
 
     def high_value_states(self, build: str) -> dict[str, tuple[str, str]] | None:
         """VCF input: what the file says at each high-value position.
@@ -239,11 +265,14 @@ def _resolved_variants(
     build_override: str | None = None,
     high_value: set[str] | None = None,
 ) -> Iterator[_ResolvedStream]:
-    """Parse ``file_path`` with the effective build set and rsID-less calls resolved.
+    """Parse ``file_path`` with the decided build set and rsID-less calls resolved.
 
-    the command-level form of ``_flush()``'s resolution step, for
-    ``stats``, ``extract`` and ``export plink``. Build detection runs first
-    (resolution needs the build); then ``resolve_rsidless`` applies the
+    This is the command-level form of ``_flush()``'s resolution step, for
+    ``stats``, ``extract`` and ``export plink``. The build is decided first
+    with the same rule as ``analyze`` (``decide_file_build``, ADR-0044;
+    resolution needs the build); a run that must stop raises
+    ``click.ClickException`` before any variant is yielded, or, for the
+    late known-SNP check, when the stream ends. Then ``resolve_rsidless`` applies the
     shared ClinVar / identity-table / gnomAD chain. Sources whose caches
     are not installed are skipped, so without databases the variants pass
     through unchanged.
@@ -256,8 +285,19 @@ def _resolved_variants(
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
-    from allelix.reports._pipeline import watch_high_value, with_effective_build
+    from allelix.reports._pipeline import (
+        StreamBuild,
+        decide_file_build,
+        watch_high_value,
+        with_effective_build,
+    )
 
+    try:
+        decision = decide_file_build(
+            parser, file_path, parser.get_metadata(file_path), override=build_override
+        )
+    except (BuildDecisionError, UnusableInputError) as exc:
+        raise click.ClickException(str(exc)) from exc
     resolved = resolve_data_dir(data_dir)
     clinvar = ClinVarAnnotator(resolved)
     gnomad = GnomadAnnotator(resolved)
@@ -265,13 +305,19 @@ def _resolved_variants(
     hv = high_value or set()
     placements = watch_high_value(parser, hv, identity)
     try:
+        record = StreamBuild(decision)
         stream = with_effective_build(
-            parser.parse(file_path),
-            metadata=parser.get_metadata(file_path),
-            build_override=build_override,
+            parser.parse(file_path), decision=decision, file_name=file_path.name, record=record
         )
         variants = resolve_rsidless(stream, clinvar=clinvar, gnomad=gnomad, identity=identity)
-        yield _ResolvedStream(variants, parser, placements, hv)
+        yield _ResolvedStream(
+            _stop_as_click(variants, parser, file_path, record),
+            parser,
+            placements,
+            hv,
+            decision,
+            record,
+        )
     finally:
         if placements is not None:
             # watch_high_value only watches (and returns placements) for a
@@ -281,23 +327,46 @@ def _resolved_variants(
             source.close()
 
 
-def _reject_structural_only(stats: VcfQualityStats | None, total_variants: int) -> None:
-    """Fail loudly on a VCF of structural-variant / copy-number records only.
+def _stop_as_click(
+    variants: Iterator[Variant],
+    parser: GenotypeParser | None = None,
+    file_path: Path | None = None,
+    record: StreamBuild | None = None,
+) -> Iterator[Variant]:
+    """Re-raise a late ``BuildDecisionError`` as the CLI's error type.
 
-    Sequencing.com delivers a 30x order as three VCFs: the genotypes
-    (``snp-indel.genome.vcf.gz``), structural variants (``sv.vcf.gz``) and
-    copy number (``cnv.vcf.gz``). The last two are all symbolic ALTs, which
-    Allelix does not annotate, so they used to "complete" with an empty
-    report. Raise instead, naming the right file.
+    When ``parser`` and ``file_path`` are given and the stream yields
+    nothing, a structural-only VCF or a file with no genotype records is
+    reported with its own error after the stream ends (the same check
+    ``analyze`` makes), so ``stats``, ``extract`` and ``export plink`` never
+    show an empty table or write an empty PLINK set, whatever decided the
+    build. MT records dropped for an hg19-length chrM (``record``) are
+    records: such a file is not empty, and gets the chrM note instead.
     """
-    if stats is None or total_variants or not stats.symbolic_rows:
-        return
-    kinds = ", ".join(f"<{kind}>" for kind, _n in stats.symbolic_kinds.most_common(4))
-    raise click.ClickException(
-        f"This VCF contains only structural-variant / copy-number records ({kinds}; "
-        f"{stats.symbolic_rows:,} record(s)). Allelix annotates SNVs and indels; "
-        "for Sequencing.com, upload the snp-indel.genome.vcf.gz file."
-    )
+    count = 0
+    try:
+        for variant in variants:
+            count += 1
+            yield variant
+    except BuildDecisionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if parser is not None and file_path is not None:
+        dropped = record.mt_skipped if record is not None else 0
+        _reject_unusable(parser, file_path, count + dropped)
+
+
+def _reject_unusable(parser: GenotypeParser, file_path: Path, records: int) -> None:
+    """Report an unusable file (``reject_unusable_input``) as the CLI's error.
+
+    A structural-only VCF or a file with no genotype records, whatever
+    decided the build.
+    """
+    from allelix.reports._pipeline import reject_unusable_input
+
+    try:
+        reject_unusable_input(parser, file_path, records)
+    except UnusableInputError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _run_setup(annotator: Annotator) -> bool:
@@ -429,6 +498,8 @@ def _normalize_cli_build(value: str | None) -> str | None:
         return "GRCh37"
     if v == "grch38":
         return "GRCh38"
+    if v == "grch36":
+        return "GRCh36"
     raise click.ClickException(f"Unknown --build value {value!r}")
 
 
@@ -453,113 +524,31 @@ def _pop_enrichment_annotator(
 
 
 def _emit_build_diagnostics(result: object) -> None:
-    """Print a one-line build banner and a warning on header/data mismatch."""
+    """``analyze``: the build banner and notices for the run's decision (ADR-0044)."""
     diag = getattr(result, "build_diagnostics", None)
-    if diag is None:
-        return
-    matched = f"{diag.matched_count}/{diag.inspected_count}" if diag.inspected_count else "0/0"
-    if diag.override:
-        source = "override"
-    elif (
-        diag.position_confident
-        and diag.detected_build
-        and diag.effective_build == diag.detected_build
-    ):
-        source = "detected"
-    elif diag.header_build and diag.effective_build == diag.header_build:
-        source = (
-            "header (position signal below confidence)"
-            if diag.detected_build
-            else "header (no position confirmation)"
-        )
-    elif diag.chr_prefix_inferred:
-        # chr-prefixed contig names ("chr1", "chrX", ...) reliably
-        # indicate GRCh38 in modern caller output. We DID detect a build;
-        # the banner and the warning should say so instead of reading as
-        # a blind default.
-        source = "inferred from chr-prefixed contig names"
-    else:
-        source = (
-            "fallback (position signal below confidence)"
-            if diag.detected_build
-            else "fallback (no known SNPs matched)"
-        )
-    console.print(
-        f"[dim]Build: {diag.effective_build} ({source}; "
-        f"{matched} known-SNP positions matched)[/dim]"
-    )
-    if diag.mismatch:
-        position_signal = (
-            f"position data is {diag.detected_build}"
-            if diag.position_confident
-            else f"position data tentatively favors {diag.detected_build}"
-        )
-        console.print(
-            f"[yellow]Build mismatch: file header claims {diag.header_build} but "
-            f"{position_signal}. Using {diag.effective_build}. "
-            f"This is a real-world data-quality issue — your provider may have "
-            f"mislabeled the build (see ADR-0021).[/yellow]"
-        )
-    elif diag.chr_prefix_inferred:
-        # positive, accurate message — the inference path
-        # actually fired. Still recommend `--build` for users who
-        # want to lock in the answer; chr-prefix is a strong signal
-        # but UCSC hg19 also uses `chr` prefixes, so the heuristic
-        # isn't guaranteed against a hg19-converted file.
-        console.print(
-            f"[dim]Inferred {diag.effective_build} from chr-prefixed contig "
-            f"names (GRCh38 convention). Pass --build grch37 if this file is "
-            f"UCSC hg19 with chr-prefixed contigs instead.[/dim]"
-        )
-    elif not diag.override and diag.detected_build is None and diag.header_build is None:
-        # Common shape: VCF from a variant caller where the ID column is `.`
-        # and the header has no ##contig assembly tag, AND no chr-prefix
-        # signal was observed. All three auto-detect paths failed.
-        # Loudly recommend an explicit --build because picking the wrong one
-        # silently means every annotation lookup uses wrong coordinates.
-        console.print(
-            f"[yellow]Could not auto-detect genome build (no rsIDs in input, "
-            f"no ##contig assembly tag, no chr-prefixed contigs). Defaulted to "
-            f"{diag.effective_build}. If the file is the other build, pass "
-            f"--build grch37 or --build grch38 explicitly — annotation "
-            f"coordinates differ between builds and silently using the wrong "
-            f"one will miss every hit.[/yellow]"
-        )
-    elif (
-        not diag.override
-        and diag.detected_build is None
-        and diag.header_build is not None
-        and diag.inspected_count > 0
-    ):
-        # Position-detection inspected known-rsID rows but couldn't pick a
-        # build — either votes tied across builds or no row matched any
-        # build's reference position. Without this warning, the pipeline
-        # silently falls through to header_build, and a GRCh36 file with a
-        # GRCh37-mislabeled header gets the GRCh37 ClinVar cache (the
-        # silent-coords trap). The dim "header (no position
-        # confirmation)" status line shows the same facts but reads as
-        # routine — yellow is what the situation deserves.
-        console.print(
-            f"[yellow]Build detection inconclusive: "
-            f"{diag.inspected_count} known-rsID position checks ran but "
-            f"did not converge on a build. Using the file's header-claimed "
-            f"build ({diag.header_build}), which has not been confirmed "
-            f"against your position data. If the file is actually a "
-            f"different build, pass --build grch37 or --build grch38 to "
-            f"force — wrong coordinates will silently mis-annotate every "
-            f"variant.[/yellow]"
-        )
-    if diag.effective_build == "GRCh36":
-        console.print(
-            "[yellow]Warning: GRCh36 (hg18) detected. rsID-based annotations "
-            "(ClinPGx, GWAS Catalog, SNPedia, gnomAD) are complete. ClinVar "
-            "position-matching is skipped (no GRCh36 cache — see ADR-0025). "
-            "For full ClinVar coverage, liftOver to GRCh38 first: "
-            "docs/grch36-liftover.md[/yellow]"
-        )
+    if diag is not None:
+        _emit_build_notices(diag)
 
 
-def _emit_runtime_nudges(result: object) -> None:
+def _emit_build_notices(
+    diag: BuildDiagnostics, *, heading: str | None = None, banner: bool = True
+) -> None:
+    """Every command's build banner and notices, from one place (``build_text``).
+
+    ``heading`` names the file when a command reads more than one
+    (``compare``); ``banner=False`` when the command shows the build itself
+    (the ``stats`` table).
+    """
+    from allelix.reports.build_text import build_notices, source_text
+
+    prefix = f"{heading}: " if heading else ""
+    if banner:
+        console.print(f"[dim]{prefix}Build: {diag.effective_build} ({source_text(diag)})[/dim]")
+    for notice in build_notices(diag):
+        console.print(f"[yellow]{prefix}{notice.text}[/yellow]")
+
+
+def _emit_runtime_nudges(result: object, missing_resolvers: tuple[str, ...] = ()) -> None:
     """Surface runtime-degradation notes the analyze run can detect.
 
     Both are once-per-run, post-pipeline. Neither blocks the report; the
@@ -574,13 +563,13 @@ def _emit_runtime_nudges(result: object) -> None:
       and gnomAD are both missing; on other builds no reference source
       exists. VCF inputs always carry REF from the file, so this never
       fires for them.
-    - **GRCh38 rsID-less undercount.** When the effective
-      build is GRCh38 AND most variants entered the pipeline without
-      rsIDs (the variant-caller ``ID=.`` case), annotation coverage
-      is materially lower than the GRCh37 equivalent because rsID
-      resolution falls back to ClinVar position lookup — a smaller
-      surface than dbSNP. Real fix is pending; this is the interim
-      honesty signal until then.
+    - **rsID-less GRCh38 input without the resolvers.** When the
+      effective build is GRCh38, most variants entered the pipeline
+      without rsIDs (the variant-caller ``ID=.`` case), and a resolver
+      named in ``missing_resolvers`` (the rsID identity table, gnomAD) is
+      not ready, rsIDs are recovered from ClinVar positions alone and
+      fewer findings appear. With both installed, coverage matches the
+      GRCh37 equivalent, so the note is shown only when one is missing.
     """
     no_ref = getattr(result, "no_ref_variant_count", 0)
     rsidless = getattr(result, "rsidless_variant_count", 0)
@@ -613,13 +602,12 @@ def _emit_runtime_nudges(result: object) -> None:
     # 23andMe-style array (rsID-bearing — no warning) or a mostly-
     # rsID-bearing VCF where a handful of novel calls came in with
     # ID=. (no warning, ID=. for novel sites is expected).
-    if effective_build == "GRCh38" and total > 0 and rsidless / total > 0.5:
+    if missing_resolvers and effective_build == "GRCh38" and total > 0 and rsidless / total > 0.5:
         console.print(
-            "[yellow]GRCh38 input without rsIDs: annotation coverage is "
-            "currently lower than GRCh37 because rsID resolution falls "
-            "back to ClinVar positions. Full dbSNP resolution is planned"
-            ". If you have a GRCh37 build available, it currently "
-            "surfaces more annotations.[/yellow]"
+            "[yellow]GRCh38 input without rsIDs: "
+            f"{' and '.join(missing_resolvers)} not ready, so rsIDs are recovered "
+            "from fewer sources and fewer findings are shown. Run `allelix db update` "
+            "to install them.[/yellow]"
         )
 
 
@@ -731,12 +719,23 @@ def _run_analysis_command(
             panel_rsids=rsids,
             collect_vcf_write_inputs=vcf_out is not None,
         )
+    except (BuildDecisionError, UnusableInputError) as exc:
+        # ADR-0044: stop before any report, annotated VCF or diff is written.
+        raise click.ClickException(str(exc)) from exc
     finally:
         _unwire_parser_logging(counter, stderr_handler, snapshot)
 
-    _reject_structural_only(result.vcf_quality, result.total_variants)
+    missing_resolvers = tuple(
+        label
+        for label, source in (
+            ("the rsID identity table", identity_annotator),
+            ("gnomAD", gnomad_annotator),
+        )
+        if source is None or not source.is_ready()
+    )
+    _reject_unusable(parser, file_path, result.total_variants)
     _emit_build_diagnostics(result)
-    _emit_runtime_nudges(result)
+    _emit_runtime_nudges(result, missing_resolvers)
 
     hv_warnings = scan_no_calls(result.hv_variants, high_value, result.high_value_vcf_states)
     if hv_warnings:
@@ -859,6 +858,9 @@ def _run_analysis_command(
             input_path=file_path,
             output_path=vcf_out,
             build=result.build,
+            build_source=(
+                result.build_diagnostics.source if result.build_diagnostics is not None else None
+            ),
             annotators_used=result.annotators_used,
             annotations_by_key=result.vcf_write_inputs.annotations_by_key,
             recovered_rsids=result.vcf_write_inputs.recovered_rsids,

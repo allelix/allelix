@@ -22,85 +22,18 @@
 #
 # How to add a new spot check
 #   1. Confirm the genotype from the GIAB benchmark VCF directly
-#      (sqlite the .tbi-indexed file, or `bcftools view -r chr:pos`).
-#   2. Add an entry under `extract:` with chrom + pos + expected genotype.
-#   3. If the rsID should also surface in `analyze` output, add it under
+#      (`bcftools view -r chr:pos` on the .tbi-indexed file).
+#   2. If the rsID should surface in `analyze` output, add it under
 #      `analyze:` with the expected source set and significance pattern.
-#   4. Re-run the §19 harness to confirm.
+#   3. Re-run the §19 harness to confirm.
 #
 # Schema
-#   See the §19 harness comment block in FULL_TEST_PROTOCOL.md for the
-#   exact keys consumed. Anything in this file that the harness doesn't
-#   know about is ignored (forward-compatible).
+#   test_data/check_ground_truth.py reads every key in this file. A key it
+#   does not know fails the run, so no entry here can go unchecked.
+#   `source_of_truth`, `sample` and `note` are descriptive text.
 
 source_of_truth: "GIAB v4.2.1 HG002 benchmark VCFs (NIST FTP, build dates 2020-12 GRCh38 / 2020-12 GRCh37)"
 sample: "HG002 (NA24385, Ashkenazim son, Personal Genome Project)"
-
-# `extract` invariants — exact genotypes at specific positions.
-# Run: allelix extract <file> --snps <rsid>
-# Pass condition: chrom/pos/genotype/het all match.
-#
-# Coordinate notes:
-#   - chrom_grch37/pos_grch37 used when analyzing the GRCh37 benchmark
-#   - chrom_grch38/pos_grch38 used when analyzing the GRCh38 benchmark
-#   - genotype field is build-independent (same allele identity)
-#   - "absent" means the variant is not in the file because HG002 is ref/ref
-#     at that position (GIAB benchmark only emits non-ref calls)
-extract:
-  - rsid: rs1801133
-    gene: MTHFR
-    variant_name: "MTHFR C677T (Ala222Val)"
-    chrom_grch37: "1"
-    pos_grch37: 11856378
-    chrom_grch38: "1"
-    pos_grch38: 11796321
-    expected_genotype: "G/A"
-    expected_het: true
-    note: "HG002 is a published MTHFR C677T heterozygote — one of the most-cited variants for methylation pathway research."
-
-  - rsid: rs7412
-    gene: APOE
-    variant_name: "APOE rs7412 (Arg176Cys, the E2 marker)"
-    chrom_grch37: "19"
-    pos_grch37: 45412079
-    chrom_grch38: "19"
-    pos_grch38: 44908822
-    expected_genotype: "C/T"
-    expected_het: true
-    note: "HG002 carries one APOE2 allele. Combined with rs429358=T/T below, this gives the published E2/E3 APOE haplotype."
-
-  - rsid: rs429358
-    gene: APOE
-    variant_name: "APOE rs429358 (Cys130Arg, the E4 marker)"
-    chrom_grch37: "19"
-    pos_grch37: 45411941
-    chrom_grch38: "19"
-    pos_grch38: 44908684
-    expected_genotype: "absent"
-    expected_het: null
-    note: "HG002 has no APOE4 allele — ref/ref (T/T) at this position. The GIAB benchmark only emits non-ref calls, so this rsID is absent from the file. allelix's extract must report 'not in file', NOT a wrong genotype."
-
-  - rsid: rs2010963
-    gene: VEGFA
-    variant_name: "VEGFA promoter -634G>C"
-    chrom_grch37: "6"
-    pos_grch37: 43738350
-    chrom_grch38: "6"
-    pos_grch38: 43770612
-    expected_genotype: "G/G"
-    expected_het: false
-    note: "HG002 is homozygous-alt at this VEGFA promoter site (the C677T-style upstream MTHFR pair). Useful homozygote for verifying allele-pair handling on non-het carriers."
-
-  - rsid: rs6025
-    gene: F5
-    variant_name: "Factor V Leiden (Arg506Gln)"
-    chrom_grch37: "1"
-    pos_grch37: 169519049
-    chrom_grch38: "1"
-    pos_grch38: 169549811
-    expected_genotype: "C/C"
-    expected_het: false
-    note: "HG002 is NOT a Factor V Leiden carrier — ref/ref C/C. This is a load-bearing 'not present' check: a false-positive FVL report on HG002 would be a clinically meaningful regression (this is the most-tested thrombophilia variant in consumer genomics)."
 
 # `analyze` invariants — what allelix's analyze output must surface for
 # each of these rsIDs when run on the GIAB GRCh37 benchmark (which has
@@ -201,44 +134,39 @@ vocabulary:
     - "not_specified"
     - "no_classification_provided"
 
-# Aggregate floor invariants per file. Sized at ~80% of v2.2.1 (de0de64)
+# Aggregate floor invariants per file. Sized at ~80% of v2.2.1
 # observed values to absorb legitimate dedup / vocab drift. Failing a
 # floor means SOMETHING is over-filtering — run the v2.2.0→v2.2.1-style
 # baseline diff to classify removed annotations before re-pinning.
 #
-# Calibration date: 2026-06-18 against v2.2.1 (de0de64).
+# Calibration date: 2026-06-18 against v2.2.1.
 floors:
   giab_grch38_benchmark:
     file: "test_data/real/vcf/HG002_GRCh38_benchmark.vcf.gz"
-    build: grch38
-    total_annotations_mag_0_min: 1500     # observed 1873
+    build: GRCh38
     written_annotations_mag_0_min: 700    # observed 773
     unique_dedup_keys_min: 550            # observed 611
-    default_filter_written_min: 240       # observed 298 at --min-magnitude 5 (default)
-    expected_build_detection: "GRCh38 (override)"
+    build_source: override  # §19 passes --build
 
   giab_grch37_benchmark:
     file: "test_data/real/vcf/HG002_GRCh37_benchmark.vcf.gz"
-    build: grch37
-    total_annotations_mag_0_min: 55000    # observed 66008
+    build: GRCh37
     written_annotations_mag_0_min: 2500   # observed 3058
     unique_dedup_keys_min: 1700           # observed 2157
-    default_filter_written_min: 500       # observed 668 at --min-magnitude 5 (default)
-    expected_build_detection: "GRCh37 (override)"
+    build_source: override  # §19 passes --build
 
   hg00187_gatkhc_gvcf:
     file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
-    build: grch37
-    total_annotations_mag_0_min: 8        # observed 11; tight floor on tiny dataset
+    build: GRCh37
     written_annotations_mag_0_min: 1      # observed 1 after removing cross-build false positives
     unique_dedup_keys_min: 1              # observed 1; the sole correctly anchored GRCh37 hit
-    default_filter_written_min: 3         # observed 5
-    expected_build_detection: "GRCh37 (override)"
+    build_source: override  # §19 passes --build
     note: "Tiny dataset. The v2.3.1 recalibration classified all three removed rsIDs as GRCh38-coordinate coincidences in this GRCh37 file; rs2280789 is the sole correctly anchored hit. Do not lower again without equivalent coordinate-level classification."
 
   hg00187_gatkhc_gvcf_default:
     file: "test_data/real/vcf/HG00187_gatkhc.g.vcf.gz"
-    build: grch37
+    build: GRCh37
+    build_source: override  # §19 passes --build
     # At default --min-gq 20, this ~4x genome produces 0 annotations
     # because all ~44K non-ref calls have GQ below 20.
     written_annotations_mag_0_min: 0

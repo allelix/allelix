@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""Allele identity: Annotation invariants and locus-keyed ClinVar selection (2.4 item 1).
+"""Allele identity: Annotation invariants and locus-keyed ClinVar selection.
 
 1. An Annotation never names an ``alt`` the user carries zero copies of
    (every source).
@@ -348,7 +348,7 @@ class TestLocusKeyedClinVarSelection:
 
 
 class TestArrayProbeAndForeignLocusGuards:
-    """Reviewer blockers on locus-keyed selection (release 2.4 item 2).
+    """Edge cases for locus-keyed selection.
 
     A: array vendor probes without an rsID (23andMe ``i5000123``)
        produced pathogenic findings from whatever ClinVar row sat at their

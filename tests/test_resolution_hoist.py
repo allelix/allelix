@@ -29,7 +29,6 @@ from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
 from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME, write_identity_db
 from allelix.databases.schema import GNOMAD_SCHEMA
 from allelix.models import Variant
-from allelix.reports._pipeline import _BuildDetectionState
 from allelix.utils.build_detect import (
     BUILD_GRCH37,
     BUILD_GRCH38,
@@ -221,16 +220,29 @@ class TestRsidlessBuildDetection:
         assert known_snp_seed(Variant("", chrom, pos, "A", "G")) == rsid
         assert known_snp_seed(Variant("chr1:5:A:G", chrom, pos, "A", "G")) == rsid
 
-    def test_detection_state_converges_on_rsidless_grch37(self) -> None:
-        """No header build and no chr prefix: the seeds alone decide."""
-        diag = _BuildDetectionState(override=None, header_build=None)
-        out: list[Variant] = []
-        for v in _seed_records(BUILD_GRCH37):
-            _ready, batch = diag.feed(v)
-            out.extend(batch)
-        out.extend(diag.flush())
-        assert diag.effective_build == BUILD_GRCH37
-        assert diag.position_confident
+    def test_decision_converges_on_rsidless_grch37(self, tmp_path: Path) -> None:
+        """No build label and no contig lengths: the seeds alone decide."""
+        from allelix.parsers.vcf import VcfParser
+        from allelix.reports._pipeline import decide_file_build, with_effective_build
+
+        rows = [
+            f"{v.chromosome}\t{v.position}\t.\tA\tG\t50\tPASS\t.\tGT\t0/1"
+            for v in _seed_records(BUILD_GRCH37)
+        ]
+        vcf = tmp_path / "seeds.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+            + "\n".join(rows)
+            + "\n"
+        )
+        parser = VcfParser()
+        decision = decide_file_build(parser, vcf, parser.get_metadata(vcf), override=None)
+        assert decision.build == BUILD_GRCH37
+        assert decision.source == "seeds"
+        assert decision.seeds.is_confident
+        out = list(with_effective_build(parser.parse(vcf), decision=decision, file_name=vcf.name))
         assert {v.build for v in out} == {BUILD_GRCH37}
 
     def test_positions_beat_a_chr_prefix_on_ucsc_hg19(self, tmp_path: Path) -> None:
@@ -273,6 +285,68 @@ class _FakeTabix:
 
     def close(self) -> None:
         pass
+
+
+class TestTabixFastPathGuard:
+    """The indexed extract fetches GRCh38 coordinates only when the
+    build came from --build or the contig lengths (never from a label alone)."""
+
+    @pytest.mark.parametrize(
+        "source",
+        ["override", "contig_lengths", "seeds", "assembly_header", "file_label", "default"],
+    )
+    @pytest.mark.parametrize("build", [BUILD_GRCH37, BUILD_GRCH38])
+    def test_every_source(self, source: str, build: str) -> None:
+        from allelix.cli.utility import _tabix_fast_path_allowed
+        from allelix.utils.build_detect import BUILD_SOURCES, NO_SEEDS, BuildDecision
+
+        assert source in BUILD_SOURCES
+        decision = BuildDecision(build, source, None, NO_SEEDS, None)
+        allowed = build == BUILD_GRCH38 and source in ("override", "contig_lengths")
+        assert _tabix_fast_path_allowed(decision) is allowed
+
+    def test_hg19_chrm_falls_back(self) -> None:
+        """The sequential scan drops the hg19-chrM MT records and gives the note."""
+        from allelix.cli.utility import _tabix_fast_path_allowed
+        from allelix.utils.build_detect import NO_SEEDS, BuildDecision
+
+        decision = BuildDecision(
+            BUILD_GRCH38, "contig_lengths", None, NO_SEEDS, None, skip_mt=True
+        )
+        assert _tabix_fast_path_allowed(decision) is False
+
+    def test_grch38_label_without_lengths_falls_back(self, tmp_path: Path) -> None:
+        """assembly=GRCh38, no contig lengths, GRCh37 data: the fast path must not
+        run (it would fetch GRCh38 coordinates); the sequential scan decides."""
+        from types import SimpleNamespace
+
+        from allelix.cli.utility import _execute_tabix_extract
+
+        data = tmp_path / "data"
+        data.mkdir()
+        _gnomad(data, [(*_RS7412_38, "rs7412", 0.08)])
+        row = "19\t44908822\t.\tC\tT\t50\tPASS\t.\tGT\t0/1"
+        vcf = tmp_path / "label_only.vcf"
+        vcf.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=19,assembly=GRCh38>\n"
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n" + row + "\n"
+        )
+        fetched: list[str] = []
+
+        class _Spy(_FakeTabix):
+            def fetch(self, chrom: str, start: int, end: int) -> list[str]:
+                fetched.append(chrom)
+                return super().fetch(chrom, start, end)
+
+        pysam = SimpleNamespace(TabixFile=lambda _path: _Spy({"19": [row]}))
+        assert _execute_tabix_extract(vcf, {"rs7412"}, None, data, pysam) is None
+        assert fetched == []
+        # Forced with --build, the same file may take the fast path.
+        found = _execute_tabix_extract(vcf, {"rs7412"}, None, data, pysam, "GRCh38")
+        assert found is not None
+        assert "rs7412" in found
 
 
 class TestTabixExtract:

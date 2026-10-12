@@ -198,7 +198,8 @@ class TestMetadata:
     def test_extracts_sample_id(self, parser, mock_mhg_path):
         meta = parser.get_metadata(mock_mhg_path)
         assert meta["sample_id"] == "MHG000001"
-        assert meta["build"] == "GRCh37"
+        # "# using human reference build 38 coordinates."
+        assert meta["build"] == "GRCh38"
         assert meta["format"] == "myhappygenes"
 
     def test_metadata_has_no_snp_count_field(self, parser, mock_mhg_path):

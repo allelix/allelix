@@ -1,7 +1,7 @@
 # ADR-0021: Genome build is detected from position data, not file headers
 
 - **Date:** 2026-05-14
-- **Status:** Superseded in part by ADR-0037 (confidence threshold only)
+- **Status:** Superseded in part by ADR-0037 (confidence threshold) and ADR-0044 (the decision rule: evidence from the whole file, contig lengths, no header fallback against contrary evidence)
 
 ## Context
 

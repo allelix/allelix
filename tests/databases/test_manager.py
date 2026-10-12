@@ -191,8 +191,8 @@ class TestStampExistingClinvarCache:
         assert stamp_existing_clinvar_cache(db) is False
 
     def test_null_tag_unknown_version_not_promoted(self, tmp_path: Path):
-        """PR-1: a cache with NULL local_version_tag AND no baked `|iv:N`
-        marker is an unknown-version legacy cache. The pre-PR-1 behavior
+        """A cache with NULL local_version_tag AND no baked `|iv:N`
+        marker is an unknown-version legacy cache. The earlier behavior
         auto-stamped it to the current interpreter version — silent
         promotion across the iv:2→iv:3 format boundary would serve old
         single-row VCF data labeled as fresh per-SCV TSV data. The fix:
@@ -212,7 +212,7 @@ class TestStampExistingClinvarCache:
             )
             conn.commit()
 
-        # PR-1 safety fix: reingest, do not silent-promote.
+        # Safety fix: reingest, do not silent-promote.
         assert stamp_existing_clinvar_cache(db) is False
 
         # Cache row left untouched — tag stays NULL so is_ready() also
@@ -226,7 +226,7 @@ class TestStampExistingClinvarCache:
         assert row[1] == "md5:x"
 
     def test_baked_older_version_not_promoted(self, tmp_path: Path):
-        """PR-1: NULL tag with a baked `|iv:N` marker for a NON-current
+        """NULL tag with a baked `|iv:N` marker for a NON-current
         N means the cache was built by a prior interpreter version.
         Promoting it to the current tag without reingesting would serve
         old-format data as fresh — return False so db update reingests."""
@@ -240,7 +240,7 @@ class TestStampExistingClinvarCache:
                 "local_version_tag TEXT);"
             )
             # iv:1 baked — pre-v2.0.1 era. Strictly less than the
-            # current CLINVAR_INTERPRETER_VERSION (3 as of PR 8b).
+            # current CLINVAR_INTERPRETER_VERSION (3 when this test was written).
             conn.execute(
                 "INSERT INTO database_versions VALUES (?, ?, ?, ?, ?, ?, ?)",
                 ("clinvar.GRCh37", "url", "20240101", "2024-01-01", 100, "md5:abc|iv:1", None),
@@ -333,7 +333,7 @@ class TestStampExistingClinvarCache:
 
     def test_dual_build_caches_both_self_heal_when_baked_current(self, tmp_path: Path):
         """Both GRCh37 and GRCh38 rows self-heal in one call when both
-        carry a baked `|iv:CURRENT` marker. Post-PR-1 the self-heal path
+        carry a baked `|iv:CURRENT` marker. The self-heal path
         requires positive version evidence on every row."""
         from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 

@@ -1,0 +1,4 @@
+# The source distribution ships what the package needs to build and install.
+# setuptools adds tests/test*.py by default; the test suite (with its
+# fixtures and conftest) lives in the repository, not in the distribution.
+prune tests

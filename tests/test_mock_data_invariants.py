@@ -253,7 +253,7 @@ class TestGwasMockInvariants:
 
 
 class TestCpicLookupMockInvariants:
-    """ADR-0015 + m-6: MOCK_CPIC_LOOKUP must mirror real CPIC's shape.
+    """ADR-0015: MOCK_CPIC_LOOKUP must mirror real CPIC's shape.
 
     A fixture that's structurally different from real CPIC output
     silently hides categorical bugs (see the v0.6.0 inverted-shape

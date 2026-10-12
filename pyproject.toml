@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.4.0"
+version = "2.4.1"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -101,7 +101,7 @@ filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
 
-# : coverage gate now measures BOTH line and branch
+# The coverage gate measures BOTH line and branch
 # coverage. Previously, the gate was line-only — a line counted as covered
 # the moment any input crossed it, which is how the v2.0.x carrier-match
 # case/strand and download-truncation correctness bugs shipped green.
@@ -114,7 +114,7 @@ filterwarnings = [
 #     local on 3.14 reports 92.62. The 0.15pp delta is Python-version-
 #     dependent (~8 lines that run on 3.14 don't run on 3.11/3.12).
 #   - (v2.2):    92.5   after _check_gnomad_version warning-path
-#     tests landed in PR 7. CI now clears the 92.5 bar honestly instead
+#     tests landed. CI now clears the 92.5 bar honestly instead
 #     of relying on the 0.07pp margin under it.
 #
 # *** CI is the floor's source of truth, NOT local. ***
@@ -133,7 +133,7 @@ branch = true
 precision = 2
 fail_under = 92.50
 
-# : backs the py.typed promise with a real type checker.
+# mypy backs the py.typed promise with a real type checker.
 # The starting baseline is intentionally permissive (no strict mode, no
 # disallow_untyped_defs) so we get the gate in CI immediately instead of
 # negotiating dozens of remediation PRs. Ratchet later by tightening the

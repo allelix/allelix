@@ -108,8 +108,8 @@ reference strand. The MHG parser also reports forward strand. The carrier rule
 therefore uses direct base comparison without strand flipping.
 
 This assumption is not validated against pre-2014 GWAS Catalog entries, which
-may have reported risk alleles on the gene-coding strand. When R-1 (strand-aware
-genotype comparison) ships, the GWAS annotator should wire in the same
+may have reported risk alleles on the gene-coding strand. When strand-aware
+genotype comparison ships, the GWAS annotator should wire in the same
 strand-flip fallback used by ClinVar (see `allelix/utils/allele.py`).
 
 ## Per-source magnitude floor (amended 2026-05-19)
@@ -307,7 +307,7 @@ filter test.
 - Unknown-risk-allele rows are always identifiable by their description text
   and by their magnitude ≤ 3.0.
 - Future strand normalization is a latent gap, not a blocking issue.
-  Documented here so R-1 implementation can reference this ADR.
+  Documented here so the strand-aware matching work can reference this ADR.
 - If the magnitude tiers need revision, update this ADR and the
   `_magnitude()` function together.
 - The per-source floor keeps GWAS output tractable without hiding data —

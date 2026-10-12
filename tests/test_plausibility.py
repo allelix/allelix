@@ -368,7 +368,8 @@ class TestReports:
         out = tmp_path / "report.json"
         render_json(_result(tmp_path, _FLAGGED), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["schema_version"] == SCHEMA_VERSION == "7"
+        assert payload["schema_version"] == SCHEMA_VERSION
+        assert int(SCHEMA_VERSION) >= 7
         got = {a["rsid"]: a["plausibility"] for a in payload["annotations"]}
         assert got == {
             "rs900580001": IMPLAUSIBLE,

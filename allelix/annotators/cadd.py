@@ -158,7 +158,9 @@ class CaddAnnotator(Annotator):
         """True when the active backend is available.
 
         In full mode, checks for the tabix file. In cache mode, checks
-        the SQLite database.
+        the SQLite database, which must carry the current schema stamp: a
+        cache with no ``local_version_tag`` has an unknown schema version, so
+        it is not ready and ``db update`` replaces it.
         """
         if self._full_mode:
             return (
@@ -168,8 +170,7 @@ class CaddAnnotator(Annotator):
         info = get_database_info(self._db_path, "cadd")
         if info is None:
             return False
-        tag = info.get("local_version_tag") or ""
-        return tag == f"sv:{CADD_SCHEMA_VERSION}" or not tag
+        return info.get("local_version_tag") == f"sv:{CADD_SCHEMA_VERSION}"
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""

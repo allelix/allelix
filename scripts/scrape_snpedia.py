@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from allelix.databases import resolve_data_dir  # noqa: E402
 
 API_URL = "https://bots.snpedia.com/api.php"
-USER_AGENT = "allelix-scraper/1.0 (archival; contact@redneck.travel)"
+USER_AGENT = "allelix-scraper/1.0 (archival; https://github.com/allelix/allelix)"
 CM_BATCH_SIZE = 500
 CONTENT_BATCH_SIZE = 50
 COMMIT_EVERY = 100

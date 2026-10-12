@@ -51,7 +51,7 @@ def _stub_responses(seq_locs: list[dict], loc_values: list[dict], alleles: list[
 
 
 class TestClassifyCpicStatus:
-    """M-4: mutation-gap pin. Unknown statuses must NEVER coerce to Normal."""
+    """Mutation-gap pin. Unknown statuses must NEVER coerce to Normal."""
 
     def test_known_statuses_map(self):
         assert _classify_cpic_status("Normal function") == FUNCTION_CLASS_NORMAL
@@ -110,7 +110,7 @@ class TestFetchCpicAlleleFunctions:
         }
 
     def test_multi_base_alleles_skipped(self, monkeypatch):
-        """M-4: mutation-gap pin. CPIC's tables also contain haplotype
+        """Mutation-gap pin. CPIC's tables also contain haplotype
         components like 'CT' or 'CGTACG' that aren't valid SNV genotype
         bases. The loader must skip them — otherwise the lookup would
         contain garbage keys that mis-classify real user genotypes.
@@ -182,7 +182,7 @@ class TestFetchCpicAlleleFunctions:
         assert result == {("rs1", "G"): FUNCTION_CLASS_NORMAL}
 
     def test_conflict_prefers_non_normal(self, monkeypatch):
-        """M-3 pin: when CPIC's data has a Normal-vs-non-Normal conflict for
+        """When CPIC's data has a Normal-vs-non-Normal conflict for
         the same (rsid, base), prefer the non-Normal classification. The
         filter only suppresses when EVERY base is Normal — biasing
         conflicts toward non-Normal ensures we never silently suppress a
@@ -205,7 +205,7 @@ class TestFetchCpicAlleleFunctions:
         assert result == {("rs_conflict", "G"): FUNCTION_CLASS_DECREASED}
 
     def test_network_error_propagates_after_retries(self, monkeypatch):
-        """M-1: persistent network failure must raise after exhausting
+        """Persistent network failure must raise after exhausting
         retries — never silently return an empty lookup (which would
         treat every row as a finding and flood the user with noise).
         """
@@ -229,7 +229,7 @@ class TestFetchCpicAlleleFunctions:
 
 
 class TestFetchCpicRemoteSignal:
-    """M-2: lightweight CPIC freshness probe via change_log table."""
+    """Lightweight CPIC freshness probe via change_log table."""
 
     def test_returns_lastchange_date(self, monkeypatch):
         @contextmanager
@@ -285,7 +285,7 @@ class TestFetchCpicRemoteSignal:
 
 
 class TestHttpRetryBehavior:
-    """M-1: transient failures recover via retry; persistent ones surface."""
+    """Transient failures recover via retry; persistent ones surface."""
 
     def test_retries_then_succeeds(self, monkeypatch):
         import urllib.error

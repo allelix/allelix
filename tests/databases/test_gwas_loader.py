@@ -195,7 +195,7 @@ class TestCategorizerVersion:
 
 
 class TestMinRowsFloor:
-    """post-load row-count sanity gate catches mid-stream truncation.
+    """The post-load row-count sanity gate catches mid-stream truncation.
 
     Production callers pass ``min_rows=GWAS_MIN_ROWS``. A truncated download
     (chunked transfer without Content-Length, connection drop mid-stream)

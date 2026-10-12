@@ -43,5 +43,5 @@ A new `function_class TEXT` column is added to `pharmgkb_annotations` storing th
 - The category of "regex-pattern-arms-race" bugs is closed for the entire codebase. Every future annotator added to the project is bound by the same principle.
 - Some decisions become unautomatable. Somatic-vs-germline is the visible example. The trade is correct: surfacing slightly more rows that the user evaluates is better than silently classifying based on regex hits that drift.
 - The safety-net regex serves a real role — it's the canary that warns us when the structured ingestion missed a field. It is not, and cannot be, a fallback when the structured field is empty.
-- Audit of the existing codebase identified exactly two violations (`_NONFINDING_PATTERNS`, `_SOMATIC_PATTERN`), both in `pharmgkb_loader.py`. Both refactored in v0.6.0.
+- The existing codebase had exactly two violations (`_NONFINDING_PATTERNS`, `_SOMATIC_PATTERN`), both in `pharmgkb_loader.py`. Both refactored in v0.6.0.
 - The principle is a top-level project policy. PRs that violate it are rejected.

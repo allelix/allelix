@@ -4,9 +4,9 @@
 
 The loader joins ``submission_summary.txt.gz`` (per-SCV rows) against
 ``variant_summary.txt.gz`` (per-(VariationID, Assembly) rows) and emits
-one cache record per submission. Stage A added the loader, stage B
-wired it into ``db update`` with an interpreter-version bump, stage C
- removed the legacy VCF path entirely — this is now the only
+one cache record per submission. v2.2 added the loader, wired it into
+``db update`` with an interpreter-version bump, and removed the legacy
+VCF path entirely — this is now the only
 production ingest route.
 """
 
@@ -359,8 +359,7 @@ class TestIterTsvRecords:
         assert records[0]["clinical_significance"] == "Pathogenic"
 
     def test_skips_all_placeholder_clnsigs(self, tmp_path):
-        """follow-up (evaluator defect 5 + cross-PR review):
-        ClinVar's submission_summary carries multiple placeholder
+        """ClinVar's submission_summary carries multiple placeholder
         values meaning "no classification recorded." The loader must
         drop every placeholder NOT in ``_CLNSIG_MAGNITUDE`` (those
         would otherwise default to 5.0, the analyze display floor,
@@ -392,8 +391,8 @@ class TestIterTsvRecords:
         assert sigs == ["Pathogenic", "not provided"]
         # And the placeholder set must be the exact set used by the
         # protocol §7b ship-gate. If you broaden one, broaden both
-        # together — that's the cross-PR-review lesson.
-        # the set grew with "other", "association",
+        # together; the two have diverged before.
+        # The set grew with "other", "association",
         # "association not found" — non-classification curatorial
         # terms surfaced by the per-SCV switch that fell to the
         # 5.0 default before this filter.
@@ -440,7 +439,7 @@ class TestIterTsvRecords:
         `_magnitude()` normalizes via `_normalize_clnsig()` (which
         lowercases). A case-sensitive filter would let "Not Specified"
         slip past the skip and still land at the 5.0 default — silent
-        regression of the same defect 5 surface bug.
+        regression of the same placeholder bug.
 
         `-` (the confirmed real defect) is moot here, but the prose
         placeholders ("not specified", "no classification provided")
@@ -669,7 +668,7 @@ class TestLoadClinvarTsv:
         assert row[1] == "md5:abcdef"
         assert row[2] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
         assert row[3] == 1
-        # follow-up (evaluator defect 3): the TSV loader stamps
+        # The TSV loader stamps
         # the cache build date as version so `db status` doesn't show
         # "ClinVar version: None". The build date is YYYY-MM-DD UTC.
         assert row[4] is not None
@@ -766,7 +765,7 @@ class TestRealClinvarTsvIngest:
             distinct_sigs = conn.execute(
                 "SELECT COUNT(DISTINCT clinical_significance) FROM clinvar_variants"
             ).fetchone()[0]
-            # Evaluator defect 5 follow-up: the old spot-check below
+            # The old spot-check below
             # used `assert sig` (non-empty), which passed on the
             # literal "-" placeholder because "-" is non-empty. Pin
             # the sentinel guard against the whole cache, not a tiny
@@ -774,7 +773,7 @@ class TestRealClinvarTsvIngest:
             # at fast-tier speed against real data — without waiting
             # for the live-cache drift guard to fire.
             #
-            # Round-2 evaluator catch: the SQL set MUST match
+            # The SQL set MUST match
             # _CLINVAR_PLACEHOLDER_CLNSIGS (the loader's actual skip
             # set). Hand-rolling this set diverged once already — the
             # initial version included "not provided" (which is in
@@ -782,8 +781,7 @@ class TestRealClinvarTsvIngest:
             # by design) and omitted "no classification provided"
             # (which the loader DOES filter). The protocol §7b SQL
             # ended up correct; this one didn't — pure copy-paste
-            # divergence the cross-PR review lesson should have
-            # already retired. Build the SQL straight from the
+            # divergence. Build the SQL straight from the
             # constant so they literally cannot diverge again.
             # LOWER() mirrors the loader's case-insensitive
             # membership test.
@@ -817,7 +815,7 @@ class TestRealClinvarTsvIngest:
             f"Expected diverse classification vocabulary; got only "
             f"{distinct_sigs} distinct values. Filtering bug?"
         )
-        # Evaluator defect 5: the `-` placeholder (and prose variants)
+        # The `-` placeholder (and prose variants)
         # must NEVER land as a literal clinical_significance value.
         # If this ever fires the loader's sentinel filter regressed —
         # CI is now the primary gate, the slow drift-guard against the
@@ -834,8 +832,8 @@ class TestRealClinvarTsvIngest:
         # `assert sig` here is a fast-path sanity (every row must
         # carry a value at all) — the placeholder catch is the
         # cache-wide sentinel_count assertion above, which closes
-        # the "non-empty != non-placeholder" blind spot the evaluator
-        # caught.
+        # the "non-empty != non-placeholder" blind spot a real-data
+        # run exposed.
         for rsid, sig, condition in sample:
             assert rsid.startswith("rs") and rsid[2:].isdigit(), rsid
             assert sig
@@ -850,6 +848,6 @@ class TestRealClinvarTsvIngest:
     # confirms the default mode against real data — so the only thing the
     # deleted test added was real-data confirmation that the filter "fires"
     # (i.e. real ClinVar still contains rows aggregate_only drops). The
-    # mock tests prove the logic; R-4 covers vocabulary drift separately.
+    # mock tests prove the logic; the CLNSIG drift test covers vocabulary drift separately.
     # Net trim: slow class 3 passes → 1, ~15 min → ~5 min on slow.yml's
-    # weekly cron and on local run-tests.sh. See review thread.
+    # weekly cron and on local run-tests.sh.

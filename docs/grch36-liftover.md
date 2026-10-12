@@ -11,6 +11,11 @@ AlphaMissense, and CADD are also skipped because their current Allelix
 caches are GRCh38-only; using their values on another assembly would risk
 wrong-allele enrichment.
 
+If Allelix cannot tell the file's build by itself (for example an export
+with no build line whose rows include none of the known SNPs it checks),
+it stops and asks. For a GRCh36 file, pass `--build grch36`: the run then
+uses GRCh36 with the same limits as above.
+
 To get full ClinVar coverage, convert your file's coordinates to GRCh38 (or
 GRCh37) using one of these tools, then re-run `allelix analyze` on the
 converted file.
@@ -68,10 +73,15 @@ CrossMap documentation: https://crossmap.readthedocs.io/
   unmapped output file.
 - After conversion, verify the build through the analysis pipeline:
   `allelix analyze converted_file.txt --output converted_report.html`
-  should print a GRCh38 build banner. `allelix stats` reports the parser's
-  declared/default build and does not run position-based build detection.
-- If fewer than three seed SNPs are present or the signal is mixed, detection
-  remains tentative. After independently verifying a successful conversion,
-  pass `--build grch38` rather than relying on a tentative signal.
+  should print a GRCh38 build banner. `allelix stats` runs the same build
+  decision and shows the build and where it came from (ADR-0044).
+- A converted array file usually still carries its old "build 36" header
+  line. Confident GRCh38 positions override it with a mismatch notice; weaker
+  evidence against it stops the run. A converted VCF must also get GRCh38
+  `##contig` lines: if it keeps the GRCh36 or GRCh37 contig lengths,
+  Allelix stops rather than mix builds.
+- If fewer than three seed SNPs are present or the signal is mixed, the
+  position evidence is tentative. After independently verifying a successful
+  conversion, pass `--build grch38`.
 - If your genotyping provider offers re-export on a newer build, that is
   simpler than liftover. Check your provider's download settings.

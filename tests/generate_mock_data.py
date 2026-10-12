@@ -65,7 +65,7 @@ KNOWN_SNPS = [
     ("rs4149056", "12", 21331549, 21178615, "T", "C", "SLCO1B1 het"),
     # ── ClinVar pathogenic (should trigger alerts) ───────────────────
     # BRCA1: heterozygous carrier (pathogenic)
-    ("rs80357906", "17", 41209080, 43057063, "G", "A", "BRCA1 carrier"),
+    ("rs80357906", "17", 41209079, 43057062, "G", "A", "BRCA1 carrier"),
     # TP53: wild type (should NOT be flagged)
     ("rs121918506", "17", 7577538, 7674222, "G", "G", "TP53 wt"),
     # ── Carrier status (recessive, one copy) ─────────────────────────
@@ -274,6 +274,9 @@ def generate_mock_gnomad(fixtures_dir: Path) -> None:
 
     raw_db = fixtures_dir / "mock_gnomad.sqlite"
     gz_path = fixtures_dir / "mock_gnomad.sqlite.gz"
+    # Start from nothing, so a leftover database from an interrupted run is
+    # not appended to: the output must be the same bytes on every run.
+    raw_db.unlink(missing_ok=True)
 
     with contextlib.closing(sqlite3.connect(raw_db)) as conn:
         for stmt in GNOMAD_SCHEMA.split(";"):
@@ -297,7 +300,13 @@ def generate_mock_gnomad(fixtures_dir: Path) -> None:
         )
         conn.commit()
 
-    with raw_db.open("rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+    # No timestamp and no file name in the gzip header (gzip.open stores both),
+    # so regenerating the fixture leaves the tracked file unchanged.
+    with (
+        raw_db.open("rb") as f_in,
+        gz_path.open("wb") as raw_out,
+        gzip.GzipFile(filename="", mode="wb", fileobj=raw_out, mtime=0) as f_out,
+    ):
         shutil.copyfileobj(f_in, f_out)
     raw_db.unlink()
     print(f"Generated {gz_path}")

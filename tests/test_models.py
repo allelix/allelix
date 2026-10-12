@@ -51,7 +51,7 @@ class TestVariant:
     def test_ref_lowercase_normalized_to_uppercase(self):
         """ADR-0035 + soft-masked references emit lowercase REF.
 
-        Without normalization the strand-aware carrier match (PR 4) would
+        Without normalization the strand-aware carrier match would
         compare a lowercase user ref against uppercase gnomAD / annotator
         alleles and silently mismatch — exactly the failure mode for
         the new field. Normalize at the model boundary so the invariant
@@ -71,7 +71,7 @@ class TestVariant:
         assert v.genotype == "CTT/C"
 
     def test_lowercase_alleles_normalized_to_uppercase(self):
-        """(case half): a lowercase user allele used to silently
+        """Alleles are uppercased at construction. A lowercase user allele used to silently
         fail the raw-set-membership carrier match in clinical annotators
         (which check `alt in {variant.allele1, variant.allele2}` against
         uppercase REF/ALT from the source databases). Normalize at the

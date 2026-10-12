@@ -411,7 +411,7 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
     Not strictly streaming: the (rsid, trait) dedup-on-min-p-value pass
     has to see every row before any (rsid, trait) is final, so the
     intermediate ``best`` dict holds the post-filter row set in memory
-    until the input is exhausted. item 1 audit noted this; the
+    until the input is exhausted. That is acceptable: the
     GWAS Catalog has ~600k post-filter rows, peak memory stays well
     under a normal-machine budget, and a true streaming pass would
     require either a pre-sort on disk or a two-pass design with
@@ -482,7 +482,7 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
 # than that but still far above this floor. 100K only catches gross
 # truncation (a mid-stream download committed as "complete") while staying
 # permissive against legitimate upstream drift. Set to 0 from tests so
-# synthetic fixtures of any size load cleanly. See .
+# synthetic fixtures of any size load cleanly.
 GWAS_MIN_ROWS = 100_000
 
 

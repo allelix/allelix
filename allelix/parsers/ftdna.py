@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import is_padding_only, split_csv_line, split_genotype
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -76,11 +76,11 @@ class FTDNAParser(GenotypeParser):
     def can_parse(self, file_path: Path) -> bool:
         """Recognize the file by its ``RSID,CHROMOSOME,POSITION,RESULT`` header.
 
-        rejects files carrying the MyHeritage signature comment.
+        Rejects files carrying the MyHeritage signature comment.
         Both formats are byte-identical past the first comment line, so
         the discriminator must be checked explicitly — otherwise FTDNA
         also claims MyHeritage files and routing depends on registry
-        order (which has silently mislabeled formats in past audits).
+        order, which has silently mislabeled formats before.
         """
         try:
             with file_path.open("r", encoding="utf-8") as fh:
@@ -149,9 +149,12 @@ class FTDNAParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract metadata from header. FTDNA files have no sample ID field."""
+        """Extract metadata from header. FTDNA files have no sample ID field.
+
+        The build is the header's build line, or None (ADR-0044).
+        """
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=DEFAULT_BUILD,
+            build=read_header_build(file_path),
         )

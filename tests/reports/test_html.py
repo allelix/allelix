@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from allelix.models import Annotation
 from allelix.reports._pipeline import AnalysisResult, BuildDiagnostics
 from allelix.reports.html import render_html
@@ -91,7 +93,7 @@ class TestPanelCoverageHtml:
         assert "no annotations matched" in body
 
     def test_panel_gt_column_renders_when_genotypes_supplied(self, tmp_path: Path):
-        """when `result.panel_genotypes` is supplied (the
+        """When `result.panel_genotypes` is supplied (the
         rsid → "A/G" map run_analysis collected during the batch
         flush), the HTML Panel Coverage table grows a GT column.
         Genotyped rsIDs show their literal call; state-3 rows show
@@ -227,72 +229,120 @@ class TestEducationSection:
         assert "Confirmatory testing" in out.read_text()
 
 
+def _diag(**overrides) -> BuildDiagnostics:
+    fields = {
+        "effective_build": "GRCh37",
+        "source": "seeds",
+        "file_label": "GRCh37",
+        "detected_build": "GRCh37",
+        "matched_count": 5,
+        "inspected_count": 5,
+        "position_confident": True,
+    }
+    fields.update(overrides)
+    return BuildDiagnostics(**fields)
+
+
 class TestBuildMismatchBanner:
     def test_no_banner_without_mismatch(self, tmp_path: Path):
         r = _result([_ann()])
-        r.build_diagnostics = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build="GRCh37",
-            effective_build="GRCh37",
-            override=False,
-            matched_count=5,
-            inspected_count=5,
-            position_confident=True,
-        )
+        r.build_diagnostics = _diag()
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
         assert "Build mismatch" not in out.read_text()
 
     def test_banner_on_mismatch(self, tmp_path: Path):
         r = _result([_ann()])
-        r.build_diagnostics = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build="GRCh38",
-            effective_build="GRCh38",
-            override=False,
-            matched_count=5,
-            inspected_count=5,
-            position_confident=True,
+        r.build_diagnostics = _diag(
+            effective_build="GRCh38", detected_build="GRCh38", label_overridden=True
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
         body = out.read_text()
         assert "Build mismatch" in body
-        assert "GRCh37" in body
-        assert "GRCh38" in body
+        assert "the file says GRCh37, but its known-SNP positions say GRCh38 (5/5)" in body
         assert "notice-warn" in body
 
-    def test_tentative_mismatch_is_not_described_as_authoritative(self, tmp_path: Path):
+    def test_tentative_grch36_mismatch_is_not_described_as_authoritative(self, tmp_path: Path):
         r = _result([_ann()])
-        r.build_diagnostics = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build="GRCh38",
-            effective_build="GRCh37",
-            override=False,
-            matched_count=2,
-            inspected_count=2,
+        r.build_diagnostics = _diag(
+            effective_build="GRCh36",
+            detected_build="GRCh36",
+            matched_count=3,
+            inspected_count=4,
             position_confident=False,
+            label_overridden=True,
+            tentative_grch36=True,
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
         body = out.read_text()
-        assert "position data tentatively favors GRCh38" in body
-        assert "position data indicates GRCh38" not in body
+        assert "known-SNP positions tentatively say GRCh36 (3/4)" in body
+        assert "positions say GRCh36" not in body
+
+    def test_tie_shows_the_inconclusive_notice(self, tmp_path: Path):
+        r = _result([_ann()])
+        r.build_diagnostics = _diag(
+            source="contig_lengths",
+            detected_build=None,
+            matched_count=0,
+            inspected_count=4,
+            position_confident=False,
+            tied_builds=("GRCh37", "GRCh38"),
+            tied_votes=2,
+        )
+        out = tmp_path / "report.html"
+        render_html(r, output_path=out)
+        body = out.read_text()
+        assert "Build evidence inconclusive." in body
+        assert "tied between GRCh37 and GRCh38 (2 each of 4)" in body
+        assert (
+            "Using GRCh37, which the contig lengths decide; it is one of the tied builds." in body
+        )
+
+    def test_grch36_tie_mismatch_banner(self, tmp_path: Path):
+        r = _result([_ann()])
+        r.build_diagnostics = _diag(
+            effective_build="GRCh36",
+            detected_build=None,
+            matched_count=0,
+            inspected_count=4,
+            position_confident=False,
+            label_overridden=True,
+            tentative_grch36=True,
+            tied_builds=("GRCh36", "GRCh38"),
+            tied_votes=2,
+        )
+        out = tmp_path / "report.html"
+        render_html(r, output_path=out)
+        body = out.read_text()
+        assert "known-SNP positions are tied between GRCh36 and GRCh38" in body
+        assert "Using GRCh36 as the safe choice" in body
+        assert "Build evidence inconclusive." in body
 
     def test_no_banner_with_override(self, tmp_path: Path):
         r = _result([_ann()])
-        r.build_diagnostics = BuildDiagnostics(
-            header_build="GRCh37",
-            detected_build="GRCh38",
-            effective_build="GRCh38",
-            override=True,
-            matched_count=5,
-            inspected_count=5,
-            position_confident=True,
+        r.build_diagnostics = _diag(
+            effective_build="GRCh38", detected_build=None, source="override"
         )
         out = tmp_path / "report.html"
         render_html(r, output_path=out)
         assert "Build mismatch" not in out.read_text()
+
+    @pytest.mark.parametrize(
+        ("source", "label"),
+        [
+            ("override", "forced with --build"),
+            ("contig_lengths", "from the contig lengths"),
+            ("default", "format default; the file states no build"),
+        ],
+    )
+    def test_build_card_shows_the_source(self, tmp_path: Path, source: str, label: str):
+        r = _result([_ann()])
+        r.build_diagnostics = _diag(source=source)
+        out = tmp_path / "report.html"
+        render_html(r, output_path=out)
+        assert f'<div class="build-source">{label}</div>' in out.read_text()
 
     def test_no_banner_without_diagnostics(self, tmp_path: Path):
         out = tmp_path / "report.html"

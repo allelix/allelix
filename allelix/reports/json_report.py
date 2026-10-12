@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "7",
+      "schema_version": "8",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -15,6 +15,8 @@ Output schema (versioned via `schema_version`):
         "method": null,
         "sample_id": "MHG000001",
         "build": "GRCh37",
+        "build_source": "seeds",
+        "build_evidence": {"file_label": null, "seeds_matched": 10, ...},
         "total_variants": 2015,
         "skipped_lines": 0,
         "gvcf": false,
@@ -55,16 +57,21 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
+# v7 -> v8 bump (ADR-0033): ``input.build_source`` says where the build came
+# from (ADR-0044 vocabulary: override, contig_lengths, seeds, assembly_header,
+# file_label, default) and ``input.build_evidence`` records the evidence
+# beside it (the file's own label, the contig-length verdict, the known-SNP
+# counts). Both are null when the result carries no build diagnostics.
 # v6 -> v7 bump (ADR-0033): every annotation carries ``plausibility``, the
 # zygosity x gnomAD frequency quality-control flag (ADR-0041); the
 # ``input`` block carries ``gvcf`` and ``vcf_quality`` (null for non-VCF
 # input); ``high_value_no_calls`` entries carry ``reason``; ``input.method``
 # names a declared genotyping method (null when none). All land in the
 # same unreleased version, so one bump covers them.
-# v4 → v5 bump: enters the ADR-0035 cluster contract. Incoming cluster fields
+# v4 → v5 bump: enters the ADR-0035 cluster contract. The cluster fields
 # (variant.ref via Variant model, annotation.trait / .p_value / .phecode via
-# Annotation model) land across PRs 1-4 of the v2.1 Cluster B work. v4
+# Annotation model) all arrived under v5 in the v2.1 series. v4
 # consumers reading v5 output still succeed — every v4 field is unchanged.
 
 
@@ -146,6 +153,7 @@ def render_json(
         source_min_magnitudes=source_min_magnitudes,
     )
     filtered = rollup_gwas_duplicates(filtered)
+    diag = result.build_diagnostics
     payload: dict = {
         "schema_version": SCHEMA_VERSION,
         "allelix_version": __version__,
@@ -157,6 +165,8 @@ def render_json(
             "method": result.input_method or None,
             "sample_id": result.sample_id,
             "build": result.build,
+            "build_source": diag.source if diag is not None else None,
+            "build_evidence": diag.evidence() if diag is not None else None,
             "total_variants": result.total_variants,
             "skipped_lines": result.skipped_count,
             "gvcf": result.vcf_quality is not None and result.vcf_quality.is_gvcf,

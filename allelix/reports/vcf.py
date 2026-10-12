@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.2.0"
+VCF_SCHEMA_VERSION = "0.3.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
@@ -63,6 +63,8 @@ line, or attribution shape. ADR after real user feedback.
 
 0.2.0: adds ``ALLELIX_FILTER`` (rows kept with ``--keep-filtered``), and
 caller-rejected rows are no longer stamped by default.
+0.3.0: ``##ALLELIX_Build=<ID=...,Source=...>`` records where the build came
+from (ADR-0044); it was ``##ALLELIX_Build=<build>``.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -318,6 +320,7 @@ def _license_attributions(
 def _emit_provenance_lines(
     *,
     build: str,
+    build_source: str | None,
     annotators_used: list[tuple[str, str | None]],
     run_date: datetime,
 ) -> list[str]:
@@ -332,7 +335,7 @@ def _emit_provenance_lines(
         f"##ALLELIX_VCF_SchemaVersion={VCF_SCHEMA_VERSION}",
         f"##ALLELIX_License={VCF_LICENSE}",
         f"##ALLELIX_RunDate={run_date.isoformat()}",
-        f"##ALLELIX_Build={build}",
+        f"##ALLELIX_Build=<ID={build},Source={build_source or 'unknown'}>",
     ]
     for name, version in annotators_used:
         version_str = version if version else "unknown"
@@ -467,6 +470,7 @@ def render_vcf(
     recovered_rsids: Mapping[_VariantKey, str] | None = None,
     run_date: datetime | None = None,
     keep_filtered: bool = False,
+    build_source: str | None = None,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -527,6 +531,7 @@ def render_vcf(
                     fout.write(h + "\n")
                 for h in _emit_provenance_lines(
                     build=build,
+                    build_source=build_source,
                     annotators_used=annotators_used,
                     run_date=run_date,
                 ):

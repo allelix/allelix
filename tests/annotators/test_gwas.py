@@ -505,7 +505,7 @@ class TestGenotypeMatching:
 
 
 class TestStructuredFields:
-    """ADR-0035 PR 3: trait / p_value / phecode are populated as structured fields."""
+    """ADR-0035: trait / p_value / phecode are populated as structured fields."""
 
     def test_trait_p_value_populated(self, gwas_data_dir: Path) -> None:
         """Every emitted GWAS row carries trait structured; p_value tracks the
@@ -557,7 +557,7 @@ class TestStructuredFields:
 
 
 class TestAltThreading:
-    """ADR-0035 PR 2 — risk_allele threads onto Annotation.alt for exact enrichment."""
+    """ADR-0035 — risk_allele threads onto Annotation.alt for exact enrichment."""
 
     def test_known_risk_allele_threads_as_alt(self, gwas_data_dir: Path) -> None:
         """rs4680 hom-alt (A/A) — risk allele A populates Annotation.alt."""
@@ -828,7 +828,7 @@ class TestTraitFiltering:
             v = Variant(
                 rsid="rs80357906",
                 chromosome="17",
-                position=43057063,
+                position=43057062,
                 allele1="G",
                 allele2="A",
                 build="GRCh38",

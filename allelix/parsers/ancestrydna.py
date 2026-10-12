@@ -30,7 +30,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, NO_CALL_MARKER, Variant
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -122,9 +122,12 @@ class AncestryDNAParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract metadata from header comments. AncestryDNA has no sample ID field."""
+        """Extract metadata from header comments. AncestryDNA has no sample ID field.
+
+        The build is the header's build line, or None (ADR-0044).
+        """
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=DEFAULT_BUILD,
+            build=read_header_build(file_path),
         )

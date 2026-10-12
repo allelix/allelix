@@ -70,7 +70,7 @@ class Variant:
     original_rsid: str | None = None
 
     def __post_init__(self) -> None:
-        """Normalize allele case at construction (, ADR-0035).
+        """Normalize allele case at construction (ADR-0035).
 
         Reference databases (ClinVar, gnomAD, ClinPGx, etc.) all ship
         uppercase alleles, and carrier matching is raw set membership
@@ -84,7 +84,7 @@ class Variant:
         multi-base alleles (indels) are uppercased in place.
 
         ``ref`` (ADR-0035) is a sibling allele field feeding the same
-        downstream matching path (PR 4 strand-aware carrier matching
+        downstream matching path (strand-aware carrier matching
         compares ``ref`` against ``{allele1, allele2}`` and against
         gnomAD's uppercased REF). VCFs derived from soft-masked
         references emit lowercase bases in the REF column, so the
@@ -187,7 +187,7 @@ class Annotation:
     am_class: str = ""
     cadd_phred: float | None = None
     plausibility: str = ""
-    # ADR-0035 cluster manifest (PR 3): structured GWAS fields promoted out of
+    # ADR-0035 cluster manifest: structured GWAS fields promoted out of
     # the rendered ``description`` prose. `description` still carries the same
     # rendered text for HTML / terminal display, but downstream code (rollup,
     # diff, future consumers) reads the structured fields directly instead of

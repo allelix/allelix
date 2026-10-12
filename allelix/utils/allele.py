@@ -90,7 +90,7 @@ def strand_aware_carrier_match(
 ) -> bool:
     """Return True if the user carries ``source_alt`` directly or via strand-flip.
 
-    Multi-allelic safety (the v2.0.1 audit): only fires strand-flip when the
+    Multi-allelic safety (since v2.0.1): only fires strand-flip when the
     ``variant_ref`` context confirms the user is reverse-stranded relative to the
     source's ref. Without that context — ``variant_ref`` is None, or it agrees
     with ``source_ref`` (forward) — strand-flip never fires and the carrier
@@ -257,7 +257,7 @@ def strand_aware_genotype_match(
     # Site-level palindrome guard: include variant_ref so homozygous
     # genotypes at palindromic sites are correctly caught.  set("GG") =
     # {"G"} missed the C/G palindrome; {"G"} | {"C"} = {"C","G"} catches
-    # it.  Fixes .
+    # it.
     site_alleles = set(source_geno) | {variant_ref}
     return site_alleles != {"A", "T"} and site_alleles != {"C", "G"}
 
@@ -271,7 +271,7 @@ def derive_alt_from_diploid(ref: str | None, allele1: str, allele2: str) -> str:
     be cleanly identified:
 
     - ``ref`` is None — no reference context yet (e.g., array data prior to
-      strand-aware ref population, ADR-0035 PR 4).
+      strand-aware ref population, ADR-0035).
     - Both alleles equal ref — hom-ref; should be filtered earlier
       (ADR-0023 for ClinPGx; SNPedia rarely matches hom-ref) but defensive.
     - Neither allele equals ref — multi-allelic het where the matched row's

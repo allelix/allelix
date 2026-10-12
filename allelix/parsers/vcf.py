@@ -134,7 +134,8 @@ def _cannot_yield_call(alt: str) -> bool:
 # build. The terminator ``[,>]`` keeps us from matching prefixes like
 # ``ID=chr1_KI270706v1_random`` (an alt contig) when only chr1 is
 # present as a standard contig.
-_CHR_PREFIX_CONTIG_RE = re.compile(r"ID=chr(?:[1-9]|1[0-9]|2[0-2]|X|Y|MT|M)[,>]")
+_CONTIG_ID_RE = re.compile(r"[<,]\s*ID=([^,>]+)")
+_CONTIG_LENGTH_RE = re.compile(r"[<,]\s*length=(\d+)")
 
 
 # GATK's convention: a genotype quality below 20 is low confidence.
@@ -451,8 +452,8 @@ class VcfParser(GenotypeParser):
         return GenotypeMetadata(
             format=self.name,
             sample_id=sample_id,
-            build=header.build or "",
-            chr_prefix_observed=header.chr_prefix_observed,
+            build=header.build,
+            contig_lengths=dict(header.contig_lengths),
         )
 
     def validate_sample(self, file_path: Path) -> None:
@@ -535,17 +536,16 @@ class VcfParser(GenotypeParser):
 class _VcfHeader:
     """Parsed VCF header — what the pipeline needs from the ``##`` lines."""
 
-    __slots__ = ("build", "chr_prefix_observed", "has_non_ref_alt", "samples")
+    __slots__ = ("build", "contig_lengths", "has_non_ref_alt", "samples")
 
     def __init__(self) -> None:
         self.samples: list[str] = []
         self.build: str | None = None
         self.has_non_ref_alt: bool = False
-        # ``chr``-prefixed contig names indicate GRCh38 in modern
-        # variant callers (DeepVariant, DRAGEN, GATK HaplotypeCaller).
-        # Tertiary build-detection signal when rsIDs and ``##assembly``
-        # both fail to converge.
-        self.chr_prefix_observed: bool = False
+        # ``##contig`` ID -> declared length. The build decision reads the
+        # lengths (ADR-0044); contig naming (``chr1`` vs ``1``) is not
+        # evidence of a build.
+        self.contig_lengths: dict[str, int] = {}
 
 
 def _read_header(handle: TextIO) -> _VcfHeader:
@@ -600,21 +600,15 @@ def _read_header(handle: TextIO) -> _VcfHeader:
 
 
 def _absorb_meta_line(line: str, header: _VcfHeader) -> None:
-    """Extract build (from ``##contig``) and gVCF marker from a ``##`` line."""
+    """Extract contig lengths, the assembly label and the gVCF marker from a ``##`` line."""
     if line.startswith("##ALT=") and "ID=NON_REF" in line:
         header.has_non_ref_alt = True
         return
     if line.startswith("##contig="):
-        # capture the chr-prefix signal once any contig declares
-        # it. Match ``ID=chr`` followed by any standard chromosome name
-        # (1-22, X, Y, M, MT) terminated by ``,`` or ``>`` so we don't
-        # false-positive on alt contigs and decoy sequences (``GL00*``,
-        # ``hs37d5``, ``NC_*`` — none disambiguate the build the same
-        # way). Previously only checked ``chr1`` and ``chrX``; this
-        # widening (v2.0.2) catches per-chromosome VCFs and slices that
-        # omit chr1.
-        if not header.chr_prefix_observed and _CHR_PREFIX_CONTIG_RE.search(line):
-            header.chr_prefix_observed = True
+        contig_id = _CONTIG_ID_RE.search(line)
+        length = _CONTIG_LENGTH_RE.search(line)
+        if contig_id and length:
+            header.contig_lengths[contig_id.group(1).strip()] = int(length.group(1))
         if "assembly=" in line and header.build is None:
             # First explicit assembly wins.
             header.build = _extract_assembly(line)

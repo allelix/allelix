@@ -185,8 +185,7 @@ _SS_REVIEW_STATUS = 6  # "ReviewStatus" — per-SCV
 _SS_SCV = 10  # "SCV"                   — submission accession
 _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 
-# follow-up (evaluator defect 5, ): exact set of
-# ClinicalSignificance values the TSV loader filters at ingest.
+# Exact set of ClinicalSignificance values the TSV loader filters at ingest.
 # These are values that ClinVar uses to mark SCVs with no actionable
 # classification — placeholders ("-", "", "not specified") AND
 # non-classification curatorial categories ("other", "association",
@@ -201,7 +200,7 @@ _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
 #     would lose real submitter records.
 #   - "no classification for the single variant" — same.
 #
-# added the three non-classification terms ("other",
+# v2.2.1 added the three non-classification terms ("other",
 # "association", "association not found"). The per-SCV TSV
 # switch surfaced these from the underlying submission_summary
 # rows where the old summarized data hid them; they're meaningfully
@@ -293,7 +292,7 @@ def iter_clinvar_tsv_records(
     (ClinicalSignificance, ReportedPhenotypeInfo) pair for each SCV
     submission. ``variant_summary`` carries the position / ref / alt /
     rsID / gene per (variant, build). The legacy VCF loader's
-    CLNSIG|CLNDN Frankenstein pairing (, removed in stage C) is
+    CLNSIG|CLNDN Frankenstein pairing (the VCF loader was removed in v2.2.0) is
     structurally absent here because each row is one submission.
 
     Memory: the variant_summary index uses a temp on-disk SQLite, NOT
@@ -424,8 +423,7 @@ def iter_clinvar_tsv_records(
                     continue
                 rsid, chromosome, position, ref, alt, gene, review_status_agg = row
                 clinical_significance = cols[_SS_CLIN_SIG].strip()
-                # follow-up (evaluator defect 5 + cross-PR value-
-                # domain review on ): ClinVar's submission_summary
+                # ClinVar's submission_summary
                 # carries several placeholder values that mean "no clinical
                 # significance recorded." A placeholder that ISN'T in
                 # `_CLNSIG_MAGNITUDE` falls through to that dict's 5.0
@@ -485,7 +483,7 @@ def load_clinvar_tsv(
     Production ingest path for ClinVar. The annotator returns
     MULTIPLE Annotation objects per variant when multiple SCVs target
     the same (chrom, pos, ref, alt); the annotator-side reconciliation
-    landed in stage B.
+    landed in v2.2.0.
     """
     if db_path.exists():
         db_path.unlink()
@@ -539,8 +537,7 @@ def load_clinvar_tsv(
 
             stamp_remote_signal(conn, "clinvar", remote_signal, source_url)
             _ensure_local_version_tag_column(conn)
-            # follow-up (evaluator defect 3): stamp_remote_signal
-            # inserts version=NULL by design — it's a freshness-only
+            # stamp_remote_signal inserts version=NULL by design — it's a freshness-only
             # stamper meant to upsert remote_signal onto existing rows
             # (e.g. the baked-in metadata of the HF .sqlite.gz caches).
             # Caches built from scratch by load_clinvar_tsv have no
@@ -702,7 +699,7 @@ def stamp_existing_clinvar_cache(db_path: Path) -> bool:
     | NULL                  | no `|iv:` marker          | return False      |
     +-----------------------+---------------------------+-------------------+
 
-    The bottom-right case is the v2.2 stage-B safety hole: a
+    The bottom-right case is the v2.2 safety hole: a
     pre-v2.0.1 cache (iv:1-era, NULL tag, no baked marker) skipping
     straight to v2.2 used to get stamped as iv:CURRENT unconditionally —
     serving old single-row VCF data labeled as fresh per-SCV TSV data.
@@ -765,9 +762,21 @@ def _parse_baked_iv(remote_signal: str | None) -> int | None:
     caller can decide between self-heal and reingest. Returns None for
     missing or malformed markers (caller treats as unknown).
     """
-    if not remote_signal or "|iv:" not in remote_signal:
+    return parse_baked_version(remote_signal, "iv")
+
+
+def parse_baked_version(remote_signal: str | None, kind: str) -> int | None:
+    """Extract ``N`` from a legacy ``|<kind>:N`` suffix in ``remote_signal``, or None.
+
+    Caches written before ``local_version_tag`` existed baked their
+    version into ``remote_signal`` (``|iv:N`` for ClinVar and ClinPGx,
+    ``|cv:N`` for the GWAS Catalog). None means no marker or a malformed
+    one: the cache's version is unknown.
+    """
+    marker = f"|{kind}:"
+    if not remote_signal or marker not in remote_signal:
         return None
-    _, _, after = remote_signal.partition("|iv:")
+    _, _, after = remote_signal.partition(marker)
     head = after.split("|", 1)[0].strip()
     if not head.isdigit():
         return None

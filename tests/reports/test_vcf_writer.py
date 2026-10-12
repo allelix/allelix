@@ -3,7 +3,7 @@
 """Tests for the annotated VCF output writer.
 
 Writer is invoked directly with hand-built annotation dicts — no
-pipeline coupling in PR 1. Fixture files under ``tests/fixtures/``
+pipeline coupling. Fixture files under ``tests/fixtures/``
 provide the shapes we care about: single-sample, multi-sample,
 multi-allelic (``mock_vcf.vcf`` line 8: ``A → G,C``), and gVCF
 ``<NON_REF>`` + reference blocks.
@@ -105,7 +105,7 @@ class TestHeaderPreservation:
         text = _read(out)
         assert "##fileformat=VCFv4.2" in text
         assert '##FILTER=<ID=PASS,Description="All filters passed">' in text
-        assert "##contig=<ID=1,length=249250621,assembly=GRCh38>" in text
+        assert "##contig=<ID=1,length=248956422,assembly=GRCh38>" in text
         assert '##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">' in text
 
     def test_missing_emitted_contigs_receive_minimal_declarations(self, tmp_path: Path) -> None:
@@ -157,6 +157,7 @@ class TestProvenanceBlock:
             input_path=FIXTURES / "mock_vcf.vcf",
             output_path=out,
             build="GRCh38",
+            build_source="contig_lengths",
             annotators_used=[("clinvar", "20260101"), ("gnomad", "4.1")],
             annotations_by_key={},
             run_date=_fixed_date(),
@@ -181,7 +182,19 @@ class TestProvenanceBlock:
 
     def test_build_line(self, tmp_path: Path) -> None:
         text = self._run(tmp_path)
-        assert "##ALLELIX_Build=GRCh38" in text
+        assert "##ALLELIX_Build=<ID=GRCh38,Source=contig_lengths>" in text
+
+    def test_build_line_without_a_source(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.vcf"
+        render_vcf(
+            input_path=FIXTURES / "mock_vcf.vcf",
+            output_path=out,
+            build="GRCh38",
+            annotators_used=[],
+            annotations_by_key={},
+            run_date=_fixed_date(),
+        )
+        assert "##ALLELIX_Build=<ID=GRCh38,Source=unknown>" in _read(out)
 
     def test_database_lines_per_annotator(self, tmp_path: Path) -> None:
         text = self._run(tmp_path)
@@ -601,7 +614,7 @@ class TestBomAndEncoding:
         assert raw_bytes.startswith(b"##fileformat=VCFv4.2")
 
     def test_non_utf8_byte_in_header_does_not_raise(self, tmp_path: Path) -> None:
-        """real VCFs commonly carry non-UTF-8 bytes in tool
+        """Real VCFs commonly carry non-UTF-8 bytes in tool
         headers (a latin-1 ``\\xa9`` copyright in ``##CL=`` from GATK /
         DeepVariant / bcftools). The parser uses ``errors="replace"``
         to degrade gracefully; the writer must too, otherwise the
@@ -703,7 +716,7 @@ class TestSymbolicAlleles:
         text = _read(out)
         ref_block = next(line for line in text.splitlines() if "\t10001\t" in line)
         info_col = ref_block.split("\t")[7]
-        assert info_col == "END=11796320"
+        assert info_col == "END=11794418"
 
 
 class TestMultiSample:

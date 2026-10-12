@@ -37,8 +37,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import split_genotype
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
-from allelix.utils.build_detect import normalize_build_label
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -113,30 +112,15 @@ class LivingDNAParser(GenotypeParser):
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
         """Extract build from header comments. Living DNA has no sample ID field.
 
-        previously every comment line was passed into
-        ``normalize_build_label`` and the *last* match won. A download-
-        date comment like ``# downloaded 2038-01-01`` would silently
-        retag the file as GRCh38. Only lines that look like an explicit
-        build marker (containing ``build``, ``reference``, or ``genome``)
-        are inspected, and the first match wins — matching the format
-        spec which puts the build line near the top:
+        Only comment lines that look like an explicit build marker are
+        inspected, and the first match wins (``read_header_build``), so a
+        download-date comment like ``# downloaded 2038-01-01`` cannot
+        retag the file. The format spec puts the build line near the top:
 
             # Human Genome Reference Build 37 (GRCh37.p13).
         """
-        build = DEFAULT_BUILD
-        with file_path.open("r", encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.rstrip("\r\n")
-                if not line.startswith("#"):
-                    break
-                if not _BUILD_MARKER_RE.search(line):
-                    continue
-                normalized = normalize_build_label(line)
-                if normalized:
-                    build = normalized
-                    break
         return GenotypeMetadata(
             format=self.name,
             sample_id="",
-            build=build,
+            build=read_header_build(file_path),
         )

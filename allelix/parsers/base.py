@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, NotRequired, TypedDict
 
+from allelix.utils.build_detect import normalize_build_label
+
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
     from pathlib import Path
 
     from allelix.models import Variant
@@ -25,17 +28,13 @@ class GenotypeMetadata(TypedDict):
     Keys:
         format: Parser name (matches `GenotypeParser.name`).
         sample_id: Vendor sample identifier, or "" if not present in the file.
-        build: Reference genome build (e.g., "GRCh37").
-        chr_prefix_observed: True when the file uses ``chr``-prefixed contig
-            names (``chr1`` / ``chrX``). Optional — only VCF / gVCF parsers
-            populate it; consumer-array exports always use bare names and
-            don't set it. used as a tertiary build-detection signal
-            after rsID matching and ``##assembly`` tag checks both fail.
-            ``chr``-prefixed contigs overwhelmingly indicate GRCh38.
-        header_build: The build the file explicitly declares in its header
-            (e.g. MyHeritage ``##reference=build37`` -> ``"GRCh37"``).
-            Optional; absent when the file declares none. ``build`` may
-            still carry a parser default in that case.
+        build: The build the file itself states (a header line such as
+            ``# Build 37`` or ``##reference=build37``, a VCF ``assembly=``),
+            normalized to ``GRCh36`` / ``GRCh37`` / ``GRCh38``, or None when
+            the file states none. Parsers never fill in a default here: the
+            format default is applied only by the build decision (ADR-0044).
+        contig_lengths: ``{contig ID: length}`` from VCF ``##contig`` lines
+            that declare a length. Optional — only VCF / gVCF parsers set it.
         method: How the genotypes were produced, when the file says so
             (e.g. ``"low-pass-wgs-imputed"`` for MyHeritage low-pass whole
             genome sequencing). Optional; absent for files that do not
@@ -44,10 +43,49 @@ class GenotypeMetadata(TypedDict):
 
     format: str
     sample_id: str
-    build: str
-    chr_prefix_observed: NotRequired[bool]
-    header_build: NotRequired[str]
+    build: str | None
+    contig_lengths: NotRequired[dict[str, int]]
     method: NotRequired[str]
+
+
+# Comment lines that can carry a build statement. Other comment lines are
+# skipped so a date (``2038-01-01``) or a count cannot read as a build.
+_BUILD_MARKER_RE = re.compile(r"\b(build|reference|assembly|genome|grch\d\d|hg\d\d)\b", re.I)
+HEADER_SCAN_LIMIT = 50
+
+
+def header_build_label(lines: Iterable[str]) -> str | None:
+    """The build stated in a file's leading ``#`` comment lines, or None.
+
+    Reads until the first non-comment line (at most ``HEADER_SCAN_LIMIT``
+    lines). The first line that names a build marker and normalizes to one
+    build wins, e.g. ``# Build 37``, ``# Human Genome Reference Build 37
+    (GRCh37.p13).``, ``#... human reference build 37.1 coordinates``.
+    """
+    for count, raw in enumerate(lines):
+        line = raw.rstrip("\r\n").lstrip("\ufeff")
+        if count >= HEADER_SCAN_LIMIT or (line and not line.startswith("#")):
+            break
+        build = build_statement(line)
+        if build is not None:
+            return build
+    return None
+
+
+def build_statement(line: str) -> str | None:
+    """The build one header line states, or None (marker word required)."""
+    if not _BUILD_MARKER_RE.search(line):
+        return None
+    return normalize_build_label(line)
+
+
+def read_header_build(file_path: Path) -> str | None:
+    """``header_build_label`` over ``file_path``; None when it cannot be read."""
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+            return header_build_label(fh)
+    except OSError:
+        return None
 
 
 class GenotypeParser(ABC):

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Allelix
-"""regression tests for the ``allelix extract`` command on
+"""Regression tests for the ``allelix extract`` command on
 rsID-less VCF inputs.
 
 Sister test file to ``tests/reports/test_rsidless_resolution_gh128.py``.
@@ -46,9 +46,9 @@ GNOMAD_DB_FILENAME = "gnomad.sqlite"
 # right next to the assertions about what should resolve out of it.
 _RSIDLESS_VCF = """\
 ##fileformat=VCFv4.2
-##contig=<ID=1,length=249250621>
+##contig=<ID=1,length=248956422>
 ##contig=<ID=19,length=58617616>
-##contig=<ID=22,length=51304566>
+##contig=<ID=22,length=50818468>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE
 1\t11796321\t.\tG\tA\t.\tPASS\t.\tGT\t0/1
@@ -63,7 +63,7 @@ _RSIDLESS_VCF = """\
 # stamp rsIDs).
 _RSID_STAMPED_VCF = """\
 ##fileformat=VCFv4.2
-##contig=<ID=1,length=249250621>
+##contig=<ID=1,length=248956422>
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE
 1\t11796321\trs1801133\tG\tA\t.\tPASS\t.\tGT\t0/1

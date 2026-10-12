@@ -153,7 +153,7 @@ def _collapse_identical_scvs(annotations: list[Annotation]) -> list[Annotation]:
     surface, and collapsing them would be the Frankenstein-pair
     regression the per-SCV loader retired.
 
-    cross-PR review (Finding 1): ``alt`` is in the key for the
+    ``alt`` is in the key for the
     wrong-allele safety invariant. Two SCVs at a multi-allelic site
     can share (significance, condition, gene) but differ in alt — e.g.
     rs1065852 (G→A drug_response/Codeine_response + G→C drug_response/
@@ -283,7 +283,7 @@ class ClinVarAnnotator(Annotator):
     def setup(self) -> None:
         """Download the per-SCV TSV pair once and ingest both builds from it.
 
-        v2.2 stage B: the VCF-per-build path is replaced by the
+        Since v2.2 the VCF-per-build path is replaced by the
         variant_summary + submission_summary TSV pair. variant_summary
         carries per-(VariationID, Assembly) rows so the same downloaded
         file populates both GRCh37 and GRCh38 caches with no second
@@ -445,7 +445,7 @@ class ClinVarAnnotator(Annotator):
         # may have BOTH SNV and indel rows for the same rsid; the WHERE
         # filters those out so we keep only the SNV REF.
         #
-        # item 1: iterate the cursor directly instead of fetchall()
+        # Iterate the cursor directly instead of fetchall()
         # so peak memory is one row + the dict, not the entire result set
         # twice.
         cursor = conn.execute(
@@ -463,8 +463,8 @@ class ClinVarAnnotator(Annotator):
     def fetch_remote_signal(self) -> str | None:
         r"""Freshness signal derived from the per-SCV submission_summary md5.
 
-        v2.2 stage B: pre-stage-B this returned a composite VCF-md5
-        per build. After stage B, the cache is built from a build-agnostic
+        Before v2.2 this returned a composite VCF-md5 per build. Since
+        v2.2, the cache is built from a build-agnostic
         TSV pair, and submission_summary's md5 endpoint is the change
         cadence we want to track (per-SCV submissions land daily; the
         slower-moving variant_summary only adds new VariationIDs).
@@ -500,7 +500,7 @@ class ClinVarAnnotator(Annotator):
         None if any managed build's cache is absent / unstamped or if the
         builds' stamps diverge (an interrupted partial reingest).
 
-        Stage B: both builds now share the same source TSVs and therefore
+        Since v2.2 both builds share the same source TSVs and therefore
         the same remote_signal. We still cross-check that EVERY managed
         build's cache carries the stamp; a missing build means the
         last-setup didn't complete, treat as "no signal" and let
@@ -699,7 +699,7 @@ class ClinVarAnnotator(Annotator):
           input). Together with the locus this identifies the variant by
           ``(chrom, pos, ref, alt)`` rather than by rsID.
         - ADR-0011: ClinVar indels never match single-base array calls.
-        - ADR-0035 PR 4 / ADR-0007: the user carries the ALT, directly or
+        - ADR-0035 / ADR-0007: the user carries the ALT, directly or
           via a confirmed strand flip.
         - Benign rows are suppressed unless ``include_benign``.
 
