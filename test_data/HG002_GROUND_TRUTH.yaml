@@ -77,13 +77,14 @@ analyze:
 
   - rsid: rs6025
     applies_to: [giab_grch37_benchmark]
-    min_rows: 2
-    expected_sources: [clinvar]
+    min_rows: 0
+    expected_sources: []
     allowed_significance_patterns:
-      - "^clinvar_[a-z_]+$"
+      - "^clinvar_(?!(likely_)?pathogenic)[a-z_]+$"
       - "^pharmgkb_loe_[0-9a-z]+$"
-    must_have_condition: true
-    note: "Factor V Leiden surfaces on the GRCh37 benchmark because the VCF carries rsIDs in the ID column (so the rsID-keyed lookup fires for any row tagged rs6025, even if HG002 is ref/ref at the variant position). On the GRCh38 benchmark — which is rsID-less — position-only resolution at the FVL coordinate finds no variant row (HG002 is ref/ref) and rs6025 correctly does NOT surface. Scoping this check to GRCh37 only."
+      - "^snpedia_[a-z]+$"
+    must_have_condition: false
+    note: "Factor V Leiden. HG002 is CC, the normal genotype: no ClinVar Pathogenic or Likely pathogenic row may appear at rs6025. On GRCh37 the reference base here is the Leiden allele (T), so ClinVar writes the Leiden variant as T>T and the normal-allele record (c.1601=) as T>C. Before 2.4.2 Allelix dropped the T>T row and matched C carriers to the normal-allele record's Pathogenic submissions; this entry used to require those false rows. Scoped to GRCh37, where the inversion was."
 
 # Vocabulary invariants — every `significance` value emitted by allelix
 # must be in the known-vocabulary union. A value outside this set means

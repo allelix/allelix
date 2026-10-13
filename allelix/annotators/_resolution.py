@@ -129,11 +129,18 @@ def resolve_rsidless(
 
 
 def _populate_ref_from_identity(identity: RsidIdentityAnnotator, variants: list[Variant]) -> None:
-    """Set ``Variant.ref`` from the identity table's REF at the variant's locus.
+    """Set ``Variant.ref`` from the identity table's REF for the call's own rsID.
 
-    Only for calls that carry an rsID, and only when the locus has a single
-    REF of the call's shape: single-base for single-base calls (an indel
-    row's anchor REF can share the position), any length otherwise.
+    Only for calls that carry an rsID, only from the identity rows of that
+    rsID at the variant's locus, and only when those rows give a single REF
+    of the call's shape: single-base for single-base calls (an indel row's
+    anchor REF can share the position), any length otherwise.
+
+    A call whose rsID the identity table does not hold (a withdrawn or
+    merged ID) gets no REF, even when another rsID's rows sit at the same
+    position: nothing confirms that the other rsID is the same variant.
+    Such a call keeps ``ref`` None, and ClinVar matches it by locus only
+    when ClinVar holds its rsID.
 
     A call without an rsID (array vendor probes such as 23andMe
     ``i5000123``) never gets a REF from position alone. The REF at a locus
@@ -154,9 +161,9 @@ def _populate_ref_from_identity(identity: RsidIdentityAnnotator, variants: list[
     ]
     for build in {v.build for v in pending}:
         group = [v for v in pending if v.build == build]
-        refs_at = identity.refs_at_loci(build, {variant_locus(v) for v in group})
+        rows_at = identity.alleles_at_loci(build, {variant_locus(v) for v in group})
         for v in group:
-            refs = refs_at.get(variant_locus(v), set())
+            refs = {ref for ref, _alt, rsid in rows_at.get(variant_locus(v), []) if rsid == v.rsid}
             if len(v.allele1) <= 1 and len(v.allele2) <= 1:
                 refs = {r for r in refs if len(r) == 1}
             if len(refs) == 1:

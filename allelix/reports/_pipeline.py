@@ -498,7 +498,10 @@ def _enrichment_allele(a: Annotation) -> str | None:
     The annotation's ``alt``; when it has none (a GWAS row with no reported
     risk allele), the user's single carried non-reference allele. None when
     the locus or its REF is unknown, when there is no such allele or more
-    than one, or when the allele is the reference.
+    than one, or when the allele is the reference, unless the annotation
+    says the build's reference carries the variant allele
+    (``reference_carries_alt``, F5 c.1601G>A on GRCh37): that allele is
+    the variant, and its GRCh38 key is the real variant there.
     """
     if a.locus is None or a.locus_ref is None:
         return None
@@ -508,7 +511,7 @@ def _enrichment_allele(a: Annotation) -> str | None:
         if len(carried) != 1:
             return None
         allele = carried.pop()
-    if allele == a.locus_ref:
+    if allele == a.locus_ref and not a.reference_carries_alt:
         return None
     return allele
 
@@ -544,7 +547,8 @@ def _enrichment_keys(
     GWAS row with no reported risk allele) uses the user's single carried
     non-reference allele, as the rsID-less position fallback always did,
     and gets no key when there is none or more than one. An allele equal
-    to the reference has no variant to look up. GRCh38 keys are used as
+    to the reference has no variant to look up, except where the build's
+    reference carries the variant allele (``reference_carries_alt``). GRCh38 keys are used as
     they are; GRCh37 keys go through the identity table; any other build
     gets no keys.
     """

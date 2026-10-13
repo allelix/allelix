@@ -73,10 +73,11 @@ def _rows(build: str, filler: int = _FILLER) -> list[tuple[str, str, int, str]]:
     ]
     filler_rows = [("i" + str(n), "1", _FILLER_START + 10 * n, "AA") for n in range(filler)]
     findings = [
-        # rs-style IDs far above any dbSNP number: matched by position, as
-        # an unknown chip rsID is.
-        ("rs9900000001", _TRUE[0], _TRUE[1], _TRUE[2] + _TRUE[3]),
-        ("rs9900000002", _HARM[0], _HARM[1], _HARM[2] + _HARM[3]),
+        # The ClinVar rows' own rsIDs (see ``_clinvar_cache``). Each cache
+        # holds its rsID on its own build only, and a call with no REF is
+        # matched by position only when ClinVar holds its rsID.
+        (f"rs{9_100_000_000 + _TRUE[1]}", _TRUE[0], _TRUE[1], _TRUE[2] + _TRUE[3]),
+        (f"rs{9_100_000_000 + _HARM[1]}", _HARM[0], _HARM[1], _HARM[2] + _HARM[3]),
     ]
     rows = seeds + filler_rows + findings
     rows.sort(key=lambda r: (_CHROM_ORDER[r[1]], r[2]))

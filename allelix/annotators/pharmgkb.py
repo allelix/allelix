@@ -10,7 +10,13 @@ import sqlite3
 import urllib.error
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref, variant_locus
+from allelix.annotators.base import (
+    Annotator,
+    LicenseDescriptor,
+    carried_alt,
+    is_clinvar_homref,
+    variant_locus,
+)
 from allelix.databases._versions import PHARMGKB_INTERPRETER_VERSION
 from allelix.databases.cpic_loader import (
     fetch_cpic_allele_functions,
@@ -30,7 +36,7 @@ from allelix.databases.pharmgkb_loader import (
     schema_is_current,
 )
 from allelix.models import Annotation
-from allelix.utils.allele import derive_alt_from_diploid, strand_aware_genotype_match
+from allelix.utils.allele import strand_aware_genotype_match
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -86,6 +92,7 @@ class PharmGKBAnnotator(Annotator):
         data_dir: Path,
         clinvar_ref_provider: Callable[[str, str], str | None] | None = None,
         palindromic_provider: Callable[[set[str]], set[str]] | None = None,
+        normal_allele_provider: Callable[[str, str], str | None] | None = None,
     ) -> None:
         """Resolve the ClinPGx SQLite cache path within `data_dir`.
 
@@ -100,12 +107,19 @@ class PharmGKBAnnotator(Annotator):
         matching is skipped there. In production it's wired to
         `RsidIdentityAnnotator.palindromic_rsids`. None keeps the per-genotype
         palindrome guard only.
+
+        `normal_allele_provider` gives the normal allele where the build's
+        reference carries a ClinVar variant allele, for deriving `alt`
+        (`base.carried_alt`). In production it's wired to
+        `ClinVarAnnotator.normal_allele_for`. None derives `alt` against
+        `Variant.ref` everywhere.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / PHARMGKB_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._clinvar_ref_provider = clinvar_ref_provider
         self._palindromic_provider = palindromic_provider
+        self._normal_allele_provider = normal_allele_provider
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -319,6 +333,9 @@ class PharmGKBAnnotator(Annotator):
             references = (
                 [f"pharmgkb:annotation/{pgkb_annotation_id}"] if pgkb_annotation_id else []
             )
+            alt, reference_carries_alt = carried_alt(
+                variant, variant.allele1, variant.allele2, self._normal_allele_provider
+            )
             annotations.append(
                 Annotation(
                     source=self.name,
@@ -332,8 +349,9 @@ class PharmGKBAnnotator(Annotator):
                     references=references,
                     condition=phenotype or "",
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
+                    alt=alt,
                     locus_ref=variant.ref,
+                    reference_carries_alt=reference_carries_alt,
                     carried_alleles=(variant.allele1, variant.allele2),
                     locus=variant_locus(variant),
                 )
@@ -422,6 +440,9 @@ class PharmGKBAnnotator(Annotator):
                 references = (
                     [f"pharmgkb:annotation/{pgkb_annotation_id}"] if pgkb_annotation_id else []
                 )
+                alt, reference_carries_alt = carried_alt(
+                    variant, variant.allele1, variant.allele2, self._normal_allele_provider
+                )
                 yield Annotation(
                     source=self.name,
                     rsid=variant.rsid,
@@ -434,8 +455,9 @@ class PharmGKBAnnotator(Annotator):
                     references=references,
                     condition=phenotype or "",
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(variant.ref, variant.allele1, variant.allele2),
+                    alt=alt,
                     locus_ref=variant.ref,
+                    reference_carries_alt=reference_carries_alt,
                     carried_alleles=(variant.allele1, variant.allele2),
                     locus=variant_locus(variant),
                 )

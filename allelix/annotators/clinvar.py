@@ -36,6 +36,7 @@ from allelix.utils.allele import (
     resolve_rsid_at_locus,
     strand_aware_carrier_match,
 )
+from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -248,6 +249,10 @@ class ClinVarAnnotator(Annotator):
         # consults this as its primary non-finding filter. Built lazily
         # on first lookup per build.
         self._ref_lookups: dict[str, dict[str, str]] = {}
+        # Per build, the rsIDs where ``reference_for`` gives the normal
+        # allele from the other build (the build's reference carries a
+        # ClinVar variant allele), with that allele.
+        self._normal_alleles: dict[str, dict[str, str]] = {}
 
     def _connection(self, build: str) -> sqlite3.Connection | None:
         """Return a lazy connection to the per-build cache, or None if missing.
@@ -383,6 +388,15 @@ class ClinVarAnnotator(Annotator):
             return False
         return True
 
+    def _cache_is_current(self, build: str) -> bool:
+        """True when ``build``'s cache carries the current interpreter-version tag."""
+        if build not in self._db_paths:
+            return False
+        info = get_database_info(self._db_paths[build], clinvar_record_name(build))
+        return info is not None and info.get("local_version_tag") == (
+            f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        )
+
     def version(self) -> str | None:
         """Composite version string across managed builds.
 
@@ -413,6 +427,7 @@ class ClinVarAnnotator(Annotator):
             conn.close()
         self._conns.clear()
         self._ref_lookups.clear()
+        self._normal_alleles.clear()
 
     def reference_for(self, rsid: str, build: str) -> str | None:
         """Return ClinVar's single-base REF allele for `rsid` in `build`, or None.
@@ -425,6 +440,15 @@ class ClinVarAnnotator(Annotator):
         call so subsequent lookups are O(1). Multi-base REFs (indels) are
         skipped — array-based parsers can't call indels, so a multi-base
         REF can't validly suppress a single-base genotype.
+
+        Where this build's reference carries a ClinVar variant allele (a
+        REF == ALT row, F5 c.1601G>A on GRCh37), a homozygous-reference
+        call is the variant genotype. There the normal allele is returned
+        instead: the REF of the same ClinVar variant on the other build,
+        when that row is a single-base REF != ALT (C for F5), so the same
+        call is a non-finding on both builds. Without such a row (only one
+        build's cache installed, or REF == ALT on both builds) it returns
+        None and nothing is suppressed.
 
         Returns None when ClinVar has no data for the rsid in this build
         (or has only indel REFs). Callers fall through to secondary tiers.
@@ -449,16 +473,71 @@ class ClinVarAnnotator(Annotator):
         # so peak memory is one row + the dict, not the entire result set
         # twice.
         cursor = conn.execute(
-            "SELECT DISTINCT rsid, ref FROM clinvar_variants WHERE length(ref) = 1"
+            "SELECT DISTINCT rsid, ref, alt, allele_id FROM clinvar_variants WHERE length(ref) = 1"
         )
         out: dict[str, str] = {}
-        for rsid, ref in cursor:
+        # rsID -> VariationIDs whose row is REF == ALT: this build's
+        # reference carries their variant allele.
+        reference_carried: dict[str, set[int]] = {}
+        for rsid, ref, alt, variation_id in cursor:
+            if ref == alt:
+                reference_carried.setdefault(rsid, set()).add(variation_id)
             # If a rsid has multiple single-base REFs (shouldn't happen at
             # one position but defending against future data shapes), keep
             # the first.
             if rsid not in out:
                 out[rsid] = ref
+        # Only a current cache gives REF == ALT its one meaning; an older
+        # one still holds normal-allele records written REF == ALT, and
+        # keeps the locus REF (the 2.4.1 behaviour) until `db update`.
+        normal: dict[str, str] = {}
+        if reference_carried and self._cache_is_current(build):
+            normal = self._normal_alleles_on_other_build(build, reference_carried)
+            for rsid in reference_carried:
+                if rsid in normal:
+                    out[rsid] = normal[rsid]
+                else:
+                    out.pop(rsid, None)
+        self._normal_alleles[build] = normal
         return out
+
+    def normal_allele_for(self, rsid: str, build: str) -> str | None:
+        """The normal allele at `rsid` where `build`'s reference carries a variant, or None.
+
+        Set only where ``reference_for`` returns the other build's REF of
+        the same ClinVar variant (C at F5 rs6025 on GRCh37). ClinPGx and
+        SNPedia derive their ``alt`` against it there; everywhere else
+        they keep ``Variant.ref``, even where ClinVar's REF differs from it.
+        """
+        self.reference_for(rsid, build)
+        return self._normal_alleles.get(build, {}).get(rsid)
+
+    def _normal_alleles_on_other_build(
+        self, build: str, reference_carried: dict[str, set[int]]
+    ) -> dict[str, str]:
+        """The normal allele at each reference-carried rsID, from the other build.
+
+        For each rsID, the single-base REF of the same VariationIDs on the
+        other build where that row's REF differs from its ALT. An rsID with
+        no such row, or more than one candidate REF, is left out.
+        """
+        other = BUILD_GRCH38 if build == BUILD_GRCH37 else BUILD_GRCH37
+        conn = self._connection(other)
+        if conn is None or not self._cache_is_current(other):
+            return {}
+        rsids = sorted(reference_carried)
+        candidates: dict[str, set[str]] = {}
+        for start in range(0, len(rsids), _BATCH_CHUNK):
+            chunk = rsids[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, ref, alt, variation_id in conn.execute(
+                f"SELECT DISTINCT rsid, ref, alt, allele_id FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders})",
+                chunk,
+            ):
+                if variation_id in reference_carried[rsid] and len(ref) == 1 and ref != alt:
+                    candidates.setdefault(rsid, set()).add(ref)
+        return {rsid: refs.pop() for rsid, refs in candidates.items() if len(refs) == 1}
 
     def fetch_remote_signal(self) -> str | None:
         r"""Freshness signal derived from the per-SCV submission_summary md5.
@@ -691,9 +770,13 @@ class ClinVarAnnotator(Annotator):
 
         A row annotates only when all of these hold:
 
-        - REF != ALT. ClinVar's reference-allele records (HGVS ``=``,
-          e.g. ``c.1601=``) carry REF == ALT; they describe the reference
-          allele, never a variant the user carries.
+        - REF == ALT means this build's reference carries the variant
+          allele (F5 c.1601G>A is T>T on GRCh37, whose reference base is
+          the Leiden allele). The loader keeps no other REF == ALT rows:
+          it drops normal-allele records (HGVS ``c.N=``) written REF ==
+          ALT and REF == ALT rows that are not SNVs (cache ``iv:5``). Such
+          a row annotates a user who carries its ALT, counting copies of
+          it, like any other row.
         - The row's REF agrees with ``variant.ref`` when the input supplies
           one (directly, or as the complement for a reverse-stranded
           input). Together with the locus this identifies the variant by
@@ -705,26 +788,26 @@ class ClinVarAnnotator(Annotator):
 
         Two guards decide whether the locus may be matched at all:
 
-        - A call with no reference allele and no rsID (array vendor probes
-          such as 23andMe ``i5000123``) is never locus-matched: nothing
-          confirms that the row at its position describes the same
-          variant. The pipeline never infers a REF for such a call from
-          position (the identity table fills REF only for rsID-carrying
-          calls), so a no-rsID call with a REF is a VCF record whose REF
-          came from the file, and the REF check applies to it.
+        - A call with no reference allele is locus-matched only when
+          ClinVar holds its rsID on this build (``rsid_loci``, every
+          position ClinVar records for that rsID). That excludes array
+          vendor probes without an rsID (23andMe ``i5000123``) and array
+          calls whose rsID neither ClinVar nor the identity table holds (a
+          withdrawn or merged ID): nothing confirms that the row at the
+          position describes the same variant. The pipeline fills REF only
+          from the identity rows of the call's own rsID, so a call with a
+          REF is either one of those or a VCF record whose REF came from
+          the file, and the REF check applies to it.
         - When the input carries an rsID that ClinVar places elsewhere
-          (``rsid_loci``, every position ClinVar records for that rsID on
-          this build) and not at the input's locus, the rows at the locus
-          belong to a different variant and are not reported under the
-          input's rsID. An rsID ClinVar does not hold at all (a retired or
-          merged ID) still matches by locus.
+          and not at the input's locus, the rows at the locus belong to a
+          different variant and are not reported under the input's rsID.
 
         The Annotation's rsID is the input's when it has one, otherwise
         the matching row's. identical per-SCV rows collapse.
         """
         if variant.is_no_call:
             return []
-        if variant.ref is None and not variant.rsid.startswith("rs"):
+        if variant.ref is None and not rsid_loci:
             return []
         if rsid_loci and variant_locus(variant) not in rsid_loci:
             return []
@@ -746,8 +829,6 @@ class ClinVarAnnotator(Annotator):
                 allele_id,
                 row_rsid,
             ) = row
-            if ref == alt:
-                continue
             if variant.ref is not None and variant.ref not in (ref, complement(ref)):
                 continue
             clinvar_is_indel = len(ref) > 1 or len(alt) > 1
@@ -785,6 +866,7 @@ class ClinVarAnnotator(Annotator):
                         variant.allele1, variant.allele2, alt
                     ),
                     locus=variant_locus(variant),
+                    reference_carries_alt=ref == alt,
                 )
             )
         return _collapse_identical_scvs(annotations)

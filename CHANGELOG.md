@@ -2,6 +2,79 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-10-13
+
+After upgrading, run `allelix db update`. This release changes how
+Allelix reads ClinVar: `CLINVAR_INTERPRETER_VERSION` bumps `4 → 5`, so
+existing ClinVar caches are invalidated and the next `db update`
+rebuilds them (about 860 MB to download). Until then `allelix analyze`
+skips ClinVar and says so on the console ("Skipping unready annotators:
+clinvar ... (run `allelix db update` to populate)").
+
+### Fixed
+
+- Array files (for example 23andMe v5 exports) no longer get a false
+  homozygous pathogenic phenylketonuria (PAH) finding. Since 2.4.0,
+  ClinVar matched array calls by position, so the probe ID rs62508729,
+  which dbSNP has withdrawn and which reads TT on these chips, picked up
+  the ClinVar record for rs62507269, a different variant at the same
+  position. Two changes:
+  - array calls whose rsID the rsID identity table does not hold no
+    longer borrow a reference allele from another rsID at the same
+    position;
+  - an array call with no reference allele matches ClinVar by position
+    only when ClinVar holds its rsID on that build.
+
+  VCF records are unchanged: their reference allele comes from the file.
+  Array calls carrying a merged rsID (for example rs10735810, merged into
+  rs2228570) also lose their position match, as before 2.4.0. Their GWAS
+  Catalog and SNPedia rows stay, but no longer show gnomAD, AlphaMissense,
+  CADD or plausibility values. On three public array genomes with the
+  2026-10-10 ClinVar snapshot, each file loses at most two false matches
+  from withdrawn IDs and 200 to 290 ClinVar rows under merged IDs, of
+  which at most three per file are not benign or likely benign.
+
+- Factor V Leiden (rs6025) is no longer reported the wrong way round on
+  GRCh37. The GRCh37 reference base at rs6025 is the Leiden allele, so
+  ClinVar writes the Leiden variant there with the same reference and
+  alternate allele (T and T), and writes its record for the normal allele
+  (`c.1601=`) as T to C. Allelix dropped the first and matched the second:
+  - people who do not carry Factor V Leiden (CC) were shown two ClinVar
+    "Pathogenic" rows;
+  - heterozygous carriers (CT) were shown the same two rows;
+  - homozygous carriers (TT) were shown nothing from ClinVar, ClinPGx or
+    SNPedia from 2.4.0, and before 2.4.0 the ClinVar row but nothing from
+    ClinPGx or SNPedia.
+
+  The same ClinVar data gives the false rows on 2.2.3, 2.3.1, 2.4.0 and
+  2.4.1, and 2.4.0 and 2.4.1 also drop the Leiden row. GRCh38 was right.
+  Now, on both builds, CC gets no ClinVar finding, and CT and TT get the
+  Leiden row (ClinVar "drug response") with their zygosity. ClinPGx and
+  SNPedia treat CC, not TT, as the normal genotype on GRCh37, as on
+  GRCh38, and name T as the allele carried.
+
+  The same applies where the GRCh37 reference carries another ClinVar
+  variant allele (171 sites in the 2026-10-10 snapshot, most of them
+  benign; for example DPYD rs1801265 and CYP3A5 rs776746), and at the 5
+  sites where the GRCh38 reference does. ClinVar records for the normal
+  allele no longer give a "Pathogenic" or "Likely pathogenic" row; their
+  other rows are unchanged.
+
+  This corrects the 2.4.0 release notes, which said such records were never
+  reported. 2.4.0 hid only records written with the same reference and
+  alternate allele, and on GRCh37 the rs6025 normal-allele record is
+  written T to C.
+
+  Known limitation, not new in this release: with VCF input on GRCh37, a
+  person homozygous for a variant the GRCh37 reference carries (Factor V
+  Leiden TT, and the other such loci) still gets no finding there, because
+  the file has no variant record at that position. Array files are not
+  affected. If a gVCF has no reference block at rs6025, the high-value
+  list names rs6025 as not covered. A plain VCF with no record there, a
+  homozygous-reference call, or a gVCF reference block covering it leaves
+  rs6025 off the list, and the report reads as if it were genotyped with
+  no findings.
+
 ## [2.4.1] - 2026-10-12
 
 ### Added
@@ -3326,6 +3399,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.4.2]: https://github.com/allelix/allelix/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/allelix/allelix/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/allelix/allelix/compare/v2.3.1...v2.4.0
 [2.3.1]: https://github.com/allelix/allelix/compare/v2.3.0...v2.3.1

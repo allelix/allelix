@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import urllib.request
 from pathlib import Path
@@ -167,6 +168,8 @@ def verify_file_hash(path: Path, algorithm: str, expected_hex: str) -> None:
 # Both files use `\t` as field separator and `#` as comment-line prefix.
 
 # variant_summary.txt.gz — 43 columns. We only need a handful.
+_VS_TYPE = 1  # "Type": "single nucleotide variant", "Deletion", ...
+_VS_NAME = 2  # "Name": HGVS, e.g. "NM_000130.5(F5):c.1601G>A (p.Arg534Gln)"
 _VS_RS = 9  # "RS# (dbSNP)"     — number only, no `rs` prefix
 _VS_GENE_SYMBOL = 4  # "GeneSymbol"
 _VS_REVIEW_STATUS = 24  # "ReviewStatus" — aggregate
@@ -225,6 +228,33 @@ _CLINVAR_PLACEHOLDER_CLNSIGS: frozenset[str] = frozenset(
         "association not found",
     }
 )
+
+
+# Per-SCV classifications dropped from normal-allele records whose VCF
+# alleles differ on the build (see ``describes_reference_allele``).
+_NORMAL_ALLELE_DROPPED_CLNSIGS: frozenset[str] = frozenset(
+    {
+        "pathogenic",
+        "likely pathogenic",
+        "pathogenic/likely pathogenic",
+        "pathogenic, low penetrance",
+        "likely pathogenic, low penetrance",
+    }
+)
+
+_HGVS_ALLELE = re.compile(r"\b[cgmn]\.([^\s(]+)")
+
+
+def describes_reference_allele(name: str) -> bool:
+    """Return True when a ClinVar record's HGVS name describes the reference sequence.
+
+    ClinVar writes the normal (reference-sequence) allele as ``c.N=``, for
+    example ``NM_000130.5(F5):c.1601=``. Only the nucleotide description
+    counts: a synonymous protein change such as ``c.123A>G (p.Leu41=)``
+    describes a real variant.
+    """
+    match = _HGVS_ALLELE.search(name)
+    return match is not None and match.group(1).endswith("=")
 
 
 def _open_tsv(path: Path) -> Iterator[list[str]]:
@@ -345,7 +375,8 @@ def iter_clinvar_tsv_records(
                 "  ref TEXT, "
                 "  alt TEXT, "
                 "  gene TEXT, "
-                "  review_status TEXT"
+                "  review_status TEXT, "
+                "  normal_allele INTEGER"
                 ");"
             )
             batch: list[tuple[object, ...]] = []
@@ -377,6 +408,16 @@ def iter_clinvar_tsv_records(
                     variation_id = int(cols[_VS_VARIATION_ID].strip())
                 except (ValueError, IndexError):
                     continue
+                normal_allele = describes_reference_allele(cols[_VS_NAME])
+                if ref == alt and (
+                    normal_allele or cols[_VS_TYPE].strip() != "single nucleotide variant"
+                ):
+                    # REF == ALT has one meaning left in the cache: this
+                    # build's reference carries the variant allele (F5
+                    # c.1601G>A on GRCh37). A normal-allele record with
+                    # REF == ALT describes the reference itself, and a
+                    # non-SNV with REF == ALT has no alleles on this build.
+                    continue
                 batch.append(
                     (
                         variation_id,
@@ -387,17 +428,18 @@ def iter_clinvar_tsv_records(
                         alt,
                         cols[_VS_GENE_SYMBOL].strip(),
                         cols[_VS_REVIEW_STATUS].strip(),
+                        int(normal_allele),
                     )
                 )
                 if len(batch) >= INSERT_BATCH_SIZE:
                     tmp_conn.executemany(
-                        "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         batch,
                     )
                     batch.clear()
             if batch:
                 tmp_conn.executemany(
-                    "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
             tmp_conn.commit()
@@ -415,14 +457,20 @@ def iter_clinvar_tsv_records(
                 except (ValueError, IndexError):
                     continue
                 row = cursor.execute(
-                    "SELECT rsid, chromosome, position, ref, alt, gene, review_status "
-                    "FROM vs WHERE variation_id = ?",
+                    "SELECT rsid, chromosome, position, ref, alt, gene, review_status, "
+                    "normal_allele FROM vs WHERE variation_id = ?",
                     (variation_id,),
                 ).fetchone()
                 if row is None:
                     continue
-                rsid, chromosome, position, ref, alt, gene, review_status_agg = row
+                rsid, chromosome, position, ref, alt, gene, review_status_agg, normal = row
                 clinical_significance = cols[_SS_CLIN_SIG].strip()
+                if normal and clinical_significance.lower() in _NORMAL_ALLELE_DROPPED_CLNSIGS:
+                    # A normal-allele record names the reference sequence;
+                    # carrying it is not a pathogenic finding (F5 c.1601=,
+                    # written T>C on GRCh37). Its other classifications
+                    # stay as they are.
+                    continue
                 # ClinVar's submission_summary
                 # carries several placeholder values that mean "no clinical
                 # significance recorded." A placeholder that ISN'T in

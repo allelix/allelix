@@ -127,14 +127,16 @@ class TestCarriedInSourceOrientation:
 _SINGLE = "criteria_provided,_single_submitter"
 
 # (rsid, chrom, pos, ref, alt, clnsig, condition, gene, review, allele_id)
+# Cache rows as the iv:5 loader leaves them. It drops normal-allele (c.N=)
+# records written REF == ALT, so a REF == ALT row here is a variant whose
+# allele the build's reference carries (the F5 c.1601G>A shape on GRCh37).
 _REFERENCE_RECORD_ROWS: tuple[tuple[object, ...], ...] = (
-    # Multi-allelic pathogenic site with a reference-allele record ("=").
+    # Multi-allelic site; the reference carries one of the variant alleles.
     ("rs900170001", "1", 1_700_100, "C", "T", "Pathogenic", "Ref_rec_A", "REFA", _SINGLE, 1),
     ("rs900170001", "1", 1_700_100, "C", "A", "Pathogenic", "Ref_rec_A", "REFA", _SINGLE, 2),
-    ("rs900170001", "1", 1_700_100, "C", "C", "Pathogenic", "Ref_rec_A", "REFA", _SINGLE, 3),
-    # Heterozygous user at a site whose "=" record is pathogenic.
+    ("rs900170001", "1", 1_700_100, "C", "C", "risk factor", "Ref_rec_A3", "REFA", _SINGLE, 3),
     ("rs900170002", "2", 2_700_200, "A", "C", "Pathogenic", "Ref_rec_B", "REFB", _SINGLE, 4),
-    ("rs900170002", "2", 2_700_200, "A", "A", "Pathogenic", "Ref_rec_B2", "REFB", _SINGLE, 5),
+    ("rs900170002", "2", 2_700_200, "A", "A", "risk factor", "Ref_rec_B2", "REFB", _SINGLE, 5),
 )
 
 
@@ -163,26 +165,34 @@ def reference_record_data_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-class TestClinVarReferenceAlleleRecords:
+class TestClinVarReferenceCarriedRows:
     @pytest.mark.parametrize("batch", [False, True])
-    def test_hom_ref_chip_call_is_not_annotated(
+    def test_hom_ref_call_gets_only_the_reference_carried_row(
         self, reference_record_data_dir: Path, cm_stack: contextlib.ExitStack, batch: bool
     ) -> None:
         clinvar = cm_stack.enter_context(ClinVarAnnotator(reference_record_data_dir))
         v = Variant("rs900170001", "1", 1_700_100, "C", "C", build="GRCh38")
         got = list(clinvar.batch_annotate([v])) if batch else clinvar.annotate(v)
-        assert got == []
+        assert [(a.alt, a.condition, a.zygosity) for a in got] == [
+            ("C", "Ref_rec_A3", "Homozygous")
+        ]
+        assert got[0].reference_carries_alt
 
     @pytest.mark.parametrize("batch", [False, True])
-    def test_het_call_annotates_only_the_carried_alt(
+    def test_het_call_annotates_each_carried_allele(
         self, reference_record_data_dir: Path, cm_stack: contextlib.ExitStack, batch: bool
     ) -> None:
         clinvar = cm_stack.enter_context(ClinVarAnnotator(reference_record_data_dir))
         v = Variant("rs900170002", "2", 2_700_200, "A", "C", build="GRCh38")
         got = list(clinvar.batch_annotate([v])) if batch else clinvar.annotate(v)
-        assert [(a.alt, a.condition) for a in got] == [("C", "Ref_rec_B")]
-        assert got[0].locus_ref == "A"
-        assert got[0].carried_alleles == ("A", "C")
+        assert sorted((a.alt, a.condition, a.zygosity) for a in got) == [
+            ("A", "Ref_rec_B2", "Heterozygous"),
+            ("C", "Ref_rec_B", "Heterozygous"),
+        ]
+        by_alt = {a.alt: a for a in got}
+        assert by_alt["C"].locus_ref == "A" and not by_alt["C"].reference_carries_alt
+        assert by_alt["C"].carried_alleles == ("A", "C")
+        assert by_alt["A"].reference_carries_alt
 
 
 # ── Every annotator supplies the invariant context ─────────────
@@ -317,8 +327,9 @@ class TestLocusKeyedClinVarSelection:
     def test_locus_match_annotates_under_the_inputs_rsid(
         self, locus_clinvar: ClinVarAnnotator
     ) -> None:
-        """A merged / alias rsID at the same locus is the same variant."""
-        v = Variant("rs111111111", "3", 3_700_100, "G", "A", build="GRCh38")
+        """A VCF record with a merged / alias rsID and its REF from the file
+        is the same variant as the ClinVar row at its locus."""
+        v = Variant("rs111111111", "3", 3_700_100, "G", "A", build="GRCh38", ref="G")
         got = _both_paths(locus_clinvar, v)
         assert [(a.rsid, a.alt) for a in got] == [("rs111111111", "A")]
 
@@ -337,13 +348,17 @@ class TestLocusKeyedClinVarSelection:
         assert [(a.alt, a.carried_alleles) for a in got] == [("A", ("G", "A"))]
 
     @pytest.mark.parametrize(
-        ("chrom", "pos", "a1", "a2"),
-        [("chrX", 3_700_200, "T", "C"), ("x", 3_700_200, "C", "C"), ("M", 3_700, "G", "G")],
+        ("rsid", "chrom", "pos", "a1", "a2"),
+        [
+            ("rs900170011", "chrX", 3_700_200, "T", "C"),
+            ("rs900170011", "x", 3_700_200, "C", "C"),
+            ("rs900170012", "M", 3_700, "G", "G"),
+        ],
     )
     def test_chromosome_names_are_normalized(
-        self, locus_clinvar: ClinVarAnnotator, chrom: str, pos: int, a1: str, a2: str
+        self, locus_clinvar: ClinVarAnnotator, rsid: str, chrom: str, pos: int, a1: str, a2: str
     ) -> None:
-        v = Variant("rs1", chrom, pos, a1, a2, build="GRCh38")
+        v = Variant(rsid, chrom, pos, a1, a2, build="GRCh38")
         assert len(_both_paths(locus_clinvar, v)) == 1
 
 
@@ -397,12 +412,14 @@ class TestArrayProbeAndForeignLocusGuards:
         v = Variant("rs900170013", "3", 3_700_500, "C", "T", build="GRCh38")
         assert [(a.rsid, a.alt) for a in _both_paths(locus_clinvar, v)] == [("rs900170013", "T")]
 
-    def test_retired_rsid_still_recovers_by_locus(self, locus_clinvar: ClinVarAnnotator) -> None:
-        """An rsID ClinVar does not hold (merged / retired, like rs10735810 ->
-        rs2228570) still matches the ClinVar variant at its locus."""
+    def test_array_call_with_an_rsid_clinvar_does_not_hold_is_not_locus_matched(
+        self, locus_clinvar: ClinVarAnnotator
+    ) -> None:
+        """An array call (no REF) whose rsID ClinVar does not hold (withdrawn
+        or merged, like rs10735810 -> rs2228570) does not match the ClinVar
+        variant at its locus: nothing confirms it is the same variant."""
         v = Variant("rs222222222", "3", 3_700_100, "G", "A", build="GRCh38")
-        got = _both_paths(locus_clinvar, v)
-        assert [(a.rsid, a.alt, a.condition) for a in got] == [("rs222222222", "A", "Locus_A")]
+        assert _both_paths(locus_clinvar, v) == []
 
 
 _PROBE_CHIP = """\
@@ -490,3 +507,142 @@ def test_pipeline_vendor_probe_and_foreign_locus(
     got = sorted((a.rsid, a.alt, a.zygosity) for a in result.annotations)
     assert got == [("rs900170020", "C", "Homozygous")]
     assert not any(a.rsid.startswith("i") for a in result.annotations)
+
+
+# ── Array calls whose rsID neither ClinVar nor the identity table holds ────
+
+# The PAH case: probe rs62508729 (withdrawn in dbSNP) reads TT at the GRCh37
+# position of rs62507269 C>T, a pathogenic phenylketonuria variant. Synthetic
+# rows only; the rsIDs and coordinates are public identifiers.
+_PAH_ROW = (
+    "rs62507269",
+    "12",
+    103_246_729,
+    "C",
+    "T",
+    "Pathogenic",
+    "Phenylketonuria",
+    "PAH",
+    _SINGLE,
+    30,
+)
+_PAH_IDENTITY = ("rs62507269", "12", 103_246_729, "C", "T", 102_852_951, "C", "T", 0)
+# An rsID the identity table places elsewhere on chromosome 12; ClinVar does
+# not hold it.
+_ELSEWHERE_IDENTITY = ("rs900000777", "12", 103_300_000, "G", "A", 102_906_222, "G", "A", 0)
+
+
+def _pah_data(tmp_path: Path) -> Path:
+    from allelix.databases.rsid_identity_loader import (
+        RSID_IDENTITY_DB_FILENAME,
+        write_identity_db,
+    )
+
+    data = tmp_path / "data"
+    data.mkdir()
+    with contextlib.closing(sqlite3.connect(data / clinvar_db_filename("GRCh37"))) as conn:
+        conn.executescript(CLINVAR_SCHEMA)
+        conn.execute(
+            "INSERT INTO clinvar_variants (rsid, chromosome, position, ref, alt, "
+            "clinical_significance, condition, gene, review_status, allele_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            _PAH_ROW,
+        )
+        conn.execute(
+            "INSERT INTO database_versions (name, source_url, version, downloaded_at, "
+            "record_count, remote_signal, local_version_tag) "
+            "VALUES (?, 'test://pah', '1', '2026-10-12', 1, NULL, ?)",
+            (clinvar_record_name("GRCh37"), f"iv:{CLINVAR_INTERPRETER_VERSION}"),
+        )
+        conn.commit()
+    write_identity_db(
+        [_PAH_IDENTITY, _ELSEWHERE_IDENTITY],
+        data / RSID_IDENTITY_DB_FILENAME,
+        version="dbSNP test",
+        source_url="test://pah",
+        downloaded_at="2026-10-12T00:00:00Z",
+    )
+    return data
+
+
+class TestUnheldRsidAtAClinVarLocus:
+    @pytest.mark.parametrize("with_identity", [False, True])
+    @pytest.mark.parametrize(
+        ("rsid", "expected"),
+        [("rs62508729", []), ("rs62507269", [("rs62507269", "T", "Homozygous")])],
+    )
+    def test_pipeline_array_call(
+        self,
+        tmp_path: Path,
+        cm_stack: contextlib.ExitStack,
+        with_identity: bool,
+        rsid: str,
+        expected: list[tuple[str, str, str]],
+    ) -> None:
+        """End to end through run_analysis: a TT array call under the
+        withdrawn probe ID gets no ClinVar annotation, with or without the
+        identity table (which holds only rs62507269 at that position). The
+        same call under rs62507269 is annotated."""
+        from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+
+        data = _pah_data(tmp_path)
+        identity = cm_stack.enter_context(RsidIdentityAnnotator(data)) if with_identity else None
+        chip = tmp_path / "pah_chip.txt"
+        chip.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            "# Sample ID\tPROBE000002\n"
+            "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            f"{rsid}\t12\t103246729\tT\tT\n"
+        )
+        result = run_analysis(
+            chip,
+            MyHappyGenesParser(),
+            [cm_stack.enter_context(ClinVarAnnotator(data, builds=("GRCh37",)))],
+            build_override="GRCh37",
+            identity=identity,
+        )
+        got = sorted((a.rsid, a.alt, a.zygosity) for a in result.annotations)
+        assert got == expected
+
+    def test_vcf_record_with_ref_from_the_file_still_matches(
+        self, tmp_path: Path, cm_stack: contextlib.ExitStack
+    ) -> None:
+        """A VCF record at the locus with REF C ALT T is matched by the REF
+        check, whatever its ID."""
+        data = _pah_data(tmp_path)
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(data, builds=("GRCh37",)))
+        v = Variant("rs62508729", "12", 103_246_729, "C", "T", build="GRCh37", ref="C")
+        assert [(a.rsid, a.alt, a.condition) for a in _both_paths(clinvar, v)] == [
+            ("rs62508729", "T", "Phenylketonuria")
+        ]
+
+    def test_identity_ref_comes_only_from_the_calls_own_rsid(
+        self, tmp_path: Path, cm_stack: contextlib.ExitStack
+    ) -> None:
+        from allelix.annotators._resolution import resolve_batch
+        from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+
+        data = _pah_data(tmp_path)
+        identity = cm_stack.enter_context(RsidIdentityAnnotator(data))
+        unheld = Variant("rs62508729", "12", 103_246_729, "T", "T", build="GRCh37")
+        held = Variant("rs62507269", "12", 103_246_729, "T", "T", build="GRCh37")
+        resolve_batch([unheld, held], clinvar=None, gnomad=None, identity=identity)
+        assert unheld.ref is None
+        assert held.ref == "C"
+
+    def test_rsid_the_identity_table_places_elsewhere(
+        self, tmp_path: Path, cm_stack: contextlib.ExitStack
+    ) -> None:
+        """The REF and the locus match both need the call's own rsID placed at
+        the call's locus. An rsID the identity table holds at another
+        position, and ClinVar does not hold, gets neither."""
+        from allelix.annotators._resolution import resolve_batch
+        from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+
+        data = _pah_data(tmp_path)
+        identity = cm_stack.enter_context(RsidIdentityAnnotator(data))
+        clinvar = cm_stack.enter_context(ClinVarAnnotator(data, builds=("GRCh37",)))
+        v = Variant("rs900000777", "12", 103_246_729, "T", "T", build="GRCh37")
+        resolve_batch([v], clinvar=clinvar, gnomad=None, identity=identity)
+        assert v.ref is None
+        assert _both_paths(clinvar, v) == []

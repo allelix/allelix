@@ -167,3 +167,97 @@ def test_no_enriched_row(tmp_path: Path, data_dir: Path) -> None:
     report = _report(tmp_path, "GRCh38", [_ann()])
     assert _run(report, data_dir, _input(tmp_path)) == 1
     assert _run(report, data_dir, _input(tmp_path), "--allow-empty") == 0
+
+
+# ── Sites where the build's reference carries a ClinVar variant allele ──
+
+
+@pytest.fixture
+def carried_dir(data_dir: Path) -> Path:
+    """rs5 at GRCh37 1:300, reference T, is the variant allele (ClinVar T>T on
+    GRCh37, as F5 rs6025); on GRCh38 1:310 it is C>T. A second GRCh38 allele,
+    C>A, has its own values."""
+    from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
+
+    def add(name: str, sql: str, rows: list[tuple]) -> None:
+        with contextlib.closing(sqlite3.connect(data_dir / name)) as conn:
+            conn.executemany(sql, rows)
+            conn.commit()
+
+    add(
+        "rsid_identity.sqlite",
+        "INSERT INTO rsid_identity VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            ("rs5", "1", 300, "T", "T", 310, "C", "T", 0),
+            ("rs5", "1", 300, "T", "A", 310, "C", "A", 0),
+        ],
+    )
+    add(
+        "gnomad.sqlite",
+        "INSERT INTO gnomad_frequencies (chrom, pos, ref, alt, rsid, af) VALUES (?,?,?,?,?,?)",
+        [("1", 310, "C", "T", "rs5", 0.02), ("1", 310, "C", "A", "rs5", 0.001)],
+    )
+    add("cadd.sqlite", "INSERT INTO cadd_scores VALUES (?,?,?,?,?)", [("1", 310, "C", "T", 28.1)])
+    add(
+        "clinvar.GRCh37.sqlite",
+        "INSERT INTO clinvar_variants (rsid, chromosome, position, ref, alt, "
+        "clinical_significance, condition, gene, review_status, allele_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [("rs5", "1", 300, "T", "T", "drug response", "x", "G5", "", 1)],
+    )
+    add(
+        "clinvar.GRCh37.sqlite",
+        "INSERT INTO database_versions (name, source_url, version, downloaded_at, "
+        "record_count, remote_signal, local_version_tag) VALUES (?,?,?,?,?,?,?)",
+        [
+            (
+                "clinvar.GRCh37",
+                "test://",
+                "1",
+                "2026-10-13",
+                1,
+                None,
+                f"iv:{CLINVAR_INTERPRETER_VERSION}",
+            )
+        ],
+    )
+    return data_dir
+
+
+def _carried_ann(**values) -> dict:
+    return {"rsid": "rs5", "source": "snpedia", "alt": "T", "genotype_match": "CT", **values}
+
+
+def test_reference_carried_allele_is_checked_like_any_allele(
+    tmp_path: Path, carried_dir: Path
+) -> None:
+    report = _report(tmp_path, "GRCh37", [_carried_ann(allele_frequency=0.02, cadd_phred=28.1)])
+    assert _run(report, carried_dir, _input(tmp_path)) == 0
+
+
+def test_reference_carried_row_with_another_alleles_value_fails(
+    tmp_path: Path, carried_dir: Path, capsys
+) -> None:
+    report = _report(tmp_path, "GRCh37", [_carried_ann(allele_frequency=0.001)])
+    assert _run(report, carried_dir, _input(tmp_path)) == 1
+    assert "1 non-direct" in capsys.readouterr().out
+
+
+def test_other_reference_allele_with_values_still_fails(
+    tmp_path: Path, carried_dir: Path, capsys
+) -> None:
+    """rs1's GRCh37 reference G is not a ClinVar variant allele."""
+    report = _report(tmp_path, "GRCh37", [_ann(alt="G", allele_frequency=0.25)])
+    assert _run(report, carried_dir, _input(tmp_path)) == 1
+    assert "enriched although the allele is the reference" in capsys.readouterr().out
+
+
+def test_old_clinvar_cache_does_not_mark_reference_carried_sites(
+    tmp_path: Path, carried_dir: Path, capsys
+) -> None:
+    with contextlib.closing(sqlite3.connect(carried_dir / "clinvar.GRCh37.sqlite")) as conn:
+        conn.execute("UPDATE database_versions SET local_version_tag = 'iv:4'")
+        conn.commit()
+    report = _report(tmp_path, "GRCh37", [_carried_ann(allele_frequency=0.02, cadd_phred=28.1)])
+    assert _run(report, carried_dir, _input(tmp_path)) == 1
+    assert "enriched although the allele is the reference" in capsys.readouterr().out

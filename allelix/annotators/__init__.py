@@ -54,9 +54,14 @@ def get_annotators(
         data_dir,
         clinvar_ref_provider=clinvar.reference_for,
         palindromic_provider=rsid_identity.palindromic_rsids,
+        normal_allele_provider=clinvar.normal_allele_for,
     )
     gwas = GWASCatalogAnnotator(data_dir, filter_traits=gwas_filter_traits)
-    snpedia = SNPediaAnnotator(data_dir, clinvar_ref_provider=clinvar.reference_for)
+    snpedia = SNPediaAnnotator(
+        data_dir,
+        clinvar_ref_provider=clinvar.reference_for,
+        normal_allele_provider=clinvar.normal_allele_for,
+    )
     gnomad = GnomadAnnotator(data_dir)
     alphamissense = AlphaMissenseAnnotator(data_dir)
     cadd = CaddAnnotator(data_dir, full_mode=cadd_full)

@@ -197,8 +197,10 @@ class TestTsvSetupWiring:
         bumped iv:3 → iv:4 because the per-SCV TSV loader was
         landing placeholder CLNSIG values ("-", "not specified",
         etc.) in the cache; without the bump, existing iv:3 caches
-        stayed poisoned across the fix. Every cache-content change
-        requires an interpreter-version bump.
+        stayed poisoned across the fix. 2.4.2 bumped iv:4 -> iv:5: the
+        loader classifies records by their HGVS name, so a REF == ALT row
+        means the build's reference carries the variant allele. Every
+        cache-content change requires an interpreter-version bump.
 
         Pin the current value here so a future content-altering
         loader change is forced to revisit this assertion (and the
@@ -206,9 +208,9 @@ class TestTsvSetupWiring:
         whatever number is in the constant."""
         from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 
-        assert CLINVAR_INTERPRETER_VERSION == 4
+        assert CLINVAR_INTERPRETER_VERSION == 5
 
-    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3"])
+    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4"])
     def test_stale_cache_is_not_ready(self, tmp_path: Path, stale_iv: str):
         """Any iv-tag older than CLINVAR_INTERPRETER_VERSION must fail
         is_ready() so db update triggers a reingest.

@@ -5,7 +5,8 @@
 Not a clinical source: it never produces Annotations. The pipeline uses it
 for three things, all keyed by locus on the input's own build:
 
-1. ``Variant.ref`` for array data on GRCh37 and GRCh38 (``refs_at_loci``).
+1. ``Variant.ref`` for array data on GRCh37 and GRCh38, from the rows of
+   the call's own rsID at its locus (``alleles_at_loci``).
 2. rsID recovery for rsID-less VCF records on both builds
    (``alleles_at_loci`` feeding ``resolve_rsid_at_locus``).
 3. Translating a GRCh37 ``(chrom, pos, ref, alt)`` to its GRCh38 key so the

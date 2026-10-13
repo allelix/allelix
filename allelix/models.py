@@ -211,6 +211,12 @@ class Annotation:
     #   analysis build, chromosome in Allelix's bare form. Lets enrichment
     #   key every annotation by position rather than by rsID (ADR-0040).
     locus: tuple[str, int] | None = field(default=None, compare=False, repr=False)
+    # ``reference_carries_alt``: ``alt`` is the reference base because this
+    #   build's reference sequence carries the variant allele (F5 c.1601G>A
+    #   on GRCh37): a ClinVar row written REF == ALT, or a ClinPGx / SNPedia
+    #   genotype whose alt is derived against the normal allele from the
+    #   other build. Exempts the annotation from invariant 2 only.
+    reference_carries_alt: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Enforce the allele-identity invariants.
@@ -222,7 +228,9 @@ class Annotation:
            (``ALT_IS_NON_REFERENCE_SOURCES``), ``alt`` is never the
            reference base. GWAS is exempt: its ``alt`` is the study's
            effect (risk) allele, which is often the reference allele.
-           Checked when ``locus_ref`` is known.
+           Checked when ``locus_ref`` is known. An annotation whose alt is
+           the reference base because the build's reference carries the
+           variant allele is exempt (``reference_carries_alt``).
 
         Annotators filter offending source rows before construction; a
         violation here is a programming error, not a data condition.
@@ -237,6 +245,7 @@ class Annotation:
             and self.alt
             and self.locus_ref is not None
             and self.alt == self.locus_ref
+            and not self.reference_carries_alt
         ):
             raise AnnotationInvariantError(
                 f"{self.source} annotation for {self.rsid}: alt {self.alt!r} is the "
@@ -267,7 +276,7 @@ class Annotation:
 # new public-output path, you're re-introducing the bug — add the field
 # here and use ``annotation_to_public_dict`` instead.
 _INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset(
-    {"is_must_include", "locus_ref", "carried_alleles", "locus"}
+    {"is_must_include", "locus_ref", "carried_alleles", "locus", "reference_carries_alt"}
 )
 
 

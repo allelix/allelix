@@ -710,7 +710,12 @@ annotation's alt or, for an alt-less row (a GWAS row with no reported
 risk allele), the single non-reference allele the user carries. GRCh37
 keys are translated through the identity table by locus and alleles
 (at strand-inverted sites the GRCh38 allele is the complement, an
-explicit translation; palindromic sites never translate). A value that
+explicit translation; palindromic sites never translate). An allele
+equal to the build's reference base is checked the same way only where
+that reference carries a ClinVar variant allele (a single-base REF == ALT
+row in a current ClinVar cache, as Factor V Leiden on GRCh37); anywhere
+else an enriched row whose allele is the reference base is a mismatch.
+A value that
 belongs to another allele at the locus is "non-direct"; a value that
 matches nothing is a "mismatch"; an annotation no locus can be found
 for is "unresolved". The loci come from the identity table, ClinVar and

@@ -20,6 +20,7 @@ import pytest
 
 from allelix.databases.manager import (
     _decode_reported_phenotype,
+    describes_reference_allele,
     iter_clinvar_tsv_records,
     load_clinvar_tsv,
 )
@@ -59,12 +60,14 @@ def _vs_row(
     alt: str = "A",
     variation_id: str = "100",
     review_status: str = "criteria provided, single submitter",
+    variant_type: str = "single nucleotide variant",
+    name: str | None = None,
 ) -> str:
     """Build one tab-separated variant_summary row at the right column positions."""
     cols = [""] * 43
     cols[0] = allele_id
-    cols[1] = "single nucleotide variant"
-    cols[2] = f"NM_007294.3({gene}):c.5266dupC"
+    cols[1] = variant_type
+    cols[2] = name if name is not None else f"NM_007294.3({gene}):c.5266dupC"
     cols[3] = "672"
     cols[4] = gene
     cols[5] = "HGNC:1100"
@@ -141,6 +144,119 @@ def _ss_row(
 def _write_tsv(path: Path, header: str, rows: list[str]) -> Path:
     path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
     return path
+
+
+# ---------------- normal-allele and reference-carried records ----------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("NM_000130.5(F5):c.1601=", True),
+        ("NM_000130.5(F5):c.1601= (p.Arg534=)", True),
+        ("NM_000937.5(POLR2A):c.5511_5512= (p.Pro1837_Lys1838=)", True),
+        ("NC_000001.11:g.145927840=", True),
+        ("NM_000130.4(F5):c.1601G>A (p.Arg534Gln)", False),
+        ("NM_181783.4(TMTC3):c.399C>T (p.His133=)", False),
+        ("NM_000682.7(ADRA2B):c.894AGAGGAGGA[1] (p.Glu307_Glu309del)", False),
+        ("CYP2D6*10", False),
+        ("", False),
+    ],
+)
+def test_describes_reference_allele(name: str, expected: bool) -> None:
+    """Only the nucleotide description counts; a synonymous ``p.(...=)`` does not."""
+    assert describes_reference_allele(name) is expected
+
+
+class TestReferenceSequenceRecords:
+    """ClinVar rows whose REF equals ALT, and normal-allele (``c.N=``) records.
+
+    Modelled on F5 rs6025: on GRCh37 the reference base is the Leiden
+    allele, so the real variant (c.1601G>A) is written T>T and the
+    normal-allele record (c.1601=) T>C; on GRCh38 they are C>T and C>C.
+    """
+
+    def _ingest(self, tmp_path: Path, vs_rows: list[str], ss_rows: list[str], build: str):
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, vs_rows)
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, ss_rows)
+        return sorted(
+            (r["allele_id"], r["ref"], r["alt"], r["clinical_significance"])
+            for r in iter_clinvar_tsv_records(vs, ss, build)
+        )
+
+    def test_normal_allele_record_with_ref_equal_alt_is_dropped(self, tmp_path):
+        vs = [_vs_row(name="NM_000130.5(F5):c.1601=", ref="C", alt="C", variation_id="2")]
+        ss = [
+            _ss_row(variation_id="2", significance="Pathogenic", scv="SCV1"),
+            _ss_row(variation_id="2", significance="Benign", scv="SCV2"),
+        ]
+        assert self._ingest(tmp_path, vs, ss, "GRCh38") == []
+
+    def test_normal_allele_record_keeps_only_non_pathogenic_rows(self, tmp_path):
+        vs = [
+            _vs_row(
+                name="NM_000130.5(F5):c.1601=",
+                assembly="GRCh37",
+                ref="T",
+                alt="C",
+                variation_id="2",
+            )
+        ]
+        ss = [
+            _ss_row(variation_id="2", significance=sig, scv=f"SCV{i}")
+            for i, sig in enumerate(
+                [
+                    "Pathogenic",
+                    "Likely pathogenic",
+                    "Benign",
+                    "risk factor",
+                    "Uncertain significance",
+                ]
+            )
+        ]
+        assert self._ingest(tmp_path, vs, ss, "GRCh37") == [
+            (2, "T", "C", "Benign"),
+            (2, "T", "C", "Uncertain significance"),
+            (2, "T", "C", "risk factor"),
+        ]
+
+    def test_reference_carried_snv_is_kept(self, tmp_path):
+        vs = [
+            _vs_row(
+                name="NM_000130.4(F5):c.1601G>A (p.Arg534Gln)",
+                assembly="GRCh37",
+                ref="T",
+                alt="T",
+                variation_id="1",
+            )
+        ]
+        ss = [_ss_row(variation_id="1", significance="drug response")]
+        assert self._ingest(tmp_path, vs, ss, "GRCh37") == [(1, "T", "T", "drug response")]
+
+    def test_ref_equal_alt_non_snv_is_dropped(self, tmp_path):
+        vs = [
+            _vs_row(
+                name="NM_002958.4(RYK):c.61del (p.Gly20_Leu21insTer)",
+                variant_type="Deletion",
+                assembly="GRCh37",
+                ref="G",
+                alt="G",
+                variation_id="3",
+            )
+        ]
+        ss = [_ss_row(variation_id="3", significance="Benign")]
+        assert self._ingest(tmp_path, vs, ss, "GRCh37") == []
+
+    def test_real_variant_with_ref_differing_from_alt_is_unchanged(self, tmp_path):
+        vs = [_vs_row(name="NM_000130.4(F5):c.1601G>A (p.Arg534Gln)", ref="C", alt="T")]
+        ss = [
+            _ss_row(significance="Pathogenic", scv="SCV1"),
+            _ss_row(significance="drug response", scv="SCV2"),
+        ]
+        assert self._ingest(tmp_path, vs, ss, "GRCh38") == [
+            (100, "C", "T", "Pathogenic"),
+            (100, "C", "T", "drug response"),
+        ]
 
 
 # ---------------- _decode_reported_phenotype unit tests ----------------

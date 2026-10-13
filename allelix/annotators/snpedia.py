@@ -18,7 +18,13 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor, is_clinvar_homref, variant_locus
+from allelix.annotators.base import (
+    Annotator,
+    LicenseDescriptor,
+    carried_alt,
+    is_clinvar_homref,
+    variant_locus,
+)
 from allelix.databases.manager import (
     download,
     verify_file_hash,
@@ -29,7 +35,7 @@ from allelix.databases.snpedia_loader import (
     install_prebuilt_cache,
 )
 from allelix.models import Annotation
-from allelix.utils.allele import complement, derive_alt_from_diploid
+from allelix.utils.allele import complement
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -125,6 +131,7 @@ class SNPediaAnnotator(Annotator):
         self,
         data_dir: Path,
         clinvar_ref_provider: Callable[[str, str], str | None] | None = None,
+        normal_allele_provider: Callable[[str, str], str | None] | None = None,
     ) -> None:
         """Initialize with path to the data directory.
 
@@ -132,11 +139,16 @@ class SNPediaAnnotator(Annotator):
         callable used by the ADR-0023 hom-ref check. In production it is
         wired to ``ClinVarAnnotator.reference_for``. ``None`` disables the
         check (tests, standalone use).
+
+        ``normal_allele_provider`` gives the normal allele where the build's
+        reference carries a ClinVar variant allele, for deriving ``alt``
+        (``base.carried_alt``); wired to ``ClinVarAnnotator.normal_allele_for``.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / SNPEDIA_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._clinvar_ref_provider = clinvar_ref_provider
+        self._normal_allele_provider = normal_allele_provider
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -314,6 +326,9 @@ class SNPediaAnnotator(Annotator):
 
             description = f"SNPedia: {summary}"
             forward_allele1, forward_allele2 = forward_genotype
+            alt, reference_carries_alt = carried_alt(
+                variant, forward_allele1, forward_allele2, self._normal_allele_provider
+            )
             genotype_match = f"{forward_allele1}{forward_allele2}"
 
             annotations.append(
@@ -328,12 +343,9 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(
-                        variant.ref,
-                        forward_allele1,
-                        forward_allele2,
-                    ),
+                    alt=alt,
                     locus_ref=variant.ref,
+                    reference_carries_alt=reference_carries_alt,
                     carried_alleles=(forward_allele1, forward_allele2),
                     locus=variant_locus(variant),
                 )
@@ -418,6 +430,9 @@ class SNPediaAnnotator(Annotator):
                 category = _REPUTE_CATEGORY.get(repute_lower, "trait")
                 description = f"SNPedia: {summary}"
                 forward_allele1, forward_allele2 = forward_genotype
+                alt, reference_carries_alt = carried_alt(
+                    variant, forward_allele1, forward_allele2, self._normal_allele_provider
+                )
                 genotype_match = f"{forward_allele1}{forward_allele2}"
                 yield Annotation(
                     source=self.name,
@@ -430,12 +445,9 @@ class SNPediaAnnotator(Annotator):
                     genotype_match=genotype_match,
                     references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
                     gene=gene or "",
-                    alt=derive_alt_from_diploid(
-                        variant.ref,
-                        forward_allele1,
-                        forward_allele2,
-                    ),
+                    alt=alt,
                     locus_ref=variant.ref,
+                    reference_carries_alt=reference_carries_alt,
                     carried_alleles=(forward_allele1, forward_allele2),
                     locus=variant_locus(variant),
                 )

@@ -10,6 +10,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.parsers._helpers import normalize_chromosome
+from allelix.utils.allele import derive_alt_from_diploid
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -93,6 +94,32 @@ def is_clinvar_homref(
         return False
     ref = clinvar_ref_provider(variant.rsid, variant.build)
     return ref is not None and len(ref) == 1 and variant.allele1 == ref and variant.allele2 == ref
+
+
+def carried_alt(
+    variant: Variant,
+    allele1: str,
+    allele2: str,
+    normal_allele_provider: Callable[[str, str], str | None] | None,
+) -> tuple[str, bool]:
+    """The non-normal allele of a matched genotype, for per-genotype sources.
+
+    Returns ``(alt, reference_carries_alt)``. The alt is derived against the
+    normal allele, which is ``variant.ref`` except where the build's
+    reference carries a ClinVar variant allele: there
+    ``normal_allele_provider`` (``ClinVarAnnotator.normal_allele_for``) gives
+    the normal allele from the other build (C at F5 rs6025 on GRCh37, whose
+    reference is the Leiden T). The alt is then the same on both builds,
+    and it can equal ``variant.ref``, which the Annotation is told through
+    ``reference_carries_alt``.
+    """
+    normal = variant.ref
+    if normal is not None and normal_allele_provider is not None and variant.rsid.startswith("rs"):
+        other = normal_allele_provider(variant.rsid, variant.build)
+        if other is not None and len(other) == 1 and other != normal:
+            normal = other
+    alt = derive_alt_from_diploid(normal, allele1, allele2)
+    return alt, bool(alt) and alt == variant.ref
 
 
 class Annotator(ABC):

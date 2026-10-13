@@ -15,6 +15,13 @@ table by locus and alleles, and only when exactly one non-palindromic
 GRCh38 key matches (``allelix/reports/_pipeline.py``,
 ``allelix/annotators/rsid_identity.py``).
 
+An allele equal to the build's reference base has no variant to look up,
+except where the build's reference carries a ClinVar variant allele (a
+single-base REF == ALT row in a current, ``iv:5`` or later, ClinVar cache:
+Factor V Leiden on GRCh37). There the pipeline keys enrichment by that
+allele, and so does this check. Anywhere else such a row with values is
+a mismatch.
+
 The JSON report does not carry the locus, so the loci of an rsID come from
 the identity table, ClinVar and gnomAD, and, for an rsID no cache places,
 from the ID column of the analysed file (``--input``, required).
@@ -169,6 +176,26 @@ class Caches:
             refs |= {r for (r,) in self.rows("gnomad", sql, locus)}
         return refs
 
+    def reference_carried(self, locus: Locus, allele: str) -> bool:
+        """True when the build's reference at ``locus`` carries a ClinVar variant ``allele``.
+
+        The pipeline's rule (ClinVar cache ``iv:5``, 2.4.2): a single-base REF ==
+        ALT row means the reference base is the variant allele. An older
+        cache still holds normal-allele records written REF == ALT, so it
+        never counts.
+        """
+        from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
+
+        sql = "SELECT local_version_tag FROM database_versions WHERE name LIKE 'clinvar%'"
+        tags = {tag for (tag,) in self.rows("clinvar", sql, ())}
+        if tags != {f"iv:{CLINVAR_INTERPRETER_VERSION}"} or len(allele) != 1:
+            return False
+        sql = (
+            "SELECT 1 FROM clinvar_variants "
+            "WHERE chromosome=? AND position=? AND ref=? AND alt=? LIMIT 1"
+        )
+        return next(self.rows("clinvar", sql, (*locus, allele, allele)), None) is not None
+
     def to38(self, key: Key) -> Key | None:
         """The GRCh38 key of ``key``; GRCh37 keys only when exactly one key translates."""
         if self.build == "GRCh38":
@@ -252,7 +279,7 @@ def check_report(
                     if len(nonref) != 1:
                         continue
                     allele = nonref.pop()
-                if allele == ref:
+                if allele == ref and not caches.reference_carried(locus, allele):
                     ref_is_allele = True
                     continue
                 key38 = caches.to38((locus[0], locus[1], ref, allele))

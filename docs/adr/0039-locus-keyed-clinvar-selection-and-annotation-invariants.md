@@ -82,3 +82,70 @@ programming error.
   (`reference_for`, ADR-0023) remains rsID-keyed. It reads a reference base,
   not a finding; per-build positional identity for array data arrives with
   the cross-build rsID identity table.
+
+## Amendment (2.4.2): array calls with an rsID nobody holds
+
+ADR-0040 let an array call whose rsID ClinVar does not hold still match
+ClinVar by locus, and the identity table filled its REF from whatever rsID's
+rows sat at that position. The withdrawn probe ID rs62508729 reads TT at
+the position of rs62507269, a pathogenic PAH variant, so array files that
+carry it (for example 23andMe v5 exports) got a false homozygous
+pathogenic phenylketonuria finding. From 2.4.2:
+
+- The identity table fills `Variant.ref` only from the rows of the call's
+  own rsID. An array call whose rsID the table does not hold gets no REF
+  from another rsID at the same position.
+- A call with no REF is matched by locus only when ClinVar holds its rsID
+  on this build. VCF records keep their REF from the file and are
+  unchanged.
+- Merged rsIDs (for example rs10735810, merged into rs2228570) also lose
+  their position match. They were not matched before 2.4.0 either. A
+  merge-aware rule (dbSNP merge history in the identity table) would
+  restore them; it is not part of this release.
+
+## Amendment (2.4.2): REF == ALT, and records for the normal allele
+
+This ADR's Context treats every REF == ALT row as a reference-allele record
+and names `c.1601=` as the example. That is wrong for Factor V Leiden
+(rs6025) on GRCh37, whose reference base is the Leiden allele. ClinVar
+writes the Leiden variant (c.1601G>A) there as T>T, and the normal-allele
+record (`c.1601=`) as T>C. Dropping REF == ALT rows dropped the real
+variant, and the normal-allele record's Pathogenic submissions matched
+every C carrier. On GRCh38 (reference C) the same records are C>T and C>C,
+and were handled correctly. From 2.4.2 (ClinVar cache `iv:5`):
+
+- The loader reads ClinVar's HGVS name. A record whose nucleotide
+  description ends in `=` describes the normal allele. Its REF == ALT rows
+  are dropped (no earlier release reported them). Where its REF differs
+  from its ALT it keeps every submission except Pathogenic and Likely
+  pathogenic ones (every value of that family, including "low
+  penetrance"): carrying the normal allele is not a pathogenic finding,
+  but some other classifications of a normal allele are real claims. The
+  CASP12 normal allele (rs497116, `c.373=`) is classified a risk factor,
+  and is reported on GRCh38, where ClinVar writes it A>G. On GRCh37 the
+  same record is written G>G and is dropped, so the two builds differ
+  there; a rule for such records on both builds is not part of this
+  change. REF == ALT rows that are not single-nucleotide variants (indels
+  ClinVar cannot place on that build) are dropped too.
+- Every REF == ALT row left in the cache therefore means that this build's
+  reference carries the variant allele. It annotates a user who carries
+  that allele, counting copies of it, like any other row. This is the one
+  exception to invariant 2 (`alt` is never the reference base): the
+  Annotation is marked `reference_carries_alt` and only such rows are.
+- `reference_for` (the non-finding check of ClinPGx and SNPedia) returns,
+  at an rsID with a REF == ALT row, the REF of the same ClinVar variant on
+  the other build when that row is a single-base REF != ALT (C for
+  rs6025). So CC, not TT, is the non-finding genotype on both builds.
+  Without such a row (only one build's cache installed, or REF == ALT on
+  both builds) it returns nothing and nothing is suppressed, as on GRCh37
+  before this release. An `iv:4` cache keeps the locus REF until
+  `db update` rebuilds it.
+- ClinPGx and SNPedia derive their `alt` against the same normal allele,
+  so CT and TT at rs6025 carry `alt` T on both builds. `locus_ref` stays
+  the build's reference base, so enrichment uses the same key as the
+  ClinVar row; where `alt` is that base the Annotation is marked
+  `reference_carries_alt` as well.
+- Known limitation: VCF input on GRCh37 has no variant record where a
+  person is homozygous for the allele the reference carries (Factor V
+  Leiden TT), and homozygous-reference calls are not annotated, so that
+  person still gets no finding. Array input is not affected.

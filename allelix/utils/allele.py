@@ -162,8 +162,9 @@ def resolve_rsid_at_locus(
     """Pick the rsID for an rsID-less call from the ``(ref, alt, rsid)`` rows at its locus.
 
     Shared by every position resolver (ClinVar, gnomAD) so they apply one
-    rule. A row is consistent with the call when it is not a
-    reference-allele record (REF != ALT), its REF equals ``variant_ref``
+    rule. A row is consistent with the call when its REF differs from its
+    ALT (a REF == ALT row names the reference base itself, which no
+    non-reference call explains), its REF equals ``variant_ref``
     when that is known, and the user carries its ALT. The call resolves
     when those rows:
 

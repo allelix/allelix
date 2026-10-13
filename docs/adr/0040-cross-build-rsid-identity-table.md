@@ -89,6 +89,10 @@ the user's variant:
   rsID is never a positive selection key; it is used only to reject a
   contradicting locus.
 
+Amended in 2.4.2 (see ADR-0039, Amendment): the REF comes only from the
+rows of the call's own rsID, and a call with no REF matches by locus only
+when ClinVar holds its rsID.
+
 ## Consequences
 
 - GRCh37 chip reports regain gnomAD, AlphaMissense and CADD values wherever

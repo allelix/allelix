@@ -213,9 +213,12 @@ SITES: tuple[ParitySite, ...] = (
         gnomad=(("A", 0.06),),
     ),
     ParitySite(
-        # ClinVar reference-allele record (HGVS "=", REF == ALT in the VCF
-        # columns) at a multi-allelic pathogenic site; the user is
-        # homozygous reference. Neither path may report a finding.
+        # Site of a ClinVar reference-allele record (HGVS "=") at a
+        # multi-allelic pathogenic site; the user is homozygous reference.
+        # The iv:5 loader drops the record's REF == ALT row, so the cache
+        # holds only the real alt. Neither path may report a finding.
+        # (A REF == ALT row that remains means the build's reference
+        # carries the variant: tests/test_reference_carried_variants.py.)
         case="reference_allele_record_hom_ref",
         rsid="rs900178008",
         chrom="10",
@@ -223,15 +226,13 @@ SITES: tuple[ParitySite, ...] = (
         ref="C",
         genotype=("C", "C"),
         gene="PARH",
-        clinvar=(
-            ClinVarRow("T", "Pathogenic", "Parity_condition_H"),
-            ClinVarRow("C", "Pathogenic", "Parity_condition_H"),
-        ),
+        clinvar=(ClinVarRow("T", "Pathogenic", "Parity_condition_H"),),
         gnomad=(("T", 0.0004),),
     ),
     ParitySite(
-        # Reference-allele record at a site where the user is het for a
-        # real alt: only the real alt is reported.
+        # Site of a reference-allele record where the user is het for a
+        # real alt (the record's REF == ALT row dropped at ingest, as
+        # above): only the real alt is reported.
         case="reference_allele_record_het",
         rsid="rs900178009",
         chrom="10",
@@ -239,10 +240,7 @@ SITES: tuple[ParitySite, ...] = (
         ref="A",
         genotype=("A", "C"),
         gene="PARI",
-        clinvar=(
-            ClinVarRow("C", "Pathogenic", "Parity_condition_I1"),
-            ClinVarRow("A", "Pathogenic", "Parity_condition_I2"),
-        ),
+        clinvar=(ClinVarRow("C", "Pathogenic", "Parity_condition_I1"),),
         gnomad=(("C", 0.4),),
     ),
 )
