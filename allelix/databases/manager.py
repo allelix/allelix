@@ -12,10 +12,12 @@ import os
 import re
 import sqlite3
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 from allelix import __version__
+from allelix.databases.cache_state import connect_readonly, is_wal
 from allelix.databases.schema import CLINVAR_SCHEMA
 
 if TYPE_CHECKING:
@@ -169,6 +171,7 @@ def verify_file_hash(path: Path, algorithm: str, expected_hex: str) -> None:
 
 # variant_summary.txt.gz — 43 columns. We only need a handful.
 _VS_TYPE = 1  # "Type": "single nucleotide variant", "Deletion", ...
+_VS_AGGREGATE = 6  # "ClinicalSignificance": ClinVar's aggregate classification
 _VS_NAME = 2  # "Name": HGVS, e.g. "NM_000130.5(F5):c.1601G>A (p.Arg534Gln)"
 _VS_RS = 9  # "RS# (dbSNP)"     — number only, no `rs` prefix
 _VS_GENE_SYMBOL = 4  # "GeneSymbol"
@@ -187,6 +190,129 @@ _SS_REPORTED_PHENO = 5  # "ReportedPhenotypeInfo" — "MedGenID:Name" tuples
 _SS_REVIEW_STATUS = 6  # "ReviewStatus" — per-SCV
 _SS_SCV = 10  # "SCV"                   — submission accession
 _SS_CONTRIBUTES = 15  # "ContributesToAggregateClassification"
+
+# The header name each column index above must carry. The loader checks
+# both files' header rows against these before reading a record, so an
+# upstream column change fails the update instead of building a cache
+# from shifted columns.
+_VS_REQUIRED_COLUMNS: dict[int, str] = {
+    _VS_TYPE: "Type",
+    _VS_NAME: "Name",
+    _VS_AGGREGATE: "ClinicalSignificance",
+    _VS_GENE_SYMBOL: "GeneSymbol",
+    _VS_RS: "RS# (dbSNP)",
+    _VS_ASSEMBLY: "Assembly",
+    _VS_CHROMOSOME: "Chromosome",
+    _VS_REVIEW_STATUS: "ReviewStatus",
+    _VS_VARIATION_ID: "VariationID",
+    _VS_POSITION_VCF: "PositionVCF",
+    _VS_REF_ALLELE_VCF: "ReferenceAlleleVCF",
+    _VS_ALT_ALLELE_VCF: "AlternateAlleleVCF",
+}
+_SS_REQUIRED_COLUMNS: dict[int, str] = {
+    _SS_VARIATION_ID: "VariationID",
+    _SS_CLIN_SIG: "ClinicalSignificance",
+    _SS_REPORTED_PHENO: "ReportedPhenotypeInfo",
+    _SS_REVIEW_STATUS: "ReviewStatus",
+    _SS_SCV: "SCV",
+    _SS_CONTRIBUTES: "ContributesToAggregateClassification",
+}
+
+# Per-SCV review status ClinVar gives a submission it has flagged (for
+# example as outdated or in error). Such submissions are not loaded.
+_FLAGGED_REVIEW_STATUS = "flagged submission"
+
+# Per-SCV review tiers, strongest first, as ClinVar ranks submissions when
+# it computes an aggregate. A status not listed ranks below all of them.
+_SUBMISSION_TIERS: dict[str, int] = {
+    "practice guideline": 0,
+    "reviewed by expert panel": 1,
+    "criteria provided, single submitter": 2,
+    "no assertion criteria provided": 3,
+}
+_UNRANKED_TIER = 4
+
+_PATHOGENIC_CLNSIGS: frozenset[str] = frozenset(
+    {
+        "pathogenic",
+        "likely pathogenic",
+        "pathogenic/likely pathogenic",
+        "pathogenic, low penetrance",
+        "likely pathogenic, low penetrance",
+    }
+)
+
+# Classifications of disease causation: the terms ClinVar's conflict rule
+# compares. Drug response, risk factor, protective and the like are a
+# different kind of classification.
+_DISEASE_CLNSIGS: frozenset[str] = _PATHOGENIC_CLNSIGS | frozenset(
+    {
+        "uncertain significance",
+        "likely benign",
+        "benign",
+        "benign/likely benign",
+        "vus-high",
+        "vus-mid",
+        "vus-low",
+        "conflicting classifications of pathogenicity",
+        "no classifications from unflagged records",
+    }
+)
+
+# ``outside_aggregate`` values in the cache.
+CONTRIBUTES_TO_AGGREGATE = 0
+OUTSIDE_AGGREGATE_AGREED = 1
+OUTSIDE_AGGREGATE_CONFLICTING = 2
+
+
+def aggregate_germline_term(aggregate: str) -> str:
+    """The germline part of a ClinVar aggregate, lower-cased.
+
+    ClinVar appends other kinds of classification after a semicolon:
+    ``Conflicting classifications of pathogenicity; risk factor`` gives
+    ``conflicting classifications of pathogenicity``.
+    """
+    return aggregate.split(";")[0].strip().lower()
+
+
+_PATHOGENIC_AGGREGATE_PARTS = frozenset(
+    {
+        "pathogenic",
+        "likely pathogenic",
+        "pathogenic, low penetrance",
+        "likely pathogenic, low penetrance",
+    }
+)
+
+
+def is_pathogenic_aggregate(aggregate: str) -> bool:
+    """True when ClinVar's aggregate is Pathogenic or Likely pathogenic (ADR-0050).
+
+    Every ``/``-separated part of the germline term is Pathogenic or Likely
+    pathogenic (low penetrance included): ``Pathogenic/Likely pathogenic;
+    risk factor`` counts, ``Pathogenic/Likely risk allele`` and
+    ``Conflicting classifications of pathogenicity`` do not.
+    """
+    # ClinVar's aggregate uses spaces; the per-submission form uses "_".
+    term = aggregate_germline_term(aggregate).replace("_", " ")
+    return bool(term) and all(
+        part.strip() in _PATHOGENIC_AGGREGATE_PARTS for part in term.split("/")
+    )
+
+
+def is_disease_classification(aggregate: str) -> bool:
+    """True when ClinVar's aggregate classifies disease causation.
+
+    False when the top review tier gave another kind of classification
+    (``drug response``, ``risk factor``, ``not provided``, ...), so the
+    aggregate says nothing about pathogenicity. A combined term such as
+    ``Uncertain significance/Uncertain risk allele`` counts as disease.
+    """
+    term = aggregate_germline_term(aggregate)
+    return any(part.strip() in _DISEASE_CLNSIGS for part in term.split("/")) or (
+        term in _DISEASE_CLNSIGS
+    )
+
 
 # Exact set of ClinicalSignificance values the TSV loader filters at ingest.
 # These are values that ClinVar uses to mark SCVs with no actionable
@@ -268,6 +394,52 @@ def _open_tsv(path: Path) -> Iterator[list[str]]:
             yield line.split("\t")
 
 
+class ClinVarFormatError(RuntimeError):
+    """A ClinVar TSV does not have the columns the loader reads."""
+
+
+def _read_header(path: Path) -> list[str] | None:
+    """Return the column names of a ClinVar TSV, or None when it has no header row.
+
+    The header is the last ``#`` comment line holding a tab before the
+    first record. submission_summary precedes it with ``#`` lines that
+    explain each column and hold no tab.
+    """
+    opener: object = gzip.open if path.suffix == ".gz" else open
+    header: list[str] | None = None
+    with opener(path, "rt", encoding="utf-8") as fh:  # type: ignore[operator]
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            if not line.startswith("#"):
+                break
+            if "\t" in line:
+                header = line.lstrip("#").split("\t")
+    return header
+
+
+def check_tsv_header(path: Path, required: dict[int, str]) -> None:
+    """Raise ``ClinVarFormatError`` unless each required column has its expected name.
+
+    The loader reads columns by position. A renamed, inserted or removed
+    column upstream would otherwise shift every value it reads, skip every
+    record, and leave an empty cache that reports ready.
+    """
+    header = _read_header(path)
+    if header is None:
+        msg = f"{path.name}: no header row; cannot confirm the ClinVar column layout"
+        raise ClinVarFormatError(msg)
+    for index, name in sorted(required.items()):
+        found = header[index].strip() if index < len(header) else None
+        if found != name:
+            msg = (
+                f"{path.name}: column {index + 1} is {found!r}, expected {name!r}; "
+                "the ClinVar file layout has changed"
+            )
+            raise ClinVarFormatError(msg)
+
+
 def _decode_reported_phenotype(field: str) -> str:
     """Strip MedGen ID prefixes from a `ReportedPhenotypeInfo` cell.
 
@@ -302,6 +474,171 @@ def _decode_reported_phenotype(field: str) -> str:
         if name and name != "-":
             parts.append(name)
     return "; ".join(parts)
+
+
+@dataclass(frozen=True)
+class _OutrankedDecision:
+    """ClinVar's conflict rule applied to a variant's outranked submissions.
+
+    ``tier`` is the strongest review tier among the outranked, non-flagged
+    disease classifications; only that tier is judged, as ClinVar judges
+    the aggregate. ``counts`` holds each classification's count within it,
+    ``total`` their sum, and ``agreed`` is True when every one is P/LP.
+    """
+
+    tier: int
+    counts: dict[str, int]
+    total: int
+    agreed: bool
+
+
+class _Submission(NamedTuple):
+    """One submission_summary row the loader keeps (not flagged, not a placeholder)."""
+
+    significance: str
+    review_status: str
+    contributes: bool
+    reported_phenotype: str
+
+    @property
+    def sig(self) -> str:
+        return self.significance.lower()
+
+    @property
+    def tier(self) -> int:
+        return _SUBMISSION_TIERS.get(self.review_status.lower(), _UNRANKED_TIER)
+
+
+def _variation_groups(path: Path) -> Iterator[tuple[int, list[_Submission]]]:
+    """Yield each VariationID's kept submissions, one group at a time.
+
+    submission_summary is sorted by VariationID, which lets the split and
+    ADR-0045's tier rule be worked out per variant in one pass. A file that
+    is not sorted raises ``ClinVarFormatError`` (the old cache is kept)
+    rather than giving a variant two partial groups.
+    """
+    current: int | None = None
+    group: list[_Submission] = []
+    for cols in _open_tsv(path):
+        if len(cols) <= _SS_CONTRIBUTES:
+            continue
+        try:
+            variation_id = int(cols[_SS_VARIATION_ID].strip())
+        except ValueError:
+            continue
+        if variation_id != current:
+            if current is not None and variation_id < current:
+                msg = (
+                    f"{path.name}: VariationID {variation_id} follows {current}; "
+                    "the file is no longer sorted by VariationID"
+                )
+                raise ClinVarFormatError(msg)
+            if current is not None and group:
+                yield current, group
+            current, group = variation_id, []
+        review = cols[_SS_REVIEW_STATUS].strip()
+        significance = cols[_SS_CLIN_SIG].strip()
+        # ClinVar has flagged the submission; it may still count toward the
+        # aggregate when every submission on the variant is flagged ("no
+        # classifications from unflagged records"). ClinVar's placeholder
+        # values ("-", "not specified", ...) record no classification; a
+        # case-insensitive match keeps "Not Specified" out too.
+        if review.lower() == _FLAGGED_REVIEW_STATUS:
+            continue
+        if significance.lower() in _CLINVAR_PLACEHOLDER_CLNSIGS:
+            continue
+        group.append(
+            _Submission(
+                significance,
+                review,
+                cols[_SS_CONTRIBUTES].strip().lower() == "yes",
+                cols[_SS_REPORTED_PHENO],
+            )
+        )
+    if current is not None and group:
+        yield current, group
+
+
+def _decide_outranked(submissions: list[_Submission]) -> _OutrankedDecision | None:
+    """ClinVar's tiered conflict rule over a variant's outranked submissions (ADR-0045).
+
+    Only disease classifications count. Returns None when the strongest
+    tier among them holds no P/LP submission.
+    """
+    disease = [s for s in submissions if not s.contributes and s.sig in _DISEASE_CLNSIGS]
+    if not disease:
+        return None
+    top = min(s.tier for s in disease)
+    counts: dict[str, int] = {}
+    for s in disease:
+        if s.tier == top:
+            counts[s.sig] = counts.get(s.sig, 0) + 1
+    pathogenic = sum(n for sig, n in counts.items() if sig in _PATHOGENIC_CLNSIGS)
+    if pathogenic == 0:
+        return None
+    total = sum(counts.values())
+    return _OutrankedDecision(top, counts, total, pathogenic == total)
+
+
+def _group_records(
+    variation_id: int,
+    group: list[_Submission],
+    variant: tuple,
+    *,
+    outranked: _OutrankedDecision | None,
+    aggregate_only: bool,
+) -> Iterator[dict[str, object]]:
+    """The cache records for one variant's kept submissions.
+
+    Each carries ClinVar's aggregate and the submitter split: how many of
+    the contributing submissions gave its classification, of how many. An
+    outranked submission (ADR-0045) is kept only when ``outranked`` holds a
+    decision for the variant, and only from the decided tier; its split
+    counts that tier.
+    """
+    rsid, chromosome, position, ref, alt, gene, review_status_agg, normal, aggregate = variant
+    counts: dict[str, int] = {}
+    for s in group:
+        if s.contributes:
+            counts[s.sig] = counts.get(s.sig, 0) + 1
+    contributing = sum(counts.values())
+    for s in group:
+        if normal and s.sig in _NORMAL_ALLELE_DROPPED_CLNSIGS:
+            # A normal-allele record names the reference sequence; carrying
+            # it is not a pathogenic finding (F5 c.1601=, written T>C on
+            # GRCh37). Its other classifications stay as they are.
+            continue
+        same: int | None
+        total: int | None
+        if s.contributes:
+            same, total, outside = counts[s.sig], contributing, CONTRIBUTES_TO_AGGREGATE
+        elif outranked is not None and s.sig in _PATHOGENIC_CLNSIGS and s.tier == outranked.tier:
+            same, total = outranked.counts.get(s.sig, 0), outranked.total
+            outside = (
+                OUTSIDE_AGGREGATE_AGREED if outranked.agreed else OUTSIDE_AGGREGATE_CONFLICTING
+            )
+        elif aggregate_only:
+            continue
+        else:
+            same, total, outside = None, None, OUTSIDE_AGGREGATE_CONFLICTING
+        yield {
+            "rsid": rsid,
+            "chromosome": chromosome,
+            "position": position,
+            "ref": ref,
+            "alt": alt,
+            "clinical_significance": s.significance,
+            "condition": _decode_reported_phenotype(s.reported_phenotype),
+            "gene": gene,
+            # The per-SCV review status is more specific than the aggregate's.
+            "review_status": s.review_status or review_status_agg,
+            "allele_id": variation_id,
+            "aggregate": aggregate,
+            "submitters_same": same,
+            "submitters_total": total,
+            "outside_aggregate": outside,
+            "normal_allele": int(normal),
+        }
 
 
 def iter_clinvar_tsv_records(
@@ -339,14 +676,14 @@ def iter_clinvar_tsv_records(
             from other Assembly values are skipped during the
             variant_summary pass.
         aggregate_only: When True (default), skip SCV submissions whose
-            ``ContributesToAggregateClassification`` is not ``"yes"``.
-            ClinVar uses that flag to mark submissions that were rolled
-            into the aggregate variant-level classification. Submissions
-            flagged ``"no"`` (e.g. older submissions superseded by a
-            newer one) would otherwise inflate per-variant row counts
-            without adding signal. Set False to materialize EVERY
-            historical SCV — used by forensic dives, not production
-            ingest.
+            ``ContributesToAggregateClassification`` is not ``"yes"``,
+            except the outranked P/LP submissions ADR-0045 keeps.
+            submission_summary holds current submissions only; ``"no"``
+            marks a submission outranked by a higher review tier, which
+            ClinVar's aggregate uses alone. Set False to materialize every
+            submission (forensic use, not production ingest); outranked
+            rows not kept by ADR-0045 then carry
+            ``OUTSIDE_AGGREGATE_CONFLICTING`` and no split.
 
     Yields:
         Dicts shaped for the cache INSERT in ``load_clinvar_tsv``. The
@@ -358,6 +695,8 @@ def iter_clinvar_tsv_records(
     if build not in ("GRCh37", "GRCh38"):
         msg = f"unsupported build {build!r} — expected 'GRCh37' or 'GRCh38'"
         raise ValueError(msg)
+    check_tsv_header(variant_summary_path, _VS_REQUIRED_COLUMNS)
+    check_tsv_header(submission_summary_path, _SS_REQUIRED_COLUMNS)
 
     # Stream variant_summary into a temp SQLite indexed by VariationID
     # for the requested build only. Roughly halves the row count vs.
@@ -376,18 +715,23 @@ def iter_clinvar_tsv_records(
                 "  alt TEXT, "
                 "  gene TEXT, "
                 "  review_status TEXT, "
-                "  normal_allele INTEGER"
+                "  normal_allele INTEGER, "
+                "  aggregate TEXT"
                 ");"
             )
+            # Variants whose aggregate is not a disease classification: their
+            # outranked P/LP submissions may still be reported (ADR-0045).
+            non_disease: set[int] = set()
             batch: list[tuple[object, ...]] = []
             for cols in _open_tsv(variant_summary_path):
                 if len(cols) <= _VS_ALT_ALLELE_VCF:
                     continue
                 if cols[_VS_ASSEMBLY] != build:
                     continue
+                # A variant without an rsID (RS# -1) is kept with rsid "":
+                # VCF input matches it by locus (ADR-0046).
                 rs = cols[_VS_RS].strip()
-                if not rs or rs == "-1":
-                    continue
+                rsid = "" if not rs or rs == "-1" else f"rs{rs}"
                 pos_str = cols[_VS_POSITION_VCF].strip()
                 if not pos_str or pos_str == "-1":
                     continue
@@ -409,109 +753,75 @@ def iter_clinvar_tsv_records(
                 except (ValueError, IndexError):
                     continue
                 normal_allele = describes_reference_allele(cols[_VS_NAME])
-                if ref == alt and (
-                    normal_allele or cols[_VS_TYPE].strip() != "single nucleotide variant"
-                ):
-                    # REF == ALT has one meaning left in the cache: this
-                    # build's reference carries the variant allele (F5
-                    # c.1601G>A on GRCh37). A normal-allele record with
-                    # REF == ALT describes the reference itself, and a
-                    # non-SNV with REF == ALT has no alleles on this build.
+                if ref == alt and cols[_VS_TYPE].strip() != "single nucleotide variant":
+                    # A non-SNV with REF == ALT has no alleles on this build.
+                    # An SNV with REF == ALT names the allele this build's
+                    # reference carries: a variant allele (F5 c.1601G>A on
+                    # GRCh37) or, for a normal-allele record, the normal one
+                    # (CASP12 rs497116 on GRCh37). Both are kept, so a record
+                    # reads the same on both builds; ``normal_allele`` tells
+                    # them apart.
                     continue
+                gene = cols[_VS_GENE_SYMBOL].strip()
+                if " " in gene:
+                    # Not a symbol: ClinVar's placeholder for a region,
+                    # "covers 10 genes, none of which curated to show
+                    # dosage sensitivity". Symbol lists are ";"-joined.
+                    gene = ""
+                aggregate = cols[_VS_AGGREGATE].strip()
+                if not is_disease_classification(aggregate):
+                    non_disease.add(variation_id)
                 batch.append(
                     (
                         variation_id,
-                        f"rs{rs}",
+                        rsid,
                         cols[_VS_CHROMOSOME].strip(),
                         position,
                         ref,
                         alt,
-                        cols[_VS_GENE_SYMBOL].strip(),
+                        gene,
                         cols[_VS_REVIEW_STATUS].strip(),
                         int(normal_allele),
+                        aggregate,
                     )
                 )
                 if len(batch) >= INSERT_BATCH_SIZE:
                     tmp_conn.executemany(
-                        "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         batch,
                     )
                     batch.clear()
             if batch:
                 tmp_conn.executemany(
-                    "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO vs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
             tmp_conn.commit()
 
-            # Second pass: stream submission_summary, look each SCV's
-            # VariationID up against the temp index, emit on hit.
+            # Second pass: stream submission_summary one VariationID at a
+            # time, look the variant up once, emit its kept submissions.
             cursor = tmp_conn.cursor()
-            for cols in _open_tsv(submission_summary_path):
-                if len(cols) <= _SS_CONTRIBUTES:
-                    continue
-                if aggregate_only and cols[_SS_CONTRIBUTES].strip().lower() != "yes":
-                    continue
-                try:
-                    variation_id = int(cols[_SS_VARIATION_ID].strip())
-                except (ValueError, IndexError):
+            for variation_id, group in _variation_groups(submission_summary_path):
+                if (
+                    aggregate_only
+                    and not any(s.contributes for s in group)
+                    and (variation_id not in non_disease)
+                ):
                     continue
                 row = cursor.execute(
                     "SELECT rsid, chromosome, position, ref, alt, gene, review_status, "
-                    "normal_allele FROM vs WHERE variation_id = ?",
+                    "normal_allele, aggregate FROM vs WHERE variation_id = ?",
                     (variation_id,),
                 ).fetchone()
                 if row is None:
                     continue
-                rsid, chromosome, position, ref, alt, gene, review_status_agg, normal = row
-                clinical_significance = cols[_SS_CLIN_SIG].strip()
-                if normal and clinical_significance.lower() in _NORMAL_ALLELE_DROPPED_CLNSIGS:
-                    # A normal-allele record names the reference sequence;
-                    # carrying it is not a pathogenic finding (F5 c.1601=,
-                    # written T>C on GRCh37). Its other classifications
-                    # stay as they are.
-                    continue
-                # ClinVar's submission_summary
-                # carries several placeholder values that mean "no clinical
-                # significance recorded." A placeholder that ISN'T in
-                # `_CLNSIG_MAGNITUDE` falls through to that dict's 5.0
-                # default — equal to the analyze display floor — and
-                # surfaces as a bogus annotation on real rsIDs.
-                #
-                # The set below is exactly the placeholders that are
-                # NOT in the magnitude dict (those that ARE — "not
-                # provided", "no_classification_for_the_single_variant"
-                # — map to 2.0, safe below the floor; dropping them at
-                # ingest would lose real submitter records).
-                #
-                # Case-insensitive: `_magnitude()` normalizes via
-                # `_normalize_clnsig()` (`.lower().replace(" ", "_")`),
-                # so a case-sensitive filter here would let
-                # "Not Specified" / "NO CLASSIFICATION PROVIDED" slip
-                # past the skip and still land at the 5.0 default.
-                # `-` (the confirmed real defect) is unaffected — the
-                # extra robustness covers the prose placeholders that
-                # were added by domain reasoning, not observed
-                # in-the-wild casing.
-                if clinical_significance.lower() in _CLINVAR_PLACEHOLDER_CLNSIGS:
-                    continue
-                condition = _decode_reported_phenotype(cols[_SS_REPORTED_PHENO])
-                # Per-SCV review_status from submission_summary is more
-                # specific than the aggregate; prefer it when present.
-                per_scv_review = cols[_SS_REVIEW_STATUS].strip()
-                review_status = per_scv_review or review_status_agg
-                yield {
-                    "rsid": rsid,
-                    "chromosome": chromosome,
-                    "position": position,
-                    "ref": ref,
-                    "alt": alt,
-                    "clinical_significance": clinical_significance,
-                    "condition": condition,
-                    "gene": gene,
-                    "review_status": review_status,
-                    "allele_id": variation_id,
-                }
+                yield from _group_records(
+                    variation_id,
+                    group,
+                    row,
+                    outranked=_decide_outranked(group) if variation_id in non_disease else None,
+                    aggregate_only=aggregate_only,
+                )
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -532,9 +842,49 @@ def load_clinvar_tsv(
     MULTIPLE Annotation objects per variant when multiple SCVs target
     the same (chrom, pos, ref, alt); the annotator-side reconciliation
     landed in v2.2.0.
+
+    The cache is built beside ``db_path`` and replaces it only once it is
+    complete and holds records. A failure at any point (a changed column
+    layout, a broken download, an empty result) raises and leaves the
+    existing cache as it was.
     """
-    if db_path.exists():
-        db_path.unlink()
+    partial = db_path.with_name(db_path.name + ".partial")
+    partial.unlink(missing_ok=True)
+    try:
+        _build_clinvar_cache(
+            variant_summary_path,
+            submission_summary_path,
+            partial,
+            build,
+            source_url=source_url,
+            remote_signal=remote_signal,
+            aggregate_only=aggregate_only,
+        )
+        os.replace(partial, db_path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+_CLINVAR_INSERT = (
+    "INSERT INTO clinvar_variants "
+    "(rsid, chromosome, position, ref, alt, clinical_significance, condition, gene, "
+    "review_status, allele_id, aggregate, submitters_same, submitters_total, "
+    "outside_aggregate, normal_allele) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def _build_clinvar_cache(
+    variant_summary_path: Path,
+    submission_summary_path: Path,
+    db_path: Path,
+    build: str,
+    *,
+    source_url: str,
+    remote_signal: str | None,
+    aggregate_only: bool,
+) -> None:
+    """Write a new ClinVar cache at ``db_path``; raise when it holds no records."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(CLINVAR_SCHEMA)
         batch: list[tuple[object, ...]] = []
@@ -556,28 +906,28 @@ def load_clinvar_tsv(
                     record["gene"],
                     record["review_status"],
                     record["allele_id"],
+                    record["aggregate"],
+                    record["submitters_same"],
+                    record["submitters_total"],
+                    record["outside_aggregate"],
+                    record["normal_allele"],
                 )
             )
             if len(batch) >= INSERT_BATCH_SIZE:
                 conn.executemany(
-                    "INSERT INTO clinvar_variants "
-                    "(rsid, chromosome, position, ref, alt, "
-                    "clinical_significance, condition, gene, "
-                    "review_status, allele_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    _CLINVAR_INSERT,
                     batch,
                 )
                 batch.clear()
         if batch:
             conn.executemany(
-                "INSERT INTO clinvar_variants "
-                "(rsid, chromosome, position, ref, alt, "
-                "clinical_significance, condition, gene, "
-                "review_status, allele_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                _CLINVAR_INSERT,
                 batch,
             )
         record_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
+        if record_count == 0:
+            msg = f"ClinVar {build}: the source files gave no records; the existing cache is kept"
+            raise ClinVarFormatError(msg)
         if remote_signal:
             from datetime import UTC, datetime
 
@@ -616,12 +966,15 @@ def get_database_info(db_path: Path, name: str) -> DatabaseInfo | None:
     Tolerates older caches that lack ``remote_signal`` or
     ``local_version_tag`` columns by falling back to progressively
     simpler SELECTs.  Missing columns report as None; the next
-    ``db update`` self-heals via the annotator's migration path.
+    ``db update`` self-heals via the annotator's migration path. The
+    file is opened read-only and never changed (ADR-0048). A cache in
+    WAL mode is not opened at all, and reads as not present until the
+    update step converts it.
     """
-    if not db_path.exists():
+    if not db_path.exists() or is_wal(db_path):
         return None
     try:
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        with contextlib.closing(connect_readonly(db_path)) as conn:
             remote_signal: str | None = None
             local_version_tag: str | None = None
             try:
@@ -666,7 +1019,6 @@ def get_database_info(db_path: Path, name: str) -> DatabaseInfo | None:
                     if row is None:
                         return None
                     source_url, version, downloaded_at, record_count, remote_signal = row
-                _ensure_local_version_tag_column(conn)
             except sqlite3.DatabaseError:
                 return None
             return DatabaseInfo(

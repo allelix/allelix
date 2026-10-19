@@ -83,15 +83,15 @@ class TestParse:
         mthfr = next(v for v in variants if v.rsid == "rs1801133")
         assert mthfr.chromosome == "1"
         assert mthfr.position == 11856378
-        assert mthfr.allele1 == "A"
-        assert mthfr.allele2 == "G"
+        assert mthfr.allele1 == "G"
+        assert mthfr.allele2 == "A"
         assert mthfr.is_heterozygous
 
     def test_homozygous_variant(
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        v = next(v for v in variants if v.rsid == "rs1065852")
+        v = next(v for v in variants if v.rsid == "rs3999990011")
         assert v.allele1 == "C"
         assert v.allele2 == "C"
         assert not v.is_heterozygous
@@ -100,7 +100,7 @@ class TestParse:
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        no_call = next(v for v in variants if v.rsid == "rs9001001")
+        no_call = next(v for v in variants if v.rsid == "rs3999990001")
         assert no_call.is_no_call
         assert no_call.allele1 == "-"
         assert no_call.allele2 == "-"
@@ -109,28 +109,28 @@ class TestParse:
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        x = next(v for v in variants if v.rsid == "rs9001003")
+        x = next(v for v in variants if v.rsid == "rs3999990003")
         assert x.chromosome == "X"
 
     def test_chromosome_24_maps_to_y(
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        y = next(v for v in variants if v.rsid == "rs9001004")
+        y = next(v for v in variants if v.rsid == "rs3999990004")
         assert y.chromosome == "Y"
 
     def test_chromosome_25_par_maps_to_x(
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        par = next(v for v in variants if v.rsid == "rs9001005")
+        par = next(v for v in variants if v.rsid == "rs3999990005")
         assert par.chromosome == "X"
 
     def test_chromosome_26_maps_to_mt(
         self, parser: AncestryDNAParser, mock_ancestrydna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_ancestrydna_path))
-        mt = next(v for v in variants if v.rsid == "rs9001002")
+        mt = next(v for v in variants if v.rsid == "rs3999990002")
         assert mt.chromosome == "MT"
 
     def test_skips_comment_lines(self, parser: AncestryDNAParser, tmp_path: Path) -> None:

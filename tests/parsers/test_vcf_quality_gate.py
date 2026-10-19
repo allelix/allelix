@@ -91,7 +91,7 @@ class TestPlinkAlleleGuard:
             Variant("rs900750012", "1", 300, "A", "*"),
         ]
         prefix = tmp_path / "out"
-        written, no_calls, non_snv, _mono = export_plink(iter(variants), prefix, "GRCh37")
+        written, no_calls, non_snv, _mono, _ = export_plink(iter(variants), prefix, "GRCh37")
         assert (written, no_calls, non_snv) == (1, 0, 2)
         assert prefix.with_suffix(".bim").read_text().split("\t")[1] == "rs900750010"
 
@@ -285,7 +285,17 @@ class TestCallerFilterEndToEnd:
             "low_quality_calls": 1,
             "min_gq": 20,
             "spanning_deletion_calls": 0,
+            "spanning_deletion_sites": [],
             "symbolic_rows": 0,
+            "half_calls": 0,
+            "malformed_rows": 0,
+            "no_genotype_rows": 0,
+            "unusable_genotype_calls": 0,
+            "symbolic_allele_calls": 0,
+            "trimmed_matches": 0,
+            "clinvar_ref_mismatches": 0,
+            "reference_carried_calls": 0,
+            "reference_carried_not_in_file": 0,
         }
         assert _stamped_rsids(vcf_text) == {"rs900740001", "rs900740002"}
         assert "ALLELIX_FILTER" not in vcf_text
@@ -430,16 +440,17 @@ class TestGateBoundaryAndCommands:
 
 
 class TestSpanningDeletionReporting:
-    def test_one_haplotype_star_calls_are_counted(self, tmp_path: Path) -> None:
+    def test_star_calls_are_counted(self, tmp_path: Path) -> None:
         from allelix.reports import vcf_quality_lines
 
         parser = VcfParser()
         list(parser.parse(_vcf(tmp_path, _STAR_ROWS)))
-        # 1/2 G,* and 0/2 T,* have '*' on one haplotype; 1/1 * has it on both.
-        assert parser.quality_stats.spanning_deletion_calls == 2
+        # 1/2 G,* and 0/2 T,* have '*' on one haplotype; 1/1 * has it on
+        # both. All three are counted and listed (ADR-0047).
+        assert parser.quality_stats.spanning_deletion_calls == 3
         assert (
-            "2 record(s) with a spanning deletion on one haplotype were not assessed."
-            in vcf_quality_lines(parser.quality_stats)
+            "3 call(s) with a spanning deletion (*) were not assessed; the JSON report "
+            "lists their positions." in vcf_quality_lines(parser.quality_stats)
         )
 
     def test_star_never_reaches_report_or_annotated_vcf_fields(self, tmp_path: Path) -> None:

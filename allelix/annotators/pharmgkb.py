@@ -18,6 +18,7 @@ from allelix.annotators.base import (
     variant_locus,
 )
 from allelix.databases._versions import PHARMGKB_INTERPRETER_VERSION
+from allelix.databases.cache_state import CacheState, CacheStatus, cache_state, connect_readonly
 from allelix.databases.cpic_loader import (
     fetch_cpic_allele_functions,
     fetch_cpic_remote_signal,
@@ -28,6 +29,8 @@ from allelix.databases.manager import (
     head_request_headers,
 )
 from allelix.databases.pharmgkb_loader import (
+    _REQUIRED_PHARMGKB_COLUMNS,
+    _REQUIRED_PHARMGKB_TABLES,
     PHARMGKB_CLINICAL_URL,
     PHARMGKB_DB_FILENAME,
     PHARMGKB_MIN_ROWS,
@@ -35,7 +38,7 @@ from allelix.databases.pharmgkb_loader import (
     load_pharmgkb_tsv,
     schema_is_current,
 )
-from allelix.models import Annotation
+from allelix.models import Annotation, diploid_label
 from allelix.utils.allele import strand_aware_genotype_match
 
 if TYPE_CHECKING:
@@ -90,17 +93,18 @@ class PharmGKBAnnotator(Annotator):
     def __init__(
         self,
         data_dir: Path,
-        clinvar_ref_provider: Callable[[str, str], str | None] | None = None,
+        clinvar_ref_provider: Callable[[str, str, tuple[str, int]], str | None] | None = None,
         palindromic_provider: Callable[[set[str]], set[str]] | None = None,
         normal_allele_provider: Callable[[str, str], str | None] | None = None,
     ) -> None:
         """Resolve the ClinPGx SQLite cache path within `data_dir`.
 
-        `clinvar_ref_provider` is a `(rsid, build) -> ref_base | None` callable
-        used by the primary non-finding filter (ADR-0023). In production it's
-        wired to `ClinVarAnnotator.reference_for`. None disables the REF check
-        and falls back to the cache's CPIC-based `is_nonfinding` flag for all
-        suppression — the v0.7.1 behavior.
+        `clinvar_ref_provider` is a `(rsid, build, locus) -> ref_base | None`
+        callable used by the primary non-finding filter (ADR-0023). In
+        production it's wired to `ClinVarAnnotator.reference_at`, which
+        answers only where ClinVar places the rsID at the call's locus.
+        None disables the REF check and falls back to the cache's CPIC-based
+        `is_nonfinding` flag for all suppression — the v0.7.1 behavior.
 
         `palindromic_provider` returns the subset of given rsIDs whose site
         the identity table flags palindromic; complement (strand-flip)
@@ -123,7 +127,7 @@ class PharmGKBAnnotator(Annotator):
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def setup(self) -> None:
@@ -176,25 +180,41 @@ class PharmGKBAnnotator(Annotator):
     def is_ready(self) -> bool:
         """True iff a ClinPGx SQLite cache exists with current schema and interpreter stamp.
 
-        Never touches the network, so ``analyze`` stays offline. When the
-        interpreter version has bumped, the cache is not ready and
-        ``allelix db update`` rebuilds it, fetching the ClinPGx annotations
-        and the CPIC allele-function table again (``setup``).
+        Never touches the network or the file, so ``analyze`` stays
+        offline and read-only (ADR-0048). When the interpreter version has
+        bumped, the cache is not ready and ``allelix db update`` rebuilds
+        it, fetching the ClinPGx annotations and the CPIC allele-function
+        table again (``setup``).
+        """
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        """State of the ClinPGx cache: tables, columns and interpreter tag (ADR-0048)."""
+        return cache_state(
+            self._db_path,
+            "pharmgkb",
+            tag=f"iv:{PHARMGKB_INTERPRETER_VERSION}",
+            # The annotation table first: it must hold rows.
+            tables=("pharmgkb_annotations", *sorted(_REQUIRED_PHARMGKB_TABLES)),
+            columns={"pharmgkb_annotations": _REQUIRED_PHARMGKB_COLUMNS},
+        )
+
+    def prepare_cache(self) -> bool:
+        """Self-heal a pre-mechanism cache whose baked stamp is the current version.
 
         Pre-mechanism caches (tag missing, version baked into
-        ``remote_signal``) are self-healed with a one-shot stamp update
-        when the baked version is the current one; otherwise they are not
-        ready either.
+        ``remote_signal``) get a one-shot stamp update when the baked
+        version is the current one and the schema is current; any other
+        outdated cache is left for ``db update`` to rebuild.
         """
+        if self.cache_status().state is not CacheState.OUTDATED:
+            return False
         info = get_database_info(self._db_path, "pharmgkb")
-        if info is None:
+        if info is None or info.get("local_version_tag"):
             return False
         if not schema_is_current(self._db_path):
             return False
-        tag = info.get("local_version_tag") or ""
-        if tag == f"iv:{PHARMGKB_INTERPRETER_VERSION}":
-            return True
-        return not tag and _stamp_existing_pharmgkb_cache(self._db_path)
+        return _stamp_existing_pharmgkb_cache(self._db_path)
 
     def version(self) -> str | None:
         """Cached database version (download date, or version supplied to load)."""
@@ -298,7 +318,7 @@ class PharmGKBAnnotator(Annotator):
 
         rows = self._connection().execute(sql, params).fetchall()
         annotations: list[Annotation] = []
-        user_diploid = _user_diploid(variant)
+        user_diploid = diploid_label(variant)
         palindromic = (
             self._palindromic_provider is not None
             and variant.rsid in self._palindromic_provider({variant.rsid})
@@ -407,7 +427,7 @@ class PharmGKBAnnotator(Annotator):
             rows = rows_by_rsid.get(variant.rsid)
             if not rows:
                 continue
-            user_diploid = _user_diploid(variant)
+            user_diploid = diploid_label(variant)
             for row in rows:
                 (
                     geno,
@@ -461,19 +481,6 @@ class PharmGKBAnnotator(Annotator):
                     carried_alleles=(variant.allele1, variant.allele2),
                     locus=variant_locus(variant),
                 )
-
-
-def _user_diploid(variant: Variant) -> str:
-    """Sorted two-letter diploid for SNVs; indel passthrough verbatim.
-
-    ADR-0023: report the user's actual genotype consistently across
-    annotators. Mirrors `allelix.annotators.clinvar._user_diploid`
-    (kept here to avoid a cross-annotator import dependency).
-    """
-    a1, a2 = variant.allele1, variant.allele2
-    if len(a1) == 1 and len(a2) == 1:
-        return "".join(sorted((a1, a2)))
-    return f"{a1}/{a2}"
 
 
 def _stamp_existing_pharmgkb_cache(db_path: Path) -> bool:

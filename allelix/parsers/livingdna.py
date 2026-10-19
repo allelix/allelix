@@ -2,7 +2,8 @@
 # Copyright (C) 2026 Allelix
 """Parser for Living DNA raw genotype export files.
 
-Format reference (from snps package and H600 Project wiki):
+Format reference (the export layout as publicly described; the file's own header
+states GRCh37 and the forward strand; the rows here are invented):
 
     # Living DNA customer genotype data download file version: 1.0.1
     # This file contains raw genotype data ...
@@ -10,9 +11,9 @@ Format reference (from snps package and H600 Project wiki):
     # Genotypes are presented on the forward strand.
     #
     # rsid  chromosome  position  genotype
-    rs1801133   1   11856378    AG
-    AX-12345678 3   15000000    GG
-    1:726912    1   726912  AA
+    rs3999990021    1   3999021     AG
+    AX-39999901     4   39999901    TT
+    1:2999901       1   2999901     CC
 
 Specifics:
     - Tab-delimited despite ``.csv`` file extension.
@@ -24,7 +25,7 @@ Specifics:
     - Build 37 (GRCh37.p13), forward strand.
     - SNP ID types: rs-numbers, ``AX-`` prefixed (Affymetrix),
       ``AFFX-`` prefixed (Affymetrix control probes), and positional
-      notation (``CHR:POS``, e.g., ``1:726912``).
+      notation (``CHR:POS``, e.g., ``1:2999901``).
     - Y and MT chromosomes delivered as separate files; main file
       has chromosomes 1-22 and X.
 """
@@ -36,7 +37,13 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import split_genotype
+from allelix.parsers._helpers import (
+    DamagedFileError,
+    first_nonblank_line,
+    is_haploid_call,
+    open_genotype_text,
+    split_genotype,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
@@ -65,17 +72,17 @@ class LivingDNAParser(GenotypeParser):
     url: ClassVar[str] = "https://livingdna.com"
 
     def can_parse(self, file_path: Path) -> bool:
-        """Recognize the file by ``Living DNA`` in the first line."""
+        """Recognize the file by ``Living DNA`` in the first non-blank line."""
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
-                first_line = fh.readline()
+            with open_genotype_text(file_path) as fh:
+                first_line = first_nonblank_line(fh, SNIFF_LINE_LIMIT)
                 return SIGNATURE in first_line
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
                 if not line or line.startswith("#"):
@@ -107,6 +114,7 @@ class LivingDNAParser(GenotypeParser):
                     allele1=allele1,
                     allele2=allele2,
                     build=DEFAULT_BUILD,
+                    haploid=is_haploid_call(genotype),
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:

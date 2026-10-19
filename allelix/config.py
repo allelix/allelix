@@ -170,13 +170,23 @@ def save_config(data_dir: Path, config: AllelixConfig) -> None:
     path.write_text(_serialize(config), encoding="utf-8")
 
 
-def load_config(data_dir: Path) -> AllelixConfig:
-    """Load config from disk. Creates default config if absent."""
+def load_config(data_dir: Path, *, create: bool = True) -> AllelixConfig:
+    """Load config from disk. Creates default config if absent.
+
+    With ``create`` False (``analyze --no-update``, ADR-0048) an absent
+    config is not written; the defaults are used. A data directory that
+    cannot be written gets the defaults too.
+    """
     path = _config_path(data_dir)
     if not path.exists():
         config = AllelixConfig()
-        save_config(data_dir, config)
-        logger.info("Created default config at %s", path)
+        if create:
+            try:
+                save_config(data_dir, config)
+            except OSError as exc:
+                logger.info("Could not create default config at %s: %s", path, exc)
+            else:
+                logger.info("Created default config at %s", path)
         return config
 
     with open(path, "rb") as fh:

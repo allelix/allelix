@@ -14,7 +14,28 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 NO_CALL_MARKER = "-"
+# Array codes for a deletion and an insertion allele (23andMe ``DI``), not bases.
+DI_ALLELES = frozenset({"D", "I"})
 DEFAULT_BUILD = "GRCh37"
+# A half call's missing allele as reports show it (``T/.``), and its zygosity.
+MISSING_ALLELE_DISPLAY = "."
+HALF_CALL = "Half call"
+
+# Zygosity: a machine code in JSON, a display string in HTML and the
+# terminal. ``hemizygous`` is a call the file declares haploid (a one-index
+# VCF GT, a one-letter array call): one copy of the allele.
+HOMOZYGOUS = "homozygous"
+HETEROZYGOUS = "heterozygous"
+HEMIZYGOUS = "hemizygous"
+HALF_CALL_CODE = "half_call"
+NO_CALL_CODE = "no_call"
+ZYGOSITY_DISPLAY: dict[str, str] = {
+    HOMOZYGOUS: "Homozygous",
+    HETEROZYGOUS: "Heterozygous",
+    HEMIZYGOUS: "Hemizygous",
+    HALF_CALL_CODE: HALF_CALL,
+    NO_CALL_CODE: "No call",
+}
 
 
 @dataclass
@@ -38,6 +59,10 @@ class Variant:
             allele within the user's pair. None means "cannot resolve" —
             consumers degrade gracefully (return ambiguous, skip strand check,
             etc.) rather than guess.
+        ref_from_input: True when ``ref`` came from the input file (a VCF
+            REF column), False when it is unknown or was filled in from a
+            reference table. ClinVar rows without an rsID match only calls
+            whose REF came from the input (ADR-0046).
     """
 
     rsid: str
@@ -47,6 +72,7 @@ class Variant:
     allele2: str
     build: str = DEFAULT_BUILD
     ref: str | None = None
+    ref_from_input: bool = False
     # pre-resolution rsID stashed when a resolver
     # (`ClinVarAnnotator.bulk_resolve_rsids` or
     # `GnomadAnnotator.bulk_resolve_rsids_from_positions`, both invoked
@@ -68,6 +94,10 @@ class Variant:
     # ``tests/test_original_rsid_never_serializes.py`` asserts this
     # field never reaches JSON / HTML / ``--diff`` output.
     original_rsid: str | None = None
+    # The file declares one copy: a one-index VCF GT, or a one-letter array
+    # call. The parsers still give both alleles (the called one twice), so
+    # matching is unchanged; reports show the call as hemizygous.
+    haploid: bool = False
 
     def __post_init__(self) -> None:
         """Normalize allele case at construction (ADR-0035).
@@ -112,6 +142,33 @@ class Variant:
         meaning is format-dependent (some VCFs use `-` for indel deletions).
         """
         return self.allele1 == NO_CALL_MARKER or self.allele2 == NO_CALL_MARKER
+
+    @property
+    def is_half_call(self) -> bool:
+        """True for a VCF call with one allele called and the other missing.
+
+        GT ``./1`` or ``1/.`` (ADR-0047). ``is_no_call`` is also true for
+        it: sources that need both alleles (ClinPGx, SNPedia) skip it, and
+        those that need only a carried allele (ClinVar, GWAS) assess the
+        called one. An array call never counts: its REF does not come from
+        the input.
+        """
+        return self.ref_from_input and (self.allele1 == NO_CALL_MARKER) != (
+            self.allele2 == NO_CALL_MARKER
+        )
+
+    @property
+    def carried_pair(self) -> tuple[str, str]:
+        """The two alleles for allele-membership checks.
+
+        A half call's called allele stands for both, so a check of "which
+        alleles does the user carry" sees only real alleles. Never use it
+        for zygosity or copy counts.
+        """
+        if self.is_half_call:
+            called = self.allele2 if self.allele1 == NO_CALL_MARKER else self.allele1
+            return called, called
+        return self.allele1, self.allele2
 
     @property
     def genotype(self) -> str:
@@ -159,9 +216,12 @@ class Annotation:
             the reference allele; empty when the study does not report one.
         is_must_include: Internal flag for GWAS rollup; excluded from public output.
         plausibility: Quality-control flag from the call's zygosity and the
-            allele's gnomAD frequency (ADR-0041): "plausible", "suspicious",
-            "implausible", or empty when not assessed. Never suppresses the
-            annotation.
+            allele's gnomAD frequency (ADR-0041, ADR-0050): "plausible",
+            "suspicious", "implausible" or "not_assessed". Never suppresses
+            the annotation.
+        plausibility_reason: Why plausibility was not assessed (ADR-0050):
+            "no_frequency", "gnomad_not_run", "chromosome", "half_call",
+            "no_allele"; empty when it was assessed.
     """
 
     source: str
@@ -187,6 +247,7 @@ class Annotation:
     am_class: str = ""
     cadd_phred: float | None = None
     plausibility: str = ""
+    plausibility_reason: str = ""
     # ADR-0035 cluster manifest: structured GWAS fields promoted out of
     # the rendered ``description`` prose. `description` still carries the same
     # rendered text for HTML / terminal display, but downstream code (rollup,
@@ -196,6 +257,28 @@ class Annotation:
     trait: str = ""
     p_value: float | None = None
     phecode: str = ""
+    # GWAS rows only: what the study's effect allele does,
+    # ``increases``, ``decreases`` or ``unknown``; empty on other sources.
+    effect_direction: str = ""
+    # ADR-0045, ClinVar rows only (empty / None / False elsewhere):
+    # ``clinvar_aggregate``: ClinVar's own classification of the variant.
+    # ``submitters_same`` of ``submitters_total``: how many of the
+    #   submitters it counts gave this row's classification.
+    # ``aggregate_capped``: the magnitude was lowered to the aggregate's.
+    # ``outside_aggregate``: an outranked P/LP submission, reported because
+    #   the aggregate is not a disease classification (drug response, ...).
+    # ``common_allele_capped`` (ADR-0052): a zero-star P/LP submission on an
+    #   allele whose gnomAD frequency is at least 5%, scored below the
+    #   default floor.
+    # ``clinvar_allele_af`` (ADR-0052): gnomAD's frequency of ClinVar's own
+    #   allele, set on a zero-star P/LP row when it could be looked up.
+    clinvar_aggregate: str = ""
+    submitters_same: int | None = None
+    submitters_total: int | None = None
+    aggregate_capped: bool = False
+    outside_aggregate: bool = False
+    common_allele_capped: bool = False
+    clinvar_allele_af: float | None = None
     # Internal allele-identity context for the construction invariants
     # below. Excluded from every public serialization via
     # ``_INTERNAL_ANNOTATION_FIELDS`` and from equality / repr, so two
@@ -217,6 +300,17 @@ class Annotation:
     #   genotype whose alt is derived against the normal allele from the
     #   other build. Exempts the annotation from invariant 2 only.
     reference_carries_alt: bool = field(default=False, compare=False, repr=False)
+    # ``record_key``: ``(chromosome, position, REF, ALT)`` of the input VCF
+    #   record and allele as written, when the annotation matched only after
+    #   trimming that allele (ADR-0047), so ``locus`` and ``alt`` are the
+    #   trimmed form. ``--vcf-out`` stamps the record by it.
+    record_key: tuple[str, int, str, str] | None = field(default=None, compare=False, repr=False)
+    # ``haploid``: the call is one the file declares haploid (Variant.haploid);
+    #   ``genotype_match`` then holds the one allele.
+    haploid: bool = field(default=False, compare=False, repr=False)
+    # ``effect_measure``: ``odds_ratio`` or ``beta`` when the GWAS row's
+    #   effect direction was read from one, for the report's plain words.
+    effect_measure: str = field(default="", compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Enforce the allele-identity invariants.
@@ -253,14 +347,23 @@ class Annotation:
             )
 
     @property
-    def zygosity(self) -> str:
-        """Classify the genotype call as Heterozygous, Homozygous, or No Call."""
+    def zygosity_code(self) -> str:
+        """The call's zygosity as a JSON code (homozygous, hemizygous, half_call, ...)."""
         if NO_CALL_MARKER in self.genotype_match:
-            return "No Call"
+            return NO_CALL_CODE
+        if self.haploid:
+            return HEMIZYGOUS
         parts = self.genotype_match.split("/")
+        if MISSING_ALLELE_DISPLAY in parts:
+            return HALF_CALL_CODE
         if len(parts) != 2:
-            return "Homozygous" if len(set(self.genotype_match)) == 1 else "Heterozygous"
-        return "Heterozygous" if parts[0] != parts[1] else "Homozygous"
+            return HOMOZYGOUS if len(set(self.genotype_match)) == 1 else HETEROZYGOUS
+        return HETEROZYGOUS if parts[0] != parts[1] else HOMOZYGOUS
+
+    @property
+    def zygosity(self) -> str:
+        """The call's zygosity for display (Homozygous, Hemizygous, Half call, ...)."""
+        return ZYGOSITY_DISPLAY[self.zygosity_code]
 
 
 # Annotation fields that are internal-only and MUST be stripped from every
@@ -276,8 +379,51 @@ class Annotation:
 # new public-output path, you're re-introducing the bug — add the field
 # here and use ``annotation_to_public_dict`` instead.
 _INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset(
-    {"is_must_include", "locus_ref", "carried_alleles", "locus", "reference_carries_alt"}
+    {
+        "is_must_include",
+        "locus_ref",
+        "carried_alleles",
+        "locus",
+        "reference_carries_alt",
+        "record_key",
+        "haploid",
+        "effect_measure",
+    }
 )
+
+
+def report_rank_key(annotation: Annotation) -> tuple[float, str]:
+    """The order reports list rows in: highest magnitude first, then rsID.
+
+    Sorts using it are stable, so rows that tie keep the pipeline's order.
+    """
+    return (-annotation.magnitude, annotation.rsid)
+
+
+def half_call_genotype(variant: Variant) -> str | None:
+    """A half call's genotype as reports show it (``T/.``), or None for any other call."""
+    if not variant.is_half_call:
+        return None
+    return f"{variant.carried_pair[0]}/{MISSING_ALLELE_DISPLAY}"
+
+
+def diploid_label(variant: Variant) -> str:
+    """The user's call as reports show it (ADR-0023), the same for every source.
+
+    Two one-base alleles of an SNV are sorted and joined (``("G", "A")``
+    gives ``AG``). An indel's alleles keep a slash (``AC/A``), including a
+    homozygous one-base deletion from a VCF record whose REF is longer
+    (``AC>A`` 1/1 is ``A/A``, not an SNV-like ``AA``). A half call is
+    ``T/.`` (ADR-0047).
+    """
+    half = half_call_genotype(variant)
+    if half is not None:
+        return half
+    a1, a2 = variant.allele1, variant.allele2
+    record_is_indel = variant.ref_from_input and len(variant.ref or "") > 1
+    if len(a1) == 1 and len(a2) == 1 and not record_is_indel:
+        return "".join(sorted((a1, a2)))
+    return f"{a1}/{a2}"
 
 
 def annotation_to_public_dict(a: Annotation) -> dict:
@@ -293,4 +439,36 @@ def annotation_to_public_dict(a: Annotation) -> dict:
     diff-specific ``previous_*``) — those are layered by the calling
     serializer after this helper has stripped internal state.
     """
-    return {k: v for k, v in asdict(a).items() if k not in _INTERNAL_ANNOTATION_FIELDS}
+    d = {k: v for k, v in asdict(a).items() if k not in _INTERNAL_ANNOTATION_FIELDS}
+    # ADR-0046: where the call sits, so a finding without an rsID still
+    # names its variant. ``ref`` is the forward-strand reference allele
+    # when the annotator knows it.
+    d["chromosome"], d["position"] = a.locus if a.locus is not None else ("", None)
+    d["ref"] = a.locus_ref or ""
+    return d
+
+
+def variant_label(rsid: str, chromosome: str, position: int | None, ref: str, alt: str) -> str:
+    """The rsID, or ``chrom:pos ref>alt`` for a variant without one (ADR-0046)."""
+    if rsid or not chromosome or position is None:
+        return rsid
+    if ref and alt:
+        return f"{chromosome}:{position} {ref}>{alt}"
+    return f"{chromosome}:{position}"
+
+
+def annotation_label(a: Annotation) -> str:
+    """How reports name the variant of ``a``: its rsID, or its locus without one."""
+    chromosome, position = a.locus if a.locus is not None else ("", None)
+    return variant_label(a.rsid, chromosome, position, a.locus_ref or "", a.alt)
+
+
+def public_dict_label(d: dict) -> str:
+    """``annotation_label`` for an annotation read back from a JSON report."""
+    return variant_label(
+        d.get("rsid", ""),
+        d.get("chromosome", ""),
+        d.get("position"),
+        d.get("ref", ""),
+        d.get("alt", ""),
+    )

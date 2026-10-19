@@ -43,7 +43,6 @@ threads the user's ``--sample`` flag through to the constructor.
 
 from __future__ import annotations
 
-import gzip
 import logging
 import re
 from bisect import bisect_left, bisect_right
@@ -53,8 +52,10 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
 from allelix.models import NO_CALL_MARKER, Variant
-from allelix.parsers._helpers import normalize_chromosome
+from allelix.parsers._helpers import DamagedFileError, normalize_chromosome, open_genotype_text
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers.genesforgood import METHOD_ARRAY_IMPUTED
+from allelix.utils.build_detect import is_ucsc_mito_name
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -175,8 +176,33 @@ class VcfQualityStats:
     ``kept_filtered``: True when those rows were kept (``keep_filtered``).
     ``low_quality_calls``: calls reported as no-calls because their GQ
     was below ``min_gq`` or their DP was 0.
-    ``spanning_deletion_calls``: calls with the deletion allele ``*`` on
-    exactly one haplotype, which are not assessed.
+    ``spanning_deletion_calls`` / ``spanning_deletion_sites``: calls with
+    the deletion allele ``*`` on one or both haplotypes, which are not
+    assessed, and each one as ``chrom:pos REF>ALT GT`` (ADR-0047).
+    ``half_calls``: calls with one allele called and the other missing
+    (GT ``./1``). ClinVar and the GWAS Catalog assess the called allele;
+    ClinPGx and SNPedia, which need both, do not (ADR-0047).
+    ``malformed_rows``: rows with fewer than eight columns or a POS that
+    is not a number. ``no_genotype_rows``: rows with no GT for the
+    sample (a sites-only file has nothing else). ``unusable_genotype_calls``:
+    calls whose GT names an allele the record does not have (also a GT
+    such as ``0/1`` on a record whose ALT is ``.``).
+    ``symbolic_allele_calls``: calls whose GT names a symbolic ALT (such as
+    ``<NON_REF>``) on a record that also has a real ALT. A reference block
+    (``<NON_REF>`` or ``<*>`` alone) is not checked: a gVCF holds them by
+    the million (ADR-0047).
+    A call written as a no-call (``./.``) is yielded as a no-call, as
+    before; it is not a dropped call and is not counted here.
+    ``trimmed_matches``: calls ClinVar matched only after trimming an
+    allele the record wrote untrimmed; set by the pipeline (ADR-0047).
+    ``clinvar_ref_mismatches``: one-base records at a ClinVar position
+    whose REF is none of ClinVar's one-base REFs there, the complement
+    included (mis-coordinated input); set by the pipeline.
+    ``reference_carried_calls``: hom-ref calls (a ``0/0`` call or a
+    reference block) at a site where the build's reference carries a
+    ClinVar variant allele, assessed as homozygous for that allele.
+    ``reference_carried_not_in_file``: such sites a plain VCF has no
+    record at. Both set by the pipeline.
     ``symbolic_rows`` / ``symbolic_kinds``: structural-variant and
     copy-number records (all ALTs symbolic, such as ``<DEL>``, ``<DUP>``,
     ``<CNV>``, or breakends), counted whatever their FILTER, and their
@@ -195,6 +221,16 @@ class VcfQualityStats:
     low_quality_calls: int = 0
     min_gq: int = DEFAULT_MIN_GQ
     spanning_deletion_calls: int = 0
+    spanning_deletion_sites: list[str] = field(default_factory=list)
+    half_calls: int = 0
+    malformed_rows: int = 0
+    no_genotype_rows: int = 0
+    unusable_genotype_calls: int = 0
+    symbolic_allele_calls: int = 0
+    trimmed_matches: int = 0
+    clinvar_ref_mismatches: int = 0
+    reference_carried_calls: int = 0
+    reference_carried_not_in_file: int = 0
     symbolic_rows: int = 0
     symbolic_kinds: Counter[str] = field(default_factory=Counter)
     is_gvcf: bool = False
@@ -298,6 +334,13 @@ class VcfParser(GenotypeParser):
         self.quality_stats = VcfQualityStats(kept_filtered=keep_filtered, min_gq=min_gq)
         self._watch_loci: dict[str, list[int]] = {}
         self._watch_rsids: frozenset[str] = frozenset()
+        # Set by the build decision (GRCh37): records named as UCSC hg19
+        # names the mitochondrion (chrM, M) are left out and counted in
+        # ``ucsc_mito_dropped``, unless that name is declared with the rCRS
+        # length (``rcrs_mito_names``).
+        self.drop_ucsc_mito = False
+        self.rcrs_mito_names: frozenset[str] = frozenset()
+        self.ucsc_mito_dropped = 0
 
     def watch(self, loci: set[Locus], rsids: set[str]) -> None:
         """Record what the file says at these positions and rsIDs.
@@ -319,14 +362,14 @@ class VcfParser(GenotypeParser):
     def can_parse(self, file_path: Path) -> bool:
         """True if a leading non-blank line is ``##fileformat=VCF...``.
 
-        catches ``UnicodeDecodeError`` and ``EOFError`` (corrupt
+        catches ``UnicodeDecodeError`` and ``DamagedFileError`` (corrupt
         gzip / truncated BGZF) on top of ``OSError`` so format sniffing
         never raises through into ``detect_parser``. A real-world
         ``.vcf.gz`` shouldn't reach the decode path's replacement
         substitution (``_open_vcf`` uses ``errors="replace"``), but
         binary garbage or a truncated tabix index masquerading as a
         ``.vcf.gz`` would otherwise still leak a traceback at the
-        ``read`` boundary in ``gzip.open``.
+        ``read`` boundary of the gzip reader.
 
         scan multiple leading non-blank lines (capped at
         :data:`_PREAMBLE_SCAN_LINES`) instead of insisting
@@ -366,7 +409,7 @@ class VcfParser(GenotypeParser):
                     scanned += 1
                     if scanned >= _PREAMBLE_SCAN_LINES:
                         return False
-        except (OSError, UnicodeDecodeError, EOFError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
         return False
 
@@ -383,6 +426,9 @@ class VcfParser(GenotypeParser):
         """
         stats = VcfQualityStats(kept_filtered=self._keep_filtered, min_gq=self._min_gq)
         self.quality_stats = stats
+        drop_mito = self.drop_ucsc_mito
+        keep_mito = self.rcrs_mito_names
+        self.ucsc_mito_dropped = 0
         watch_rsids = self._watch_rsids
         watcher = _LocusWatcher(self._watch_loci) if self._watch_loci else None
         # Re-classifying a watched row must not count it twice.
@@ -422,8 +468,12 @@ class VcfParser(GenotypeParser):
                     covering = watcher.feed(cols)
                     if covering:
                         record(covering)
-                if variant is not None:
-                    yield variant
+                if variant is None:
+                    continue
+                if drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito:
+                    self.ucsc_mito_dropped += 1
+                    continue
+                yield variant
             if watcher is not None:
                 record(watcher.finish())
 
@@ -442,19 +492,30 @@ class VcfParser(GenotypeParser):
         """
         with _open_vcf(file_path) as handle:
             header = _read_header(handle)
-        samples = header.samples
-        if self._sample is not None and self._sample in samples:
-            sample_id = self._sample
-        elif len(samples) == 1:
-            sample_id = samples[0]
-        else:
-            sample_id = ""
-        return GenotypeMetadata(
+            samples = header.samples
+            if self._sample is not None and self._sample in samples:
+                sample_id = self._sample
+            elif len(samples) == 1:
+                sample_id = samples[0]
+            else:
+                sample_id = ""
+            imputed = (
+                header.genes_for_good
+                and bool(sample_id)
+                and _all_phased(handle, samples.index(sample_id))
+            )
+        meta = GenotypeMetadata(
             format=self.name,
             sample_id=sample_id,
             build=header.build,
             contig_lengths=dict(header.contig_lengths),
         )
+        if imputed:
+            # Genes for Good's imputed VCF: marked as its text file is.
+            meta["method"] = METHOD_ARRAY_IMPUTED
+        elif header.imputation_fields:
+            meta["method"] = METHOD_VCF_IMPUTED
+        return meta
 
     def validate_sample(self, file_path: Path) -> None:
         """Raise on an unusable sample binding without consuming variant data.
@@ -536,7 +597,14 @@ class VcfParser(GenotypeParser):
 class _VcfHeader:
     """Parsed VCF header — what the pipeline needs from the ``##`` lines."""
 
-    __slots__ = ("build", "contig_lengths", "has_non_ref_alt", "samples")
+    __slots__ = (
+        "build",
+        "contig_lengths",
+        "genes_for_good",
+        "has_non_ref_alt",
+        "imputation_fields",
+        "samples",
+    )
 
     def __init__(self) -> None:
         self.samples: list[str] = []
@@ -546,6 +614,10 @@ class _VcfHeader:
         # lengths (ADR-0044); contig naming (``chr1`` vs ``1``) is not
         # evidence of a build.
         self.contig_lengths: dict[str, int] = {}
+        # A ``##Genes_for_Good_version`` line: Genes for Good's own VCF.
+        self.genes_for_good: bool = False
+        # The imputation fields the header declares (``IMPUTATION_INFO_IDS``).
+        self.imputation_fields: set[str] = set()
 
 
 def _read_header(handle: TextIO) -> _VcfHeader:
@@ -599,11 +671,64 @@ def _read_header(handle: TextIO) -> _VcfHeader:
     return header
 
 
+# Genes for Good writes this line in the header of its VCF downloads. Its
+# imputed VCF has no imputation field, but every call in it is phased; its
+# measured calls are not (the text download says which file is which).
+GENES_FOR_GOOD_LINE = "##Genes_for_Good_version"
+# The fields imputation tools declare in the VCFs they write: the ``##INFO``
+# fields of Minimac (IMPUTED, TYPED, R2) and Beagle (DR2, IMP), and the
+# ``##FORMAT`` dosage ``DS`` (Minimac, Beagle, GLIMPSE) and GLIMPSE's ``HS``.
+# A header that declares one marks the file imputed; the values are never
+# read. FORMAT ``GP`` alone does not count (a variant caller can add it), nor
+# does GATK's INFO ``DS`` ("downsampled"), which is another field.
+IMPUTATION_INFO_IDS = frozenset({"IMPUTED", "TYPED", "R2", "DR2", "IMP"})
+IMPUTATION_FORMAT_IDS = frozenset({"DS", "HS"})
+# The ``method`` of a VCF whose header declares one of them.
+METHOD_VCF_IMPUTED = "vcf-imputed"
+# How many records with a called GT decide whether a file's calls are phased.
+_PHASE_CHECK_CALLS = 1000
+
+
+def _all_phased(handle: TextIO, sample_idx: int) -> bool:
+    """True when the first called diploid GTs of the sample are all phased (``|``).
+
+    Reads from the first data line on, up to ``_PHASE_CHECK_CALLS`` such
+    calls. False when any is unphased (``/``) or none is found. A haploid
+    GT and a GT with a missing allele say nothing and are passed over.
+    """
+    phased = 0
+    for line in handle:
+        cols = line.rstrip("\n").rstrip("\r").split("\t")
+        if len(cols) <= 9 + sample_idx or cols[0].startswith("#"):
+            continue
+        keys = cols[8].split(":")
+        if not keys or keys[0] != "GT":
+            continue
+        gt = cols[9 + sample_idx].split(":")[0]
+        if "." in re.split(r"[/|]", gt) or ("/" not in gt and "|" not in gt):
+            continue
+        if "/" in gt:
+            return False
+        phased += 1
+        if phased >= _PHASE_CHECK_CALLS:
+            break
+    return phased > 0
+
+
 def _absorb_meta_line(line: str, header: _VcfHeader) -> None:
     """Extract contig lengths, the assembly label and the gVCF marker from a ``##`` line."""
     if line.startswith("##ALT=") and "ID=NON_REF" in line:
         header.has_non_ref_alt = True
         return
+    if line.startswith(GENES_FOR_GOOD_LINE):
+        header.genes_for_good = True
+        return
+    for prefix, ids in (("##INFO=", IMPUTATION_INFO_IDS), ("##FORMAT=", IMPUTATION_FORMAT_IDS)):
+        if line.startswith(prefix):
+            field_id = _CONTIG_ID_RE.search(line)
+            if field_id and field_id.group(1).strip() in ids:
+                header.imputation_fields.add(prefix + field_id.group(1).strip())
+            return
     if line.startswith("##contig="):
         contig_id = _CONTIG_ID_RE.search(line)
         length = _CONTIG_LENGTH_RE.search(line)
@@ -678,6 +803,7 @@ def _parse_record(
     """
     if len(cols) < 8:
         logger.warning("Malformed VCF line (fewer than 8 columns): %s", line[:80])
+        stats.malformed_rows += 1
         return None, None
     chrom = cols[0]
     pos_str = cols[1]
@@ -701,18 +827,27 @@ def _parse_record(
         position = int(pos_str)
     except ValueError:
         logger.warning("Invalid VCF position %r", pos_str)
+        stats.malformed_rows += 1
         return None, None
 
     if not want_state and _cannot_yield_call(alt):
         # Reference block, reference-only row or SV: no Variant, and no
-        # one is asking what it says.
+        # one is asking what it says. A reference-only row (ALT '.')
+        # whose GT names an ALT is counted (ADR-0047).
+        if alt in (".", ""):
+            _count_alt_less_call(_gt_indices(_sample_fields(cols, sample_idx)), stats)
         return None, None
     alts = [] if alt in (".", "") else alt.split(",")
 
     fields = _sample_fields(cols, sample_idx)
     gt = _gt_indices(fields)
     if gt is None:
-        # Sites-only file, no sample columns, or no GT in FORMAT.
+        # Sites-only file, no sample columns, or no GT in FORMAT; or a GT
+        # that is neither haploid nor diploid.
+        if "GT" in fields:
+            stats.unusable_genotype_calls += 1
+        else:
+            stats.no_genotype_rows += 1
         return None, None
     low = _low_confidence(fields, stats.min_gq)
 
@@ -722,12 +857,19 @@ def _parse_record(
         return None, ((NO_CALL, REASON_LOW_GQ_BLOCK) if low else (REFERENCE, ""))
 
     stars = sum(1 for i in gt if _points_at(i, alts, _SPANNING_DELETION))
-    if stars == 1:
-        # one haplotype is the deletion allele '*'. No Variant shape
-        # says "this allele, other haplotype deleted", so it is not
-        # assessed; counted so the report can say so.
+    if stars:
+        # a haplotype is the deletion allele '*'. No Variant shape says
+        # "this allele, other haplotype deleted", so it is not assessed;
+        # counted and listed so the report can say so (ADR-0047).
         stats.spanning_deletion_calls += 1
+        stats.spanning_deletion_sites.append(f"{chrom}:{position} {ref}>{alt} {fields['GT']}")
     if any(_points_at(i, alts) for i in gt):
+        if not stars and not all(_is_symbolic(a) for a in alts):
+            # ADR-0047: a call on a symbolic ALT (0/2 on A,<NON_REF>) of a
+            # record that also has a real ALT. Structural-variant records
+            # are counted as symbolic rows above; a reference block
+            # (<NON_REF> or <*> alone) is not checked (ADR-0047).
+            stats.symbolic_allele_calls += 1
         reason = REASON_SPANNING_DELETION if stars else REASON_SYMBOLIC
         return None, (NO_CALL, reason)
     if not alts or all(_is_symbolic(a) for a in alts):
@@ -735,13 +877,18 @@ def _parse_record(
         # genotype that is not hom-ref. Nothing to annotate.
         if all(i == "." for i in gt):
             return None, (NO_CALL, REASON_CALLER_NO_CALL)
+        if not alts:
+            _count_alt_less_call(gt, stats)
         return None, None
 
     a1, a2 = _resolve_genotype(fields, ref, alts)
     if a1 is None or a2 is None:
+        # a GT index that names no allele of this record.
+        stats.unusable_genotype_calls += 1
         return None, None
     state: LocusState = (CALLED, "")
-    if NO_CALL_MARKER in (a1, a2):
+    half = (a1 == NO_CALL_MARKER) != (a2 == NO_CALL_MARKER)
+    if NO_CALL_MARKER in (a1, a2) and not half:
         state = (NO_CALL, REASON_CALLER_NO_CALL)
     elif low:
         # the caller's own genotype quality says this call is not
@@ -749,7 +896,16 @@ def _parse_record(
         stats.low_quality_calls += 1
         a1 = a2 = NO_CALL_MARKER
         state = (NO_CALL, REASON_LOW_GQ_CALL)
+    elif half:
+        # ADR-0047: one allele called, the other missing (./1). Yielded
+        # with the called allele; the position stays a no-call.
+        stats.half_calls += 1
+        state = (NO_CALL, REASON_CALLER_NO_CALL)
 
+    # A one-index GT (``1`` on a male X, Y or MT): the file declares one
+    # copy. ``_resolve_genotype`` doubles it for matching (ADR-0050).
+    gt_field = fields.get("GT", "")
+    haploid = "/" not in gt_field and "|" not in gt_field and NO_CALL_MARKER not in (a1, a2)
     variant = Variant(
         rsid=_canonical_rsid(rsid),
         chromosome=normalize_chromosome(chrom),
@@ -758,8 +914,16 @@ def _parse_record(
         allele2=a2,
         # build is overridden by the pipeline (ADR-0021); leave default.
         ref=ref,
+        ref_from_input=True,
+        haploid=haploid,
     )
     return variant, state
+
+
+def _count_alt_less_call(gt: list[str] | None, stats: VcfQualityStats) -> None:
+    """Count a call on a reference-only record (ALT '.') whose GT names an ALT."""
+    if gt is not None and any(i not in ("0", ".") for i in gt):
+        stats.unusable_genotype_calls += 1
 
 
 def _gt_indices(fields: dict[str, str]) -> list[str] | None:
@@ -1097,12 +1261,12 @@ def _open_vcf(file_path: Path) -> TextIO:
     text paths so the fix applies regardless of how the file was
     delivered.
 
+    The gzip path is the shared ``open_genotype_text`` reader: a cut or
+    corrupt stream raises ``DamagedFileError`` and a BGZF file without its
+    end-of-file block is warned about.
+
     Returns ``typing.TextIO`` rather than the concrete ``io.TextIOBase``
     so mypy-strict callers see the ``__enter__`` / ``__exit__`` protocol
     on the returned handle.
     """
-    with open(file_path, "rb") as raw:
-        magic = raw.read(2)
-    if magic == b"\x1f\x8b":
-        return gzip.open(file_path, "rt", encoding="utf-8-sig", errors="replace")
-    return open(file_path, encoding="utf-8-sig", errors="replace")
+    return open_genotype_text(file_path, errors="replace")

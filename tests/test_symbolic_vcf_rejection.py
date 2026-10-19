@@ -331,7 +331,7 @@ class TestWrongFileErrorsComeBeforeTheBuildStop:
         for path in (zero, garbage):
             for command in ("analyze", "stats"):
                 message = self._run([command, str(path)], clinvar_data_dir)
-                assert f"No parser recognized '{path.name}'" in message
+                assert f"Allelix doesn't recognise the format of '{path.name}'" in message
 
     def test_header_only_file(self, tmp_path: Path, clinvar_data_dir: Path) -> None:
         chip = tmp_path / "header_only.txt"

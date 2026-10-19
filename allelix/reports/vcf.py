@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 
 from allelix import __version__
 from allelix.annotators import get_annotator_class
+from allelix.models import report_rank_key
 from allelix.parsers._helpers import normalize_chromosome
 from allelix.parsers.vcf import _open_vcf
 
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.3.0"
+VCF_SCHEMA_VERSION = "0.4.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
@@ -65,6 +66,9 @@ line, or attribution shape. ADR after real user feedback.
 caller-rejected rows are no longer stamped by default.
 0.3.0: ``##ALLELIX_Build=<ID=...,Source=...>`` records where the build came
 from (ADR-0044); it was ``##ALLELIX_Build=<build>``.
+0.4.0: ``##ALLELIX_SkippedSources=`` lists each registered source that did
+not run, with its reason (``clinvar:outdated,cadd:disabled``), or ``none``,
+so an annotated VCF never reads as complete when a source was skipped.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -219,7 +223,7 @@ def _format_primary(ann: Annotation) -> tuple[str, str] | None:
     if source == "clinvar":
         return (
             "clinvar",
-            _sanitize_info_value(f"{ann.significance}|{ann.rsid}|{ann.gene or '.'}"),
+            _sanitize_info_value(f"{ann.significance}|{ann.rsid or '.'}|{ann.gene or '.'}"),
         )
     if source == "gwas":
         pval = "." if ann.p_value is None else _format_number(ann.p_value)
@@ -323,6 +327,7 @@ def _emit_provenance_lines(
     build_source: str | None,
     annotators_used: list[tuple[str, str | None]],
     run_date: datetime,
+    skipped_sources: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Emit the provenance header block.
 
@@ -336,6 +341,8 @@ def _emit_provenance_lines(
         f"##ALLELIX_License={VCF_LICENSE}",
         f"##ALLELIX_RunDate={run_date.isoformat()}",
         f"##ALLELIX_Build=<ID={build},Source={build_source or 'unknown'}>",
+        "##ALLELIX_SkippedSources="
+        + (",".join(f"{name}:{reason}" for name, reason in skipped_sources or []) or "none"),
     ]
     for name, version in annotators_used:
         version_str = version if version else "unknown"
@@ -471,6 +478,7 @@ def render_vcf(
     run_date: datetime | None = None,
     keep_filtered: bool = False,
     build_source: str | None = None,
+    skipped_sources: list[tuple[str, str]] | None = None,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -534,6 +542,7 @@ def render_vcf(
                     build_source=build_source,
                     annotators_used=annotators_used,
                     run_date=run_date,
+                    skipped_sources=skipped_sources,
                 ):
                     fout.write(h + "\n")
                 fout.write(raw_line)
@@ -616,18 +625,16 @@ def _stamp_data_line(
         key: _VariantKey = (key_chrom, pos, ref, alt)
         anns = annotations_by_key.get(key, [])
         # Primary sources: source-dispatched, one Annotation → one INFO
-        # value slot. Last-one-wins across multiple annotations from the
-        # same source at the same variant — e.g. two ClinVar conditions
-        # collapse to the last one the pipeline hands us. v0.1.0
-        # explicit-scope trade-off: real multi-condition rendering (intra-
-        # value delimiter, or a dedicated ``ALLELIX_CLINVAR_ALL`` field)
-        # waits for v0.2.
-        for a in anns:
+        # value slot. Where a source has several rows at the variant (two
+        # ClinVar conditions, say), the slot takes the row the report
+        # lists first, so the VCF never shows a different classification
+        # from the report.
+        for a in sorted(anns, key=report_rank_key):
             primary = _format_primary(a)
             if primary is None:
                 continue
             src, value = primary
-            if src not in per_source:
+            if src not in per_source or per_source[src][i]:
                 continue
             per_source[src][i] = value
             row_stamped = True

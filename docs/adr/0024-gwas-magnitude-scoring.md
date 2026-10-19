@@ -112,6 +112,54 @@ may have reported risk alleles on the gene-coding strand. When strand-aware
 genotype comparison ships, the GWAS annotator should wire in the same
 strand-flip fallback used by ClinVar (see `allelix/utils/allele.py`).
 
+**Amended 2026-10-16 (2.5): abstain-first strand rule.** The risk allele is
+read against the site's forward alleles on the input's build (REF plus every
+ALT in the rsID identity table, ADR-0040), in this order:
+
+1. The site is not A/T or C/G and the risk allele is forward: compare it as
+   written.
+2. Otherwise, if its complement is forward: complement it, then compare.
+3. Abstain on A/T and C/G sites (forward alleles exactly {A,T} or {C,G}), on
+   rsIDs the table does not place at the call, and when neither reading fits.
+
+Abstentions are counted by reason in the report (`strand_abstentions`). There
+is no allele-frequency rescue. Rows without a risk allele need no strand and
+keep the 3.0 cap.
+
+"A/T or C/G site" is read from the site's forward alleles on the input's
+build, not from the identity table's `palindromic` flag. That flag says the
+strand relation between builds cannot be decided, and it is set wherever
+dbSNP lists all four bases (F5 rs6025, MTHFR rs1801133). Using it here would
+drop such sites, about 115,000 more GWAS rows.
+
+SNPedia genotype rows at rsIDs go through the same check
+(`allelix/annotators/snpedia.py`):
+
+- A page's stated orientation (plus or minus) is kept, and the oriented
+  genotype must lie among the forward alleles; otherwise the row abstains. At
+  a four-base site the direct reading of a minus page would be wrong (rs6025
+  `(A;A)` on a minus page is forward TT).
+- An unknown orientation, including one-row sites that cannot show they are
+  palindromic, takes rule 1 and then rule 2 on the site's alleles.
+- A/T and C/G sites abstain whatever the orientation.
+- 23andMe i-IDs (not rsIDs) and indel or D/I genotypes are outside the rule:
+  they keep the page's orientation with the palindrome guard, as before.
+
+Where the identity table cannot place a call, everything with a risk allele
+or a single-base genotype abstains, counted. This happens with no identity
+cache installed, and on GRCh36 input, which has no placements in the table.
+That follows ADR-0025's fail-closed GRCh36 path; GRCh36 placements are left
+for later.
+
+**Effect direction.** Every GWAS row carries `effect_direction`. It is
+`increases` or `decreases` for an odds ratio above or below 1, or for a beta
+whose sign (the Catalog's "unit increase/decrease" text) is positive or
+negative. Otherwise it is `unknown`. The HTML and terminal say it in plain
+words, and say when the effect allele is the reference allele: a person
+homozygous for a protective reference allele sees that it is protective.
+Magnitude is unchanged; the odds-ratio modifier still treats OR <= 0.33 like
+OR >= 3.0.
+
 ## Per-source magnitude floor (amended 2026-05-19)
 
 On real data, the GWAS Catalog produces ~88,000 trait–SNP associations at
@@ -125,6 +173,14 @@ annotations via `--gwas-min-magnitude` (default 9.0). The floor is implemented
 in `AnalysisResult.filter()` as a `source_min_magnitudes` dict that renderers
 pass through. GWAS annotations must meet `max(min_magnitude, gwas_min_magnitude)`
 to appear in the report.
+
+**Amended 2026-10-16 (2.5).** The implementation had made
+`--gwas-min-magnitude` replace `--min-magnitude` for GWAS rows, so a GWAS
+floor below the global one let GWAS rows in below the floor the user asked
+for. GWAS rows now meet `max(--min-magnitude, --gwas-min-magnitude)`, as
+written above. Must-include rsIDs keep their exemption from the GWAS floor
+and meet `--min-magnitude` (see the allowlist section). `--snpedia-min-magnitude`
+is unchanged: it replaces the global floor for SNPedia.
 
 The initial floor of 7.0 (v0.7.x) was insufficient: on real data, 30,000+
 GWAS rows have mag 7 (genome-wide significant common-trait territory: Height,
@@ -270,6 +326,13 @@ whose GWAS annotations bypass the per-source magnitude floor
 (`source_min_magnitudes`). The global `--min-magnitude` floor still applies.
 Trait-category filtering still applies. The carrier rule still applies.
 
+**Confirmed 2026-10-16 (2.5).** The exemption stays: these associations sit
+in the genome-wide tier (6.0 to 7.0) that the 9.0 GWAS floor hides, and
+applying it would undo the allowlist. They never go below `--min-magnitude`.
+Since 2.5 every other GWAS row meets `max(--min-magnitude,
+--gwas-min-magnitude)`. The strand rule (Strand normalization) applies to
+them like any other row.
+
 ### Initial allowlist
 
 | rsID | Gene | Condition |
@@ -341,6 +404,8 @@ Schema-only changes (new columns) are still caught by the existing
 accept/reject behavior for matching, missing, and stale `cv:` markers.
 
 ### Auto-reingest from cached TSV (amended 2026-05-22)
+
+*Amended by ADR-0048:* the re-ingest runs in the update step (`GWASCatalogAnnotator.prepare_cache()`, from `db update` or `analyze` without `--no-update`), not in `is_ready()`, which never writes.
 
 The raw GWAS Catalog TSV (~200 MB) is retained on disk after the first
 successful ingest. When `_CATEGORIZER_VERSION` bumps and the cached TSV is

@@ -1,4 +1,4 @@
-# results of my Tipsy Test (courtesy of BGI)
-rs1229984	4	99318162	CC
-rs671	12	111803962	GG
-rs279845	4	46327706	AT
+# results of my home panel test (placeholder text)
+rs3999990031	4	3999031	AG
+rs3999990032	12	3999032	GG
+rs3999990033	12	3999033	CT

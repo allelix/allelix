@@ -18,7 +18,13 @@ _FILE_ARG = click.argument(
     "file_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
 )
 _FORMAT_OPT = click.option(
-    "--format", "fmt", default=None, help="Force a specific parser. Default: auto-detect."
+    "--format",
+    "fmt",
+    default=None,
+    help=(
+        "Read the file with this reader even if it does not recognise the file, at your "
+        "own risk (every report then carries a warning). Default: auto-detect."
+    ),
 )
 _DATA_DIR_OPT = click.option(
     "--data-dir",
@@ -75,7 +81,10 @@ _GWAS_MIN_MAG_OPT = click.option(
     type=float,
     default=9.0,
     show_default=True,
-    help="Magnitude floor for GWAS Catalog annotations (overrides --min-magnitude for GWAS).",
+    help=(
+        "Magnitude floor for GWAS Catalog annotations; GWAS rows must meet the"
+        " larger of this and --min-magnitude."
+    ),
 )
 _SNPEDIA_MIN_MAG_OPT = click.option(
     "--snpedia-min-magnitude",
@@ -121,7 +130,8 @@ _FILTER_FILE_OPT = click.option(
     help=(
         "Plain text file with rsIDs and/or gene names (one per line) to "
         "filter the report. Lines matching '^rs\\d+$' are rsIDs; everything "
-        "else is a gene name. Comments (#) and blank lines are ignored."
+        "else is a gene name. A # starts a comment, on its own line or after "
+        "an entry; the rest of the line and blank lines are ignored."
     ),
 )
 _NO_UPDATE_OPT = click.option(
@@ -156,9 +166,10 @@ _BUILD_OPT = click.option(
         "Genome build of the input file. 'auto' decides from the evidence "
         "the file carries (VCF contig lengths, known-SNP positions) and stops "
         "when that evidence contradicts the file's label or is missing. "
-        "'grch37' / 'grch38' force a specific build, skipping detection; "
-        "'grch36' forces an old GRCh36 / hg18 file, with position-keyed "
-        "lookups off (see docs/grch36-liftover.md)."
+        "'grch37' / 'grch38' force a specific build; the run still stops when "
+        "the file's contig lengths or confident known-SNP positions say "
+        "another build. 'grch36' forces an old GRCh36 / hg18 file, with "
+        "position-keyed lookups off (see docs/grch36-liftover.md)."
     ),
 )
 _SAMPLE_OPT = click.option(

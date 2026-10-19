@@ -2,8 +2,8 @@
 # Copyright (C) 2026 Allelix
 """The build decision rule (ADR-0044): evidence before labels.
 
-Unit tests of ``contig_length_verdict``, ``decide_build`` and
-``check_late_seeds``. Every input is synthetic.
+Unit tests of ``contig_length_verdict``, ``decide_build``,
+``check_late_seeds`` and ``needs_late_seeds``. Every input is synthetic.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from allelix.utils.build_detect import (
     check_late_seeds,
     contig_length_verdict,
     decide_build,
+    needs_late_seeds,
 )
 
 # T2T-CHM13v2.0 chr1, an assembly Allelix does not support.
@@ -180,6 +181,45 @@ class TestDecideBuild:
         )
         assert _decide(kind=KIND_VCF, lengths=lengths).skip_mt
 
+    # chrM alone declares a length: the lengths do not decide the build,
+    # but the hg19 chrM still holds whatever does.
+    _HG19_CHRM_ONLY = contig_length_verdict({"chrM": HG19_CHRM_LENGTH})
+
+    def test_hg19_chrm_skipped_under_build_override(self) -> None:
+        decision = _decide(kind=KIND_VCF, override=BUILD_GRCH37, lengths=self._HG19_CHRM_ONLY)
+        assert decision.source == SOURCE_OVERRIDE
+        assert decision.skip_mt
+
+    def test_hg19_chrm_skipped_under_assembly_label(self) -> None:
+        decision = _decide(
+            kind=KIND_VCF,
+            file_label=BUILD_GRCH37,
+            lengths=self._HG19_CHRM_ONLY,
+            seeds=TENTATIVE_37,
+        )
+        assert decision.source == SOURCE_ASSEMBLY_HEADER
+        assert decision.skip_mt
+
+    def test_hg19_chrm_skipped_when_seeds_decide(self) -> None:
+        decision = _decide(kind=KIND_VCF, lengths=self._HG19_CHRM_ONLY, seeds=CONFIDENT_37)
+        assert decision.source == SOURCE_SEEDS
+        assert decision.skip_mt
+
+    @pytest.mark.parametrize(
+        "how",
+        [
+            {"override": BUILD_GRCH37},
+            {"file_label": BUILD_GRCH37, "seeds": TENTATIVE_37},
+            {"seeds": CONFIDENT_37},
+        ],
+    )
+    def test_rcrs_chrm_is_kept_on_every_path(self, how: dict[str, object]) -> None:
+        lengths = contig_length_verdict({"chrM": 16_569})
+        assert not _decide(kind=KIND_VCF, lengths=lengths, **how).skip_mt  # type: ignore[arg-type]
+
+    def test_arrays_never_skip_mt(self) -> None:
+        assert not _decide(kind=KIND_ARRAY, override=BUILD_GRCH37).skip_mt
+
     # ── known-SNP positions ──
 
     def test_confident_seeds_override_a_wrong_label(self) -> None:
@@ -283,9 +323,36 @@ class TestDecideBuild:
         assert decision.label_overridden
         assert not decision.tentative_grch36
 
-    def test_label_without_seeds(self) -> None:
-        decision = _decide(file_label=BUILD_GRCH38)
-        assert (decision.build, decision.source) == (BUILD_GRCH38, SOURCE_FILE_LABEL)
+    @pytest.mark.parametrize("kind", [KIND_ARRAY, KIND_VCF])
+    def test_label_without_seeds_stops(self, kind: str) -> None:
+        """a label with nothing to check it against does not decide alone."""
+        lengths = contig_length_verdict({}) if kind == KIND_VCF else None
+        with pytest.raises(BuildDecisionError) as exc:
+            _decide(kind=kind, file_label=BUILD_GRCH38, lengths=lengths)
+        message = str(exc.value)
+        assert "the file says GRCh38 but carries no known-SNP position to check it" in message
+        assert "--build grch37 or --build grch38" in message
+
+    @pytest.mark.parametrize("kind", [KIND_ARRAY, KIND_VCF])
+    def test_label_with_one_agreeing_seed_decides(self, kind: str) -> None:
+        lengths = contig_length_verdict({}) if kind == KIND_VCF else None
+        decision = _decide(kind=kind, file_label=BUILD_GRCH38, lengths=lengths, seeds=TENTATIVE_38)
+        source = SOURCE_ASSEMBLY_HEADER if kind == KIND_VCF else SOURCE_FILE_LABEL
+        assert (decision.build, decision.source) == (BUILD_GRCH38, source)
+
+    def test_grch36_label_without_seeds_runs_as_grch36(self) -> None:
+        """A vendor GRCh36 label is exempt from the stop, like --build grch36:
+        GRCh36 turns position lookups off (ADR-0025)."""
+        decision = _decide(file_label=BUILD_GRCH36)
+        assert (decision.build, decision.source) == (BUILD_GRCH36, SOURCE_FILE_LABEL)
+
+    def test_vcf_grch36_assembly_without_seeds_still_stops(self) -> None:
+        with pytest.raises(BuildDecisionError, match="carries no known-SNP position"):
+            _decide(kind=KIND_VCF, file_label=BUILD_GRCH36, lengths=contig_length_verdict({}))
+
+    def test_label_without_seeds_passes_with_build(self) -> None:
+        decision = _decide(file_label=BUILD_GRCH38, override=BUILD_GRCH38)
+        assert (decision.build, decision.source) == (BUILD_GRCH38, SOURCE_OVERRIDE)
 
     @pytest.mark.parametrize("label", [None, BUILD_GRCH37])
     def test_tentative_grch36_fails_safe_to_grch36(self, label: str | None) -> None:
@@ -406,5 +473,81 @@ class TestLateSeedCheck:
         assert "annotation pass" in message
         assert "nothing was written" in message
 
-    def test_only_a_lengths_decision_is_checked(self) -> None:
-        check_late_seeds(_decide(file_label=BUILD_GRCH37), CONFIDENT_38, "x.txt")
+    def test_only_a_lengths_or_override_decision_is_checked(self) -> None:
+        check_late_seeds(
+            _decide(file_label=BUILD_GRCH37, seeds=TENTATIVE_37), CONFIDENT_38, "x.txt"
+        )
+        check_late_seeds(_decide(seeds=CONFIDENT_37), CONFIDENT_38, "x.txt")
+
+
+class TestBuildOverrideChecked:
+    """--build against the file's own evidence."""
+
+    _LENGTHS_37 = contig_length_verdict(_lengths(BUILD_GRCH37, "1"))
+
+    @pytest.mark.parametrize("kind", [KIND_ARRAY, KIND_VCF])
+    def test_confident_contrary_seeds_stop_naming_both(self, kind: str) -> None:
+        with pytest.raises(BuildDecisionError) as exc:
+            _decide(kind=kind, override=BUILD_GRCH37, seeds=CONFIDENT_38)
+        message = str(exc.value)
+        assert "--build grch37 was given but the file's known-SNP positions say GRCh38" in message
+        assert "9 of 10 known-SNP positions match GRCh38 (confident)" in message
+
+    def test_contrary_contig_lengths_stop_naming_both(self) -> None:
+        with pytest.raises(BuildDecisionError) as exc:
+            _decide(kind=KIND_VCF, override=BUILD_GRCH38, lengths=self._LENGTHS_37)
+        assert "--build grch38 was given but the file's contig lengths are GRCh37" in str(
+            exc.value
+        )
+
+    @pytest.mark.parametrize(
+        "seeds",
+        # 8 of 11 is many contrary positions, but under 80%: not confident.
+        [TENTATIVE_38, _seeds(BUILD_GRCH38, 8, 11), TIE_37_38, TIE_36_38, ZERO_VOTES, NO_SEEDS],
+    )
+    def test_tentative_or_no_evidence_runs_as_forced(self, seeds: BuildDetectionResult) -> None:
+        decision = _decide(override=BUILD_GRCH37, seeds=seeds)
+        assert (decision.build, decision.source) == (BUILD_GRCH37, SOURCE_OVERRIDE)
+        assert decision.seeds == seeds  # kept for the warning notice
+
+    def test_agreeing_evidence_runs(self) -> None:
+        decision = _decide(
+            kind=KIND_VCF, override=BUILD_GRCH37, lengths=self._LENGTHS_37, seeds=CONFIDENT_37
+        )
+        assert (decision.build, decision.source) == (BUILD_GRCH37, SOURCE_OVERRIDE)
+
+    def test_grch36_is_exempt(self) -> None:
+        """ADR-0025: GRCh36 turns position lookups off, so it cannot attach wrong records."""
+        decision = _decide(override=BUILD_GRCH36, seeds=CONFIDENT_38)
+        assert decision.build == BUILD_GRCH36
+        decision = _decide(kind=KIND_VCF, override=BUILD_GRCH36, lengths=self._LENGTHS_37)
+        assert decision.build == BUILD_GRCH36
+        assert not needs_late_seeds(decision)
+        check_late_seeds(decision, CONFIDENT_38, "x.vcf")
+
+    def test_needs_late_seeds(self) -> None:
+        by_lengths = _decide(kind=KIND_VCF, lengths=self._LENGTHS_37)
+        forced_with_lengths = _decide(
+            kind=KIND_VCF, override=BUILD_GRCH37, lengths=self._LENGTHS_37
+        )
+        forced_without = _decide(
+            kind=KIND_VCF, override=BUILD_GRCH37, lengths=contig_length_verdict({})
+        )
+        forced_array = _decide(override=BUILD_GRCH37)
+        assert needs_late_seeds(by_lengths)
+        assert needs_late_seeds(forced_with_lengths)
+        assert not needs_late_seeds(forced_without)
+        assert not needs_late_seeds(forced_array)
+
+    def test_late_confident_contrary_seeds_stop(self) -> None:
+        decision = _decide(kind=KIND_VCF, override=BUILD_GRCH37, lengths=self._LENGTHS_37)
+        with pytest.raises(BuildDecisionError) as exc:
+            check_late_seeds(decision, CONFIDENT_38, "x.vcf")
+        message = str(exc.value)
+        assert "--build grch37 was given but the file's known-SNP positions say GRCh38" in message
+        assert "nothing was written" in message
+
+    @pytest.mark.parametrize("seeds", [TENTATIVE_38, TIE_36_38, CONFIDENT_37])
+    def test_late_tentative_or_agreeing_seeds_pass(self, seeds: BuildDetectionResult) -> None:
+        decision = _decide(kind=KIND_VCF, override=BUILD_GRCH37, lengths=self._LENGTHS_37)
+        check_late_seeds(decision, seeds, "x.vcf")

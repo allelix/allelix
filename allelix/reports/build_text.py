@@ -3,11 +3,12 @@
 """Wording for the build decision, shared by every command and report (ADR-0044).
 
 ``source_text`` says where the build came from; ``build_notices`` lists the
-notices the decision carries (label mismatch, format default, tie, hg19 chrM,
-GRCh36). The CLI prints them for ``analyze``, ``stats``, ``extract``,
-``export plink`` and ``compare``; the HTML report shows the mismatch and tie
-notices. One place, so a tie is never described as "decided by known-SNP
-positions" on one surface and correctly on another.
+notices the decision carries (label mismatch, ``--build`` against tentative
+evidence, format default, tie, hg19 chrM, GRCh36). The CLI prints them for
+``analyze``, ``stats``, ``extract``, ``export plink`` and ``compare``; the HTML
+report shows the mismatch and tie notices. One place, so a tie is never
+described as "decided by known-SNP positions" on one surface and correctly on
+another.
 """
 
 from __future__ import annotations
@@ -168,6 +169,27 @@ def build_notices(diag: BuildDiagnostics) -> list[Notice]:
                 f"is used. If the file uses another build, pass {_BUILD_CHOICES}.",
             )
         )
+    if diag.override and diag.effective_build != BUILD_GRCH36:
+        # Confident contrary evidence stopped the run (ADR-0044);
+        # tentative evidence against --build is shown, not obeyed.
+        if diag.tied_builds and diag.effective_build not in diag.tied_builds:
+            against = f"the file's known-SNP positions are {_tie(diag)}"
+        elif diag.detected_build and diag.detected_build != diag.effective_build:
+            against = (
+                f"the file's known-SNP positions tentatively say {diag.detected_build} "
+                f"({diag.matched_count}/{diag.inspected_count})"
+            )
+        else:
+            against = ""
+        if against:
+            notices.append(
+                Notice(
+                    MISMATCH,
+                    f"Build warning: --build {diag.effective_build.lower()} was given, "
+                    f"but {against}. Using {diag.effective_build} as forced. If the file "
+                    f"uses another build, pass {_BUILD_CHOICES}.",
+                )
+            )
     if diag.inconclusive:
         if _is_grch36_fail_safe_tie(diag):
             using = "Using GRCh36 as the safe choice: position lookups are off."
@@ -181,7 +203,17 @@ def build_notices(diag: BuildDiagnostics) -> list[Notice]:
                 f"{using} If the file uses a different build, pass {_BUILD_CHOICES}.",
             )
         )
-    if diag.mt_skipped:
+    if diag.mt_skipped and diag.mt_ucsc_name:
+        notices.append(
+            Notice(
+                CHRM,
+                f"Note: {diag.mt_skipped:,} mitochondrial record(s) named chrM or M were not "
+                "annotated. On GRCh37 that name is UCSC hg19's chrM (16,571 bp), whose "
+                "coordinates are not the reference mitochondrial sequence, unless the file "
+                "declares it with the reference length (16,569 bp).",
+            )
+        )
+    elif diag.mt_skipped:
         notices.append(
             Notice(
                 CHRM,
@@ -211,10 +243,12 @@ def build_notices(diag: BuildDiagnostics) -> list[Notice]:
         notices.append(
             Notice(
                 GRCH36,
-                f"Warning: {how} ClinPGx, GWAS Catalog and SNPedia match by rsID and still "
-                "run. ClinVar is skipped (no GRCh36 cache, see ADR-0025), and gnomAD, "
-                "AlphaMissense and CADD give no values (they need GRCh38 coordinates). For "
-                "full coverage, lift the file over to GRCh38 first: docs/grch36-liftover.md",
+                f"Warning: {how} ClinPGx matches by rsID and still runs; GWAS Catalog risk "
+                "alleles and single-base SNPedia genotypes are not assessed on GRCh36 "
+                "(counted below). ClinVar is skipped (no GRCh36 cache, see ADR-0025), and "
+                "gnomAD, AlphaMissense and CADD give no values (they need GRCh38 "
+                "coordinates). For full coverage, lift the file over to GRCh38 first: "
+                "docs/grch36-liftover.md",
             )
         )
     return notices

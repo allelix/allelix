@@ -173,7 +173,7 @@ class TestEndToEndAgainstMockGenerators:
         assert result.build_diagnostics.effective_build == "GRCh38"
 
     def test_nipa1_forced_grch37_no_cross_build_false_positive(
-        self, mock_mhg_path: Path, all_annotators_data_dir: Path
+        self, mock_mhg_path: Path, all_annotators_data_dir: Path, tmp_path: Path
     ):
         """Pinning the OTHER direction of the dispatch contract.
 
@@ -187,6 +187,10 @@ class TestEndToEndAgainstMockGenerators:
         no NIPA1 annotation. The diagnostics still record the GRCh37
         override, so a "let's always default to GRCh37" regression would
         flip the effective-build assertions here and in the sibling test.
+
+        The file's known-SNP positions confidently say GRCh38, so the forced
+        GRCh37 now stops on the full file. The dispatch is pinned on a copy
+        without those rows, where nothing contradicts the forced build.
         """
         from contextlib import ExitStack
 
@@ -194,15 +198,27 @@ class TestEndToEndAgainstMockGenerators:
         from allelix.annotators.pharmgkb import PharmGKBAnnotator
         from allelix.parsers.myhappygenes import MyHappyGenesParser
         from allelix.reports._pipeline import run_analysis
+        from allelix.utils.build_detect import KNOWN_SNP_POSITIONS, BuildDecisionError
 
         parser = MyHappyGenesParser()
+        with pytest.raises(BuildDecisionError, match="--build grch37 was given"):
+            run_analysis(mock_mhg_path, parser, [], build_override="GRCh37")
+        no_seeds = tmp_path / "mock_myhappygenes_no_seeds.txt"
+        no_seeds.write_text(
+            "".join(
+                line
+                for line in mock_mhg_path.read_text().splitlines(keepends=True)
+                if line.split("\t")[0] not in KNOWN_SNP_POSITIONS
+            )
+        )
+        assert "rs104894490\t" in no_seeds.read_text()
         annotators = [
             ClinVarAnnotator(all_annotators_data_dir),
             PharmGKBAnnotator(all_annotators_data_dir),
         ]
         with ExitStack() as stack:
             bound = [stack.enter_context(a) for a in annotators]
-            result = run_analysis(mock_mhg_path, parser, bound, build_override="GRCh37")
+            result = run_analysis(no_seeds, parser, bound, build_override="GRCh37")
 
         nipa1_hits = [
             a for a in result.annotations if a.source == "clinvar" and a.rsid == "rs104894490"

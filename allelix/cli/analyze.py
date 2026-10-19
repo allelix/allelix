@@ -45,9 +45,9 @@ if TYPE_CHECKING:
 @_MIN_MAG_OPT
 @click.option(
     "--category",
-    type=str,
+    type=click.Choice(["clinical", "pharma", "trait"], case_sensitive=False),
     default=None,
-    help="Filter to a single bucket (clinical, pharma).",
+    help="Show only one category: clinical, pharma or trait.",
 )
 @_OUTPUT_OPT
 @_REPORT_FORMAT_OPT

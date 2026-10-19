@@ -72,6 +72,8 @@ MHG.txt
 !CHANGELOG.txt
 # Synthetic test fixtures are committed
 !tests/fixtures/*.vcf
+# Synthetic edge-case VCFs (every call invented; README entry each)
+!test_data/edge_cases/synthetic_*.vcf
 !tests/fixtures/*.vcf.gz
 !tests/fixtures/*.txt
 

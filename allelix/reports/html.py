@@ -7,7 +7,7 @@ assets, works from ``file://``. Per ADR-0003, every annotation carries its
 source attribution and the page header restates the informational posture.
 
 v1.8.0 redesign: 5-column table (Magnitude, Gene, Genotype, Repute,
-Summary) with annotations grouped by ``(rsid, genotype_match)``. Clicking a
+Summary) with annotations grouped by variant and ``genotype_match``. Clicking a
 row opens a sliding detail sidebar showing all source annotations vertically.
 """
 
@@ -20,16 +20,49 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from allelix import __version__
+from allelix.annotators.clinvar import (
+    _AGGREGATE_CAP,
+    _BENIGN_CLNSIGS,
+    _CLNSIG_MAGNITUDE,
+    _OUTSIDE_CONFLICT_CAP,
+)
+from allelix.annotators.gwas import _UNKNOWN_RISK_ALLELE_MAG_CAP
+from allelix.annotators.gwas import _magnitude as _gwas_magnitude
+from allelix.annotators.pharmgkb import _LOE_MAGNITUDE
+from allelix.models import annotation_label
 from allelix.reports import (
     REGULATORY_NOTICE,
+    array_quality_lines,
     atomic_write_text,
+    input_left_unchecked,
     input_method_label,
     is_imputed,
     vcf_quality_lines,
 )
-from allelix.reports._pipeline import rollup_gwas_duplicates
+from allelix.reports._pipeline import (
+    COMMON_ALLELE_AF,
+    COMMON_ALLELE_MAGNITUDE,
+    PANEL_NOT_ON_CHIP,
+    PANEL_STATES,
+    is_vcf_parser,
+    panel_state_label,
+    rollup_gwas_duplicates,
+)
+from allelix.reports._sources import SKIPPED
+from allelix.reports.association_text import effect_words, strand_abstention_lines
 from allelix.reports.build_text import INCONCLUSIVE, MISMATCH, build_notices, short_source
-from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS, most_severe
+from allelix.reports.clinvar_text import common_allele_line, detail_fields, scored_down_line
+from allelix.utils.plausibility import (
+    CHROMOSOME,
+    GNOMAD_NOT_RUN,
+    IMPLAUSIBLE,
+    NO_ALLELE,
+    NO_FREQUENCY,
+    NOT_ASSESSED,
+    SUSPICIOUS,
+    most_severe,
+)
+from allelix.utils.plausibility import HALF_CALL as REASON_HALF_CALL
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -37,6 +70,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
     from allelix.reports._pipeline import AnalysisResult, PanelCoverage
+    from allelix.reports._sources import ReportWarning, SourceRecord
     from allelix.reports.diff import DiffResult
 
 
@@ -50,6 +84,11 @@ _BAD_SIGNIFICANCE = frozenset(
         "clinvar_pathogenic/likely_pathogenic",
         "clinvar_likely_pathogenic",
         "clinvar_risk_factor",
+        "clinvar_pathogenic,_low_penetrance",
+        "clinvar_likely_pathogenic,_low_penetrance",
+        "clinvar_established_risk_allele",
+        "clinvar_confers_sensitivity",
+        "clinvar_likely_risk_allele",
         "snpedia_bad",
     }
 )
@@ -59,6 +98,7 @@ _GOOD_SIGNIFICANCE = frozenset(
         "clinvar_benign",
         "clinvar_benign/likely_benign",
         "clinvar_likely_benign",
+        "clinvar_protective",
         "snpedia_good",
     }
 )
@@ -75,7 +115,14 @@ def _classify_repute(significance: str) -> str:
 
 
 def _get_repute(ann: Annotation) -> str:
-    """Return ``'bad'``, ``'good'``, or ``'neutral'`` for an annotation."""
+    """Return ``'bad'``, ``'good'``, or ``'neutral'`` for an annotation.
+
+    A ClinVar row scored down to ClinVar's own Conflicting or Benign view
+    (ADR-0045), or as a zero-star submission on a common allele (ADR-0052),
+    is neutral, whatever its submitter said.
+    """
+    if ann.aggregate_capped or ann.common_allele_capped:
+        return "neutral"
     return _classify_repute(ann.significance).removeprefix("repute-")
 
 
@@ -169,6 +216,10 @@ a { color: var(--link); }
   background: var(--notice-bg, #fff8e1); border-left: 4px solid var(--notice-border, #f9a825);
   padding: 1rem; margin: 1.5rem 0; border-radius: 4px; font-size: .95rem;
 }
+.sources-off { color: var(--text-muted); font-size: 0.9em; margin: 0.5em 0; }
+.details-summary { margin: .5rem 0; }
+.tech-details { margin: 0 0 1.5rem; }
+.tech-details > summary { cursor: pointer; font-weight: 600; }
 .notice-warn {
   background: var(--notice-warn-bg, #fff3e0);
   border-left: 4px solid var(--notice-warn-border, #e65100);
@@ -272,6 +323,7 @@ tbody tr.selected {
 .plaus { margin-left: 6px; cursor: help; font-family: sans-serif; }
 .plaus-implausible { color: var(--notice-warn-border); }
 .plaus-suspicious  { color: var(--notice-border); }
+.plaus-not_assessed { color: var(--text-muted); }
 .sum-cell {
   overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 0;
@@ -391,11 +443,26 @@ If a result seems inconsistent with your health history, confirmatory
 testing by a different method is recommended.</p>
 """
 
+# How each imputed input was produced, for the "Imputed genotypes" note.
+_IMPUTATION_ORIGIN: dict[str, str] = {
+    "low-pass-wgs-imputed": (
+        "This file comes from low-pass whole genome sequencing: each position was\n"
+        "read only about twice, and most genotypes were filled in (imputed) from a\n"
+        "reference panel of other people."
+    ),
+    "array-imputed": (
+        "This file extends a genotyping array by imputation: most of its genotypes\n"
+        "were not measured but filled in (imputed) from a reference panel of other\n"
+        "people."
+    ),
+}
+_IMPUTATION_ORIGIN_DEFAULT = (
+    "Most genotypes in this file were filled in (imputed) from a reference panel\n"
+    "of other people rather than measured."
+)
 _IMPUTATION_NOTE = """\
 <h3>Imputed genotypes</h3>
-<p>This file comes from low-pass whole genome sequencing: each position was
-read only about twice, and most genotypes were filled in (imputed) from a
-reference panel of other people. Imputation is accurate for common variants
+<p>{origin} Imputation is accurate for common variants
 and least reliable for rare ones, which are the variants most findings in this
 report are about. Confirm any finding by direct genotyping before acting on
 it.</p>
@@ -405,7 +472,8 @@ it.</p>
 def _education_section(input_method: str) -> str:
     """The "Reading This Report" section, with the caveat that fits the input."""
     if is_imputed(input_method):
-        return _EDUCATION_SECTION.replace(_PSEUDOGENE_NOTE, _IMPUTATION_NOTE)
+        origin = _IMPUTATION_ORIGIN.get(input_method, _IMPUTATION_ORIGIN_DEFAULT)
+        return _EDUCATION_SECTION.replace(_PSEUDOGENE_NOTE, _IMPUTATION_NOTE.format(origin=origin))
     return _EDUCATION_SECTION
 
 
@@ -431,6 +499,10 @@ entries carry less weight than expert-panel-reviewed classifications.</p>
 copies to cause disease. If you are heterozygous (one copy), you are a carrier.
 Carrier status does not typically cause symptoms but may be relevant for family
 planning.</p>
+<p>A call marked <strong>Hemizygous</strong> is one the file declares as a single
+copy, such as an X chromosome call in a male. For an X-linked recessive
+condition, one copy of a pathogenic allele on a male's single X can cause the
+condition; it does not make him a carrier in the sense above.</p>
 
 <h3>Confirmatory testing</h3>
 <p>No genotyping platform is 100% accurate. Clinically significant findings
@@ -439,7 +511,7 @@ decisions.</p>
 </details>
 """
 
-_MAGNITUDE_LEGEND = """\
+_MAGNITUDE_LEGEND_TEMPLATE = """\
 <details class="education">
 <summary><strong>Understanding Magnitude Scores</strong></summary>
 
@@ -448,40 +520,7 @@ _MAGNITUDE_LEGEND = """\
 attention. The score shown in the table is the maximum across all source
 annotations for that variant.</p>
 
-<h3>ClinVar (clinical significance)</h3>
-<table style="width:auto; font-size:.85rem; margin:.5rem 0;">
-<tr><td><span class="badge badge-bad" style="width:20px;height:20px;font-size:11px;\
-">9</span></td><td>Pathogenic</td></tr>
-<tr><td><span class="badge badge-bad" style="width:20px;height:20px;font-size:11px;\
-">8</span></td><td>Pathogenic (single submitter / no assertion criteria)</td></tr>
-<tr><td><span class="badge badge-bad" style="width:20px;height:20px;font-size:11px;\
-">7</span></td><td>Likely pathogenic</td></tr>
-<tr><td><span class="badge badge-neutral" style="width:20px;height:20px;font-size:11px;\
-">5</span></td><td>Uncertain significance / conflicting</td></tr>
-<tr><td><span class="badge badge-neutral" style="width:20px;height:20px;font-size:11px;\
-">4</span></td><td>Risk factor / drug response / association</td></tr>
-<tr><td><span class="badge badge-good" style="width:20px;height:20px;font-size:11px;\
-">3</span></td><td>Likely benign</td></tr>
-<tr><td><span class="badge badge-good" style="width:20px;height:20px;font-size:11px;\
-">1</span></td><td>Benign</td></tr>
-</table>
-
-<h3>ClinPGx (pharmacogenomic evidence)</h3>
-<table style="width:auto; font-size:.85rem; margin:.5rem 0;">
-<tr><td><strong>9</strong></td><td>Level 1A &mdash; CPIC guideline or FDA label</td></tr>
-<tr><td><strong>8</strong></td><td>Level 1B &mdash; strong clinical evidence</td></tr>
-<tr><td><strong>6</strong></td><td>Level 2A &mdash; moderate evidence</td></tr>
-<tr><td><strong>5</strong></td><td>Level 2B &mdash; moderate (weaker replication)</td></tr>
-<tr><td><strong>4</strong></td><td>Level 3 &mdash; low evidence or annotation only</td></tr>
-</table>
-
-<h3>GWAS Catalog (trait associations)</h3>
-<table style="width:auto; font-size:.85rem; margin:.5rem 0;">
-<tr><td><strong>6</strong></td><td>p &lt; 5&times;10<sup>-8</sup> (genome-wide)</td></tr>
-<tr><td><strong>4</strong></td><td>p &lt; 5&times;10<sup>-6</sup> (suggestive)</td></tr>
-<tr><td><strong>3</strong></td><td>p &lt; 1&times;10<sup>-4</sup> (nominal)</td></tr>
-</table>
-
+{scored_sources}
 <h3>SNPedia (community-curated)</h3>
 <p>Magnitude is assigned directly by community editors (0&ndash;10 scale).
 Higher scores indicate greater clinical or personal relevance as judged by
@@ -510,6 +549,120 @@ missense variants. Score 0&ndash;1; higher = more likely pathogenic.</p>
 </details>
 """
 
+# The ClinVar, ClinPGx and GWAS sections of the legend are generated from the
+# scoring code, so the legend cannot drift from the scores again.
+_LEGEND_TABLE = '<table style="width:auto; font-size:.85rem; margin:.5rem 0;">'
+
+_LOE_TEXT: dict[str, str] = {
+    "1a": "CPIC guideline or FDA label",
+    "1b": "strong clinical evidence",
+    "2a": "moderate evidence",
+    "2b": "moderate evidence, weaker replication",
+    "3": "a single study or unreplicated evidence",
+    "4": "case reports, non-significant studies or in vitro evidence",
+}
+
+# GWAS p-value tiers as ``_magnitude`` tests them (``p <= threshold``),
+# strongest first, with a note; the score shown is the code's own.
+_GWAS_TIERS: tuple[tuple[float, str], ...] = (
+    (5e-100, ""),
+    (5e-20, ""),
+    (5e-8, " (genome-wide significance)"),
+    (5e-6, " (suggestive)"),
+    (5e-4, " (nominal)"),
+)
+# ``_magnitude``'s odds-ratio steps: (at or above, at or below, added).
+_GWAS_ODDS_RATIO_STEPS: tuple[tuple[float, float, float], ...] = (
+    (3.0, 0.33, 1.0),
+    (2.0, 0.5, 0.5),
+)
+_GWAS_MAGNITUDE_CEILING = 9.0
+
+
+def _num(value: float) -> str:
+    """``9.0`` as ``9``, ``8.5`` as ``8.5``."""
+    return f"{value:g}"
+
+
+def _p_html(p: float) -> str:
+    """``5e-08`` as ``5&times;10<sup>-8</sup>``."""
+    mantissa, exponent = f"{p:.0e}".split("e")
+    return f"{mantissa}&times;10<sup>{int(exponent)}</sup>"
+
+
+def _clinvar_label(term: str) -> str:
+    """``likely_pathogenic,_low_penetrance`` as ``Likely pathogenic, low penetrance``."""
+    text = term.replace("_", " ").replace("vus-", "VUS-")
+    return text[:1].upper() + text[1:]
+
+
+def _legend_rows(rows: list[tuple[str, str]]) -> str:
+    cells = "".join(
+        f"<tr><td><strong>{score}</strong></td><td>{text}</td></tr>" for score, text in rows
+    )
+    return f"{_LEGEND_TABLE}{cells}</table>"
+
+
+def _clinvar_legend() -> str:
+    by_score: dict[float, list[str]] = defaultdict(list)
+    for term, score in _CLNSIG_MAGNITUDE.items():
+        label = _clinvar_label(term)
+        if term in _BENIGN_CLNSIGS:
+            label += " (shown with --include-benign)"
+        by_score[score].append(label)
+    rows = [(_num(score), " / ".join(by_score[score])) for score in sorted(by_score, reverse=True)]
+    caps = ", ".join(
+        f"{_escape(_clinvar_label(term))} {_num(cap)}"
+        for term, cap in sorted(_AGGREGATE_CAP.items(), key=lambda item: -item[1])
+    )
+    return (
+        "<h3>ClinVar (clinical significance)</h3>\n"
+        "<p>Each submission is scored by its own classification:</p>\n"
+        f"{_legend_rows(rows)}\n"
+        "<p>A disease classification is never scored above ClinVar&rsquo;s own "
+        f"classification of the variant: {caps}. Outranked Pathogenic or Likely pathogenic "
+        "submissions kept beside a classification of another kind are scored "
+        f"{_num(_OUTSIDE_CONFLICT_CAP)} when their review tier also holds other disease "
+        "classifications.</p>\n"
+        "<p>A Pathogenic or Likely pathogenic submission with zero stars (no assertion "
+        "criteria, or no classification provided) is scored "
+        f"{_num(COMMON_ALLELE_MAGNITUDE)} when gnomAD gives ClinVar&rsquo;s allele a "
+        f"frequency of {_num(COMMON_ALLELE_AF * 100)}% or more.</p>\n"
+        "<p>A classification without a score here is not shown; the report counts it.</p>\n"
+    )
+
+
+def _clinpgx_legend() -> str:
+    rows = [
+        (_num(score), f"Level {level.upper()} &mdash; {_LOE_TEXT[level]}")
+        for level, score in sorted(_LOE_MAGNITUDE.items(), key=lambda item: -item[1])
+    ]
+    return f"<h3>ClinPGx (pharmacogenomic evidence)</h3>\n{_legend_rows(rows)}\n"
+
+
+def _gwas_legend() -> str:
+    rows = [
+        (_num(_gwas_magnitude(threshold, None)), f"p &le; {_p_html(threshold)}{note}")
+        for threshold, note in _GWAS_TIERS
+    ]
+    rows.append((_num(_gwas_magnitude(None, None)), "weaker or no p-value"))
+    steps = "; ".join(
+        f"+{_num(added)} at {_num(high)} or more (or {_num(low)} or less)"
+        for high, low, added in _GWAS_ODDS_RATIO_STEPS
+    )
+    return (
+        "<h3>GWAS Catalog (trait associations)</h3>\n"
+        f"{_legend_rows(rows)}\n"
+        "<p>When the study reports a confirmed odds ratio, the score rises: "
+        f"{steps}; at most {_num(_GWAS_MAGNITUDE_CEILING)}. When the study does not name "
+        f"its risk allele, the score is at most {_num(_UNKNOWN_RISK_ALLELE_MAG_CAP)}.</p>\n"
+    )
+
+
+_MAGNITUDE_LEGEND = _MAGNITUDE_LEGEND_TEMPLATE.replace(
+    "{scored_sources}", _clinvar_legend() + "\n" + _clinpgx_legend() + "\n" + _gwas_legend()
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -534,11 +687,120 @@ def _input_method_banner(method: str) -> str:
 
 
 def _vcf_quality_banner(lines: list[str]) -> str:
-    """Rows the variant caller filtered and low-quality calls."""
+    """What the input's quality checks found: VCF gating, array calls ClinVar cannot match."""
     if not lines:
         return ""
     items = "".join(f"<li>{_escape(line)}</li>" for line in lines)
     return f'<div class="notice"><strong>Input quality.</strong><ul>{items}</ul></div>'
+
+
+def _report_warnings_banner(warnings: list[ReportWarning]) -> str:
+    """Report-level warnings (``report_warnings``), one ``notice-warn`` each."""
+    return "".join(
+        f'<div class="notice-warn"><strong>Warning.</strong> {_escape(w.message)}</div>'
+        for w in warnings
+    )
+
+
+# A report warning that already names a source's failure, by warning code:
+# that source is left out of "Sources not used", so the top says it once.
+_WARNING_NAMES_SOURCE = {"clinvar_skipped": "clinvar"}
+
+
+def _sources_failed_banner(sources: list[SourceRecord], warnings: list[ReportWarning]) -> str:
+    """Sources whose cache could not be used: the user can act on these.
+
+    A source a report warning already names (``_WARNING_NAMES_SOURCE``) is
+    left out; with nothing else, there is no box.
+    """
+    warned = {_WARNING_NAMES_SOURCE[w.code] for w in warnings if w.code in _WARNING_NAMES_SOURCE}
+    failed = [s for s in sources if s.failed and s.name not in warned]
+    if not failed:
+        return ""
+    items = "".join(f"<li>{_escape(s.message)}</li>" for s in failed)
+    return f'<div class="notice"><strong>Sources not used.</strong><ul>{items}</ul></div>'
+
+
+def _sources_off_line(sources: list[SourceRecord]) -> str:
+    """Sources the user turned off."""
+    chosen = [s for s in sources if s.state == SKIPPED and not s.failed]
+    if not chosen:
+        return ""
+    names = ", ".join(f"{_escape(s.display_name)} ({_escape(s.choice_text)})" for s in chosen)
+    return f'<p class="sources-off">Not run by choice: {names}.</p>'
+
+
+def _clinvar_banner(scored_down: int, unrecognised: int, common_allele: int) -> str:
+    """ADR-0045, ADR-0052: ClinVar rows that left the default report, and why."""
+    lines = [
+        line for line in (scored_down_line(scored_down), common_allele_line(common_allele)) if line
+    ]
+    if unrecognised:
+        lines.append(
+            f"{unrecognised} ClinVar row(s) not shown: their classification is not one "
+            "Allelix scores yet."
+        )
+    if not lines:
+        return ""
+    items = "".join(f"<li>{_escape(line)}</li>" for line in lines)
+    return f'<div class="notice"><strong>ClinVar.</strong><ul>{items}</ul></div>'
+
+
+def _strand_banner(abstentions: dict[str, dict[str, int]]) -> str:
+    """GWAS and SNPedia rows not assessed because their strand was not settled."""
+    lines = strand_abstention_lines(abstentions)
+    if not lines:
+        return ""
+    items = "".join(f"<li>{_escape(line)}</li>" for line in lines)
+    return f'<div class="notice"><strong>Strand.</strong><ul>{items}</ul></div>'
+
+
+# The top of the HTML report: a short disclaimer and the warnings that change
+# what a reader should do stay visible; the other notices, unchanged, sit in a
+# collapsed "Technical details" section. JSON and terminal output keep them all.
+_SHORT_DISCLAIMER = (
+    "This report shows what public databases say about the variants in your file. "
+    "It is for information only, not medical advice or a diagnosis."
+)
+_DETAILS_UNCHECKED = "Some calls could not be checked."
+_DETAILS_BELOW = "Details below."
+_DETAILS_SUMMARY_PLAIN = "More about how this report was made is in the details below."
+
+
+def _rows(count: int, verb: str) -> str:
+    """``1 ClinVar row was <verb>`` or ``N ClinVar rows were <verb>``."""
+    if count == 1:
+        return f"1 ClinVar row was {verb}."
+    return f"{count:,} ClinVar rows were {verb}."
+
+
+def _details_summary(*, unchecked: bool, scored_down: int, not_shown: int) -> str:
+    """The line above "Technical details", naming only what the section holds.
+
+    ``unchecked``: calls not checked (input quality or strand);
+    ``scored_down``: ClinVar rows scored down (aggregate cap and the
+    zero-star common-allele rule); ``not_shown``: ClinVar rows with a
+    classification Allelix does not score. With none of them, the
+    section holds only general notes and the line says so.
+    """
+    parts = [_DETAILS_UNCHECKED] if unchecked else []
+    if scored_down:
+        parts.append(_rows(scored_down, "scored down"))
+    if not_shown:
+        parts.append(_rows(not_shown, "not shown"))
+    if not parts:
+        return _DETAILS_SUMMARY_PLAIN
+    return " ".join([*parts, _DETAILS_BELOW])
+
+
+def _technical_details(notices: list[str], *, summary: str) -> str:
+    """The summary line and the collapsed section holding ``notices`` (HTML)."""
+    line = _escape(summary)
+    return (
+        f'<p class="details-summary">{line}</p>'
+        '<details class="tech-details"><summary>Technical details</summary>'
+        f"{''.join(notices)}</details>"
+    )
 
 
 def _hv_nocall_banner(warnings: list[str] | None) -> str:
@@ -552,100 +814,44 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
     )
 
 
-def _panel_coverage_section(
-    coverage: PanelCoverage | None,
-    panel_genotypes: dict[str, str] | None = None,
-    parser_name: str = "",
-) -> str:
-    """Render the Panel Coverage section.
+def _panel_coverage_section(coverage: PanelCoverage | None, parser_name: str = "") -> str:
+    """Render the Panel coverage section (ADR-0051); quiet when no panel was supplied.
 
-    Quiet when no panel was supplied. Otherwise show the requested/found
-    counts plus a table of rsIDs that weren't in the input (state 3)
-    and rsIDs that were present but produced no findings (state 2).
-    State 1 hits render in the main annotation table as before, so
-    this section is purely a "what's NOT in the table" summary.
-
-    when ``panel_genotypes`` is supplied (the rsid → "A/G"
-    map collected during run_analysis), a GT column is added between
-    rsID and Note. Genotyped rsIDs (state 2 + no-call) render their
-    literal call — including "-/-" for full no-calls and "A/-" for
-    half no-calls so the dash is visually obvious even though the v6
-    accounting still folds no-calls into ``no_findings`` (the
-    dedicated ``no_call`` MECE state is the job in v2.3). Rows
-    that aren't in the input (state 3) show "—" (em dash).
-
-    state-3 wording is format-aware. Array inputs (23andMe,
-    AncestryDNA, FTDNA, etc.) test a fixed set of positions, so
-    "not genotyped on this chip/platform" is the accurate framing —
-    a missing rsID truly wasn't on the user's chip. VCF / gVCF inputs
-    have no chip; an rsID is absent because either (a) the input file
-    has no variant call at that position (the sample is reference
-    /reference, and gVCFs only emit non-reference calls), or (b) the
-    position-based rsID resolver couldn't find a unique match. The
-    VCF-side label reflects that — "reference at this position or
-    no variant call" — instead of carrying array-format assumptions
-    into a context where they're meaningless. The legitimate
-    ref/ref case (e.g. rs429358 on an HG002 input, where HG002 has
-    T/T and DeepVariant emits no row) reads honestly under the new
-    label; under the old label it read as "not on chip" on a
-    chip-less input.
+    One row per requested rsID with its gene, genotype, state and number
+    of shown annotations. The four state counts sum to the number
+    requested. VCF input has no chip: an rsID absent from it is "not in
+    file", which may mean reference at that position or no variant call.
     """
     if coverage is None:
         return ""
-    requested = int(coverage["requested"])
-    found = int(coverage["found"])
-    missing = list(coverage["missing"])
-    no_findings = list(coverage["no_findings"])
-    show_gt = panel_genotypes is not None
-
-    def _gt(rsid: str, in_input: bool) -> str:
-        """Render the GT column cell.
-
-        State-3 rows (not_on_chip) show em dash; state-2 rows show
-        the literal Variant.genotype (e.g. "A/G", "-/-", "A/-").
-        """
-        if not in_input:
-            return "<td>—</td>"
-        gt = (panel_genotypes or {}).get(rsid, "—")
-        return f"<td><code>{_escape(gt)}</code></td>"
-
-    # VCF / gVCF inputs use a format-aware label; array inputs
-    # keep the historical "chip/platform" framing.
-    is_vcf = parser_name.lower() in {"vcf", "gvcf", "vcf parser"}
-    missing_label = (
-        "reference at this position or no variant call"
-        if is_vcf
-        else "not genotyped on this chip/platform"
+    vcf = is_vcf_parser(parser_name)
+    counts = ", ".join(
+        f"{coverage['counts'][state]} {panel_state_label(state, vcf=vcf)}"
+        for state in PANEL_STATES
     )
-    rows = []
-    for rsid in missing:
-        rows.append(
-            f"<tr><td><code>{_escape(rsid)}</code></td>"
-            f"{_gt(rsid, in_input=False) if show_gt else ''}"
-            f"<td>{missing_label}</td></tr>"
-        )
-    for rsid in no_findings:
-        rows.append(
-            f"<tr><td><code>{_escape(rsid)}</code></td>"
-            f"{_gt(rsid, in_input=True) if show_gt else ''}"
-            "<td>genotyped, no annotations matched</td></tr>"
-        )
-    table = ""
-    if rows:
-        gt_th = "<th>GT</th>" if show_gt else ""
-        table = (
-            "<table class='panel-coverage'><thead>"
-            f"<tr><th>rsID</th>{gt_th}<th>Note</th></tr></thead>"
-            f"<tbody>{''.join(rows)}</tbody></table>"
-        )
-    # parallel format-aware framing in the summary header.
-    missing_summary = "reference or no call" if is_vcf else "not on chip"
+    note = (
+        " An rsID not in the file may be reference at that position, or have no variant call."
+        if vcf and coverage["counts"][PANEL_NOT_ON_CHIP]
+        else ""
+    )
+    rows = "".join(
+        f"<tr><td><code>{_escape(v['rsid'])}</code></td>"
+        f"<td>{_escape(v['gene'] or '')}</td>"
+        f"<td>{'<code>' + _escape(v['genotype']) + '</code>' if v['genotype'] else ''}</td>"
+        f"<td>{panel_state_label(v['state'], vcf=vcf)}</td>"
+        f"<td>{v['annotation_count']}</td></tr>"
+        for v in coverage["variants"]
+    )
+    table = (
+        "<table class='panel-coverage'><thead><tr><th>rsID</th><th>Gene</th>"
+        "<th>Genotype</th><th>State</th><th>Annotations</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        if rows
+        else ""
+    )
     return (
         '<div class="notice"><strong>Panel coverage.</strong> '
-        f"{found}/{requested} requested rsIDs genotyped in this input "
-        f"({len(missing)} {missing_summary}, {len(no_findings)} "
-        "genotyped with no findings)."
-        f"{table}</div>"
+        f"{coverage['requested']} requested: {counts}.{note}{table}</div>"
     )
 
 
@@ -701,10 +907,13 @@ def _review_stars(status: int | str | None) -> str:
 def _group_annotations(
     annotations: list[Annotation],
 ) -> list[list[Annotation]]:
-    """Group annotations by ``(rsid, genotype_match)`` and sort by max magnitude."""
+    """Group annotations by variant and ``genotype_match``; sort by max magnitude.
+
+    The variant is its rsID, or its locus when it has none (ADR-0046).
+    """
     groups: dict[tuple[str, str], list[Annotation]] = defaultdict(list)
     for ann in annotations:
-        key = (ann.rsid, ann.genotype_match)
+        key = (annotation_label(ann), ann.genotype_match)
         groups[key].append(ann)
     return sorted(
         groups.values(),
@@ -724,11 +933,12 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
     for group in sorted_groups:
         display = max(group, key=lambda a: a.magnitude)
         entry: dict = {
-            "rsid": display.rsid,
+            "rsid": annotation_label(display),
             "gene": display.gene or "",
             "genotype": display.genotype_match,
             "zygosity": display.zygosity,
             "plausibility": most_severe([a.plausibility for a in group]),
+            "plausibility_reason": _not_assessed_reason(group),
             "annotations": [],
         }
         for ann in sorted(group, key=lambda a: -a.magnitude):
@@ -746,6 +956,13 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             if ann.review_status:
                 a["reviewStatus"] = ann.review_status
                 a["reviewStars"] = _review_stars(ann.review_status)
+            # Label and value pairs for the detail panel: ClinVar's own
+            # classification and the split (ADR-0045), a GWAS row's effect;
+            # always present, as the panel script reads it.
+            a["clinvar"] = [list(pair) for pair in detail_fields(ann)]
+            effect = effect_words(ann)
+            if effect:
+                a["clinvar"].append(["Effect", effect])
             if ann.condition:
                 a["condition"] = ann.condition
             if ann.description:
@@ -775,7 +992,7 @@ def _build_search_text(group: list[Annotation]) -> str:
     display = max(group, key=lambda a: a.magnitude)
     parts.extend(
         [
-            display.rsid,
+            annotation_label(display),
             display.gene,
             display.genotype_match,
             display.zygosity,
@@ -819,13 +1036,37 @@ _PLAUSIBILITY_TITLES: dict[str, str] = {
 }
 
 
-def _plausibility_icon(plausibility: str) -> str:
-    title = _PLAUSIBILITY_TITLES.get(plausibility)
-    if title is None:
+# ADR-0050: why a call's plausibility was not assessed.
+_NOT_ASSESSED_TEXT: dict[str, str] = {
+    NO_FREQUENCY: "gnomAD has no frequency for this allele",
+    GNOMAD_NOT_RUN: "gnomAD was not used in this run",
+    CHROMOSOME: "no rule for this call's copy count on this chromosome",
+    REASON_HALF_CALL: "one allele is missing, so the copy count is unknown",
+    NO_ALLELE: "the annotation names no carried allele to look up",
+}
+
+
+def _not_assessed_reason(group: list[Annotation]) -> str:
+    """The display reason of the group's first not-assessed annotation."""
+    for a in group:
+        if a.plausibility == NOT_ASSESSED:
+            return _NOT_ASSESSED_TEXT.get(a.plausibility_reason, a.plausibility_reason)
+    return ""
+
+
+def _plausibility_icon(plausibility: str, reason: str = "") -> str:
+    if plausibility == NOT_ASSESSED:
+        title = f"Plausibility not assessed: {reason}" if reason else "Plausibility not assessed"
+        return (
+            f'<span class="plaus plaus-not_assessed" title="{_escape(title)}"'
+            f' aria-label="{_escape(title)}">○</span>'
+        )
+    warning = _PLAUSIBILITY_TITLES.get(plausibility)
+    if warning is None:
         return ""
     return (
-        f'<span class="plaus plaus-{plausibility}" title="{_escape(title)}"'
-        f' aria-label="{_escape(title)}">⚠</span>'
+        f'<span class="plaus plaus-{plausibility}" title="{_escape(warning)}"'
+        f' aria-label="{_escape(warning)}">⚠</span>'
     )
 
 
@@ -849,7 +1090,7 @@ def _row_html(group: list[Annotation], row_id: int) -> str:
         f'<span class="badge badge-{repute}">{int(mag)}</span></td>'
         f'<td class="gene-cell">{_escape(display.gene) or "—"}</td>'
         f'<td class="gt-cell">{_escape(display.genotype_match)}'
-        f"{_plausibility_icon(plausibility)}</td>"
+        f"{_plausibility_icon(plausibility, _not_assessed_reason(group))}</td>"
         f'<td class="repute-cell">'
         f'<span class="pill pill-{repute}">{repute.capitalize()}</span></td>'
         f'<td class="sum-cell">{_summary_text(group)}</td>'
@@ -984,6 +1225,8 @@ document.addEventListener("DOMContentLoaded", function() {
     else if (v.plausibility === "suspicious")
       h += fieldRow("Plausibility",
         "\u26a0 Suspicious: gnomAD reports no carriers of this allele");
+    else if (v.plausibility === "not_assessed")
+      h += fieldRow("Plausibility", "Not assessed: " + v.plausibility_reason);
 
     var hasMetrics = v.allele_frequency != null ||
                      v.am_pathogenicity != null || v.cadd_phred != null;
@@ -1028,6 +1271,8 @@ document.addEventListener("DOMContentLoaded", function() {
           h += fieldRow("Significance", a.significance);
         if (a.reviewStars)
           h += fieldRow("Review Status", a.reviewStars);
+        for (var ci = 0; ci < a.clinvar.length; ci++)
+          h += fieldRow(a.clinvar[ci][0], a.clinvar[ci][1]);
         if (a.condition) h += fieldRow("Condition", a.condition);
         if (a.description)
           h += fieldRow("Description", a.description);
@@ -1211,8 +1456,12 @@ def render_html(
 
     floor_note = ""
     if source_min_magnitudes and min_magnitude > 0:
+        ran = {name for name, _version in result.annotators_used}
         lower_floors = {
-            src: floor for src, floor in source_min_magnitudes.items() if floor < min_magnitude
+            src: floor
+            for src, floor in source_min_magnitudes.items()
+            # A GWAS floor never lowers the global one (ADR-0024).
+            if floor < min_magnitude and src in ran and src != "gwas"
         }
         if lower_floors:
             parts = ", ".join(
@@ -1297,6 +1546,35 @@ def render_html(
         "</div>"
     )
 
+    input_quality = vcf_quality_lines(result.vcf_quality) + array_quality_lines(
+        result.array_quality, result.probe_classes
+    )
+    common = result.clinvar_common_allele
+    # An imputed input's caution (confirm by direct genotyping) stays in view.
+    imputed = is_imputed(result.input_method)
+    counts = [
+        _vcf_quality_banner(input_quality),
+        _clinvar_banner(result.clinvar_scored_down, result.clinvar_unrecognised, common),
+        _strand_banner(result.strand_abstentions),
+    ]
+    summary_line = _details_summary(
+        unchecked=input_left_unchecked(
+            result.vcf_quality, result.array_quality, result.probe_classes
+        )
+        or bool(strand_abstention_lines(result.strand_abstentions)),
+        scored_down=result.clinvar_scored_down + common,
+        not_shown=result.clinvar_unrecognised,
+    )
+    details = _technical_details(
+        [
+            '<div class="notice"><strong>Informational only.</strong> '
+            f"{_escape(REGULATORY_NOTICE)}</div>",
+            _sources_off_line(result.sources),
+            "" if imputed else _input_method_banner(result.input_method),
+            *counts,
+        ],
+        summary=summary_line,
+    )
     summary_cards = "\n".join(
         f'<div class="card{css}"><div class="label">{label}</div>'
         f'<div class="value">{value}</div></div>'
@@ -1342,13 +1620,14 @@ def render_html(
         f'<p class="subtitle">Source: <code>{_escape(result.file_path.name)}</code> · '
         f"Annotators: {_escape(annotators_str)} · "
         f"Generated {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}</p>"
-        '<div class="notice"><strong>Informational only.</strong> '
-        f"{_escape(REGULATORY_NOTICE)}</div>"
+        f'<div class="notice disclaimer">{_SHORT_DISCLAIMER}</div>'
         f"{build_warn}"
-        f"{_input_method_banner(result.input_method)}"
-        f"{_vcf_quality_banner(vcf_quality_lines(result.vcf_quality))}"
+        f"{_report_warnings_banner(result.report_warnings)}"
+        f"{_sources_failed_banner(result.sources, result.report_warnings)}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
-        f"{_panel_coverage_section(result.panel_coverage(filtered), result.panel_genotypes, result.parser_name)}"  # noqa: E501
+        f"{_input_method_banner(result.input_method) if imputed else ''}"
+        f"{details}"
+        f"{_panel_coverage_section(result.panel_coverage(filtered), result.parser_name)}"
         f"{_education_section(result.input_method)}"
         f"{_MAGNITUDE_LEGEND}"
         f"{diff_banner}"

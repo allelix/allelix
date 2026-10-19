@@ -41,7 +41,13 @@ Three further problems surfaced while fixing it:
   Lengths that disagree with each other stop the run. A nuclear length that
   matches neither build stops the run with "unsupported assembly" (for
   example T2T-CHM13). When chrM is declared with the hg19 length (16,571 bp,
-  not the rCRS 16,569 bp), MT records are not annotated and a note says so.
+  not the rCRS 16,569 bp), MT records are not annotated and a note says so,
+  whatever decides the build (contig lengths, `--build`, the assembly header
+  or the seeds). *Amended (2.5):* in a GRCh37 VCF, mitochondrial records
+  named `chrM` or `M` (UCSC hg19 names) are left out, counted and noted,
+  unless the file declares that name with the 16,569 bp reference length.
+  `MT` and `chrMT` are read. A declared hg19 length (16,571) leaves out
+  every mitochondrial record, as above.
 - **Known-SNP positions (seeds)** from the whole file. Arrays, and VCFs
   without contig lengths, are pre-scanned through the same parser before
   annotation; the scan stops early once every seed has been seen. Confidence
@@ -53,10 +59,16 @@ Three further problems surfaced while fixing it:
 
 ### The rule
 
-`--build grch37|grch38|grch36` overrides everything and is recorded.
-`grch36` runs the file with position-keyed lookups off, as for a detected
-GRCh36 file (ADR-0025), so a GRCh36 file that the rule stops has a correct
-way through. `decide_build` accepts only GRCh36, GRCh37 or GRCh38 as an
+`--build grch37|grch38|grch36` overrides the label and the format default
+and is recorded. `--build grch37` or `--build grch38` is still checked
+against the file's own evidence: contig lengths of another build, or
+confident known-SNP positions for another build, stop the run and the
+message names both builds. Contrary positions that are not confident
+(fewer than three, or under an 80% majority) only warn. `--build` with contig lengths that are mixed or unsupported runs as
+forced. `grch36` is never checked: it runs the file with position-keyed
+lookups off, as for a detected GRCh36 file (ADR-0025), so it cannot attach
+another build's records, and a GRCh36 file that the rule stops has a
+correct way through. `decide_build` accepts only GRCh36, GRCh37 or GRCh38 as an
 override and raises `ValueError` for anything else, including callers of
 the Python API. Otherwise:
 
@@ -69,7 +81,9 @@ the Python API. Otherwise:
 | Confident seeds say X | X (`seeds`); a different label gets the mismatch notice |
 | Tentative seeds say GRCh36 | GRCh36 (`seeds`), the ADR-0025 fail-safe |
 | No contig-length decision, seeds tied and GRCh36 among the tied builds | GRCh36 (`seeds`), the fail-safe, with the "inconclusive" warning, whatever the label |
-| Label X, seeds absent or tentatively X | X (`assembly_header` for a VCF, `file_label` for an array) |
+| Label X, no seed inspected at all | stop: nothing checks the label (an mtDNA-only or X-only export, a small panel VCF) |
+| Array label GRCh36, no seed inspected at all | GRCh36 (`file_label`): exempt from the stop above, like `--build grch36` (ADR-0025) |
+| Label X, seeds tentatively X | X (`assembly_header` for a VCF, `file_label` for an array) |
 | Label X, seeds tied and X is one of the tied builds | X, with the "inconclusive" warning |
 | Label X, seeds tied and X is not one of them | stop |
 | Label X, seeds tentatively Y | stop |
@@ -89,7 +103,8 @@ build. If it is one of the tied builds, the run proceeds on it, and the CLI
 and the HTML report show a yellow "inconclusive" warning naming the tied
 builds and the counts; JSON records them as `input.build_evidence.seeds_tied`.
 If it is not, the run stops with the same message form as the other
-contradictions. `--build` skips the seeds, so it never warns.
+contradictions. Under `--build`, a tie that leaves out the forced build
+gets the `--build` warning instead; a tie that includes it gets nothing.
 
 One exception comes first: when contig lengths did not decide (arrays, and
 VCFs without lengths), a tie that includes GRCh36 takes the GRCh36
@@ -177,7 +192,9 @@ described as decided by known-SNP positions.
 
 - A wrong or missing label can no longer silently select the other build;
   the run either resolves from evidence or stops.
-- Arrays pay for one extra read of the file. Measured on a one-CPU machine:
+- Arrays pay for one extra read of the file, also under `--build grch37` or
+  `--build grch38` (the seeds check the forced build); `--build grch36`
+  skips it. Measured on a one-CPU machine, before `--build` was checked:
   the pipeline with no annotators took a median of 7 s more over three runs
   on a 960,613-row 23andMe chip (14 s with `--build`, 21 s without); the
   decision alone took 1.4 to 3.5 s per real chip.
@@ -187,7 +204,9 @@ described as decided by known-SNP positions.
   headers, rsID-less VCFs without contig lengths or an assembly,
   unlabelled chips whose few seeds point away from the default, and
   unlabelled chips that carry no seed at all, such as an X-chromosome-only
-  export (all seeds are autosomal). The fix is `--build`.
+  export (all seeds are autosomal), and labelled files that carry no seed,
+  such as an mtDNA-only export. The fix is `--build`, which then stops
+  only if the file's contig lengths or confident seeds say another build.
 - `stats` and `extract` gain `--build`; `compare` gains `--build1` and
   `--build2`. `stats` shows the decided build and its source.
 - Parsers no longer fill in a default build, and the VCF parser exposes

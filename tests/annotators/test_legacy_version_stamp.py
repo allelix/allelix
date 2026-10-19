@@ -46,6 +46,9 @@ def test_legacy_stamp_only_for_the_current_baked_version(
         conn.commit()
 
     with annotator_cls(tmp_path) as annotator:
+        # The stamp is written in the update step, never by is_ready() (ADR-0048).
+        assert annotator.is_ready() is False
+        assert annotator.prepare_cache() is (baked == "current")
         assert annotator.is_ready() is (baked == "current")
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         tag, signal = conn.execute(

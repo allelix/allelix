@@ -2,13 +2,13 @@
 # Copyright (C) 2026 Allelix
 """Parser for MyHeritage DNA raw genotype export files.
 
-Format reference (from real sample files and snps package):
+Format reference (from real sample files; the rows here are invented):
 
     # MyHeritage, https://www.myheritage.com
     RSID,CHROMOSOME,POSITION,RESULT
-    "rs4477212","1","82154","AA"
-    "rs3094315","1","752566","AG"
-    "rs9001001","1","100000","--"
+    "rs3999990021","1","3999021","AA"
+    "rs3999990022","1","3999022","AG"
+    "rs3999990001","1","3999001","--"
 
 Specifics:
     - CSV format, comma-delimited. Structurally identical to FTDNA.
@@ -39,7 +39,10 @@ from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import (
+    DamagedFileError,
+    is_haploid_call,
     is_padding_only,
+    open_genotype_text,
     split_csv_line,
     split_genotype,
     strip_trailing_empty,
@@ -103,7 +106,7 @@ class MyHeritageParser(GenotypeParser):
         (FTDNA exports share the column layout).
         """
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
+            with open_genotype_text(file_path) as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
                     line = fh.readline()
                     if not line:
@@ -112,13 +115,13 @@ class MyHeritageParser(GenotypeParser):
                         return True
                     if _is_column_header(line) or _looks_like_data_row(line):
                         return False
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
         return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             header_seen = False
             preamble_warnings = 0
             for lineno, raw in enumerate(fh, start=1):
@@ -167,6 +170,7 @@ class MyHeritageParser(GenotypeParser):
                     allele1=allele1,
                     allele2=allele2,
                     build=DEFAULT_BUILD,
+                    haploid=is_haploid_call(genotype),
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
@@ -181,7 +185,7 @@ class MyHeritageParser(GenotypeParser):
         """
         meta = GenotypeMetadata(format=self.name, sample_id="", build=None)
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
+            with open_genotype_text(file_path) as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
                     line = fh.readline()
                     if not line:
@@ -204,6 +208,6 @@ class MyHeritageParser(GenotypeParser):
                         build = normalize_build_label(value)
                         if build is not None:
                             meta["build"] = build
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             pass
         return meta

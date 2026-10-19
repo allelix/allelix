@@ -86,8 +86,14 @@ def _same(a: float | None, b: float | None) -> bool:
 
 
 def _carried(annotation: dict[str, Any]) -> list[str]:
+    """The alleles a report says the user carries.
+
+    ``A/G`` or ``AG``; a half call's missing allele (``T/.``) and a no-call
+    (``-``) are not alleles; a hemizygous call is one allele (``T``).
+    """
     genotype = annotation.get("genotype_match") or ""
-    return [x for x in (genotype.split("/") if "/" in genotype else list(genotype)) if x]
+    parts = genotype.split("/") if "/" in genotype else list(genotype)
+    return [x for x in parts if x and x not in (".", "-")]
 
 
 def scan_input_ids(path: Path, wanted: set[str]) -> dict[str, set[Locus]]:
@@ -179,7 +185,7 @@ class Caches:
     def reference_carried(self, locus: Locus, allele: str) -> bool:
         """True when the build's reference at ``locus`` carries a ClinVar variant ``allele``.
 
-        The pipeline's rule (ClinVar cache ``iv:5``, 2.4.2): a single-base REF ==
+        The pipeline's rule (since ClinVar cache ``iv:5``, 2.4.2): a single-base REF ==
         ALT row means the reference base is the variant allele. An older
         cache still holds normal-allele records written REF == ALT, so it
         never counts.
@@ -248,7 +254,8 @@ def check_report(
             for x, y, on in zip(attached, stored, active, strict=True)
         )
 
-    placed = {a["rsid"]: caches.loci(a["rsid"]) for a in enriched}
+    # An annotation without an rsID (ADR-0046) is placed by its own locus.
+    placed = {a["rsid"]: caches.loci(a["rsid"]) for a in enriched if a["rsid"]}
     unplaced = {rsid for rsid, loci in placed.items() if not loci}
     for rsid, loci in scan_input_ids(input_path, unplaced).items():
         for locus in loci:
@@ -267,7 +274,13 @@ def check_report(
             status["mismatch"] += 1
             problems.append(("mismatch", a, f"value from {stray}, not in the provenance"))
             continue
-        loci = placed.get(a["rsid"], {})
+        loci = (
+            placed.get(a["rsid"], {})
+            if a["rsid"]
+            else {(a["chromosome"], a["position"]): {"report"}}
+            if a.get("chromosome")
+            else {}
+        )
         keys: list[Key] = []
         ref_is_allele = False
         for locus in sorted(loci):

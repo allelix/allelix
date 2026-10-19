@@ -11,7 +11,13 @@ import sqlite3
 import zipfile
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.annotators.base import Annotator, LicenseDescriptor, variant_locus
+from allelix.annotators.base import (
+    Annotator,
+    LicenseDescriptor,
+    forward_alleles_at_call,
+    variant_locus,
+)
+from allelix.databases.cache_state import CacheState, CacheStatus, cache_state, connect_readonly
 from allelix.databases.gwas_loader import (
     _CATEGORIZER_VERSION,
     _REQUIRED_GWAS_COLUMNS,
@@ -19,7 +25,6 @@ from allelix.databases.gwas_loader import (
     GWAS_DB_FILENAME,
     GWAS_MIN_ROWS,
     load_gwas_tsv,
-    schema_is_current,
 )
 from allelix.databases.manager import (
     _ensure_local_version_tag_column,
@@ -28,7 +33,15 @@ from allelix.databases.manager import (
     head_request_headers,
     parse_baked_version,
 )
-from allelix.models import Annotation
+from allelix.models import Annotation, diploid_label
+from allelix.utils.allele import (
+    STRAND_ABSTAIN_REASONS,
+    STRAND_COMPLEMENT,
+    STRAND_DIRECT,
+    STRAND_NOT_IN_IDENTITY,
+    complement,
+    forward_strand_reading,
+)
 
 _EXCLUDED_TRAIT_CATEGORIES = frozenset(
     {
@@ -52,6 +65,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
     from pathlib import Path
 
+    from allelix.annotators.base import ForwardSiteProvider
+    from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
 logger = logging.getLogger(__name__)
@@ -142,6 +157,46 @@ def _magnitude(
 _UNKNOWN_RISK_ALLELE_MAG_CAP = 3.0
 
 
+EFFECT_INCREASES = "increases"
+EFFECT_DECREASES = "decreases"
+EFFECT_UNKNOWN = "unknown"
+EFFECT_ODDS_RATIO = "odds_ratio"
+EFFECT_BETA = "beta"
+
+
+def _effect_direction(
+    risk_allele: str | None, or_beta: float | None, ci_text: str | None
+) -> tuple[str, str]:
+    """``(direction, measure)`` of the study's effect allele.
+
+    An odds ratio (the CI shape ``_magnitude`` trusts) above 1 increases,
+    below 1 decreases. The Catalog writes a beta without its sign and puts
+    the direction in the CI text ("unit increase", "unit decrease"); a
+    negative beta without that text decreases. No risk allele, an odds
+    ratio of exactly 1, or nothing that names the measure: unknown.
+    """
+    if risk_allele is None or or_beta is None:
+        return EFFECT_UNKNOWN, ""
+    if _ci_identifies_odds_ratio(ci_text):
+        if or_beta > 1:
+            return EFFECT_INCREASES, EFFECT_ODDS_RATIO
+        if 0 < or_beta < 1:
+            return EFFECT_DECREASES, EFFECT_ODDS_RATIO
+        return EFFECT_UNKNOWN, ""
+    text = (ci_text or "").lower()
+    if "decrease" in text:
+        signed = -or_beta
+    elif "increase" in text or or_beta < 0:
+        signed = or_beta
+    else:
+        return EFFECT_UNKNOWN, ""
+    if signed > 0:
+        return EFFECT_INCREASES, EFFECT_BETA
+    if signed < 0:
+        return EFFECT_DECREASES, EFFECT_BETA
+    return EFFECT_UNKNOWN, ""
+
+
 class GWASCatalogAnnotator(Annotator):
     """Annotates variants with GWAS Catalog trait associations."""
 
@@ -160,16 +215,30 @@ class GWASCatalogAnnotator(Annotator):
         commercial_ok=True,
     )
 
-    def __init__(self, data_dir: Path, *, filter_traits: bool = True) -> None:
-        """Initialize with path to the data directory."""
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        filter_traits: bool = True,
+        forward_site_provider: ForwardSiteProvider | None = None,
+    ) -> None:
+        """Initialize with path to the data directory.
+
+        ``forward_site_provider`` gives each rsID's forward alleles on a
+        build (``RsidIdentityAnnotator.forward_sites``) for reading risk
+        alleles on the forward strand. ``None`` compares them as
+        written (tests, standalone use).
+        """
         super().__init__(data_dir)
         self._db_path = data_dir / GWAS_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._filter_traits = filter_traits
+        self._forward_site_provider = forward_site_provider
+        self._strand_abstained = dict.fromkeys(STRAND_ABSTAIN_REASONS, 0)
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def setup(self) -> None:
@@ -216,43 +285,56 @@ class GWASCatalogAnnotator(Annotator):
                 logger.warning("Could not remove staged file at %s", zip_path)
 
     def is_ready(self) -> bool:
-        """Return True when the local GWAS cache exists and has current schema.
+        """Return True when the local GWAS cache exists and has current schema."""
+        return self.cache_status().ready
 
-        Handles three states:
+    def cache_status(self) -> CacheStatus:
+        """State of the GWAS cache: the categorizer tag and the columns (ADR-0048)."""
+        return cache_state(
+            self._db_path,
+            "gwas",
+            tag=f"cv:{_CATEGORIZER_VERSION}",
+            tables=("gwas_associations",),
+            columns={"gwas_associations": _REQUIRED_GWAS_COLUMNS},
+        )
 
-        1. Current tag in ``local_version_tag`` — ready.
-        2. No tag (legacy cache or ``|cv:`` still in ``remote_signal``) —
+    def prepare_cache(self) -> bool:
+        """Bring an outdated cache up to date without the network (ADR-0048).
+
+        1. No tag (legacy cache or ``|cv:`` still in ``remote_signal``):
            one-shot migration via ``_stamp_existing_gwas_cache``.
-        3. Stale tag (categorizer bumped) — auto-reingest from cached TSV
-           if still on disk.
+        2. Stale tag (categorizer bumped): re-ingest from the cached TSV
+           if it is still on disk.
         """
-        info = get_database_info(self._db_path, "gwas")
-        if info is None:
+        if self.cache_status().state is not CacheState.OUTDATED:
             return False
-        tag = info.get("local_version_tag") or ""
-        if tag == f"cv:{_CATEGORIZER_VERSION}":
-            return _has_current_gwas_columns(self._db_path)
-        if not tag and _stamp_existing_gwas_cache(self._db_path):
-            return _has_current_gwas_columns(self._db_path)
+        info = get_database_info(self._db_path, "gwas")
+        if (
+            info is not None
+            and not info.get("local_version_tag")
+            and _stamp_existing_gwas_cache(self._db_path)
+            and self.cache_status().ready
+        ):
+            return True
         tsv_path = self.data_dir / "gwas_catalog_associations.tsv"
-        if tsv_path.exists():
-            print(
-                "GWAS categorizer changed — re-ingesting from cached TSV...",
-                flush=True,
+        if not tsv_path.exists():
+            return False
+        print(
+            "GWAS categorizer changed — re-ingesting from cached TSV...",
+            flush=True,
+        )
+        try:
+            load_gwas_tsv(
+                tsv_path,
+                self._db_path,
+                source_url=GWAS_CATALOG_URL,
+                remote_signal=self.cached_remote_signal(),
+                min_rows=GWAS_MIN_ROWS,
             )
-            try:
-                load_gwas_tsv(
-                    tsv_path,
-                    self._db_path,
-                    source_url=GWAS_CATALOG_URL,
-                    remote_signal=self.cached_remote_signal(),
-                    min_rows=GWAS_MIN_ROWS,
-                )
-            except Exception:
-                logger.warning("Auto-reingest from cached TSV failed", exc_info=True)
-                return False
-            return schema_is_current(self._db_path)
-        return False
+        except Exception:
+            logger.warning("Auto-reingest from cached TSV failed", exc_info=True)
+            return False
+        return True
 
     def version(self) -> str | None:
         """Return the cached database version string, or None."""
@@ -290,14 +372,38 @@ class GWASCatalogAnnotator(Annotator):
             return None
         return info["remote_signal"] or None
 
+    def run_counts(self) -> dict[str, int]:
+        """Association rows not assessed for strand, by reason."""
+        return dict(self._strand_abstained)
+
+    def _forward_sites(self, rsids: set[str], build: str) -> dict[str, ForwardSite] | None:
+        if self._forward_site_provider is None:
+            return None
+        return self._forward_site_provider(rsids, build)
+
+    def _forward_risk_allele(self, risk_allele: str, forward: frozenset[str] | None) -> str | None:
+        """The risk allele on the forward strand, or None (counted) when it abstains."""
+        if forward is None:
+            self._strand_abstained[STRAND_NOT_IN_IDENTITY] += 1
+            return None
+        reading = forward_strand_reading((risk_allele,), forward)
+        if reading == STRAND_DIRECT:
+            return risk_allele
+        if reading == STRAND_COMPLEMENT:
+            return complement(risk_allele)
+        self._strand_abstained[reading] += 1
+        return None
+
     def annotate(self, variant: Variant) -> list[Annotation]:
         """Return GWAS Catalog annotations for variants the user carries.
 
-        Carrier matching uses the risk allele when specified. When the
+        Carrier matching uses the risk allele when specified, read on the
+        forward strand against the rsID identity table. When the
         GWAS entry doesn't specify a risk allele, the annotation fires
-        on rsid match alone with a magnitude penalty.
+        on rsid match alone with a magnitude penalty. A VCF half call
+        (``./1``) is assessed on its called allele (ADR-0047).
         """
-        if variant.is_no_call:
+        if variant.is_no_call and not variant.is_half_call:
             return []
 
         sql = (
@@ -306,9 +412,66 @@ class GWASCatalogAnnotator(Annotator):
             "FROM gwas_associations WHERE rsid = ?"
         )
         rows = self._connection().execute(sql, (variant.rsid,)).fetchall()
-        annotations: list[Annotation] = []
-        user_diploid = _user_diploid(variant)
+        if not rows:
+            return []
+        sites = self._forward_sites({variant.rsid}, variant.build)
+        return list(self._annotations_for(variant, rows, sites))
 
+    def batch_annotate(self, variants: Iterable[Variant]) -> Iterator[Annotation]:
+        """Bulk-annotate via chunked ``WHERE rsid IN (...)`` queries.
+
+        Replaces N per-variant queries with ceil(N/500) batched queries.
+        At WGS scale (4-6M variants) this is the difference between
+        annotation completing in minutes vs. hours.
+
+        Per-variant filters (no-call rejection, strand reading, risk-allele
+        carrier check, trait-category exclusion, unknown-risk-allele
+        magnitude cap) are applied after the SQL — same logic as
+        ``annotate``, same outputs, same order.
+        """
+        variants_list = [v for v in variants if not v.is_no_call or v.is_half_call]
+        if not variants_list:
+            return
+        rsids = list({v.rsid for v in variants_list})
+
+        conn = self._connection()
+        rows_by_rsid: dict[str, list[tuple]] = {}
+        for start in range(0, len(rsids), _BATCH_CHUNK):
+            chunk = rsids[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"SELECT rsid, risk_allele, trait, p_value, or_beta, ci_text, gene, "
+                f"study_accession, pubmed_id, trait_category "
+                f"FROM gwas_associations WHERE rsid IN ({placeholders})",
+                chunk,
+            )
+            for row in cursor:
+                rows_by_rsid.setdefault(row[0], []).append(row[1:])
+
+        sites_by_build: dict[str, dict[str, ForwardSite] | None] = {}
+        for build in {v.build for v in variants_list}:
+            wanted = {v.rsid for v in variants_list if v.build == build and v.rsid in rows_by_rsid}
+            sites_by_build[build] = self._forward_sites(wanted, build)
+
+        for variant in variants_list:
+            rows = rows_by_rsid.get(variant.rsid)
+            if not rows:
+                continue
+            yield from self._annotations_for(variant, rows, sites_by_build[variant.build])
+
+    def _annotations_for(
+        self,
+        variant: Variant,
+        rows: list[tuple],
+        sites: dict[str, ForwardSite] | None,
+    ) -> Iterator[Annotation]:
+        """The annotations of one call from its rsID's association rows.
+
+        ``sites`` is None when no identity table is wired (tests,
+        standalone use): risk alleles are then compared as written.
+        """
+        user_diploid = diploid_label(variant)
+        forward = forward_alleles_at_call(variant, sites) if sites is not None else None
         for row in rows:
             (
                 risk_allele,
@@ -326,6 +489,10 @@ class GWASCatalogAnnotator(Annotator):
                 continue
 
             if risk_allele is not None:
+                if sites is not None:
+                    risk_allele = self._forward_risk_allele(risk_allele, forward)
+                    if risk_allele is None:
+                        continue
                 if variant.allele1 != risk_allele and variant.allele2 != risk_allele:
                     continue
                 mag = _magnitude(p_value, or_beta, ci_text)
@@ -356,149 +523,30 @@ class GWASCatalogAnnotator(Annotator):
             if study_accession:
                 references.append(f"gwas:{study_accession}")
 
-            annotations.append(
-                Annotation(
-                    source=self.name,
-                    rsid=variant.rsid,
-                    significance="gwas_association",
-                    category="trait",
-                    magnitude=mag,
-                    description=description,
-                    attribution=self.attribution,
-                    genotype_match=user_diploid,
-                    references=references,
-                    condition=clean_trait,
-                    gene=gene or "",
-                    alt=risk_allele or "",
-                    locus_ref=variant.ref,
-                    carried_alleles=(variant.allele1, variant.allele2),
-                    locus=variant_locus(variant),
-                    is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
-                    trait=clean_trait,
-                    p_value=p_value,
-                    phecode=phecode,
-                )
+            direction, measure = _effect_direction(risk_allele, or_beta, ci_text)
+            yield Annotation(
+                source=self.name,
+                rsid=variant.rsid,
+                significance="gwas_association",
+                category="trait",
+                magnitude=mag,
+                description=description,
+                attribution=self.attribution,
+                genotype_match=user_diploid,
+                references=references,
+                condition=clean_trait,
+                gene=gene or "",
+                alt=risk_allele or "",
+                locus_ref=variant.ref,
+                carried_alleles=(variant.allele1, variant.allele2),
+                locus=variant_locus(variant),
+                is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
+                trait=clean_trait,
+                p_value=p_value,
+                phecode=phecode,
+                effect_direction=direction,
+                effect_measure=measure,
             )
-        return annotations
-
-    def batch_annotate(self, variants: Iterable[Variant]) -> Iterator[Annotation]:
-        """Bulk-annotate via chunked ``WHERE rsid IN (...)`` queries.
-
-        Replaces N per-variant queries with ceil(N/500) batched queries.
-        At WGS scale (4-6M variants) this is the difference between
-        annotation completing in minutes vs. hours.
-
-        Per-variant filters (no-call rejection, risk-allele carrier
-        check, trait-category exclusion, unknown-risk-allele magnitude
-        cap) are applied after the SQL — same logic as ``annotate``,
-        same outputs, same order.
-        """
-        variants_list = [v for v in variants if not v.is_no_call]
-        if not variants_list:
-            return
-        rsids = list({v.rsid for v in variants_list})
-
-        conn = self._connection()
-        rows_by_rsid: dict[str, list[tuple]] = {}
-        for start in range(0, len(rsids), _BATCH_CHUNK):
-            chunk = rsids[start : start + _BATCH_CHUNK]
-            placeholders = ",".join("?" * len(chunk))
-            cursor = conn.execute(
-                f"SELECT rsid, risk_allele, trait, p_value, or_beta, ci_text, gene, "
-                f"study_accession, pubmed_id, trait_category "
-                f"FROM gwas_associations WHERE rsid IN ({placeholders})",
-                chunk,
-            )
-            for row in cursor:
-                rows_by_rsid.setdefault(row[0], []).append(row[1:])
-
-        for variant in variants_list:
-            rows = rows_by_rsid.get(variant.rsid)
-            if not rows:
-                continue
-            user_diploid = _user_diploid(variant)
-            for row in rows:
-                (
-                    risk_allele,
-                    trait,
-                    p_value,
-                    or_beta,
-                    ci_text,
-                    gene,
-                    study_accession,
-                    pubmed_id,
-                    trait_category,
-                ) = row
-
-                if self._filter_traits and trait_category in _EXCLUDED_TRAIT_CATEGORIES:
-                    continue
-
-                if risk_allele is not None:
-                    if variant.allele1 != risk_allele and variant.allele2 != risk_allele:
-                        continue
-                    mag = _magnitude(p_value, or_beta, ci_text)
-                    risk_note = ""
-                else:
-                    mag = min(
-                        _magnitude(p_value, or_beta, ci_text),
-                        _UNKNOWN_RISK_ALLELE_MAG_CAP,
-                    )
-                    risk_note = " (risk allele not specified in study)"
-
-                clean_trait, phecode = _split_trait_and_phecode(trait)
-                phecode_suffix = f" (PheCode {phecode})" if phecode else ""
-                p_str = f"p={p_value:.1e}" if p_value is not None else "p=N/A"
-                gene_str = gene or "—"
-                description = (
-                    f"GWAS Catalog: {clean_trait}{phecode_suffix} "
-                    f"({p_str}, gene: {gene_str}){risk_note}"
-                )
-
-                references: list[str] = []
-                if pubmed_id:
-                    references.append(f"pubmed:{pubmed_id}")
-                if study_accession:
-                    references.append(f"gwas:{study_accession}")
-
-                yield Annotation(
-                    source=self.name,
-                    rsid=variant.rsid,
-                    significance="gwas_association",
-                    category="trait",
-                    magnitude=mag,
-                    description=description,
-                    attribution=self.attribution,
-                    genotype_match=user_diploid,
-                    references=references,
-                    condition=clean_trait,
-                    gene=gene or "",
-                    alt=risk_allele or "",
-                    locus_ref=variant.ref,
-                    carried_alleles=(variant.allele1, variant.allele2),
-                    locus=variant_locus(variant),
-                    is_must_include=variant.rsid in _MUST_INCLUDE_RSIDS,
-                    trait=clean_trait,
-                    p_value=p_value,
-                    phecode=phecode,
-                )
-
-
-def _user_diploid(variant: Variant) -> str:
-    """Sorted two-letter diploid for SNVs; indel passthrough verbatim."""
-    a1, a2 = variant.allele1, variant.allele2
-    if len(a1) == 1 and len(a2) == 1:
-        return "".join(sorted((a1, a2)))
-    return f"{a1}/{a2}"
-
-
-def _has_current_gwas_columns(db_path: Path) -> bool:
-    """True iff the gwas_associations table has the required columns."""
-    try:
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
-            cols = {row[1] for row in conn.execute("PRAGMA table_info(gwas_associations)")}
-            return _REQUIRED_GWAS_COLUMNS.issubset(cols)
-    except sqlite3.DatabaseError:
-        return False
 
 
 def _stamp_existing_gwas_cache(db_path: Path) -> bool:

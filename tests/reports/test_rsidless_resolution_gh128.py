@@ -168,8 +168,8 @@ class TestPanelCoverageOnRsidlessVcf:
 
         The test runs the full pipeline with a panel of three rsIDs,
         all of which are present in the synthetic VCF, and asserts
-        ``coverage["found"] == 3`` and ``missing == []`` — the failure
-        mode under the bug was ``found == 0, missing == [<all 3>]``.
+        that none of them is ``not_on_chip``; under the bug all three
+        were.
         """
         parser = VcfParser()
         annotators = [
@@ -187,11 +187,7 @@ class TestPanelCoverageOnRsidlessVcf:
         coverage = result.panel_coverage()
         assert coverage is not None
         assert coverage["requested"] == 3
-        assert coverage["found"] == 3, (
-            f"Panel coverage missed gnomAD-resolved rsIDs. "
-            f"missing={coverage['missing']!r}, found={coverage['found']}"
-        )
-        assert coverage["missing"] == []
+        assert coverage["counts"]["not_on_chip"] == 0, coverage["variants"]
 
     def test_panel_rsid_genuinely_absent_classified_as_missing(
         self,
@@ -217,8 +213,8 @@ class TestPanelCoverageOnRsidlessVcf:
         )
         coverage = result.panel_coverage()
         assert coverage is not None
-        assert coverage["found"] == 1
-        assert coverage["missing"] == ["rs9999999"]
+        absent = [v["rsid"] for v in coverage["variants"] if v["state"] == "not_on_chip"]
+        assert absent == ["rs9999999"]
 
 
 class TestOriginalRsidStashedDuringResolution:

@@ -209,7 +209,8 @@ def test_grch36_notice_claims_only_what_runs() -> None:
     """On GRCh36, ClinVar has no cache and gnomAD / AlphaMissense / CADD need
     GRCh38 coordinates; only the rsID-keyed sources run."""
     text = _grch36_text()
-    assert "ClinPGx, GWAS Catalog and SNPedia match by rsID and still run" in text
+    assert "ClinPGx matches by rsID and still runs" in text
+    assert "single-base SNPedia genotypes are not assessed on GRCh36" in text
     assert "gnomAD, AlphaMissense and CADD give no values" in text
     assert "ClinVar is skipped" in text
     assert "complete" not in text
@@ -239,3 +240,88 @@ def test_default_and_tie_notices_offer_grch36() -> None:
     texts = {n.kind: n.text for n in build_notices(_diag())}
     assert texts["default"].endswith(f"If the file uses another build, {clause}")
     assert texts["inconclusive"].endswith(f"If the file uses a different build, {clause}")
+
+
+# ── --build against the file's own evidence ──────────────────────
+
+
+def _invoke_forced(command: str, chip: Path, tmp_path: Path, data: Path, build: str):
+    args = {
+        "analyze": ["analyze", str(chip), "--data-dir", str(data), "--no-update"],
+        "stats": ["stats", str(chip), "--data-dir", str(data)],
+        "extract": ["extract", str(chip), "--snps", "rs1801133", "--data-dir", str(data)],
+        "export plink": [
+            "export",
+            "plink",
+            str(chip),
+            "-o",
+            str(tmp_path / "out"),
+            "--data-dir",
+            str(data),
+        ],
+        "compare": ["compare", str(chip), str(chip), "--build1", build, "--build2", build],
+    }[command]
+    if command != "compare":
+        args += ["--build", build]
+    result = CliRunner(env={"COLUMNS": "400"}).invoke(main, args)
+    return result.exit_code, " ".join(result.output.split())
+
+
+COMMANDS = ["analyze", "stats", "extract", "export plink", "compare"]
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_build_against_tentative_seeds_warns(
+    command: str, tmp_path: Path, clinvar_data_dir: Path
+) -> None:
+    chip = _chip(tmp_path / "chip.txt", None, {BUILD_GRCH38: 2})
+    code, out = _invoke_forced(command, chip, tmp_path, clinvar_data_dir, "grch37")
+    assert code == 0, out
+    assert (
+        "Build warning: --build grch37 was given, but the file's known-SNP positions tentatively "
+        "say GRCh38 (2/2). Using GRCh37 as forced." in out
+    )
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_build_against_confident_seeds_stops(
+    command: str, tmp_path: Path, clinvar_data_dir: Path
+) -> None:
+    chip = _chip(tmp_path / "chip.txt", None, {BUILD_GRCH38: 4})
+    code, out = _invoke_forced(command, chip, tmp_path, clinvar_data_dir, "grch37")
+    assert code != 0
+    assert "--build grch37 was given but the file's known-SNP positions say GRCh38" in out
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_build_grch36_is_not_checked(command: str, tmp_path: Path, clinvar_data_dir: Path) -> None:
+    chip = _chip(tmp_path / "chip.txt", None, {BUILD_GRCH38: 4})
+    code, out = _invoke_forced(command, chip, tmp_path, clinvar_data_dir, "grch36")
+    assert code == 0, out
+    assert "Build warning" not in out
+
+
+def test_build_warning_wording() -> None:
+    forced = {"source": "override", "tied_builds": (), "tied_votes": 0}
+    agreeing = _diag(**forced, detected_build=BUILD_GRCH37, matched_count=2, inspected_count=2)
+    assert not [n for n in build_notices(agreeing) if n.text.startswith("Build warning")]
+    tie = _diag(
+        source="override",
+        effective_build=BUILD_GRCH38,
+        tied_builds=(BUILD_GRCH36, BUILD_GRCH37),
+    )
+    text = next(n.text for n in build_notices(tie) if n.text.startswith("Build warning"))
+    assert text.startswith(
+        "Build warning: --build grch38 was given, but the file's known-SNP positions are tied "
+        "between GRCh36 and GRCh37 (2 each of 4). Using GRCh38 as forced."
+    )
+    included = _diag(source="override", effective_build=BUILD_GRCH38)  # 37/38 tie
+    assert not [n for n in build_notices(included) if n.text.startswith("Build warning")]
+
+
+def test_build_help_says_the_forced_build_is_checked() -> None:
+    result = CliRunner(env={"COLUMNS": "400"}).invoke(main, ["analyze", "--help"])
+    text = " ".join(result.output.split())
+    assert "skipping detection" not in text
+    assert "the run still stops when the file's contig lengths or confident known-SNP" in text

@@ -15,9 +15,9 @@ git config core.hooksPath .githooks
 pre-commit install --hook-type pre-commit
 ```
 
-System dependencies pulled in outside pip (all needed by the fast
-test suite; skipping them causes silent test skips rather than
-failures for the ``bcftools`` group and hard failures for ``plink``):
+System tools outside pip: ``bcftools`` (fast suite; its tests skip
+locally when it is missing, and CI installs it) and ``plink2`` (one
+integration test in the slow suite; skips when missing):
 
 - ``bcftools`` — annotated-VCF round-trip validation for ``--vcf-out``
   (ADR-0036). ``apt install bcftools`` on Debian /
@@ -34,9 +34,9 @@ pytest
 ```
 
 Tests marked `@slow` exercise real-data invariants against fixtures
-that are gitignored due to size. As of v2.0.2, these fixtures
-are **auto-fetched on first use** and cached locally — no manual
-download step is required for the GWAS catalog.
+that are gitignored due to size. These fixtures are fetched on first
+use and cached; no manual download step is required for the GWAS
+catalog.
 
 For the full real-data release-validation battery — all parser formats,
 VCF/gVCF, PLINK round-trip, edge cases, and upgrade-path checks — see
@@ -78,8 +78,10 @@ is caught instead of hidden.
     pytest                      # runs everything: fast + slow
                                 # (auto-fetches the GWAS zip if missing)
 
-CI runs the same `pytest` invocation. The auto-fetch handles fixture
-availability so CI and local runs are identical.
+`pytest` runs everything locally, fast and slow; it fetches the GWAS zip
+if missing. Per-push CI runs only the fast tier
+(`-m "not slow and not integration"`). The slow and integration tests run
+in `slow.yml` every Monday and on manual dispatch.
 
 Lint and format:
 
@@ -117,6 +119,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import Variant
+from allelix.parsers._helpers import no_call_allele, open_genotype_text
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
 
 if TYPE_CHECKING:
@@ -134,7 +137,7 @@ class VendorNameParser(GenotypeParser):
 
     def can_parse(self, file_path: Path) -> bool:
         """Check for the vendor's signature in the first few lines."""
-        with open(file_path, encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             for line in fh:
                 if line.startswith("# VendorName"):
                     return True
@@ -144,7 +147,7 @@ class VendorNameParser(GenotypeParser):
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Yield Variants from the file. Stream, don't load into memory."""
-        with open(file_path, encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             for line in fh:
                 if line.startswith("#") or not line.strip():
                     continue
@@ -159,14 +162,14 @@ class VendorNameParser(GenotypeParser):
                     rsid=parts[0],
                     chromosome=parts[1],
                     position=int(parts[2]),
-                    allele1=parts[3],
-                    allele2=parts[4],
+                    allele1=no_call_allele(parts[3]),
+                    allele2=no_call_allele(parts[4]),
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
         """Extract metadata from comment headers."""
         sample_id = ""
-        with open(file_path, encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             for line in fh:
                 if not line.startswith("#"):
                     break
@@ -184,7 +187,11 @@ Key rules:
 - `can_parse()` must be fast. Only look at header/comment lines.
 - `parse()` yields `Variant` objects one at a time (streaming).
 - Malformed lines log a warning and skip. Never crash the whole parse.
+- Open files with `open_genotype_text`. Test CRLF, LF and CR-only endings,
+  plain and compressed.
 - No-calls use `"-"` as the allele value (matches `allelix.models.NO_CALL_MARKER`).
+  Pass each allele through `no_call_allele()` so a vendor's `0` or `N`
+  becomes a no-call.
 
 ### Step 2: Register the parser
 
@@ -200,7 +207,8 @@ PARSERS: list[GenotypeParser] = [
 ```
 
 Order matters: auto-detection tries each parser's `can_parse()` in order.
-Put more specific parsers before generic ones.
+Put a more specific parser before a broader one that would also accept its
+files (for example Genes for Good before 23andMe).
 
 ### Step 3: Add a test fixture
 
@@ -416,8 +424,13 @@ from allelix.annotators.mydb import MyDBAnnotator
 def get_annotators(data_dir, ...):
     # ... existing annotators ...
     mydb = MyDBAnnotator(data_dir)
-    return [clinvar, pharmgkb, gwas, snpedia, mydb]
+    return [clinvar, pharmgkb, gwas, snpedia, gnomad, alphamissense, cadd, rsid_identity, mydb]
 ```
+
+The real list has eight sources: ClinVar, ClinPGx (`pharmgkb`), GWAS
+Catalog, SNPedia, gnomAD, AlphaMissense, CADD and the rsID identity table.
+Also add your class to `_ANNOTATOR_CLASS_LIST` in the same file, which
+builds the `_ANNOTATOR_CLASSES` name registry.
 
 ### Step 3: Write tests
 
@@ -468,8 +481,9 @@ CI (`.github/workflows/ci.yml`) fires on:
 
 CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
 fixtures only) on a Python 3.11 / 3.12 matrix. `@slow` and
-`@integration`-marked tests auto-skip in CI because the runner doesn't
-have the ~1.5 GB real-genotype fixture set or the ~18 GB default annotator
+`@integration`-marked tests are deselected in CI
+(`-m "not slow and not integration"`) because the runner doesn't
+have the ~1.5 GB real-genotype fixture set or the ~19 GB default annotator
 database cache — fetching either would push CI runtime past 45 minutes
 per push and burn GitHub Actions minutes that the local-run discipline
 already covers.
@@ -479,8 +493,7 @@ already covers.
 The complete battery runs locally at ship time against the exact RC
 commit, following `test_data/FULL_TEST_PROTOCOL.md`. It includes the
 full pytest suite, fresh caches, both genome builds, all parser formats,
-and the GIAB / 1000 Genomes corpus. The reviewer posts the verification
-on the release PR and blocks the release without it.
+and the GIAB / 1000 Genomes corpus. A release does not ship without it.
 
 `.github/workflows/slow.yml` also runs every Monday and by manual
 `workflow_dispatch`. It downloads a current ClinVar cache, executes the
@@ -497,7 +510,7 @@ release failure, not a green result.
 - Weekly/on-demand `slow.yml` catches live-source drift and integration
   regressions between releases.
 - The local RC protocol supplies the larger, build-paired end-to-end
-  signal and is reviewer-enforced before tagging.
+  signal and runs against the exact release commit before tagging.
 
 To fire the release slow gate, run
 `gh workflow run slow.yml --ref <release-branch>` and confirm the
@@ -557,7 +570,7 @@ freely:
   rs7412 / rs2010963 / rs6025) pass.
 
 This applies to `CHANGELOG.md`, commit messages and release notes
-alike (reviewer responsibility): check release-content drafts for
+alike: check release-content drafts for
 drift-vulnerable numeric tokens in unsnapshotted release sections
 before publishing.
 

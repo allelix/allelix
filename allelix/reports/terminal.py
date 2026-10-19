@@ -25,8 +25,18 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 from rich.table import Table
 
-from allelix.reports._pipeline import rollup_gwas_duplicates
-from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS
+from allelix.models import annotation_label, public_dict_label
+from allelix.reports._pipeline import (
+    PANEL_NO_CALL,
+    PANEL_NOT_ON_CHIP,
+    PANEL_STATES,
+    is_vcf_parser,
+    panel_state_label,
+    rollup_gwas_duplicates,
+)
+from allelix.reports.association_text import effect_note
+from allelix.reports.clinvar_text import terminal_note
+from allelix.utils.plausibility import IMPLAUSIBLE, NOT_ASSESSED, SUSPICIOUS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -85,32 +95,31 @@ def _print_panel_coverage_warning(
     console: Console,
     filtered_annotations: list[Annotation],
 ) -> None:
-    """Surface panel rsIDs that weren't in the user's input file.
+    """The four panel coverage counts, then the no-call and not-on-chip rsIDs (ADR-0051).
 
-    "Not on your chip" is critically different from "homozygous reference"
-    — so the gap must be visible, never silent. Quiet when
-    no panel was supplied, or when every panel rsID was genotyped.
-
-    the post-filter annotation list is threaded through so
-    `panel_coverage()` derives "annotated" from what was actually rendered,
-    not from the unfiltered set. Without this thread, panel rsids whose
-    only annotations were below the magnitude floor showed in "found" but
-    not in any rendered surface (the 9-of-20 limbo bug).
+    "Not on your chip" is critically different from "homozygous
+    reference", so the gap is never silent. Quiet when no panel was
+    supplied. The post-filter list decides "annotated", as in the other
+    reports.
     """
     coverage = result.panel_coverage(filtered_annotations)
     if coverage is None:
         return
-    missing = coverage["missing"]
-    requested = coverage["requested"]
-    if not missing:
-        return
-    sample = ", ".join(missing[:3])
-    if len(missing) > 3:
-        sample = f"{sample}, …"
+    vcf = is_vcf_parser(result.parser_name)
     console.print(
-        f"[yellow]⚠[/yellow] {len(missing)}/{requested} panel variants not "
-        f"found in input: {sample}"
+        "Panel coverage: "
+        + " / ".join(
+            f"{coverage['counts'][state]} {panel_state_label(state, vcf=vcf)}"
+            for state in PANEL_STATES
+        )
     )
+    for state in (PANEL_NO_CALL, PANEL_NOT_ON_CHIP):
+        rsids = [v["rsid"] for v in coverage["variants"] if v["state"] == state]
+        if rsids:
+            sample = ", ".join(rsids[:3]) + (", …" if len(rsids) > 3 else "")
+            console.print(
+                f"[yellow]⚠[/yellow] {len(rsids)} {panel_state_label(state, vcf=vcf)}: {sample}"
+            )
 
 
 def render_terminal_diff(
@@ -145,13 +154,15 @@ def render_terminal_diff(
         if has_condition:
             table.add_column("Condition", overflow="fold")
         for a in diff.new:
-            row = [a.rsid]
+            row = [annotation_label(a)]
             if has_gene:
                 row.append(a.gene or "—")
             row.extend(
                 [
                     _compact_source(a.attribution),
-                    _compact_significance(a.significance, a.source),
+                    _compact_significance(a.significance, a.source)
+                    + terminal_note(a)
+                    + escape(effect_note(a)),
                     f"{a.magnitude:.1f}",
                     a.genotype_match,
                 ]
@@ -179,7 +190,7 @@ def render_terminal_diff(
             table.add_column("Condition", overflow="fold")
         for c in diff.changed:
             prev_mag_str = "—" if c.previous_magnitude is None else f"{c.previous_magnitude:.1f}"
-            row = [c.current.rsid]
+            row = [annotation_label(c.current)]
             if has_gene:
                 row.append(c.current.gene or "—")
             row.extend(
@@ -213,7 +224,7 @@ def render_terminal_diff(
             table.add_column("Condition", overflow="fold", style="dim")
         for d in diff.removed:
             source = d.get("source", "")
-            row = [d.get("rsid", "")]
+            row = [public_dict_label(d)]
             if has_gene:
                 row.append(d.get("gene", "") or "—")
             row.extend(
@@ -262,6 +273,7 @@ def _compact_source(attribution: str) -> str:
 _PLAUSIBILITY_MARKERS: dict[str, str] = {
     IMPLAUSIBLE: " [yellow]⚠[/yellow]",
     SUSPICIOUS: " [yellow]?[/yellow]",
+    NOT_ASSESSED: " [dim]○[/dim]",
 }
 
 
@@ -285,13 +297,15 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
         table.add_column("Condition", overflow="fold")
 
     for a in filtered:
-        row = [a.rsid]
+        row = [annotation_label(a)]
         if has_gene:
             row.append(a.gene or "—")
         row.extend(
             [
                 _compact_source(a.attribution),
-                _compact_significance(a.significance, a.source),
+                _compact_significance(a.significance, a.source)
+                + terminal_note(a)
+                + escape(effect_note(a)),
                 f"{a.magnitude:.1f}",
                 escape(a.genotype_match) + _PLAUSIBILITY_MARKERS.get(a.plausibility, ""),
             ]
@@ -300,7 +314,12 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
             row.append(a.condition or "—")
         table.add_row(*row)
     console.print(table)
-    flagged = {a.plausibility for a in filtered} & _PLAUSIBILITY_MARKERS.keys()
+    seen = {a.plausibility for a in filtered}
+    flagged = seen & {IMPLAUSIBLE, SUSPICIOUS}
+    if NOT_ASSESSED in seen:
+        console.print(
+            "[dim]○ plausibility not assessed; the JSON and HTML reports give the reason.[/dim]"
+        )
     if flagged:
         console.print(
             "[yellow]⚠[/yellow] [dim]implausible: homozygous for an allele very rare in "

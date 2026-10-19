@@ -132,9 +132,24 @@ class TestPanelCoverageJson:
         payload = json.loads(out.read_text())
         cov = payload["panel_coverage"]
         assert cov["requested"] == 3
-        assert cov["found"] == 2
-        assert cov["missing"] == ["rs999"]
-        assert cov["no_findings"] == ["rs4680"]
+        assert cov["counts"] == {
+            "annotated": 1,
+            "typed_no_annotation": 1,
+            "no_call": 0,
+            "not_on_chip": 1,
+        }
+        assert cov["variants"][0] == {
+            "rsid": "rs1801133",
+            "gene": _ann().gene or None,
+            "state": "annotated",
+            "genotype": None,
+            "annotation_count": 1,
+        }
+        assert [(v["rsid"], v["state"]) for v in cov["variants"][1:]] == [
+            ("rs4680", "typed_no_annotation"),
+            ("rs999", "not_on_chip"),
+        ]
+        assert "found" not in cov
 
 
 class TestZygosityField:
@@ -142,19 +157,19 @@ class TestZygosityField:
         out = tmp_path / "r.json"
         render_json(_result([_ann(genotype_match="A/G")]), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["annotations"][0]["zygosity"] == "Heterozygous"
+        assert payload["annotations"][0]["zygosity"] == "heterozygous"
 
     def test_zygosity_in_json_homozygous(self, tmp_path: Path):
         out = tmp_path / "r.json"
         render_json(_result([_ann(genotype_match="A/A")]), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["annotations"][0]["zygosity"] == "Homozygous"
+        assert payload["annotations"][0]["zygosity"] == "homozygous"
 
     def test_zygosity_in_json_no_call(self, tmp_path: Path):
         out = tmp_path / "r.json"
         render_json(_result([_ann(genotype_match="A/-")]), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["annotations"][0]["zygosity"] == "No Call"
+        assert payload["annotations"][0]["zygosity"] == "no_call"
 
 
 class TestLicenseAttributions:

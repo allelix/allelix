@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
-from allelix.utils.allele import complement, is_strand_ambiguous
+from allelix.utils.allele import is_strand_ambiguous
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -17,6 +17,20 @@ if TYPE_CHECKING:
     from allelix.models import Variant
 
 _BED_MAGIC = bytes([0x6C, 0x1B, 0x01])
+
+
+class PlinkCounts(NamedTuple):
+    """What ``export_plink`` wrote and skipped.
+
+    ``allele_mismatches`` counts calls written as missing because their
+    alleles fit neither gnomAD's REF nor ALT at the site.
+    """
+
+    written: int
+    no_calls: int
+    indels: int
+    monomorphic: int
+    allele_mismatches: int
 
 
 class EmptyPlinkSetError(ValueError):
@@ -42,31 +56,19 @@ _CHROM_CODES = {
 }
 
 
-def _orient_genotype(
-    allele1: str,
-    allele2: str,
-    ref: str,
-    alt: str,
-) -> tuple[str, str] | None:
-    """Map user alleles to {ref, alt} in a consistent orientation.
+# PLINK1 .bed genotype code for a missing call.
+_BED_MISSING = 0b01
 
-    Returns None for palindromic sites, indels, or alleles that don't fit.
-    Both alleles are tested in the same orientation — no mixed-strand.
+
+def _fits_site(allele1: str, allele2: str, ref: str, alt: str) -> bool:
+    """True when both single-base alleles are the site's REF or ALT as written.
+
+    The input formats state their strand, so a call is never read on the
+    other strand: one that fits neither allele is a mismatch.
     """
     if len(allele1) != 1 or len(allele2) != 1:
-        return None
-    if is_strand_ambiguous(ref, alt):
-        return None
-
-    pair = {allele1, allele2}
-    if pair <= {ref, alt}:
-        return (allele1, allele2)
-
-    c1, c2 = complement(allele1), complement(allele2)
-    if {c1, c2} <= {ref, alt}:
-        return (c1, c2)
-
-    return None
+        return False
+    return {allele1, allele2} <= {ref, alt}
 
 
 def export_plink(
@@ -74,7 +76,7 @@ def export_plink(
     prefix: Path,
     build: str,
     ref_alt_map: dict[str, tuple[str, str]] | None = None,
-) -> tuple[int, int, int, int]:
+) -> PlinkCounts:
     """Write .bed/.bim/.fam from parsed variants.
 
     Args:
@@ -84,9 +86,10 @@ def export_plink(
         ref_alt_map: ``{rsid: (ref, alt)}`` from gnomAD coordinate resolution.
             When provided, uses ref/alt to assign A1/A2 for proper allele coding.
             When None or rsid missing, falls back to ``A2="0"`` for homozygotes.
+            A call whose alleles fit neither REF nor ALT is written as missing.
 
     Returns:
-        ``(variants_written, no_calls_skipped, indels_skipped, monomorphic_count)``
+        A ``PlinkCounts``.
 
     Note:
         No-call variants and indels are dropped. PLINK1 BIM is SNV-only
@@ -128,7 +131,7 @@ def _write_plink(
     bim_path: Path,
     bed_path: Path,
     ref_alt_map: dict[str, tuple[str, str]] | None,
-) -> tuple[int, int, int, int]:
+) -> PlinkCounts:
     """The body of ``export_plink``: write the three files at the given paths."""
     fam_path.write_text("0\tSAMPLE\t0\t0\t0\t-9\n")
 
@@ -136,6 +139,7 @@ def _write_plink(
     skipped = 0
     indels = 0
     monomorphic = 0
+    mismatches = 0
 
     with bim_path.open("w") as bim_f, bed_path.open("wb") as bed_f:
         bed_f.write(_BED_MAGIC)
@@ -156,12 +160,13 @@ def _write_plink(
 
             if ref_alt_map and v.rsid in ref_alt_map:
                 ref, alt = ref_alt_map[v.rsid]
-                resolved = _orient_genotype(v.allele1, v.allele2, ref, alt)
-                if resolved is not None:
-                    r1, r2 = resolved
+                if not _fits_site(v.allele1, v.allele2, ref, alt):
+                    a1, a2, bed_code = ref, alt, _BED_MISSING
+                    mismatches += 1
+                elif not is_strand_ambiguous(ref, alt):
                     a1 = ref
                     a2 = alt
-                    a2_count = sum(1 for a in (r1, r2) if a == alt)
+                    a2_count = sum(1 for a in (v.allele1, v.allele2) if a == alt)
                     if a2_count == 0:
                         bed_code = 0b00
                     elif a2_count == 1:
@@ -181,7 +186,7 @@ def _write_plink(
             bed_f.write(bytes([bed_code]))
             written += 1
 
-    return written, skipped, indels, monomorphic
+    return PlinkCounts(written, skipped, indels, monomorphic, mismatches)
 
 
 def resolve_ref_alt_via_gnomad(
@@ -192,10 +197,9 @@ def resolve_ref_alt_via_gnomad(
     For each rsid in ``variant_by_rsid``, looks up gnomAD's coordinate
     record(s). When gnomAD returns a single record, that ref/alt pair is
     used directly. When gnomAD returns multiple records (multi-allelic
-    positions), the user's allele pair is matched against each candidate
-    via ``_orient_genotype`` and the first match that's also a subset of
-    ``{ref, alt}`` wins; if none is a subset, the first orientation-valid
-    record wins as a fallback.
+    positions), the first record the user's alleles fit as written wins,
+    preferring one that is not palindromic. When none fits, the first
+    record is used, and the exporter writes the call as missing.
 
     Returns an empty dict if gnomAD isn't ready. Raises on any underlying
     lookup error — the CLI catches and prints the "failed" warning, then
@@ -215,19 +219,13 @@ def resolve_ref_alt_via_gnomad(
                 result[rsid] = (ref, alt)
                 continue
             v = variant_by_rsid[rsid]
-            pair = {v.allele1, v.allele2}
-            for _, _, ref, alt in coords:
-                if _orient_genotype(v.allele1, v.allele2, ref, alt) is not None and pair <= {
-                    ref,
-                    alt,
-                }:
-                    result[rsid] = (ref, alt)
-                    break
-            else:
-                for _, _, ref, alt in coords:
-                    if _orient_genotype(v.allele1, v.allele2, ref, alt) is not None:
-                        result[rsid] = (ref, alt)
-                        break
+            fitting = [
+                (ref, alt)
+                for _, _, ref, alt in coords
+                if _fits_site(v.allele1, v.allele2, ref, alt)
+            ]
+            plain = [pair for pair in fitting if not is_strand_ambiguous(*pair)]
+            result[rsid] = (plain or fitting or [coords[0][2:4]])[0]
         return result
     finally:
         gnomad.close()

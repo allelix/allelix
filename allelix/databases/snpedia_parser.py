@@ -107,6 +107,17 @@ CREATE TABLE IF NOT EXISTS database_versions (
 """
 
 
+def parser_tag_is_current(conn: sqlite3.Connection) -> bool:
+    """Return True if ``local_version_tag`` names the current parser. Read-only."""
+    try:
+        row = conn.execute(
+            "SELECT local_version_tag FROM database_versions WHERE name='snpedia'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row) and row[0] == f"pv:{_PARSER_VERSION}"
+
+
 def parser_is_current(conn: sqlite3.Connection) -> bool:
     """Return True if the cache was built by the current parser version.
 

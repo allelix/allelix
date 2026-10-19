@@ -1,7 +1,7 @@
 # ADR-0008: Magnitude scoring is Allelix-derived from source classifications
 
 - **Date:** 2026-05-11
-- **Status:** Accepted
+- **Status:** Accepted; amended by ADR-0045 (a ClinVar row is capped by ClinVar's aggregate classification of the variant)
 
 ## Context
 

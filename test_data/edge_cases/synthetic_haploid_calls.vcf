@@ -1,0 +1,13 @@
+##fileformat=VCFv4.2
+##fileDate=20000101
+##source=Written by hand for the Allelix tests; every genotype is invented
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chrX,length=156040895>
+##contig=<ID=chrY,length=57227415>
+##contig=<ID=chrM,length=16569>
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
+chr1	11794419	rs1801131	T	G	.	PASS	.	GT	0/1
+chrX	338615	rs773605704	G	A	.	PASS	.	GT	1
+chrY	2786976	rs886038525	T	C	.	PASS	.	GT	1
+chrM	827	rs28358569	A	G	.	PASS	.	GT	1

@@ -233,7 +233,7 @@ class TestAnnotator:
             assert missing.version() is None
             assert missing.record_count() is None
             with pytest.raises(FileNotFoundError):
-                missing.refs_at_loci("GRCh37", {("1", 1)})
+                missing.alleles_at_loci("GRCh37", {("1", 1)})
 
     def test_setup_refuses_without_a_pinned_cache(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr("allelix.annotators.rsid_identity.RSID_IDENTITY_EXPECTED_SHA256", "")
@@ -281,11 +281,15 @@ class TestAnnotator:
         with RsidIdentityAnnotator(dest) as ann:
             assert ann.is_ready()
 
-    def test_refs_at_loci_per_build(self, identity: RsidIdentityAnnotator) -> None:
-        assert identity.refs_at_loci("GRCh37", {("1", 1_000_200)}) == {("1", 1_000_200): {"C"}}
-        assert identity.refs_at_loci("GRCh38", {("1", 1_100_200)}) == {("1", 1_100_200): {"G"}}
-        assert identity.refs_at_loci("GRCh36", {("1", 1_000_200)}) == {}
-        assert identity.refs_at_loci("GRCh37", set()) == {}
+    def test_alleles_at_loci_per_build(self, identity: RsidIdentityAnnotator) -> None:
+        def refs(build: str, loci: set[tuple[str, int]]) -> dict[tuple[str, int], set[str]]:
+            got = identity.alleles_at_loci(build, loci)
+            return {locus: {ref for ref, _, _ in rows} for locus, rows in got.items()}
+
+        assert refs("GRCh37", {("1", 1_000_200)}) == {("1", 1_000_200): {"C"}}
+        assert refs("GRCh38", {("1", 1_100_200)}) == {("1", 1_100_200): {"G"}}
+        assert refs("GRCh36", {("1", 1_000_200)}) == {}
+        assert refs("GRCh37", set()) == {}
 
     def test_alleles_at_loci(self, identity: RsidIdentityAnnotator) -> None:
         got = identity.alleles_at_loci("GRCh37", {("2", 2_000_500)})
@@ -312,7 +316,7 @@ class TestAnnotator:
 
     def test_many_loci_are_chunked(self, identity: RsidIdentityAnnotator) -> None:
         loci = {("1", 5_000_000 + i) for i in range(1000)} | {("1", 1_000_100)}
-        assert identity.refs_at_loci("GRCh37", loci) == {("1", 1_000_100): {"G"}}
+        assert set(identity.alleles_at_loci("GRCh37", loci)) == {("1", 1_000_100)}
 
 
 # ── Pipeline: GRCh37 input with the identity table ─────────────
@@ -509,7 +513,7 @@ def test_rsidless_grch37_vcf_resolves_through_identity(
     )
     coverage = result.panel_coverage()
     assert coverage is not None
-    assert coverage["missing"] == []
+    assert coverage["counts"]["not_on_chip"] == 0
     assert result.rsidless_variant_count == 0
 
 

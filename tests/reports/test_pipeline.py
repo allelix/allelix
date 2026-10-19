@@ -158,23 +158,51 @@ class TestPanelCoverage:
         r = self._result()
         assert r.panel_coverage() is None
 
-    def test_classifies_three_states(self):
-        """A panel of 4 rsIDs where one had findings, one was genotyped
-        but produced no annotations, two weren't on the chip."""
-        panel = frozenset({"rs1", "rs2", "rs3", "rs4"})
-        genotyped = frozenset({"rs1", "rs2"})
-        annotated = frozenset({"rs1"})
+    def test_classifies_four_states(self):
+        """A panel of 5 rsIDs: one with findings, one genotyped with no
+        annotations, one a no-call, two not on the chip (ADR-0051)."""
+        panel = frozenset({"rs1", "rs2", "rs3", "rs4", "rs5"})
         r = self._result(
             panel_rsids=panel,
-            genotyped_panel_rsids=genotyped,
-            panel_annotated_rsids=annotated,
+            genotyped_panel_rsids=frozenset({"rs1", "rs2", "rs5"}),
+            panel_annotated_rsids=frozenset({"rs1"}),
+            no_call_panel_rsids=frozenset({"rs5"}),
+            panel_genotypes={"rs1": "C/T", "rs2": "C/C", "rs5": "-/-"},
         )
         cov = r.panel_coverage()
         assert cov is not None
-        assert cov["requested"] == 4
-        assert cov["found"] == 2
-        assert cov["missing"] == ["rs3", "rs4"]
-        assert cov["no_findings"] == ["rs2"]
+        assert cov["requested"] == 5
+        assert cov["counts"] == {
+            "annotated": 1,
+            "typed_no_annotation": 1,
+            "no_call": 1,
+            "not_on_chip": 2,
+        }
+        assert [(v["rsid"], v["state"], v["genotype"]) for v in cov["variants"]] == [
+            ("rs1", "annotated", "C/T"),
+            ("rs2", "typed_no_annotation", "C/C"),
+            ("rs5", "no_call", "-/-"),
+            ("rs3", "not_on_chip", None),
+            ("rs4", "not_on_chip", None),
+        ]
+
+    def test_annotated_wins_over_no_call(self):
+        """A half call with a shown finding is annotated (ruling Q8)."""
+        r = self._result(
+            panel_rsids=frozenset({"rs1"}),
+            genotyped_panel_rsids=frozenset({"rs1"}),
+            no_call_panel_rsids=frozenset({"rs1"}),
+            panel_genotypes={"rs1": "T/."},
+            annotations=[_ann(rsid="rs1", magnitude=9.0)],
+        )
+        cov = r.panel_coverage(r.filter())
+        assert cov is not None
+        (variant,) = cov["variants"]
+        assert (variant["state"], variant["genotype"], variant["annotation_count"]) == (
+            "annotated",
+            "T/.",
+            1,
+        )
 
     def test_all_genotyped_with_findings_clean_coverage(self):
         """Happy path: every panel rsID was both genotyped and produced
@@ -186,7 +214,13 @@ class TestPanelCoverage:
             panel_annotated_rsids=frozenset({"rs1", "rs2"}),
         )
         cov = r.panel_coverage()
-        assert cov == {"requested": 2, "found": 2, "missing": [], "no_findings": []}
+        assert cov is not None
+        assert cov["counts"] == {
+            "annotated": 2,
+            "typed_no_annotation": 0,
+            "no_call": 0,
+            "not_on_chip": 0,
+        }
 
     def test_nothing_genotyped_all_missing(self):
         """The chip didn't carry any of the requested rsIDs."""
@@ -194,9 +228,8 @@ class TestPanelCoverage:
         r = self._result(panel_rsids=panel)
         cov = r.panel_coverage()
         assert cov is not None
-        assert cov["found"] == 0
-        assert cov["missing"] == ["rs1", "rs2"]
-        assert cov["no_findings"] == []
+        assert cov["counts"]["not_on_chip"] == 2
+        assert [v["rsid"] for v in cov["variants"]] == ["rs1", "rs2"]
 
     def test_run_analysis_populates_coverage(
         self, mock_mhg_path: Path, all_annotators_data_dir: Path
@@ -216,78 +249,41 @@ class TestPanelCoverage:
         cov = result.panel_coverage()
         assert cov is not None
         assert cov["requested"] == 2
-        assert "rs999999999" in cov["missing"]
-        assert "rs999999999" not in cov["no_findings"]
+        states = {v["rsid"]: v["state"] for v in cov["variants"]}
+        assert states["rs999999999"] == "not_on_chip"
+        assert states["rs1801133"] == "annotated"
 
-    def test_sub_floor_panel_rsid_lands_in_no_findings_not_limbo(self):
-        """When ``filtered_annotations`` is supplied
-        the "annotated" set is derived from THAT list (post-magnitude-
-        filter) instead of the raw pre-filter set.
+    def test_sub_floor_panel_rsid_is_typed_no_annotation(self):
+        """The renderer's post-filter list decides "annotated".
 
-        Repro of the v2.2.0 accounting lie: a panel rsid has an
-        annotation in the cache (so it's in
-        ``panel_annotated_rsids``), but the annotation's magnitude is
-        below the analyze display floor, so the renderer's
-        ``filter()`` drops it. Previously, the rsid:
-          - counted as "found" (because panel_annotated_rsids has it)
-          - dropped from the annotation table (below floor)
-          - NOT in no_findings (because the pipeline thought it had
-            annotations)
-        Pure limbo.
-
-        After the fix, threading the filtered list in makes "annotated"
-        equal "actually rendered" — the sub-floor rsid lands in
-        no_findings honestly.
-
-        Pinned invariant: requested == len(missing) + len(no_findings)
-        + count of distinct displayed-annotation rsids.
+        A panel rsID whose only annotation is below the display floor is
+        ``typed_no_annotation``, not annotated, so it is never counted as
+        a finding the report does not show. The four counts sum to
+        ``requested``.
         """
         panel = frozenset({"rs_displayed", "rs_subfloor", "rs_notonchip"})
-        # rs_displayed: genotyped, mag 9.0, will survive the filter.
-        # rs_subfloor: genotyped, mag 2.0, won't survive the filter.
-        # rs_notonchip: never in input.
-        genotyped = frozenset({"rs_displayed", "rs_subfloor"})
-        # Pre-filter "annotated" set: both genotyped rsids had cache
-        # annotations. This is what run_analysis populates today.
-        panel_annotated_raw = frozenset({"rs_displayed", "rs_subfloor"})
-
         r = self._result(
             panel_rsids=panel,
-            genotyped_panel_rsids=genotyped,
-            panel_annotated_rsids=panel_annotated_raw,
+            genotyped_panel_rsids=frozenset({"rs_displayed", "rs_subfloor"}),
+            panel_annotated_rsids=frozenset({"rs_displayed", "rs_subfloor"}),
             annotations=[
                 _ann(rsid="rs_displayed", magnitude=9.0),
                 _ann(rsid="rs_subfloor", magnitude=2.0),
             ],
         )
-
-        # Post-filter list: only rs_displayed survived the 5.0 floor.
         filtered = r.filter(min_magnitude=5.0)
         assert [a.rsid for a in filtered] == ["rs_displayed"]
-
-        # Previously (back-compat path): the limbo bug — rs_subfloor
-        # counted as "found" but rendered nowhere.
-        legacy_cov = r.panel_coverage()
-        assert legacy_cov is not None
-        assert legacy_cov["found"] == 2
-        assert "rs_subfloor" not in legacy_cov["no_findings"]
-
-        # After the fix, thread the filtered list. rs_subfloor falls into
-        # no_findings; `found` still means "in input file" (genotyped
-        # count) — same v6 contract.
         cov = r.panel_coverage(filtered)
         assert cov is not None
-        assert cov["requested"] == 3
-        assert cov["found"] == 2  # both genotyped, unchanged
-        assert cov["missing"] == ["rs_notonchip"]
-        assert cov["no_findings"] == ["rs_subfloor"]  # was [] in legacy
-
-        # Pinned accounting invariant: the math closes against the
-        # user-visible report.
-        displayed_rsids = {a.rsid for a in filtered} & panel
-        assert cov["requested"] == (
-            len(cov["missing"]) + len(cov["no_findings"]) + len(displayed_rsids)
-        )
+        assert cov["counts"] == {
+            "annotated": 1,
+            "typed_no_annotation": 1,
+            "no_call": 0,
+            "not_on_chip": 1,
+        }
+        assert sum(cov["counts"].values()) == cov["requested"] == 3
+        states = {v["rsid"]: v["state"] for v in cov["variants"]}
+        assert states["rs_subfloor"] == "typed_no_annotation"
 
 
 class TestRunAnalysis:
@@ -562,22 +558,80 @@ class TestBuildDecisionInPipeline:
         assert result.build_diagnostics is not None
         assert result.build_diagnostics.source == "override"
 
-    def test_override_wins_over_every_stop(self, tmp_path: Path) -> None:
-        """--build skips the evidence: no mixed-length stop, no late seed check."""
+    def test_override_passes_mixed_lengths_and_no_evidence(self, tmp_path: Path) -> None:
+        """--build passes mixed contig lengths and a file with no evidence."""
         from pathlib import Path
 
         from allelix.parsers.vcf import VcfParser
 
         mixed = Path(__file__).parent.parent / "fixtures" / "mock_vcf_mixed_contigs.vcf"
-        lifted = tmp_path / "lifted.vcf"
-        lifted.write_text(_vcf_text(["ID=1,length=249250621"], _seed_rows(BUILD_GRCH38)))
         bare = tmp_path / "bare.vcf"
         bare.write_text(_vcf_text(["ID=1"], [("1", 1_000_000, ".")]))
-        for vcf in (mixed, lifted, bare):
+        for vcf in (mixed, bare):
             result = run_analysis(vcf, VcfParser(), [], build_override=BUILD_GRCH38)
             assert result.build == BUILD_GRCH38, vcf.name
             assert result.build_diagnostics is not None
             assert result.build_diagnostics.source == "override"
+
+    def test_override_against_contig_lengths_stops(self, tmp_path: Path) -> None:
+        """contig lengths of another build stop --build, naming both."""
+        from allelix.parsers.vcf import VcfParser
+
+        lifted = tmp_path / "lifted.vcf"
+        lifted.write_text(_vcf_text(["ID=1,length=249250621"], _seed_rows(BUILD_GRCH38)))
+        with pytest.raises(
+            BuildDecisionError,
+            match="--build grch38 was given but the file's contig lengths are GRCh37",
+        ):
+            run_analysis(lifted, VcfParser(), [], build_override=BUILD_GRCH38)
+
+    def test_override_against_late_seeds_stops(self, tmp_path: Path) -> None:
+        """contig lengths agree with --build, the seeds met in the pass do not."""
+        from allelix.parsers.vcf import VcfParser
+
+        lifted = tmp_path / "lifted.vcf"
+        lifted.write_text(_vcf_text(["ID=1,length=249250621"], _seed_rows(BUILD_GRCH38)))
+        with pytest.raises(BuildDecisionError) as exc:
+            run_analysis(lifted, VcfParser(), [], build_override=BUILD_GRCH37)
+        message = str(exc.value)
+        assert "--build grch37 was given but the file's known-SNP positions say GRCh38" in message
+        assert "nothing was written" in message
+
+    def test_override_against_confident_seeds_stops(self, tmp_path: Path) -> None:
+        """confident seeds for another build stop --build, naming both."""
+        chip = self._chip(tmp_path, None, self._seed_chip_rows(BUILD_GRCH38))
+        with pytest.raises(
+            BuildDecisionError,
+            match="--build grch37 was given but the file's known-SNP positions say GRCh38",
+        ):
+            run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH37)
+
+    def test_override_grch36_is_exempt(self, tmp_path: Path) -> None:
+        """ADR-0025: --build grch36 turns position lookups off, so it is never checked."""
+        chip = self._chip(tmp_path, None, self._seed_chip_rows(BUILD_GRCH38))
+        result = run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH36)
+        assert result.build == BUILD_GRCH36
+
+    def test_override_against_tentative_seeds_runs(self, tmp_path: Path) -> None:
+        """one or two contrary seeds warn (build_text) but do not stop."""
+        chip = self._chip(tmp_path, None, self._seed_chip_rows(BUILD_GRCH38)[:2])
+        result = run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH37)
+        diag = result.build_diagnostics
+        assert result.build == BUILD_GRCH37
+        assert diag is not None
+        assert diag.override
+        assert (diag.detected_build, diag.matched_count) == (BUILD_GRCH38, 2)
+
+    def test_label_without_seeds_stops(self, tmp_path: Path) -> None:
+        """a build line with nothing to check it against stops."""
+        rows = [(f"rs99{n:05d}", "MT", 100 + n) for n in range(50)]
+        chip = self._chip(tmp_path, "37.1", rows)
+        with pytest.raises(
+            BuildDecisionError, match="the file says GRCh37 but carries no known-SNP position"
+        ):
+            run_analysis(chip, MyHappyGenesParser(), [])
+        result = run_analysis(chip, MyHappyGenesParser(), [], build_override=BUILD_GRCH37)
+        assert result.build == BUILD_GRCH37
 
     def test_variants_carry_the_decided_build(self, tmp_path: Path) -> None:
         rows = self._seed_chip_rows(BUILD_GRCH38)
@@ -596,9 +650,9 @@ class TestBuildDecisionInPipeline:
             self._chip(tmp_path, "37.1", rows),
             MyHappyGenesParser(),
             [],
-            build_override=BUILD_GRCH37,
+            build_override=BUILD_GRCH38,
         )
-        assert result.build == BUILD_GRCH37
+        assert result.build == BUILD_GRCH38
         assert result.build_diagnostics is not None
         assert result.build_diagnostics.override
 
@@ -638,6 +692,31 @@ class TestBuildDecisionInPipeline:
         assert result.build_diagnostics is not None
         assert result.build_diagnostics.mt_skipped == 1
         assert result.hv_variants == []
+
+    def test_hg19_chrm_records_are_not_annotated_under_build_override(
+        self, tmp_path: Path
+    ) -> None:
+        """The review's case: chrM declares the hg19 length, nothing else does, --build decides."""
+        from allelix.parsers.vcf import VcfParser
+
+        vcf = tmp_path / "hg19_mt_forced.vcf"
+        vcf.write_text(
+            _vcf_text(
+                ["ID=chrM,length=16571"],
+                [("chr1", 1_000_000, "rs9000001"), ("chrM", 3_243, "rs9000002")],
+            )
+        )
+        result = run_analysis(
+            vcf,
+            VcfParser(),
+            [],
+            build_override=BUILD_GRCH37,
+            high_value_rsids={"rs9000001", "rs9000002"},
+        )
+        assert result.build_diagnostics is not None
+        assert result.build_diagnostics.override
+        assert result.build_diagnostics.mt_skipped == 1
+        assert [v.rsid for v in result.hv_variants] == ["rs9000001"]
 
 
 class TestGnomadEnrichment:
@@ -740,6 +819,9 @@ class TestGrch38OnlyEnrichmentGuards:
                     "sample_id": "cross-build",
                     "build": "GRCh37",
                 }
+
+            def input_stats(self):
+                return None
 
             def parse(self, _file_path):
                 yield Variant(
@@ -859,6 +941,9 @@ class TestGrch38OnlyEnrichmentGuards:
             alphamissense=alphamissense,
             cadd=cadd,
             high_value_rsids={"rs2113764416"},
+            # The probes carry no known-SNP position, so the label alone
+            # would stop the run (ADR-0044); the build is forced instead.
+            build_override="GRCh37",
         )
 
         assert result.build == "GRCh37"

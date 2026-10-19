@@ -1,10 +1,11 @@
 ##fileformat=MyHeritage
 ##format=MHv1.0
 ##method=Low-pass Whole Genome Sequencing
-##timestamp=2026-06-26 17:54:08 UTC
+##timestamp=2000-01-01 00:00:00 UTC
 ##reference=build37
 RSID,CHROMOSOME,POSITION,RESULT
 "rs4477212","1","82154","AA"
 "rs3094315","1","752566","AG"
 "rs9001001","1","100000","--"
+"rs1801133","1","11856378","AG"
 "rs9001002","X","2700157","CT"

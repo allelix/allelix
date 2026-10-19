@@ -37,7 +37,11 @@ from allelix.reports.html import render_html
 from allelix.reports.json_report import SCHEMA_VERSION, render_json
 from allelix.reports.terminal import render_terminal
 from allelix.utils.plausibility import (
+    CHROMOSOME,
+    GNOMAD_NOT_RUN,
     IMPLAUSIBLE,
+    NO_FREQUENCY,
+    NOT_ASSESSED,
     PLAUSIBLE,
     SUSPICIOUS,
     PlausibilityThresholds,
@@ -54,39 +58,43 @@ class TestClassify:
         ("af", "copies", "chrom", "expected"),
         [
             # The three buckets.
-            (0.00001, 2, "3", IMPLAUSIBLE),
-            (0.0, 2, "3", IMPLAUSIBLE),
-            (0.0, 1, "3", SUSPICIOUS),
-            (0.2, 2, "3", PLAUSIBLE),
-            (0.00001, 1, "3", PLAUSIBLE),
+            (0.00001, 2, "3", (IMPLAUSIBLE, "")),
+            (0.0, 2, "3", (IMPLAUSIBLE, "")),
+            (0.0, 1, "3", (SUSPICIOUS, "")),
+            (0.2, 2, "3", (PLAUSIBLE, "")),
+            (0.00001, 1, "3", (PLAUSIBLE, "")),
             # Boundaries: homozygous is strict "<", heterozygous is "<=".
-            (0.0001, 2, "3", PLAUSIBLE),
-            (0.0, 1, "22", SUSPICIOUS),
-            # Not assessed.
-            (None, 2, "3", ""),
-            (None, 1, "3", ""),
-            (0.00001, 0, "3", ""),
+            (0.0001, 2, "3", (PLAUSIBLE, "")),
+            (0.0, 1, "22", (SUSPICIOUS, "")),
+            # Not assessed, with the reason (ADR-0050).
+            (None, 2, "3", (NOT_ASSESSED, NO_FREQUENCY)),
+            (None, 1, "3", (NOT_ASSESSED, NO_FREQUENCY)),
+            (0.00001, 0, "3", (NOT_ASSESSED, CHROMOSOME)),
             # X: a homozygous call may be a male's hemizygous call.
-            (0.00001, 2, "X", ""),
-            (0.0, 1, "X", SUSPICIOUS),
+            (0.00001, 2, "X", (NOT_ASSESSED, CHROMOSOME)),
+            (0.0, 1, "X", (SUSPICIOUS, "")),
             # Y and MT are haploid.
-            (0.0, 2, "Y", ""),
-            (0.0, 1, "Y", ""),
-            (0.0, 2, "MT", ""),
+            (0.0, 2, "Y", (NOT_ASSESSED, CHROMOSOME)),
+            (0.0, 1, "Y", (NOT_ASSESSED, CHROMOSOME)),
+            (0.0, 2, "MT", (NOT_ASSESSED, CHROMOSOME)),
+            # No frequency on a chromosome with no rule: the chromosome decides.
+            (None, 2, "Y", (NOT_ASSESSED, CHROMOSOME)),
         ],
     )
-    def test_buckets(self, af: float | None, copies: int, chrom: str, expected: str) -> None:
+    def test_buckets(
+        self, af: float | None, copies: int, chrom: str, expected: tuple[str, str]
+    ) -> None:
         assert classify(af, copies, chrom) == expected
 
     def test_thresholds_are_tunable(self) -> None:
         strict = PlausibilityThresholds(homozygous_max_af=0.000001, heterozygous_max_af=0.001)
-        assert classify(0.00001, 2, "3", strict) == PLAUSIBLE
-        assert classify(0.0005, 1, "3", strict) == SUSPICIOUS
+        assert classify(0.00001, 2, "3", strict) == (PLAUSIBLE, "")
+        assert classify(0.0005, 1, "3", strict) == (SUSPICIOUS, "")
 
     def test_most_severe(self) -> None:
         assert most_severe([PLAUSIBLE, IMPLAUSIBLE, SUSPICIOUS]) == IMPLAUSIBLE
-        assert most_severe(["", PLAUSIBLE]) == PLAUSIBLE
-        assert most_severe(["", ""]) == ""
+        assert most_severe([NOT_ASSESSED, PLAUSIBLE]) == PLAUSIBLE
+        assert most_severe([NOT_ASSESSED, NOT_ASSESSED]) == NOT_ASSESSED
         assert most_severe([]) == ""
 
 
@@ -104,8 +112,8 @@ _SITES: tuple[tuple[str, str, int, str, str, str, float | None, str], ...] = (
     ("rs900580002", "3", 3_800_200, "C", "T", "CT", 0.0, SUSPICIOUS),
     ("rs900580003", "3", 3_800_300, "T", "C", "CC", 0.2, PLAUSIBLE),
     ("rs900580004", "3", 3_800_400, "A", "G", "AG", 0.00002, PLAUSIBLE),
-    ("rs900580005", "3", 3_800_500, "C", "G", "GG", None, ""),
-    ("rs900580006", "X", 3_800_600, "G", "A", "AA", 0.00001, ""),
+    ("rs900580005", "3", 3_800_500, "C", "G", "GG", None, NOT_ASSESSED),
+    ("rs900580006", "X", 3_800_600, "G", "A", "AA", 0.00001, NOT_ASSESSED),
     ("rs900580007", "X", 3_800_700, "C", "T", "CT", 0.0, SUSPICIOUS),
 )
 _POS37_OFFSET = 100_000  # synthetic GRCh37 position = GRCh38 position - offset
@@ -232,7 +240,8 @@ class TestPipeline:
             [cm_stack.enter_context(ClinVarAnnotator(grch38_data, builds=("GRCh38",)))],
             build_override="GRCh38",
         )
-        assert set(_plausibility_by_rsid(result).values()) == {""}
+        assert set(_plausibility_by_rsid(result).values()) == {NOT_ASSESSED}
+        assert {a.plausibility_reason for a in result.annotations} == {GNOMAD_NOT_RUN}
 
     def test_grch37_chip_through_identity_table(
         self, tmp_path: Path, cm_stack: contextlib.ExitStack

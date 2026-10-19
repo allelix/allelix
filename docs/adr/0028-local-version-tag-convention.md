@@ -92,6 +92,8 @@ Any new annotator added to allelix must:
 
 ### Migration
 
+*Amended by ADR-0048:* `get_database_info()` opens read-only and no longer adds the column, and the `_stamp_existing_*_cache()` migrations run in the update step (`prepare_cache()`), not in `is_ready()`.
+
 The `local_version_tag` column is added lazily:
 
 - `get_database_info()` tries the full-schema SELECT first. On

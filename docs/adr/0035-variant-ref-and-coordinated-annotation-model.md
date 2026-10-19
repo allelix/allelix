@@ -195,6 +195,23 @@ was fixed in v2.0.1.
 - `Annotator.__del__` removal is independent of this ADR and can land in
   parallel without merge conflicts.
 
+## Amendment 2026-10-16 (2.5): no complemented REF in ClinVar
+
+ClinVar accepted a call whose REF was the complement of the row's REF, for
+a "reverse-stranded" input. That never happens on a correct file:
+
+- A VCF is forward strand by specification.
+- An array call's REF comes from the rsID identity table at the same
+  forward locus as ClinVar's REF, so the two are equal.
+
+A complemented REF therefore meant mis-coordinated input, and accepting it
+could attach a finding to the wrong variant. ClinVar now requires the
+call's REF to equal the row's, and the carrier check is direct membership.
+A one-base VCF REF that is none of ClinVar's one-base REFs at the position
+is counted (`input.vcf_quality.clinvar_ref_mismatches`), and the report
+asks the user to check the file's build and coordinates.
+`strand_aware_carrier_match` remains for ClinPGx.
+
 ## References
 
 - ADR-0007 (genotype matching requires alt allele — strand-aware extension

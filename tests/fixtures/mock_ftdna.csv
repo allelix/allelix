@@ -1,15 +1,13 @@
-# This file is adapted from https://github.com/apriha/snps
-# Original: BSD 3-Clause License, Copyright (c) 2019, Andrew Riha
-# FTDNA raw data format reference
+# Written by hand for the Allelix tests; every genotype is invented.
 RSID,CHROMOSOME,POSITION,RESULT
-"rs1801133","1","11856378","AG"
-"rs1801131","1","11854476","TG"
-"rs4680","22","19951271","AG"
-"rs1065852","22","42526694","CC"
-"rs429358","19","45411941","TT"
-"rs7412","19","45412079","CT"
-"rs5742904","2","21229160","CC"
-"rs9001001","1","100000","--"
-"rs9001002","MT","7028","A"
-"rs9001003","X","2699520","AG"
-"rs9001004","Y","2787654","A"
+"rs1801131","1","11854476","TT"
+"rs1801133","1","11856378","GA"
+"rs3999990011","2","3999011","CC"
+"rs3999990001","3","3999001","--"
+"rs3999990012","5","3999012","AT"
+"rs429358","19","45411941","TC"
+"rs7412","19","45412079","CC"
+"rs4680","22","19951271","GA"
+"rs3999990003","X","39990003","CT"
+"rs3999990004","Y","3999004","T"
+"rs3999990002","MT","15999","G"

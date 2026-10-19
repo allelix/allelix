@@ -130,7 +130,7 @@ class TestInterpreterVersionStamp:
 
     def test_legacy_no_stamp_self_heals(self, tmp_path: Path, mock_pharmgkb_dir: Path):
         """Pre-mechanism cache (no local_version_tag, current ``|iv:N`` baked into
-        remote_signal) gets stamped without reingest."""
+        remote_signal) gets stamped without reingest, in the update step."""
         import sqlite3
 
         from allelix.databases._versions import PHARMGKB_INTERPRETER_VERSION
@@ -149,6 +149,9 @@ class TestInterpreterVersionStamp:
 
         ann = PharmGKBAnnotator(tmp_path)
         try:
+            # Stamped by the update step, not by is_ready() (ADR-0048).
+            assert ann.is_ready() is False
+            assert ann.prepare_cache() is True
             assert ann.is_ready() is True
         finally:
             ann.close()
@@ -281,7 +284,7 @@ class TestClinvarRefPrimaryFilter:
     ) -> PharmGKBAnnotator:
         ann = PharmGKBAnnotator(
             pharmgkb_data_dir,
-            clinvar_ref_provider=lambda rsid, _build: refs.get(rsid),
+            clinvar_ref_provider=lambda rsid, _build, _locus: refs.get(rsid),
         )
         return ann
 
@@ -306,6 +309,15 @@ class TestClinvarRefPrimaryFilter:
             results = ann.annotate(v)
             assert results, "heterozygous carrier should emit"
             assert results[0].genotype_match == "AG"
+        finally:
+            ann.close()
+
+    def test_homozygous_one_base_deletion_keeps_a_slash(self, pharmgkb_data_dir: Path):
+        """A VCF record AG>A 1/1 is two one-base alleles but an indel: shown as A/A."""
+        ann = PharmGKBAnnotator(pharmgkb_data_dir)
+        try:
+            v = Variant("rs1801133", "1", 11796321, "A", "A", ref="AG", ref_from_input=True)
+            assert [a.genotype_match for a in ann.annotate(v)] == ["A/A"]
         finally:
             ann.close()
 
@@ -636,7 +648,7 @@ class TestBatchAnnotateParity:
         refs = {"rs1801133": "G"}
         ann = PharmGKBAnnotator(
             pharmgkb_data_dir,
-            clinvar_ref_provider=lambda rsid, _build: refs.get(rsid),
+            clinvar_ref_provider=lambda rsid, _build, _locus: refs.get(rsid),
         )
         try:
             variants = [

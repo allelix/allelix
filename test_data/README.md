@@ -22,8 +22,8 @@ verification.
   canonical-header check, GRCh36 position detection, MHG/Tempus
   build-mismatch warning, unsupported formats). Documented in
   `edge_cases/README.md`.
-- **`databases/`** — Pinned annotator databases. **Gitignored** (~17 GB
-  without the optional CADD cache; ~23 GB with it).
+- **`databases/`** — Pinned annotator databases. **Gitignored** (~19 GB
+  without the optional CADD cache; ~25 GB with it).
   Restore via `allelix db update --data-dir test_data/databases`.
 
 ## Directory layout
@@ -37,7 +37,8 @@ test_data/
 │   ├── ancestrydna/           # 7 files
 │   ├── ftdna/                 # 7 files
 │   ├── livingdna/             # 1 file (user1190 transcoded)
-│   └── myheritage/            # 1 file (user1190 transcoded)
+│   ├── myheritage/            # 1 file (user1190 transcoded)
+│   └── vcf/                   # GIAB HG002, 1000 Genomes, VCF mocks
 ├── transcoded/                # user1190 → AncestryDNA / FTDNA format
 ├── databases/                 # pinned annotator databases — GITIGNORED
 ├── baselines/                 # frozen analyze outputs per release
@@ -57,9 +58,10 @@ formats.
 | Source | License | Notes |
 |---|---|---|
 | openSNP genotype files (real/, transcoded/, edge_cases/, plus the synthetic source for baselines) | [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) | Public domain. |
-| Corpas family exome VCF (edge_cases/unsupported_23andme_exome_vcf.txt) | CC-BY / CC0 (see [Corpas et al. 2015](https://doi.org/10.1186/s12864-015-1973-7)) | Deliberately public-released by subjects. Attributed to satisfy CC-BY. |
+| VCFs in real/vcf/ (GIAB HG002, 1000 Genomes) | Public domain (NIST / 1000 Genomes Project) | The VCF mocks there are synthetic. |
 | ClinVar (in databases/) | NCBI public domain | Restore via `allelix db update`. |
-| GWAS Catalog (in databases/) | NCBI/EBI public domain | Same. |
+| dbSNP rsID identity table (`rsid_identity.sqlite`, in databases/) | NCBI public domain | Same. |
+| GWAS Catalog (in databases/) | EBI/NHGRI public domain | Same. |
 | ClinPGx (formerly PharmGKB; in databases/) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) | Attribution required if reports are redistributed. |
 | gnomAD (in databases/) | [ODbL](https://opendatacommons.org/licenses/odbl/1-0/) | Attribution required. GRCh38-only enrichment. |
 | AlphaMissense (in databases/) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Attribution required. GRCh38-only enrichment. |
@@ -68,15 +70,7 @@ formats.
 
 ## Pinned database versions (for regression testing)
 
-```
-clinvar.GRCh37.sqlite   2026-05-30
-clinvar.GRCh38.sqlite   2026-05-30
-pharmgkb.sqlite         2026-06-05  (ClinPGx; legacy cache filename)
-gwas.sqlite             2026-06-05
-gnomad.sqlite           2026-06-05
-alphamissense.sqlite    2026-06-05
-snpedia.sqlite          pre-built cache from HuggingFace (source data scraped 2026-05-20)
-```
+Record the `allelix db status` output next to each new `baselines/<version>/`.
 
 Pinned databases are the constant for regression testing. When a new release
 is verified, baselines are generated against THESE databases, not whatever
@@ -96,12 +90,12 @@ B=$TD/baselines/<new-version>
 mkdir -p $B
 
 # --exclude-snpedia keeps the baselines license-clean (SNPedia is non-commercial)
-allelix analyze $TD/real/23andme/user1190_v5.txt  --data-dir $DB --exclude-snpedia --output $B/user1190_23andme_analyze.json
-allelix analyze $TD/real/livingdna/user1190.csv   --data-dir $DB --exclude-snpedia --output $B/user1190_livingdna_analyze.json
-allelix analyze $TD/real/myheritage/user1190.csv  --data-dir $DB --exclude-snpedia --output $B/user1190_myheritage_analyze.json
-allelix analyze $TD/real/mhg/user1190.txt         --data-dir $DB --exclude-snpedia --output $B/user1190_mhg_analyze.json
-allelix analyze $TD/transcoded/user1190_as_ancestrydna.txt --data-dir $DB --exclude-snpedia --output $B/user1190_ancestrydna_analyze.json
-allelix analyze $TD/transcoded/user1190_as_ftdna.csv       --data-dir $DB --exclude-snpedia --output $B/user1190_ftdna_analyze.json
+allelix analyze $TD/real/23andme/user1190_v5.txt  --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_23andme_analyze.json
+allelix analyze $TD/real/livingdna/user1190.csv   --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_livingdna_analyze.json
+allelix analyze $TD/real/myheritage/user1190.csv  --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_myheritage_analyze.json
+allelix analyze $TD/real/mhg/user1190.txt         --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_mhg_analyze.json
+allelix analyze $TD/transcoded/user1190_as_ancestrydna.txt --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_ancestrydna_analyze.json
+allelix analyze $TD/transcoded/user1190_as_ftdna.csv       --data-dir $DB --no-update --exclude-snpedia --output $B/user1190_ftdna_analyze.json
 allelix stats   $TD/real/mhg/user1190.txt                                                          > $B/user1190_mhg_stats.txt
 ```
 
@@ -113,18 +107,16 @@ regression set. Diff the full output, not a cherry-picked list.
 ### Cross-parser identity
 
 user1190 exists in 6 representations across `real/` and `transcoded/`. All
-six must produce identical annotation sets with the pinned databases
-(209 annotations each with `--exclude-snpedia` on v2.3.1 correctness code,
-using the 2026-07-23 GWAS Catalog snapshot). The exact count may move with a
-new pinned database snapshot; cross-format identity is the invariant.
+six must give identical annotation sets. The count moves with the databases
+(172 each at 2.5.0); identity is the check.
 
 ### Edge cases
 
 - `edge_cases/mhg_grch38_with_grch37_header.txt` — synthetic MHG (Tempus)
   fixture with GRCh38 positions but a header claiming `build 37.1`. Exercises
   ADR-0021's auto-detect + mismatch warning path.
-- `edge_cases/23andme_lookalike_rejected_by_PA.txt` — non-23andMe file that
-  looks 23andMe-shaped. The v1.1.0 23andMe canonical-header check correctly
+- `edge_cases/23andme_lookalike_rejected_by_PA.txt` — synthetic non-23andMe
+  file that looks 23andMe-shaped. The v1.1.0 23andMe canonical-header check correctly
   rejects it.
 - `edge_cases/23andme_format_from_genes_for_good_service.txt` — Genes for
   Good service exports in 23andMe format. Auto-detect correctly identifies
@@ -134,8 +126,9 @@ new pinned database snapshot; cross-format identity is the invariant.
   `allelix analyze` and `allelix stats` both use GRCh36, and `analyze` warns
   that modern position-keyed caches are unavailable (ADR-0025, ADR-0044).
 - `edge_cases/unsupported_decodeme.txt` and `unsupported_23andme_exome_vcf.txt`
-  — deCODEme remains unsupported. The historically named 23andMe exome file
-  is now recognized as VCF; its filename predates VCF support and is retained
+  — a deCODEme-labelled table without positions (not the layout Allelix
+  reads); rejected. The historically named exome file (a
+  synthetic GATK HaplotypeCaller-shaped VCF) is now recognized as VCF; its filename predates VCF support and is retained
   for fixture continuity.
 
 ## Adding new files

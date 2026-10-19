@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, ClassVar
 
+from allelix.databases.cache_state import READY, CacheState, CacheStatus
 from allelix.parsers._helpers import normalize_chromosome
 from allelix.utils.allele import derive_alt_from_diploid
 
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from allelix.models import Annotation, Variant
+
+    # ``(rsids, build) -> {rsid: (chrom, pos, forward alleles)}``; wired to
+    # ``RsidIdentityAnnotator.forward_sites``.
+    ForwardSiteProvider = Callable[[set[str], str], dict[str, tuple[str, int, frozenset[str]]]]
 
 
 @dataclass(frozen=True)
@@ -85,14 +90,37 @@ def variant_locus(variant: Variant) -> tuple[str, int]:
     return normalize_chromosome(variant.chromosome), variant.position
 
 
+def forward_alleles_at_call(
+    variant: Variant, sites: dict[str, tuple[str, int, frozenset[str]]]
+) -> frozenset[str] | None:
+    """The forward alleles of the call's rsID, or None when it is not placed there.
+
+    None when the identity table does not hold the rsID, or places it at
+    another locus than the call's.
+    """
+    site = sites.get(variant.rsid)
+    if site is None:
+        return None
+    chrom, pos, alleles = site
+    if variant.position and variant_locus(variant) != (chrom, pos):
+        return None
+    return alleles
+
+
 def is_clinvar_homref(
     variant: Variant,
-    clinvar_ref_provider: Callable[[str, str], str | None] | None,
+    clinvar_ref_provider: Callable[[str, str, tuple[str, int]], str | None] | None,
 ) -> bool:
-    """Return True if the variant is homozygous reference per ClinVar (ADR-0023)."""
-    if clinvar_ref_provider is None:
+    """Return True if the variant is homozygous reference per ClinVar (ADR-0023).
+
+    ``clinvar_ref_provider`` is ``(rsid, build, locus) -> REF | None``
+    (``ClinVarAnnotator.reference_at``): ClinVar's REF counts only where
+    ClinVar places the rsID at the call's own locus. A call with no
+    position is never suppressed.
+    """
+    if clinvar_ref_provider is None or not variant.position:
         return False
-    ref = clinvar_ref_provider(variant.rsid, variant.build)
+    ref = clinvar_ref_provider(variant.rsid, variant.build, variant_locus(variant))
     return ref is not None and len(ref) == 1 and variant.allele1 == ref and variant.allele2 == ref
 
 
@@ -223,8 +251,37 @@ class Annotator(ABC):
 
     @abstractmethod
     def is_ready(self) -> bool:
-        """Whether the local cache exists and is queryable."""
+        """Whether the local cache exists and is queryable.
+
+        Annotators with a cache return ``self.cache_status().ready``, so
+        readiness has one truth (ADR-0048). Never writes.
+        """
         ...
+
+    def cache_status(self) -> CacheStatus:
+        """The cache's state, and why it cannot be used (ADR-0048).
+
+        Annotators with a cache override this; the default serves one
+        without (ready or missing).
+        """
+        return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
+
+    def prepare_cache(self) -> bool:
+        """Bring an outdated cache up to date from local data only (ADR-0048).
+
+        Runs in the update step (``db update``, or ``analyze`` without
+        ``--no-update``), never in ``is_ready()``. It may write; it never
+        uses the network. Returns True when it changed the cache.
+        """
+        return False
+
+    def serves_build(self, build: str) -> bool:
+        """Whether this source can annotate input on ``build`` in this run."""
+        return True
+
+    def run_counts(self) -> dict[str, int]:
+        """What this source counted during the run, by name (empty by default)."""
+        return {}
 
     @abstractmethod
     def version(self) -> str | None:

@@ -37,5 +37,5 @@ class TestAutoDetect:
     def test_no_match_raises(self, tmp_path):
         f = tmp_path / "garbage.txt"
         f.write_text("nothing recognizable here\n", encoding="utf-8")
-        with pytest.raises(ParserNotFoundError, match="No parser recognized"):
+        with pytest.raises(ParserNotFoundError, match="doesn't recognise the format"):
             detect_parser(f)

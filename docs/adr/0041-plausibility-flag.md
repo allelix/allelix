@@ -64,3 +64,5 @@ VCF output is unchanged (ADR-0036).
 - A homozygous rare X-linked call is never flagged, even in a female.
   Inferring sex from the X calls would close that gap and is a separate
   decision.
+
+*Amended by ADR-0050:* "not assessed" is the value `not_assessed` with a reason (`plausibility_reason`), every annotation gets a value, a call the file declares haploid counts as one copy, and the report warns on three or more rare homozygous ClinVar Pathogenic / Likely pathogenic calls.

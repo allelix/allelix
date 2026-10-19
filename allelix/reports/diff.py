@@ -21,14 +21,14 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from allelix.models import annotation_to_public_dict
+from allelix.models import annotation_label, annotation_to_public_dict, public_dict_label
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6", "7", "8"}
+_SUPPORTED_SCHEMA_VERSIONS = {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -67,12 +67,14 @@ class DiffResult:
         return bool(self.new or self.removed or self.changed)
 
 
+# The variant is named by its rsID, or by its locus when it has none
+# (ADR-0046), so findings without an rsID do not collide.
 def _diff_key_from_annotation(a: Annotation) -> tuple[str, str, str, str]:
-    return (a.source, a.rsid, a.condition, a.description)
+    return (a.source, annotation_label(a), a.condition, a.description)
 
 
 def _diff_key_from_dict(d: dict) -> tuple[str, str, str, str]:
-    return (d["source"], d["rsid"], d.get("condition", ""), d.get("description", ""))
+    return (d["source"], public_dict_label(d), d.get("condition", ""), d.get("description", ""))
 
 
 def load_previous_report(path: Path) -> dict:

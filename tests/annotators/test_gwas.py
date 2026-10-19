@@ -265,10 +265,10 @@ class TestSignalGuard:
 class TestAutoReingest:
     """Auto-reingest from cached TSV when categorizer version bumps."""
 
-    def test_is_ready_auto_reingests_when_categorizer_bumped(
+    def test_prepare_cache_reingests_when_categorizer_bumped(
         self, tmp_path: Path, mock_gwas_tsv: Path
     ) -> None:
-        """Stale cv: tag + TSV present → auto-reingest succeeds."""
+        """Stale cv: tag + TSV present → the update step re-ingests (ADR-0048)."""
         db_path = tmp_path / GWAS_DB_FILENAME
         tsv_dest = tmp_path / "gwas_catalog_associations.tsv"
         load_gwas_tsv(mock_gwas_tsv, db_path, source_url="test://mock")
@@ -281,13 +281,15 @@ class TestAutoReingest:
             conn.commit()
         assert not schema_is_current(db_path)
         annotator = GWASCatalogAnnotator(tmp_path)
+        assert annotator.is_ready() is False
+        assert annotator.prepare_cache() is True
         assert annotator.is_ready() is True
         assert schema_is_current(db_path)
 
     def test_is_ready_returns_false_when_tsv_missing(
         self, tmp_path: Path, mock_gwas_tsv: Path
     ) -> None:
-        """Stale tag + no TSV → can't auto-reingest, returns False."""
+        """Stale tag + no TSV → can't re-ingest, stays not ready."""
         db_path = tmp_path / GWAS_DB_FILENAME
         load_gwas_tsv(mock_gwas_tsv, db_path, source_url="test://mock")
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
@@ -297,6 +299,8 @@ class TestAutoReingest:
             conn.commit()
         annotator = GWASCatalogAnnotator(tmp_path)
         assert annotator.is_ready() is False
+        assert annotator.prepare_cache() is False
+        assert annotator.is_ready() is False
 
 
 class TestLegacyMigration:
@@ -305,7 +309,7 @@ class TestLegacyMigration:
     def test_legacy_cv_in_remote_signal_migrates(
         self, tmp_path: Path, mock_gwas_tsv: Path
     ) -> None:
-        """Pre-v1.5.0 cache with |cv:N in remote_signal self-heals."""
+        """Pre-v1.5.0 cache with |cv:N in remote_signal self-heals in the update step."""
         from allelix.databases.gwas_loader import _CATEGORIZER_VERSION
 
         db_path = tmp_path / GWAS_DB_FILENAME
@@ -319,6 +323,8 @@ class TestLegacyMigration:
             )
             conn.commit()
         annotator = GWASCatalogAnnotator(tmp_path)
+        assert annotator.is_ready() is False
+        assert annotator.prepare_cache() is True
         assert annotator.is_ready() is True
         from allelix.databases.manager import get_database_info
 
@@ -367,12 +373,11 @@ class TestLegacyMigration:
             conn.commit()
         assert _stamp_existing_gwas_cache(db_path) is False
 
-    def test_has_current_columns_on_bad_db(self, tmp_path: Path) -> None:
-        from allelix.annotators.gwas import _has_current_gwas_columns
+    def test_bad_db_is_corrupt(self, tmp_path: Path) -> None:
+        from allelix.databases.cache_state import CacheState
 
-        bad = tmp_path / "bad.sqlite"
-        bad.write_text("not a database", encoding="utf-8")
-        assert _has_current_gwas_columns(bad) is False
+        (tmp_path / GWAS_DB_FILENAME).write_text("not a database", encoding="utf-8")
+        assert GWASCatalogAnnotator(tmp_path).cache_status().state is CacheState.CORRUPT
 
 
 class TestGenotypeMatching:

@@ -6,11 +6,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from allelix.parsers._helpers import (
+    DamagedFileError,
+    InputContainerError,
+    check_container,
+    quiet_input_notices,
+)
 from allelix.parsers.ancestrydna import AncestryDNAParser
 from allelix.parsers.base import GenotypeParser
+from allelix.parsers.decodeme import DeCODEmeParser
 from allelix.parsers.ftdna import FTDNAParser
 from allelix.parsers.ftdna_famfinder import FTDNAFamFinderParser
 from allelix.parsers.ftdna_illumina import FTDNAIlluminaParser
+from allelix.parsers.genesforgood import GenesForGoodParser
 from allelix.parsers.livingdna import LivingDNAParser
 from allelix.parsers.myhappygenes import MyHappyGenesParser
 from allelix.parsers.myheritage import MyHeritageParser
@@ -22,9 +30,11 @@ if TYPE_CHECKING:
 
 PARSERS: list[GenotypeParser] = [
     MyHappyGenesParser(),
+    GenesForGoodParser(),
     TwentyThreeAndMeParser(),
     AncestryDNAParser(),
     LivingDNAParser(),
+    DeCODEmeParser(),
     MyHeritageParser(),
     FTDNAParser(),
     FTDNAFamFinderParser(),  # 5-col tab; must precede FTDNAIlluminaParser
@@ -61,18 +71,29 @@ def detect_parser(file_path: Path) -> GenotypeParser:
 
     Raises:
         ParserNotFoundError: If no parser recognizes the format.
+        DamagedFileError: A damaged zip download.
+        InputContainerError: A zip with several files, a password or an
+            unreadable compression method.
     """
-    for parser in PARSERS:
-        if parser.can_parse(file_path):
-            return parser
+    check_container(file_path)
+    with quiet_input_notices():
+        for parser in PARSERS:
+            if parser.can_parse(file_path):
+                return parser
     raise ParserNotFoundError(
-        f"No parser recognized {file_path.name!r}. Try forcing a format with --format <name>."
+        f"Allelix doesn't recognise the format of {file_path.name!r}. Use the original "
+        "file exactly as your testing company provided it, not edited or re-saved. If "
+        "you're sure of its source, --format <name> reads it anyway, at your own risk: "
+        "Allelix can't check a file it doesn't recognise, and the results may be wrong. "
+        'See "Forcing a format" in docs/formats.md.'
     )
 
 
 __all__ = [
     "PARSERS",
+    "DamagedFileError",
     "GenotypeParser",
+    "InputContainerError",
     "ParserNotFoundError",
     "detect_parser",
     "get_parser_by_name",

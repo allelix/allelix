@@ -199,3 +199,86 @@ class TestSequentialExtractOnRsidlessVcf:
         found = _sequential_extract(parser, rsidless_vcf, wanted, gnomad_data_dir)
         assert "rs1801133" in found
         assert "rs9999999" not in found
+
+
+class _StubTabixFile:
+    """Serves ``fetch`` from a plain VCF, enough for ``_execute_tabix_extract``."""
+
+    def __init__(self, path: str) -> None:
+        with open(path) as handle:
+            self._rows = [line.rstrip("\n") for line in handle if not line.startswith("#")]
+
+    def fetch(self, chrom: str, start: int, end: int) -> list[str]:
+        return [
+            row
+            for row in self._rows
+            if row.split("\t")[0] == chrom and start < int(row.split("\t")[1]) <= end
+        ]
+
+    def close(self) -> None:
+        return None
+
+
+class TestTabixFastPathChecksBuild:
+    """The indexed extract checks ``--build`` against the seeds it fetches."""
+
+    @staticmethod
+    def _vcf(tmp_path: Path, seeds: int) -> Path:
+        from allelix.utils.build_detect import BUILD_GRCH37, KNOWN_SNP_POSITIONS
+
+        rows = [
+            f"{chrom}\t{pos}\t.\tA\tG\t.\tPASS\t.\tGT\t0/1"
+            for chrom, pos in (
+                KNOWN_SNP_POSITIONS[rsid][BUILD_GRCH37]
+                for rsid in list(KNOWN_SNP_POSITIONS)[2 : 2 + seeds]
+            )
+        ]
+        # The rs1801133 row the extract looks for is a GRCh38 seed too, so
+        # the votes are ``seeds`` for GRCh37 against one for GRCh38.
+        path = tmp_path / "forced.vcf"
+        path.write_text(_RSID_STAMPED_VCF + "".join(f"{row}\n" for row in rows))
+        return path
+
+    def _run(self, vcf: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch):
+        from types import SimpleNamespace
+
+        from allelix.cli import _helpers
+        from allelix.cli.utility import _execute_tabix_extract
+
+        shown: list[object] = []
+        monkeypatch.setattr(_helpers, "_emit_build_notices", shown.append)
+        found = _execute_tabix_extract(
+            vcf,
+            {"rs1801133"},
+            None,
+            data_dir,
+            SimpleNamespace(TabixFile=_StubTabixFile),
+            build_override="GRCh38",
+        )
+        return found, shown
+
+    def test_tentative_contrary_seeds_warn(
+        self, tmp_path: Path, gnomad_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from allelix.reports.build_text import build_notices
+
+        found, shown = self._run(self._vcf(tmp_path, 2), gnomad_data_dir, monkeypatch)
+        assert found is not None
+        assert "rs1801133" in found
+        (diag,) = shown
+        texts = [notice.text for notice in build_notices(diag)]  # type: ignore[arg-type]
+        assert any(
+            text.startswith(
+                "Build warning: --build grch38 was given, but the file's known-SNP positions "
+                "tentatively say GRCh37 (2/3)"
+            )
+            for text in texts
+        ), texts
+
+    def test_confident_contrary_seeds_stop(
+        self, tmp_path: Path, gnomad_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from allelix.utils.build_detect import BuildDecisionError
+
+        with pytest.raises(BuildDecisionError, match="--build grch38 was given"):
+            self._run(self._vcf(tmp_path, 4), gnomad_data_dir, monkeypatch)

@@ -23,11 +23,18 @@ use requires a separate license from University of Washington (CoMotion).
 from __future__ import annotations
 
 import logging
-import sqlite3
+import os
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
 from allelix.databases._versions import CADD_SCHEMA_VERSION
+from allelix.databases.cache_state import (
+    READY,
+    CacheState,
+    CacheStatus,
+    cache_state,
+    connect_readonly,
+)
 from allelix.databases.cadd_loader import (
     CADD_CACHE_URL,
     CADD_DB_FILENAME,
@@ -41,6 +48,7 @@ from allelix.databases.manager import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
     from allelix.models import Annotation, Variant
@@ -103,7 +111,7 @@ class CaddAnnotator(Annotator):
                     f"CADD cache not found at {self._db_path}. "
                     "Run `allelix db update --cadd` first."
                 )
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def _open_tabix(self) -> Any:  # noqa: ANN401 — pysam ships no type stubs
@@ -162,15 +170,24 @@ class CaddAnnotator(Annotator):
         cache with no ``local_version_tag`` has an unknown schema version, so
         it is not ready and ``db update`` replaces it.
         """
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        """State of the active backend: the tabix pair, or the SQLite cache (ADR-0048)."""
         if self._full_mode:
-            return (
-                self._tabix_path.exists()
-                and (self._tabix_path.parent / (CADD_FULL_FILENAME + ".tbi")).exists()
-            )
-        info = get_database_info(self._db_path, "cadd")
-        if info is None:
-            return False
-        return info.get("local_version_tag") == f"sv:{CADD_SCHEMA_VERSION}"
+            tbi = self._tabix_path.parent / (CADD_FULL_FILENAME + ".tbi")
+            for path in (self._tabix_path, tbi):
+                if not path.exists():
+                    return CacheStatus(CacheState.MISSING, path)
+                if not os.access(path, os.R_OK):
+                    return CacheStatus(CacheState.UNREADABLE, path)
+            return READY
+        return cache_state(
+            self._db_path,
+            "cadd",
+            tag=f"sv:{CADD_SCHEMA_VERSION}",
+            tables=("cadd_scores",),
+        )
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""

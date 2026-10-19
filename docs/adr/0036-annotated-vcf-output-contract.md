@@ -184,3 +184,7 @@ partial-line garbage in production files.
   gnomAD positions (the source of the writer's recovered-rsID input)
 - Variant consequence annotation: an explicit non-goal for v2.3.0 (see
   above)
+
+*Amended by ADR-0049:* the provenance block gains `##ALLELIX_SkippedSources=`, each registered source that did not run with its reason, or `none` (`VCF_SCHEMA_VERSION` 0.4.0).
+
+*Amended (2.5):* where a source has several rows at one variant, its slot holds the row the report lists first (highest magnitude, then rsID; ties keep the pipeline order), not the last one. The INFO shape is unchanged, so `VCF_SCHEMA_VERSION` stays 0.4.0.

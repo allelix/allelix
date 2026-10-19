@@ -59,6 +59,7 @@ class TestParsing:
             ("rs4477212", "A", "A"),
             ("rs3094315", "A", "G"),
             ("rs9001001", "-", "-"),
+            ("rs1801133", "A", "G"),
             ("rs9001002", "C", "T"),
         ]
 
@@ -142,6 +143,11 @@ def _clinvar_data_dir(tmp_path: Path) -> Path:
                 "record_count, remote_signal, local_version_tag) "
                 "VALUES (?, 'test://lowpass', '1', '2026-10-10', 0, NULL, ?)",
                 (clinvar_record_name(build), f"iv:{CLINVAR_INTERPRETER_VERSION}"),
+            )
+            # One synthetic row nothing matches: an empty cache is not ready.
+            conn.execute(
+                "INSERT INTO clinvar_variants (rsid, chromosome, position, ref, alt, "
+                "clinical_significance) VALUES ('rs900780999', '22', 1, 'A', 'G', 'Benign')"
             )
             conn.commit()
     return data

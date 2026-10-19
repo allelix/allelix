@@ -78,12 +78,11 @@ class TestGetDatabaseInfo:
         assert info["remote_signal"] is None
         assert info["local_version_tag"] is None
 
-    def test_pre_v150_schema_lazily_adds_local_version_tag(self, tmp_path: Path):
+    def test_pre_v150_schema_reads_without_changing_the_file(self, tmp_path: Path):
         """A pre-v1.5.0 cache has remote_signal but no local_version_tag.
 
-        get_database_info lazily adds the column so that all caches
-        (including gnomAD/AlphaMissense which don't use version tags)
-        have a consistent schema after any db status or is_ready() call.
+        get_database_info reads it with the tag as None and leaves the
+        file as it is: it opens read-only (ADR-0048).
         """
         db = tmp_path / "pre150.sqlite"
         with contextlib.closing(sqlite3.connect(db)) as conn:
@@ -110,10 +109,9 @@ class TestGetDatabaseInfo:
         assert info["remote_signal"] == "etag:abc"
         assert info["local_version_tag"] is None
 
-        # Column was lazily added — second read uses the 7-col path.
         with contextlib.closing(sqlite3.connect(db)) as conn:
             cols = {row[1] for row in conn.execute("PRAGMA table_info(database_versions)")}
-            assert "local_version_tag" in cols
+            assert "local_version_tag" not in cols
 
     def test_v041_schema_unknown_name_returns_none(self, tmp_path: Path):
         """4-column fallback returns None when the row doesn't match."""

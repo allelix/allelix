@@ -2,6 +2,516 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-10-19
+
+After upgrading, run `allelix db update`. This release changes how
+Allelix reads ClinVar (version 5 → 9, shown as `iv:9`), so existing
+ClinVar caches are invalidated and the next `db update` rebuilds them
+(about 860 MB to download). Until then `allelix analyze`
+skips ClinVar, says so on the console ("Skipping ClinVar: out of date
+(built for iv:5, needs iv:9). Run `allelix db update`."), and puts a
+warning at the top of the report.
+
+### Added
+
+- `scripts/check_reference_sample.py`, an independent release gate on the
+  reports of a healthy reference sample (the HG002 benchmark, the CC0
+  arrays): no ClinVar Pathogenic or Likely pathogenic row is called
+  homozygous, and none sits on a variant whose ClinVar aggregate is not
+  Pathogenic or Likely pathogenic, except a row the report marks
+  `outside_aggregate` (an outranked P/LP submission kept on purpose because
+  the aggregate is not a disease classification, ADR-0045); such a row is
+  counted and listed, and the homozygous rule still applies to it. It reads
+  report JSON only and imports nothing from Allelix, so it does not depend
+  on the tool's earlier output being right. Run it on reports made with the
+  default filters. `--counts-only` prints no row. Not a CI job.
+- Every GWAS Catalog row says which way the study's effect allele points
+  (ADR-0024): JSON `effect_direction` (`increases`, `decreases`, `unknown`;
+  empty on other sources), and plain words in the HTML detail panel and
+  after the significance in the terminal ("C lowers odds"). The words say
+  when the effect allele is the reference allele, so a person homozygous
+  for a protective reference allele sees that it is protective. The odds
+  ratio, or the beta's "unit increase/decrease", decides; anything else is
+  `unknown`.
+- Genes for Good's 23andMe-style text download is read (`genesforgood`
+  parser). The imputed file is marked as imputed in every report (JSON
+  `input.method` `array-imputed`), and the HTML's imputation note now
+  says how each imputed input was made instead of always describing
+  low-pass sequencing.
+- deCODEme raw data (`deCODEme_scan.csv`) is read (`decodeme` parser).
+  Calls on the minus strand are complemented to the plus strand; the
+  file's Build 36 coordinates are detected from known-SNP positions and
+  run on the GRCh36 path (position lookups off, ADR-0025).
+- Every report names every source and its part in the run (ADR-0049).
+  JSON `sources` lists each registered source as `used`,
+  `ready_not_used`, or `skipped` with a reason: the cache's state
+  (`missing`, `outdated`, `unreadable`, `corrupt`, `wal`,
+  `readonly_wal`) or the user's choice (`disabled`, `license`,
+  `excluded`, `flag`, `not_applicable_build`). The HTML lists the
+  sources whose cache could not be used, with the fix, and the ones
+  turned off in one line. `annotators` still lists only the sources that
+  ran.
+- When ClinVar did not run, the report says so at the top: a warning in
+  the HTML, on the console and in JSON `report_warnings`
+  (`{code, message, count}`, code `clinvar_skipped`). Before, a report
+  without ClinVar read as complete.
+- A report warning when three or more variants on chromosomes 1 to 22
+  are called homozygous for an allele ClinVar classifies as Pathogenic or
+  Likely pathogenic and are rare in gnomAD or have no gnomAD frequency
+  (`multiple_homozygous_plp`, with the count). It is counted before the
+  display filter. Several such calls in one file usually point to a
+  genotyping or file problem (ADR-0050).
+- A call whose plausibility was not assessed is marked: a muted ○ with the
+  reason in the HTML and the terminal.
+- The two warnings about a compressed input file as a whole, a bgzipped
+  file that may be truncated and bytes ignored after the compressed data,
+  are also report warnings: the HTML shows them at the top and JSON
+  `report_warnings` lists them (codes `input_possibly_truncated` and
+  `input_trailing_bytes`). Before, they were on the console only.
+- The annotated VCF (`--vcf-out`, schema 0.4.0) has a
+  `##ALLELIX_SkippedSources=` line naming each skipped source and its
+  reason, or `none`.
+- Zip downloads are read as they are, when they hold one genotype file:
+  every format, the file streamed from the zip (never unpacked to disk),
+  gzipped or not. 23andMe and AncestryDNA deliver their raw data as a zip;
+  before, a zip stopped with "No parser recognized". A zip with several
+  files, a password, a compression method Python cannot read, or another
+  zip inside stops with a message saying to unzip it first. A file over
+  4 GiB once unzipped (a gzipped file counts at its `.gz` size) stops,
+  saying to unzip it or gzip it instead. A damaged zip, including a file
+  whose data is longer or shorter than its zip entry declares, gets the
+  "looks truncated or damaged" error. macOS archive
+  entries (`__MACOSX/`, `.DS_Store`) and folders are not counted as files.
+- Array reports say how many calls could not be checked against ClinVar
+  (ADR-0051): vendor probes without an rsID (23andMe `i5000123`) at a
+  locus where ClinVar's own classification is Pathogenic or Likely
+  pathogenic, and calls written as `D` or `I` (a deletion or an
+  insertion), with how many are at such an rsID. The console and the HTML
+  input-quality notice print them; JSON has `input.probe_classes`
+  (`i_probes_at_plp_loci`, `di_calls_at_plp_rsids`) and
+  `input.array_quality` (`di_calls`, plus `unreadable_genotypes`,
+  `not_genotyped` and `wrong_column_rows`, 0 until a parser counts them).
+  Both are null for VCF input; `probe_classes` is also null when ClinVar
+  did not run. Nothing new is matched.
+
+### Changed
+
+- The top of the HTML report is shorter. Still in view: a two-sentence
+  disclaimer, and the warnings that change what to do (ClinVar not used or
+  out of date, a file that may be cut short, a build warning, three or more
+  rare homozygous Pathogenic calls, a forced `--format`, a source that could
+  not be used, high-value no-calls, and the caution for imputed input).
+  ClinVar's reason for not being used is said once, in its warning, not
+  again under the sources not used. One line then names only what the
+  section below holds: calls that could not be checked, and how many ClinVar
+  rows were scored down or not shown; when it holds only general notes, the
+  line says so. Every other notice (input quality, ClinVar rows scored down
+  or not shown, strand, sources turned off, the full disclaimer) sits word
+  for word in a collapsed "Technical details" section. Open it before
+  printing or saving the page as PDF to include those notices. JSON and
+  terminal output are unchanged.
+- A file no reader recognises is rejected with a message that puts the
+  original file first: "Allelix doesn't recognise the format of …. Use the
+  original file exactly as your testing company provided it, not edited
+  or re-saved." `--format <name>` still reads such a file, at the user's
+  own risk. It now gets a warning before anything else in the terminal
+  and on every report (the terminal summary, the top of the HTML report,
+  JSON `report_warnings` code `forced_format`): Allelix cannot check a
+  forced file's layout, strand or build label, so its results may be
+  wrong. `--format` with a reader that recognises the file is not warned.
+  Every command that takes `--format` behaves this way, and `compare`
+  checks each of its two files on its own. Before, the rejection's only
+  advice was to force a format, and a forced file was read without a
+  word. `docs/formats.md` has a "Forcing a format" section.
+- GWAS Catalog risk alleles and SNPedia genotypes are read on the forward
+  strand against the site's alleles in the rsID identity table (ADR-0024).
+  A risk allele that is among them is compared as written, else its
+  complement is. A/T and C/G sites, rsIDs the table does not place at the
+  call, and genotypes that fit neither reading abstain. Before, GWAS
+  compared the letters as written, so at an A/T or C/G site a risk allele
+  given on the other strand matched the wrong carriers. SNPedia pages with
+  a stated orientation keep it, now checked against the site's alleles.
+  One-row SNPedia sites of unknown orientation could not show they were
+  palindromic and matched as plus. The JSON `strand_abstentions` block
+  counts what abstained, per source and reason (GWAS association rows,
+  SNPedia sites), and the console and HTML say so. Without the identity
+  table, GWAS risk-allele rows and single-base SNPedia sites abstain, and
+  so does GRCh36 input, which the identity table does not place: a GRCh36
+  report loses those GWAS and SNPedia findings and says how many.
+- Panel coverage (`--filter-file`) puts each requested rsID in one of
+  four states (ADR-0051): `annotated`, `typed_no_annotation`, `no_call`
+  or `not_on_chip` ("not in file" for VCF input). A no-call was counted as
+  genotyped with no findings. A half call with a shown finding is
+  annotated. JSON `panel_coverage` is `{requested, counts, variants}`:
+  `counts` has the four states and sums to `requested`, and each entry of
+  `variants` gives `rsid`, `gene`, `state`, `genotype` and
+  `annotation_count`. `found`, `missing` and `no_findings` are gone. The
+  HTML lists every requested rsID with its gene, genotype, state and
+  number of annotations (a VCF half call's genotype is `T/.`, as in the
+  annotations), and the terminal report prints the four counts, then the
+  no-call and not-on-chip rsIDs.
+- JSON values are machine codes (ADR-0050). `zygosity` is `homozygous`,
+  `heterozygous`, `hemizygous`, `half_call` or `no_call` (it was
+  "Homozygous", "Heterozygous", "Half call", "No Call"). `plausibility` is
+  `not_assessed` where it was empty, and the new `plausibility_reason`
+  says why: `no_frequency`, `gnomad_not_run`, `chromosome`, `half_call`
+  or `no_allele`. HTML and the terminal show the display words; "No Call"
+  is now "No call".
+- A call the file declares as one copy, a one-letter array call (23andMe
+  writes a male's X calls this way) or a one-index VCF genotype, is shown
+  as Hemizygous with its one allele (`T`), not as Homozygous `TT`, and its
+  plausibility counts one copy (ADR-0050). Findings do not change. A male
+  X call written as two letters (AncestryDNA, FTDNA) is still Homozygous:
+  Allelix does not infer sex.
+- ClinVar rows are scored against ClinVar's own classification of the
+  variant (ADR-0045). A Pathogenic or Likely pathogenic submission on a
+  variant ClinVar calls "Conflicting classifications of pathogenicity" is
+  capped at 4.0, so it leaves the default report; under a Benign or Likely
+  benign classification the cap is 1.0 to 2.0. Drug response, risk factor
+  and similar rows are not capped. JSON and the HTML detail panel show
+  ClinVar's classification and how many submitters agree; the terminal
+  shows it after a row that was scored down, for example
+  `pathogenic (1 of 10; ClinVar: conflicting)`. Each report says how
+  many Pathogenic or Likely pathogenic rows were scored down: 9 to 29 on
+  three of the openSNP array files in `test_data/real` and the HG002
+  benchmark VCF (TYR rs1042602, BBS2
+  rs4784677 and HFE rs1799945, where 40 of 45 submitters say Pathogenic
+  and 43 of 45 Pathogenic or Likely pathogenic, among others).
+  These rows are still shown at `--min-magnitude 4` or lower.
+- A ClinVar Pathogenic or Likely pathogenic row whose own submission has
+  zero stars ("no assertion criteria provided" or "no classification
+  provided") is scored 4.0, below the default floor, when gnomAD gives
+  ClinVar's allele a frequency of 5% or more, the ACMG/AMP BA1 level
+  (ADR-0052). The frequency is looked up for ClinVar's own REF and ALT at
+  the rsID's GRCh38 locus, so it applies to GRCh37 files too. An
+  allele that common does not cause a rare disease: CDKN2B-AS1 rs1063192,
+  Likely pathogenic for a breast tumour from one zero-star submission, with
+  a gnomAD frequency of about 0.65, was a homozygous Likely pathogenic
+  finding in the HG002 benchmark report. The row says why, and each report
+  counts these rows ("N ClinVar Pathogenic or Likely pathogenic rows not
+  shown: zero-star classification on a common allele"). Rows with one star
+  or more are unchanged, HFE C282Y among them. So is a row whenever the
+  lookup is in doubt (no rsID, a locus or allele that does not agree
+  between the identity table and both ClinVar builds, no gnomAD row) or
+  gnomAD, the identity table or a ClinVar build is not installed.
+- ClinVar classifications beside the five-tier scale have their own
+  magnitude instead of 5.0: Pathogenic, low penetrance 7.5 (SERPINA1
+  rs17580 and HFE rs1800562, for example); Likely pathogenic, low
+  penetrance 6.5; established risk allele and confers sensitivity 6.0;
+  likely risk allele, Affects and protective 5.0; the three VUS
+  subdivisions 4.5, 4.0 and 3.5; uncertain risk allele 4.0. A
+  classification with no magnitude is not shown, and the report counts
+  it.
+- JSON report `schema_version` 8 → 9. Each annotation gains
+  `clinvar_aggregate`, `submitters_same`, `submitters_total`,
+  `aggregate_capped`, `outside_aggregate`, `common_allele_capped` and
+  `clinvar_allele_af`,
+  plus `chromosome`, `position` and `ref`, so a finding without an rsID
+  still names its variant. A top-level `clinvar` object gives
+  `pathogenic_rows_scored_down`, `unrecognised_rows_hidden` and
+  `common_allele_rows_scored_down`. For a VCF,
+  `input.vcf_quality` gains `spanning_deletion_sites`, `half_calls`,
+  `malformed_rows`, `no_genotype_rows`, `unusable_genotype_calls`,
+  `symbolic_allele_calls` and `trimmed_matches`.
+
+### Fixed
+
+- `--filter-file`: a `#` after an entry now starts a comment, as a `#` at
+  the start of a line already did, so `rs1801133  # MTHFR` keeps
+  rs1801133. Before, the whole line was taken as a gene name that matched
+  nothing, and the entry left the report with no warning. The help says
+  so. A list saved with a byte order mark is still read in full.
+- `analyze --category` takes only `clinical`, `pharma` or `trait` (in any
+  case). A typo such as `clinicals` now stops with a message listing the
+  three. Before, it gave an empty report with exit 0 and no warning. The
+  help listed only two of the three.
+- `config get --help`, `config set --help` and `db path --help` show their
+  key lists and examples line by line. Before, they ran together into one
+  paragraph with a stray `\b`, and the `db path` example did not run as
+  shown.
+- The GRCh36 warning said GWAS Catalog and SNPedia still run. It now says
+  that ClinPGx still runs, and that GWAS Catalog risk alleles and
+  single-base SNPedia genotypes are not assessed on GRCh36, as the counts
+  printed with it show.
+- A VCF whose header declares an imputation tool's field (Minimac's
+  `IMPUTED`, `TYPED` or `R2`; Beagle's `DR2` or `IMP`; the per-call dosage
+  `DS` that Minimac, Beagle and GLIMPSE write; GLIMPSE's `HS`) is now marked
+  imputed, as Genes for Good's and MyHeritage's imputed files already are.
+  Before, it was read as measured with no caution. Every report now says
+  the genotypes are imputed and to confirm any finding by direct
+  genotyping, and the HTML's "Reading This Report" explains imputation in
+  place of the note on array probes. JSON `input.method` is `vcf-imputed`.
+  Only the header's declarations count, never the values; genotype
+  probabilities (`GP`) alone do not count. Measured VCFs (benchmark call
+  sets, GATK and DeepVariant gVCFs) are unchanged.
+- Four ways a file could be read wrongly with no warning are fixed:
+  - A no-call written `00` or `NN` (or `0` or `N` in a one-letter or
+    two-column file) is now a no-call in every array reader, as `--` is.
+    Before, it was read as a call of "0" or "N": it matched nothing, but
+    `stats` counted it as a homozygous call and the warning for
+    clinically important SNPs with no call did not fire.
+  - A `--filter-file` list saved with a byte order mark (as some
+    Windows editors and spreadsheet "CSV UTF-8" exports do) lost its
+    first entry. It is now read in full.
+  - Genes for Good's imputed VCF download is marked imputed, as its text
+    download already is, so every report gives the caution for imputed
+    genotypes. It is recognised by its `##Genes_for_Good_version` header
+    line together with phased calls.
+  - In a GRCh37 VCF, a mitochondrial record named `chrM` or `M` (UCSC
+    hg19's names for a 16,571 bp sequence that is not the reference ClinVar
+    uses) is now left out, counted, with a note, unless the file declares
+    that same name with the reference length (16,569). Before, it was read
+    as the reference whenever no hg19 length was declared. Records named
+    `MT` or `chrMT` are read as before, and a declared hg19 length still
+    leaves out every mitochondrial record.
+- The HTML report's "Understanding Magnitude Scores" legend now states the
+  scores Allelix assigns. Its ClinVar, ClinPGx and GWAS sections dated from
+  1.4.0 and disagreed with the scoring in many rows: for example, it said a
+  single-submitter Pathogenic call scores 8 (every Pathogenic submission
+  scores 9, whatever its review status), uncertain and conflicting 5 (4),
+  risk factor and drug response 4 (6 and 6.5), and ClinPGx Level 2A 6 (7).
+  The three sections are now generated from the scoring tables. They add the
+  GWAS odds-ratio step and the 3.0 cap for an unnamed risk allele, ClinVar's
+  own classification capping a submission, the zero-star rule for common
+  alleles, and that a classification without a score is not shown. Scores
+  and findings do not change.
+- `--vcf-out` stamps, for each source, the row the report lists first at
+  that variant (highest magnitude, then rsID). It used to stamp the last
+  row, so a site the report shows as Pathogenic could carry a VUS in the
+  annotated VCF (ADR-0036).
+- `export plink` no longer reads a call on the other strand. A call whose
+  alleles are not gnomAD's REF and ALT at the site, as written, is
+  exported as missing and counted on the console ("N call(s) fit neither
+  gnomAD allele at their site"). Before, such a call could be written as
+  its complement: A/A at a C>T site came out as T/T.
+- With VCF input, a person homozygous for a variant allele the reference
+  genome itself carries (Factor V Leiden TT on GRCh37, and about 170 other
+  ClinVar sites) now gets the finding. Their file has a `0/0` call or a
+  reference block there, never a variant record. Allelix watches these
+  sites and assesses a hom-ref call that passes the GQ gate as the
+  homozygous variant genotype (JSON `input.vcf_quality.reference_carried_calls`).
+  A plain VCF with no record at such a site cannot say which it is: the
+  report counts those sites (`reference_carried_not_in_file`) and says a
+  gVCF or an all-sites VCF would.
+- A ClinVar normal-allele record now reads the same on both builds. A
+  CASP12 rs497116 carrier of the normal allele G got the risk-factor row
+  on GRCh38, where the record is written A>G, but not on GRCh37, where it
+  is written G>G and was dropped at load. Such records are now kept on
+  both builds (still without Pathogenic or Likely pathogenic
+  classifications, as before). With a VCF on GRCh37, the GG genotype is a
+  `0/0` call there, which the site watch above assesses. This changes the
+  ClinVar cache (interpreter version 9). Such a record written G>G does
+  not make a homozygous-reference call a ClinPGx or SNPedia non-finding:
+  the reference allele there can be the one ClinVar classifies, so those
+  sources show their rows for that call, as 2.4.2 did.
+- A VCF record whose REF is the complement of ClinVar's REF no longer
+  matches ClinVar. A VCF is forward strand, so such a record is
+  mis-coordinated input. One-base records whose REF is none of ClinVar's
+  at the position are counted (`input.vcf_quality.clinvar_ref_mismatches`),
+  and the report asks you to check the file's build and coordinates.
+- ClinPGx and SNPedia treat a call as homozygous reference by ClinVar's REF
+  only where ClinVar places the rsID at the call's own position. Before, an
+  rsID placed elsewhere could hide a finding.
+- A ClinVar match from a multi-allelic or untrimmed VCF record carries the
+  matched row's own rsID where the record's ID column names another rsID
+  ClinVar holds at that site. A merged or alias rsID is kept, as before.
+- A homozygous one-base deletion (`AC>A`, 1/1) is shown as `A/A`, no longer
+  as `AA`, which looked like an SNV genotype.
+- `--gwas-min-magnitude` replaced `--min-magnitude` for GWAS rows instead
+  of taking the larger of the two, as ADR-0024 says. A GWAS floor
+  set below the global one let GWAS rows in below the floor asked for. The
+  must-include rsIDs keep their exemption from the GWAS floor and never go
+  below `--min-magnitude`.
+- A 23andMe export whose rows were re-saved with spaces instead of tabs
+  (by a text editor or spreadsheet) is read. Before, the file was
+  recognised as 23andMe by its banner and then every row was skipped, so
+  the run stopped with "contains no genotype records". A row without a
+  tab is now split on runs of spaces.
+- With one ClinVar build installed (`allelix db update --build grch37`),
+  `analyze` used no ClinVar at all and said it was not installed. It now
+  uses the installed build; input on the other build skips ClinVar and
+  names the missing build's cache (ADR-0049).
+- With one ClinVar build installed, a person who does not carry Factor V
+  Leiden (CC at F5 rs6025 on GRCh37) got a ClinPGx row for hormonal
+  contraceptives and thrombosis (level 2B), and ClinPGx and SNPedia rows
+  at other sites where the GRCh37 reference carries the variant allele
+  read the wrong allele as the variant. The normal allele at those sites
+  came only from the other build's ClinVar cache. Without that cache it
+  now comes from the rsID identity table's reference base on the other
+  build. With both ClinVar builds installed nothing changes.
+- A source turned off in config, excluded, or turned off by a `--no-`
+  flag is no longer reported as "not installed" when its cache is absent.
+- The HTML note on source-specific magnitude thresholds named sources
+  that did not run.
+- `analyze --no-update` writes nothing to the data directory, so the
+  directory can be read-only (ADR-0048). Before, it could add a column,
+  stamp or rebuild a cache, build an index, create `config.toml`, or leave
+  WAL side files. A gnomAD, AlphaMissense or CADD cache, installed in WAL
+  mode, could not be read at all in a read-only directory. Every cache now
+  opens read-only, and a WAL cache is never opened. The installer stores
+  caches in rollback-journal mode, and the next `allelix db update`
+  converts ones already installed, in place and without downloading, as
+  does `analyze` without `--no-update`. Until then `analyze --no-update`
+  skips a WAL cache with that reason, and `db status` shows it instead of
+  a version. `db update` does not download a WAL cache again when it
+  cannot convert it. Local migrations (a legacy version stamp, the GWAS
+  re-ingest from its cached file, the SNPedia parse) run in the update
+  step: `db update`, or `analyze` without `--no-update`.
+- A source that cannot be used is named on the console with its reason
+  and the fix: not installed or out of date (run `allelix db update`),
+  cannot be read (check the file's permissions), damaged (run
+  `allelix db update`, which replaces only that source), in WAL mode from
+  an older Allelix (run `allelix db update` once to convert it; nothing is
+  downloaded), or in WAL mode in a data directory you cannot write (run
+  `allelix db update` once with write access). Before, every case said
+  "run `allelix db update`". A cache whose main table has no rows is now
+  damaged; before, ClinVar, ClinPGx, GWAS, gnomAD, AlphaMissense, CADD and
+  rsID-identity caches with a current version tag and no rows were used as
+  ready.
+- A GRCh38 VCF without rsIDs no longer stalls on Ubuntu 24.04's SQLite
+  (3.45). The lookup that finds rsIDs in gnomAD by position searched the
+  cache by chromosome only. It now searches by chromosome and position,
+  one chromosome per statement, and needs 4,063 statements instead of
+  8,886. On the HG002 GRCh38 benchmark VCF with default settings, on a
+  2-vCPU machine, the analysis did not finish in 30 minutes before this
+  change and now takes about 7 to 8.5 minutes. Allelix also no longer
+  builds an index on the gnomAD cache when it opens it, so a read-only
+  cache built without that index no longer fails with "attempt to write
+  a readonly database".
+- VCF calls are no longer dropped without a word (ADR-0047). On the
+  HG002 GRCh37 benchmark VCF (2026-10-10 ClinVar data) the unfiltered
+  report gains 1,331 ClinVar rows on 978 variants, none removed; the
+  default report gains one, OPRM1 rs71021021 (drug response, Tramadol).
+  - A homozygous VCF deletion to one base (`AC>A` 1/1) now matches
+    ClinVar. The indel-anchor rule meant for array calls also blocked it.
+    HG002: 831 variants, among them NR2E3 rs11351249 (Likely pathogenic,
+    shown at 4.0 under ClinVar's Conflicting classification) and OPRM1.
+  - An allele written with bases it shares with REF (`GTT>GT,G`,
+    `CA>TA`, or `ATG>ATGTG,A` 2/1) is trimmed, per carried allele, before
+    ClinVar matching. HG002: 147 variants, among them a CFTR TG-tract
+    Pathogenic submission (4.0, Conflicting). Indels are not left-aligned,
+    so one the file places at a different position from ClinVar's still
+    does not match.
+  - A half call (`./1`) is assessed on its called allele by ClinVar and
+    the GWAS Catalog, shown as `T/.` with zygosity "Half call"; ClinPGx and
+    SNPedia, which need both alleles, skip it.
+  - The calls the parser drops are counted with their reason on the
+    console, in HTML and in JSON: malformed rows, rows without a genotype,
+    genotypes naming an allele the record lacks or a symbolic allele such
+    as `<NON_REF>` beside a real ALT, and spanning-deletion (`*`) calls,
+    which are counted on one or both haplotypes and listed by position
+    (516 in HG002). A no-call
+    written `./.` is still reported as a no-call, not counted as a drop. A
+    genotype naming the only ALT of a gVCF reference block (`<NON_REF>` or
+    `<*>` alone) is not checked.
+- VCF users now see ClinVar variants that have no rsID (ADR-0046).
+  Allelix dropped them when building the ClinVar cache, so a VCF carrying
+  one at the exact position got nothing. In the 2026-10-10 data they hold
+  98,211 GRCh37 Pathogenic or Likely pathogenic rows on 91,391 variants,
+  23.4% of the Pathogenic or Likely pathogenic variants ClinVar gives VCF
+  alleles for. They are matched by chromosome, position, REF and
+  ALT, for VCF input only: an array call's reference allele comes from a
+  table keyed by its own rsID, which says nothing about a variant without
+  one. Reports name such a finding by its position, for example
+  `1:1000 A>G`, and `--vcf-out` writes `.` for its rsID.
+- `--vcf-out` stamps ClinVar on multi-allelic records with no ID. It
+  placed annotations by rsID, so a record with ID `.` whose ClinVar rows
+  have an rsID got no stamp; it now finds the record by its position and
+  the carried ALT, and stamps the right ALT (8 such records in HG002).
+- Factor V Leiden (F5 rs6025) carriers see its Pathogenic submissions
+  again. ClinVar's classification of the variant is an expert panel's
+  "drug response", which outranks every disease submission, so Allelix
+  showed only the drug response row. Where ClinVar's classification is
+  not a disease classification, the outranked Pathogenic and Likely
+  pathogenic submissions are kept, judged in their strongest review tier
+  as ClinVar judges a variant: shown as submitted when that tier agrees
+  (F5: 22 Pathogenic and 1 Pathogenic, low penetrance), capped at 4.0
+  when it conflicts (MTHFR rs1801133), and not shown when it holds no
+  Pathogenic or Likely pathogenic submission (VKORC1 rs9923231). In the
+  2026-10-10 data this affects 46 GRCh37 variants with an rsID: 38 keep
+  their Pathogenic and Likely pathogenic submissions and 8 show none.
+- `allelix db update` no longer replaces a working ClinVar cache with an
+  empty one when ClinVar changes the layout of its files. The update
+  checks the column names in both ClinVar files and stops with an error
+  that names the changed column. It builds the new cache beside the old
+  one and replaces the old one only when the build finishes with records.
+  Before, an inserted or renamed column made every record unreadable, and
+  the update installed an empty cache that reported ready.
+- A ClinVar placeholder such as "covers 10 genes, none of which curated
+  to show dosage sensitivity" is no longer shown as the gene (rs4124874,
+  for example).
+- Submissions that ClinVar has flagged are no longer reported. They
+  appeared only where every submission on a variant is flagged: 120 rows
+  in the 2026-10-10 ClinVar data, all but one Pathogenic or Likely
+  pathogenic.
+- Array files (23andMe, AncestryDNA, Family Tree DNA, Living DNA,
+  MyHeritage, MyHappyGenes) are read when gzipped, when they start with a
+  UTF-8 byte order mark, or when their first line is blank. Before, these
+  stopped with "No parser recognized" (some formats accepted one or two of
+  the three). Family Tree DNA delivers its raw data as a `.csv.gz`, which
+  can now be passed as it is, without unpacking it first.
+- A compressed genotype file that was cut short or damaged is no longer
+  read as complete or stopped with a bare "Aborted!". A file that ends in
+  the middle of its compressed data, or holds corrupt data, stops with an
+  error naming the file ("looks truncated or damaged"). A bgzipped VCF cut
+  exactly between two blocks, which raised no error and was analysed with
+  the records after the cut silently missing, now gets a warning that its
+  end-of-file block is missing and the file may be truncated. Bytes after
+  the end of the compressed data that are not compressed data (such as a
+  web page saved onto the end of a download) are ignored with a warning
+  instead of stopping the run after every record was read.
+- A VCF whose chrM is declared with the hg19 length (16,571 bp) no longer
+  gets mitochondrial findings at reference-sequence (rCRS) positions when
+  its build comes from `--build`, the assembly header or the known-SNP
+  positions. Its mitochondrial records are now left out with the same note
+  as when the contig lengths decide the build.
+- A file that states its build but carries none of the known-SNP positions
+  (for example a 23andMe mtDNA-only export labelled build 37, or a small
+  panel VCF with only an `assembly=` line) no longer runs on the label
+  alone, which could attach another build's ClinVar records by position.
+  It stops, names the label and the missing positions, and asks for
+  `--build`. An array file labelled GRCh36 (Build 36) is exempt, as
+  `--build grch36` is: it runs on the GRCh36 path, with position-keyed
+  lookups off, so it cannot attach another build's records.
+- `--build grch37` or `--build grch38` no longer skips the file's own
+  evidence. Contig lengths of the other build, or confident known-SNP
+  positions for it, stop the run and the message names both builds.
+  Contrary positions that are not confident (fewer than three, or under
+  an 80% majority) print a "Build warning" instead, as does a tie that
+  leaves out the forced build. `--build grch36` is
+  not checked, because it turns position-keyed lookups off. Arrays run
+  under `--build` now take the same known-SNP pre-scan as without it.
+
+### Documentation
+
+- The README no longer says to pass `--cadd` to an analysis: `analyze` has
+  no such flag. CADD runs once it is downloaded (`allelix db update --cadd`)
+  and enabled in config (`allelix config set sources.cadd true`);
+  `--no-cadd` turns it off for one run.
+- The README roadmap no longer lists cross-source conflict surfacing,
+  risk-allele display and a structured MTAG flag as shipped in v2.2. None
+  of them has shipped.
+- The README's IL10 rs1800896 example is removed. Current ClinVar has no
+  Pathogenic classification for it, only "Uncertain risk allele" for
+  leprosy susceptibility.
+- `docs/formats.md` describes the 23andMe file, including the `file_id`,
+  `signature` and `timestamp` lines that current v5 exports put before the
+  "generated by 23andMe" banner. These files were already read correctly;
+  a test now covers that layout.
+- `docs/formats.md` says what happens when a MyHeritage file's preamble is
+  deleted: the rest of the file has the same layout as a Family Tree DNA
+  file, so it is read as one, and a low-pass export is then no longer
+  marked as imputed.
+- `docs/formats.md` says that every format reads Windows (CRLF), Linux
+  (LF) and classic Mac OS (CR only) line endings, plain or gzipped. This
+  was already the case; tests now cover each format with each ending.
+- Test files: the AncestryDNA, FTDNA, Living DNA and MyHeritage test
+  fixtures are rewritten from scratch with invented genotypes, and the
+  exome VCF and the 23andMe lookalike in `test_data/edge_cases/` are
+  replaced by synthetic files of the same shape. Reading is unchanged.
+  The Sequencing.com structural-variant test VCF's `##fileDate` is a
+  placeholder.
+
 ## [2.4.2] - 2026-10-13
 
 After upgrading, run `allelix db update`. This release changes how
@@ -3399,6 +3909,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.5.0]: https://github.com/allelix/allelix/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/allelix/allelix/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/allelix/allelix/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/allelix/allelix/compare/v2.3.1...v2.4.0

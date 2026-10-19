@@ -30,6 +30,7 @@ from allelix.utils.build_detect import (
     BuildDecisionError,
     check_late_seeds,
     detect_build,
+    needs_late_seeds,
 )
 
 if TYPE_CHECKING:
@@ -368,8 +369,8 @@ def _execute_tabix_extract(
     finally:
         for source in (clinvar, gnomad, identity):
             source.close()
-    late_record = late if decision.source == SOURCE_CONTIG_LENGTHS else None
-    _helpers._emit_build_notices(BuildDiagnostics.from_decision(decision, late_record))
+    # The fast path decides without seeds; the ones fetched above are its evidence.
+    _helpers._emit_build_notices(BuildDiagnostics.from_decision(decision, late))
     return found
 
 
@@ -490,8 +491,12 @@ def _render_extract_table(file_path: Path, wanted: set[str], found: dict[str, Va
 @main.command()
 @click.argument("file1", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("file2", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--format1", "fmt1", default=None, help="Force parser for file 1.")
-@click.option("--format2", "fmt2", default=None, help="Force parser for file 2.")
+@click.option(
+    "--format1", "fmt1", default=None, help="Force the reader for file 1, at your own risk."
+)
+@click.option(
+    "--format2", "fmt2", default=None, help="Force the reader for file 2, at your own risk."
+)
 @click.option("--sample1", default=None, help="VCF sample column for file 1 (multi-sample VCFs).")
 @click.option("--sample2", default=None, help="VCF sample column for file 2 (multi-sample VCFs).")
 @click.option(
@@ -562,7 +567,7 @@ def compare(
             raise click.ClickException(
                 f"{exc} For compare, give the build of this file with {flag}."
             ) from exc
-        late_record = late if decision.source == SOURCE_CONTIG_LENGTHS else None
+        late_record = late if needs_late_seeds(decision) else None
         _helpers._emit_build_notices(
             BuildDiagnostics.from_decision(decision, late_record),
             heading=f"File {number} ({path.name})",
@@ -656,7 +661,8 @@ def export_plink_cmd(
     Produces a single-sample, SNP-major .bed file suitable for downstream
     tools (plink2 PCA, ADMIXTURE, PRSice). Uses gnomAD ref/alt for allele
     coding when available; falls back to monomorphic (A2=0) for positions
-    without gnomAD coverage.
+    without gnomAD coverage. A call whose alleles are not gnomAD's REF and
+    ALT as written is exported as missing and counted.
     """
     from allelix.exporters.plink import (
         EmptyPlinkSetError,
@@ -699,9 +705,7 @@ def export_plink_cmd(
         ref_alt_map = {}
 
     try:
-        written, skipped, indel_skip, mono = export_plink(
-            iter(variants), prefix, effective_build, ref_alt_map or None
-        )
+        counts = export_plink(iter(variants), prefix, effective_build, ref_alt_map or None)
     except EmptyPlinkSetError as exc:
         reasons = [f"{exc.no_calls:,} no-calls", f"{exc.indels:,} indels"]
         if diagnostics.mt_skipped:
@@ -713,6 +717,7 @@ def export_plink_cmd(
             f"Nothing to export from {file_path.name}: no variant can be written to a "
             f"PLINK set (skipped: {'; '.join(reasons)}). No files were written."
         ) from exc
+    written, skipped, indel_skip, mono = counts[:4]
     skip_parts = []
     if skipped:
         skip_parts.append(f"{skipped:,} no-calls")
@@ -725,6 +730,11 @@ def export_plink_cmd(
         console.print(
             f"[dim]{mono:,} markers ({pct:.0f}%) exported as monomorphic "
             f"(A2=0, ref/alt unknown or ambiguous).[/dim]"
+        )
+    if counts.allele_mismatches:
+        console.print(
+            f"[yellow]{counts.allele_mismatches:,} call(s) fit neither gnomAD allele at "
+            "their site and were written as missing.[/yellow]"
         )
     if not ref_alt_map:
         console.print(

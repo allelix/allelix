@@ -22,8 +22,19 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install plink (for @integration roundtrip)
-        run: sudo apt-get update && sudo apt-get install -y plink
+      # The PLINK round-trip test needs plink2. Ubuntu's apt "plink" is PLINK
+      # 1.07, which the test cannot use, so it skipped. Pinned release archive,
+      # checked against its SHA-256 before use.
+      - name: Install plink2 (for @integration roundtrip)
+        env:
+          PLINK2_URL: https://s3.amazonaws.com/plink2-assets/alpha6/plink2_linux_x86_64_20241222.zip
+          PLINK2_SHA256: 90566ccee6259d377416ba2655646a87b4605feca66bf97c78bb649baf8784cf
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/plink2.zip" "$PLINK2_URL"
+          echo "$PLINK2_SHA256  $RUNNER_TEMP/plink2.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/plink2.zip" plink2 -d "$RUNNER_TEMP/plink2"
+          sudo install -m 0755 "$RUNNER_TEMP/plink2/plink2" /usr/local/bin/plink2
+          plink2 --version
 
       - name: Install
         run: |

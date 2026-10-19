@@ -145,7 +145,25 @@ and were handled correctly. From 2.4.2 (ClinVar cache `iv:5`):
   the build's reference base, so enrichment uses the same key as the
   ClinVar row; where `alt` is that base the Annotation is marked
   `reference_carries_alt` as well.
-- Known limitation: VCF input on GRCh37 has no variant record where a
-  person is homozygous for the allele the reference carries (Factor V
-  Leiden TT), and homozygous-reference calls are not annotated, so that
-  person still gets no finding. Array input is not affected.
+- VCF input on GRCh37 has no variant record where a person is homozygous
+  for the allele the reference carries (Factor V Leiden TT). **Amended
+  2026-10-16 (2.5):** the pipeline watches ClinVar's reference-carried
+  sites (one-base REF == ALT rows with an rsID, on the effective build)
+  in the VCF stream. A `0/0` call or a covering gVCF reference block there
+  that passes the GQ gate becomes a REF/REF call, and every source
+  assesses it (`input.vcf_quality.reference_carried_calls`). A low-quality
+  one stays a no-call. A plain VCF with no record there cannot tell a
+  homozygous carrier from no coverage: those sites are counted
+  (`reference_carried_not_in_file`) and the report says so. A gVCF
+  position no record covers is already a no-call. Array input was never
+  affected.
+- **Amended 2026-10-16 (2.5), cache `iv:9`:** a normal-allele record (HGVS
+  `c.N=`) written REF == ALT on a build whose reference is the normal
+  allele is kept, no longer dropped. CASP12 rs497116 is G>G on GRCh37 and
+  A>G on GRCh38; its risk-factor classification was shown on GRCh38 only.
+  Such rows carry `normal_allele = 1`. They keep the locus REF in
+  `reference_for`: they name the reference's own allele, not a variant it
+  carries. They annotate carriers of their allele like any row, and their
+  P/LP classifications are dropped at load, as on the other build. The
+  site watch above includes them; the plain-VCF count does not, since
+  missing a normal genotype there is not a missed variant.

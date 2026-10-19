@@ -564,7 +564,7 @@ class TestADR0023HomRefSuppression:
         """User hom-ref per ClinVar must not get SNPedia disease annotation."""
         ann = SNPediaAnnotator(
             snpedia_data_dir,
-            clinvar_ref_provider=lambda rsid, build: "C" if rsid == "rs1801133" else None,
+            clinvar_ref_provider=lambda rsid, build, locus: "C" if rsid == "rs1801133" else None,
         )
         v = Variant(rsid="rs1801133", chromosome="1", position=11796321, allele1="C", allele2="C")
         assert ann.annotate(v) == []
@@ -574,7 +574,7 @@ class TestADR0023HomRefSuppression:
         """User carrying ALT allele still gets the annotation."""
         ann = SNPediaAnnotator(
             snpedia_data_dir,
-            clinvar_ref_provider=lambda rsid, build: "C" if rsid == "rs1801133" else None,
+            clinvar_ref_provider=lambda rsid, build, locus: "C" if rsid == "rs1801133" else None,
         )
         v = Variant(rsid="rs1801133", chromosome="1", position=11796321, allele1="C", allele2="T")
         results = ann.annotate(v)
@@ -586,7 +586,7 @@ class TestADR0023HomRefSuppression:
         """An rsID absent from ClinVar — no suppression, SNPedia annotation emits."""
         ann = SNPediaAnnotator(
             snpedia_data_dir,
-            clinvar_ref_provider=lambda rsid, build: None,
+            clinvar_ref_provider=lambda rsid, build, locus: None,
         )
         v = Variant(rsid="rs1801133", chromosome="1", position=11796321, allele1="C", allele2="T")
         results = ann.annotate(v)
@@ -605,7 +605,7 @@ class TestADR0023HomRefSuppression:
         """Het user is not hom-ref — annotation emits even with REF provider."""
         ann = SNPediaAnnotator(
             snpedia_data_dir,
-            clinvar_ref_provider=lambda rsid, build: "T" if rsid == "rs1801133" else None,
+            clinvar_ref_provider=lambda rsid, build, locus: "T" if rsid == "rs1801133" else None,
         )
         v = Variant(rsid="rs1801133", chromosome="1", position=11796321, allele1="C", allele2="T")
         results = ann.annotate(v)
@@ -869,7 +869,7 @@ class TestBatchAnnotateParity:
         refs = {"rs1801133": "C"}
         ann = SNPediaAnnotator(
             snpedia_data_dir,
-            clinvar_ref_provider=lambda rsid, _build: refs.get(rsid),
+            clinvar_ref_provider=lambda rsid, _build, _locus: refs.get(rsid),
         )
         try:
             variants = [

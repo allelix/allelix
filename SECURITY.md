@@ -6,8 +6,8 @@ The current minor release receives security fixes.
 
 | Version | Supported |
 |---------|-----------|
-| 2.4.x   | ✓         |
-| < 2.4   | ✗         |
+| 2.5.x   | ✓         |
+| < 2.5   | ✗         |
 
 ## Reporting a vulnerability
 

@@ -15,11 +15,15 @@ allele frequencies (no SpliceAI or other restrictively licensed fields).
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
 from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
+from allelix.databases.cache_state import (
+    CacheStatus,
+    cache_state,
+    connect_readonly,
+)
 from allelix.databases.gnomad_loader import (
     GNOMAD_CACHE_URL,
     GNOMAD_DB_FILENAME,
@@ -33,6 +37,7 @@ from allelix.databases.manager import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
     from allelix.models import Annotation, Variant
@@ -40,6 +45,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BULK_BATCH_SIZE = 900
+# Positions bound per position-lookup statement, plus one chromosome:
+# 999 parameters, the SQLite default limit every query here respects.
+_POSITIONS_PER_STATEMENT = 998
 
 
 class GnomadAnnotator(Annotator):
@@ -75,25 +83,7 @@ class GnomadAnnotator(Annotator):
                 raise FileNotFoundError(
                     f"gnomAD cache not found at {self._db_path}. Run `allelix db update` first."
                 )
-            self._conn = sqlite3.connect(self._db_path)
-            # lazy-create the position index on caches built before
-            # the index landed (anything <= v2.2.1). The index is required
-            # for ``bulk_resolve_rsids_from_positions`` to perform
-            # well — without it that method scans the full 57M-row
-            # ``gnomad_frequencies`` table per query, which is the root
-            # cause of the ~2x analyze slowdown on rsID-less WGS VCFs
-            # observed at the v2.2.2 ship gate. ``CREATE INDEX IF NOT
-            # EXISTS`` is a no-op once the index is in place (microseconds
-            # to check the schema); the one-time build cost on first run
-            # against a pre-v2.2.2 cache is a few minutes against the 57M
-            # rows but only happens once per cache. Doing this here in
-            # ``_connection`` rather than as a schema migration avoids
-            # forcing every user to re-download the 2.7 GB compressed
-            # cache for what's a transparent index addition.
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_gnomad_position ON gnomad_frequencies(chrom, pos)"
-            )
-            self._conn.commit()
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def setup(self) -> None:
@@ -119,11 +109,16 @@ class GnomadAnnotator(Annotator):
         untagged legacy cache would silently pass as the new version.
         Rejecting it tells the user to re-run ``db update``.
         """
-        info = get_database_info(self._db_path, "gnomad")
-        if info is None:
-            return False
-        tag = info.get("local_version_tag") or ""
-        return tag == f"sv:{GNOMAD_SCHEMA_VERSION}"
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        """State of the gnomAD cache (ADR-0048)."""
+        return cache_state(
+            self._db_path,
+            "gnomad",
+            tag=f"sv:{GNOMAD_SCHEMA_VERSION}",
+            tables=("gnomad_frequencies",),
+        )
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""
@@ -245,43 +240,31 @@ class GnomadAnnotator(Annotator):
             return {}
         conn = self._connection()
         result: dict[tuple[str, int], list[tuple[str, str, str]]] = {}
-        # Issue a single combined SQL statement per chunk using SQLite's
-        # row-value ``(chrom, pos) IN ((?, ?), ...)`` form instead of
-        # grouping by chromosome and issuing one statement per
-        # (chrom, chunk) pair. On WGS input each batch touches all ~24
-        # chromosomes; the per-chrom shape was a 24x query multiplier
-        # the ``idx_gnomad_position`` index could not amortize away. The
-        # row-value IN form keeps the same carrier-rule contract — both
-        # ``chrom`` and ``pos`` must match the input pair simultaneously
-        # — and the ``idx_gnomad_position`` covering index on
-        # ``(chrom, pos)`` serves the lookup directly.
-        #
-        # Each input pair binds 2 SQLite parameters (chrom + pos), so
-        # the chunk size is ``_BULK_BATCH_SIZE // 2`` to stay inside the
-        # 999-param convention every other annotator and gnomAD's own
-        # multi-param queries respect (``bulk_lookup_by_alt`` does the
-        # same 2-param shape with the same ``// 2``;
-        # ``bulk_lookup_by_position`` uses ``// 4`` for its 4-param
-        # shape, same convention scaled). Net effective batch size:
-        # 450 pairs x 2 = 900 params per chunk.
-        chunk_pairs = _BULK_BATCH_SIZE // 2
-        position_list = list(positions)
-        for i in range(0, len(position_list), chunk_pairs):
-            batch = position_list[i : i + chunk_pairs]
-            placeholders = ",".join("(?, ?)" for _ in batch)
-            params: list[str | int] = []
-            for chrom, pos in batch:
-                params.append(chrom)
-                params.append(pos)
-            rows = conn.execute(
-                f"SELECT chrom, pos, ref, alt, rsid FROM gnomad_frequencies"
-                f" WHERE (chrom, pos) IN ({placeholders})",
-                params,
-            ).fetchall()
-            for c, p, ref, alt, rsid in rows:
-                if not rsid:
-                    continue
-                result.setdefault((c, p), []).append((ref, alt, rsid))
+        # One statement per chromosome per chunk of up to
+        # ``_POSITIONS_PER_STATEMENT`` positions: ``chrom = ? AND pos IN
+        # (...)``. SQLite plans this as a search on both columns of the
+        # primary key, ``(chrom, pos, ref, alt)``. The row-value form
+        # ``(chrom, pos) IN ((?, ?), ...)`` searched on ``chrom`` alone on
+        # SQLite 3.45.1 (Ubuntu 24.04), reading a whole chromosome per
+        # statement. The input is grouped by chromosome first, so a batch
+        # in file order costs one statement per ~1,000 positions.
+        by_chrom: dict[str, list[int]] = {}
+        for chrom, pos in positions:
+            by_chrom.setdefault(chrom, []).append(pos)
+        for chrom, chrom_positions in by_chrom.items():
+            chrom_positions.sort()
+            for i in range(0, len(chrom_positions), _POSITIONS_PER_STATEMENT):
+                chunk = chrom_positions[i : i + _POSITIONS_PER_STATEMENT]
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT chrom, pos, ref, alt, rsid FROM gnomad_frequencies"
+                    f" WHERE chrom = ? AND pos IN ({placeholders})",
+                    (chrom, *chunk),
+                ).fetchall()
+                for c, p, ref, alt, rsid in rows:
+                    if not rsid:
+                        continue
+                    result.setdefault((c, p), []).append((ref, alt, rsid))
         # Deterministic ordering for the carrier-rule pass.
         for rows in result.values():
             rows.sort()

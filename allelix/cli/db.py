@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from allelix.annotators import get_annotators
@@ -14,6 +15,7 @@ from allelix.cli import _helpers, main
 from allelix.cli._helpers import console
 from allelix.cli._options import _DATA_DIR_OPT
 from allelix.databases import resolve_data_dir
+from allelix.databases.cache_state import CacheState
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -121,9 +123,13 @@ def db_update(
 
     clinvar_builds = _helpers._resolve_clinvar_builds(build)
     failed: list[str] = []
-    for annotator in get_annotators(
-        resolved, clinvar_builds=clinvar_builds, cadd_full=cfg.cadd_full
-    ):
+    annotators = get_annotators(resolved, clinvar_builds=clinvar_builds, cadd_full=cfg.cadd_full)
+    # ADR-0048: convert WAL caches and bring outdated ones up to date from
+    # local data before deciding what to download.
+    _helpers._prepare_caches(
+        [a for a in annotators if only_source is None or a.name == only_source], resolved
+    )
+    for annotator in annotators:
         with annotator:
             if only_source is not None and annotator.name != only_source:
                 continue
@@ -147,6 +153,18 @@ def db_update(
                 ):
                     console.print(f"  [dim]{annotator.name}: skipped (declined)[/dim]")
                     continue
+
+            # ADR-0048: a cache still in WAL mode after the update step
+            # could not be converted. It is not downloaded again.
+            status = annotator.cache_status()
+            if not force and status.state in (CacheState.WAL, CacheState.READONLY_WAL):
+                console.print(
+                    f"  [yellow]{annotator.name}: {escape(str(status.path))} is still in WAL "
+                    "mode and could not be converted (no write access to its directory, or "
+                    "another process has it open). Nothing was downloaded.[/yellow]"
+                )
+                failed.append(annotator.name)
+                continue
 
             if not annotator.requires_download:
                 if annotator.is_ready():
@@ -456,13 +474,14 @@ def db_path(data_dir: Path | None, check: bool) -> None:
 
     Useful for scripting / backup integration:
 
+    \b
         ALLELIX_DATA=$(allelix db path)
         du -sh "$ALLELIX_DATA"
 
     With `--check`, additionally verify the path is writable; exit
     non-zero (and print a diagnostic to stderr) if it is not.
     Existence is guaranteed — the path is created on resolution.
-    """
+    """  # noqa: D301 - plain string: click's \b marker is the backspace character
     import os
     import sys
 
@@ -491,7 +510,17 @@ def db_status(data_dir: Path | None) -> None:
     table.add_column("Records", justify="right")
     for annotator in get_annotators(resolved, cadd_full=cfg.cadd_full):
         with annotator:
-            ready = annotator.is_ready()
+            status = annotator.cache_status()
+            if status.state in (CacheState.WAL, CacheState.READONLY_WAL):
+                # ADR-0048: a WAL cache is not opened, even for its version.
+                table.add_row(
+                    annotator.display_name,
+                    "[red]no[/red]",
+                    "WAL mode from an older Allelix; run `allelix db update` to convert it",
+                    "—",
+                )
+                continue
+            ready = status.ready
             ready_marker = "[green]yes[/green]" if ready else "[red]no[/red]"
             version = annotator.version() or "—"
             sig = getattr(annotator, "cached_remote_signal", lambda: None)()

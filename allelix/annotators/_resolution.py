@@ -179,7 +179,7 @@ def _resolve_from_identity(
         for v in variants
         if not v.rsid.startswith("rs")
         and v.ref is not None
-        and not v.is_no_call
+        and (not v.is_no_call or v.is_half_call)
         and v.chromosome
         and v.position > 0
         and v.build in _IDENTITY_BUILDS
@@ -191,7 +191,7 @@ def _resolve_from_identity(
             rows = rows_at.get(variant_locus(v))
             if not rows:
                 continue
-            hit = resolve_rsid_at_locus(v.ref, v.allele1, v.allele2, rows)
+            hit = resolve_rsid_at_locus(v.ref, *v.carried_pair, rows)
             if hit is None:
                 continue
             rsid, pair = hit
@@ -218,7 +218,7 @@ def _resolve_from_gnomad(
     positions = {
         (v.chromosome, v.position)
         for v in pending
-        if not v.is_no_call and v.chromosome and v.position > 0
+        if (not v.is_no_call or v.is_half_call) and v.chromosome and v.position > 0
     }
     if not positions:
         return
@@ -227,7 +227,7 @@ def _resolve_from_gnomad(
         rows = gnomad_rows.get((v.chromosome, v.position))
         if not rows:
             continue
-        hit = resolve_rsid_at_locus(v.ref, v.allele1, v.allele2, rows)
+        hit = resolve_rsid_at_locus(v.ref, *v.carried_pair, rows)
         if hit is None:
             continue
         rsid, pair = hit

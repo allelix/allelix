@@ -29,6 +29,18 @@ SOURCES = {
     ),
     "cadd": (CaddAnnotator, CADD_DB_FILENAME, CADD_SCHEMA, CADD_SCHEMA_VERSION),
 }
+# One synthetic row each: an empty cache is not ready (ADR-0048).
+ROWS = {
+    "alphamissense": (
+        "INSERT OR IGNORE INTO alphamissense_scores (chrom, pos, ref, alt, rsid, uniprot_id, "
+        "transcript_id, protein_variant, am_pathogenicity, am_class) "
+        "VALUES ('1', 100, 'A', 'G', 'rs900780001', 'P0', 'T0', 'A1G', 0.9, 'likely_pathogenic')"
+    ),
+    "cadd": (
+        "INSERT OR IGNORE INTO cadd_scores (chrom, pos, ref, alt, phred) "
+        "VALUES ('1', 100, 'A', 'G', 20.0)"
+    ),
+}
 
 
 @pytest.mark.parametrize("source", sorted(SOURCES))
@@ -40,6 +52,7 @@ def test_ready_only_with_the_current_stamp(tmp_path: Path, source: str) -> None:
     def stamped(tag: str | None) -> bool:
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             conn.executescript(schema)
+            conn.execute(ROWS[source])
             conn.execute(
                 "INSERT OR REPLACE INTO database_versions (name, source_url, version, "
                 "downloaded_at, record_count, local_version_tag) VALUES (?, ?, ?, ?, ?, ?)",

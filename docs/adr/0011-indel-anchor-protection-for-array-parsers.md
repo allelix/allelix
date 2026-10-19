@@ -9,6 +9,8 @@ ClinVar's GRCh37 VCF uses the standard VCF anchor-base convention for indels: a 
 
 Array-based parsers — MyHappyGenes (Tempus), 23andMe, AncestryDNA — produce single-base genotypes at probe positions. They do not call indels; they just read whichever single base sits at the array probe.
 
+*Superseded premise (ADR-0051):* arrays do call indels: 23andMe writes them as `D` / `I` codes. The decision below stands, and the report now counts the D/I calls ClinVar cannot match.
+
 The ClinVar annotator's carrier rule (ADR-0007) is a string-equality check: `alt in {allele1, allele2}`. For a SNV this is correct. For an indel against an array readout, it produces a categorical false-positive: ClinVar's single-character anchor base equals the array's single-character readout, the rule fires, and the user is told they carry a frameshift deletion they do not have.
 
 In production data this affects ~95%+ of high-magnitude cancer-gene hits (MSH6, MLH1, MSH2, PTEN, RB1, BRCA1, BRCA2, TP53, APC, …). Hundreds of false-positive "Pathogenic" calls per typical array-based input. This is a clinical-safety failure that pre-v0.4.2 reports must not be trusted.

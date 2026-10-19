@@ -20,11 +20,15 @@ dbSNP is a US government work in the public domain.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
 from allelix.databases._versions import RSID_IDENTITY_SCHEMA_VERSION
+from allelix.databases.cache_state import (
+    CacheStatus,
+    cache_state,
+    connect_readonly,
+)
 from allelix.databases.manager import download, get_database_info, verify_file_hash
 from allelix.databases.rsid_identity_loader import (
     RSID_IDENTITY_CACHE_URL,
@@ -35,6 +39,7 @@ from allelix.databases.rsid_identity_loader import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
     from allelix.models import Annotation, Variant
@@ -51,6 +56,7 @@ _COLUMNS: dict[str, tuple[str, str, str]] = {
 
 Locus = tuple[str, int]
 Key = tuple[str, int, str, str]
+ForwardSite = tuple[str, int, frozenset[str]]
 
 
 class RsidIdentityAnnotator(Annotator):
@@ -82,7 +88,7 @@ class RsidIdentityAnnotator(Annotator):
                     f"rsID identity cache not found at {self._db_path}. "
                     "Run `allelix db update` first."
                 )
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def setup(self) -> None:
@@ -102,10 +108,16 @@ class RsidIdentityAnnotator(Annotator):
 
     def is_ready(self) -> bool:
         """True when the cache exists with the current schema version."""
-        info = get_database_info(self._db_path, RSID_IDENTITY_RECORD_NAME)
-        if info is None:
-            return False
-        return (info.get("local_version_tag") or "") == f"sv:{RSID_IDENTITY_SCHEMA_VERSION}"
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        """State of the identity cache (ADR-0048)."""
+        return cache_state(
+            self._db_path,
+            RSID_IDENTITY_RECORD_NAME,
+            tag=f"sv:{RSID_IDENTITY_SCHEMA_VERSION}",
+            tables=("rsid_identity",),
+        )
 
     def version(self) -> str | None:
         """Return the dbSNP build the cache was made from, or None."""
@@ -154,16 +166,6 @@ class RsidIdentityAnnotator(Annotator):
             )
         return out
 
-    def refs_at_loci(self, build: str, loci: set[Locus]) -> dict[Locus, set[str]]:
-        """Distinct reference alleles at each locus on ``build``."""
-        ref_col = _COLUMNS.get(build, ("", "", ""))[1]
-        out: dict[Locus, set[str]] = {}
-        if not ref_col:
-            return out
-        for chrom, pos, ref in self._rows_at_loci(build, loci, ref_col):
-            out.setdefault((chrom, pos), set()).add(ref)
-        return out
-
     def alleles_at_loci(
         self, build: str, loci: set[Locus]
     ) -> dict[Locus, list[tuple[str, str, str]]]:
@@ -196,6 +198,73 @@ class RsidIdentityAnnotator(Annotator):
                 out.add(rsid)
         return out
 
+    def normal_alleles_on_other_build(self, carried: dict[str, str], build: str) -> dict[str, str]:
+        """The other build's REF at rsIDs whose ``build`` reference carries a variant allele.
+
+        ``carried`` maps each rsID to the allele ``build``'s reference
+        carries (ClinVar's REF == ALT row; T at F5 rs6025 on GRCh37). An
+        rsID gets the other build's REF when every identity row for it
+        agrees: ``build``'s REF is the carried allele, and the other build's
+        REF is one base that differs from it (C at rs6025). Everything else
+        abstains. Used by ClinVar when only one ClinVar build is installed.
+        As with ClinVar's other-build cache, the other build's REF
+        is taken as written: the ``palindromic`` flag (dbSNP lists every
+        base at rs6025) concerns translating alleles, not reading a REF.
+        """
+        if not carried or build not in _COLUMNS or not self.is_ready():
+            return {}
+        other = "GRCh38" if build == "GRCh37" else "GRCh37"
+        ref_col, other_col = _COLUMNS[build][1], _COLUMNS[other][1]
+        conn = self._connection()
+        wanted = sorted(carried)
+        candidates: dict[str, set[str | None]] = {}
+        for start in range(0, len(wanted), _CHUNK):
+            chunk = wanted[start : start + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            for rsid, ref, other_ref in conn.execute(
+                f"SELECT DISTINCT rsid, {ref_col}, {other_col} "
+                f"FROM rsid_identity WHERE rsid IN ({marks})",
+                chunk,
+            ):
+                usable = ref == carried[rsid] and len(other_ref) == 1 and other_ref != ref
+                candidates.setdefault(rsid, set()).add(other_ref if usable else None)
+        out: dict[str, str] = {}
+        for rsid, refs in candidates.items():
+            (only,) = refs if len(refs) == 1 else (None,)
+            if only is not None:
+                out[rsid] = only
+        return out
+
+    def forward_sites(self, rsids: set[str], build: str) -> dict[str, ForwardSite]:
+        """Each rsID's ``(chrom, pos, alleles)`` on ``build``: REF plus every ALT.
+
+        The strand reference for GWAS and SNPedia alleles. An rsID
+        whose rows disagree on the locus is left out, as are rsIDs the
+        table does not hold. Nothing is returned when the cache is not ready.
+        """
+        if not rsids or build not in _COLUMNS or not self.is_ready():
+            return {}
+        pos_col, ref_col, alt_col = _COLUMNS[build]
+        conn = self._connection()
+        wanted = sorted(rsids)
+        loci: dict[str, set[Locus]] = {}
+        alleles: dict[str, set[str]] = {}
+        for start in range(0, len(wanted), _CHUNK):
+            chunk = wanted[start : start + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            for rsid, chrom, pos, ref, alt in conn.execute(
+                f"SELECT rsid, chrom, {pos_col}, {ref_col}, {alt_col} "
+                f"FROM rsid_identity WHERE rsid IN ({marks})",
+                chunk,
+            ):
+                loci.setdefault(rsid, set()).add((chrom, pos))
+                alleles.setdefault(rsid, set()).update((ref, alt))
+        return {
+            rsid: (*next(iter(places)), frozenset(alleles[rsid]))
+            for rsid, places in loci.items()
+            if len(places) == 1
+        }
+
     def loci_of_rsids(self, rsids: set[str]) -> dict[str, dict[str, Locus]]:
         """Each rsID's ``{build: (chrom, pos)}`` placement on GRCh37 and GRCh38.
 
@@ -216,6 +285,30 @@ class RsidIdentityAnnotator(Annotator):
                 chunk,
             ):
                 out[rsid] = {"GRCh37": (chrom, pos37), "GRCh38": (chrom, pos38)}
+        return out
+
+    def placements(
+        self, rsids: set[str]
+    ) -> dict[str, list[tuple[str, int, str, str, int, str, str]]]:
+        """Every identity row of each rsID: ``(chrom, pos37, ref37, alt37, pos38, ref38, alt38)``.
+
+        rsIDs the table does not hold are absent; nothing is returned when
+        the cache is not ready.
+        """
+        if not rsids or not self.is_ready():
+            return {}
+        conn = self._connection()
+        wanted = sorted(rsids)
+        out: dict[str, list[tuple[str, int, str, str, int, str, str]]] = {}
+        for start in range(0, len(wanted), _CHUNK):
+            chunk = wanted[start : start + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            for rsid, *row in conn.execute(
+                f"SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 "
+                f"FROM rsid_identity WHERE rsid IN ({marks})",
+                chunk,
+            ):
+                out.setdefault(rsid, []).append(tuple(row))
         return out
 
     def translate_to_grch38(self, keys37: set[Key]) -> dict[Key, Key]:

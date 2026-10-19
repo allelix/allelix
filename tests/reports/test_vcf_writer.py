@@ -520,6 +520,66 @@ class TestMultiAllelic:
         assert "ALLELIX_GNOMAD_AF=0.001,0.0005" in info_col
 
 
+class TestReportOrderPerSource:
+    """Each source's slot holds the row the report lists first at that variant."""
+
+    @staticmethod
+    def _clinvar_info(tmp_path: Path, anns: list[Annotation]) -> str:
+        out = tmp_path / "out.vcf"
+        render_vcf(
+            input_path=FIXTURES / "mock_vcf.vcf",
+            output_path=out,
+            build="GRCh38",
+            annotators_used=[("clinvar", "20260101")],
+            annotations_by_key={("1", 11796321, "G", "A"): anns},
+            run_date=_fixed_date(),
+        )
+        (line,) = [x for x in _read(out).splitlines() if "\t11796321\t" in x]
+        info = line.split("\t")[7]
+        (field,) = [f for f in info.split(";") if f.startswith("ALLELIX_CLINVAR=")]
+        return field
+
+    def test_the_most_severe_row_wins_over_a_later_one(self, tmp_path: Path) -> None:
+        anns = [
+            _ann(significance="clinvar_pathogenic", magnitude=9.0),
+            _ann(significance="clinvar_uncertain_significance", magnitude=4.0),
+        ]
+        assert self._clinvar_info(tmp_path, anns) == (
+            "ALLELIX_CLINVAR=clinvar_pathogenic|rs1801133|MTHFR"
+        )
+
+    def test_a_tie_on_magnitude_takes_the_report_order_by_rsid(self, tmp_path: Path) -> None:
+        anns = [
+            _ann(rsid="rs900000001", gene="GENEA", magnitude=6.0),
+            _ann(rsid="rs900000002", gene="GENEB", magnitude=6.0),
+        ]
+        assert self._clinvar_info(tmp_path, anns) == (
+            "ALLELIX_CLINVAR=clinvar_pathogenic|rs900000001|GENEA"
+        )
+
+    def test_a_full_tie_keeps_the_first_row(self, tmp_path: Path) -> None:
+        anns = [
+            _ann(significance="clinvar_risk_factor", magnitude=6.0),
+            _ann(significance="clinvar_drug_response", magnitude=6.0),
+        ]
+        assert self._clinvar_info(tmp_path, anns) == (
+            "ALLELIX_CLINVAR=clinvar_risk_factor|rs1801133|MTHFR"
+        )
+
+    def test_matches_the_report_order(self, tmp_path: Path) -> None:
+        from allelix.models import report_rank_key
+
+        anns = [
+            _ann(significance="clinvar_uncertain_significance", magnitude=4.0),
+            _ann(rsid="rs900000003", significance="clinvar_risk_factor", magnitude=6.0),
+            _ann(rsid="rs900000002", significance="clinvar_drug_response", magnitude=6.0),
+        ]
+        first = sorted(anns, key=report_rank_key)[0]
+        assert self._clinvar_info(tmp_path, anns) == (
+            f"ALLELIX_CLINVAR={first.significance}|{first.rsid}|MTHFR"
+        )
+
+
 class TestChrPrefixNormalization:
     """Every real GRCh38 VCF from modern callers (GATK / DeepVariant /
     DRAGEN) uses ``chr``-prefixed contigs (``chr22`` etc.). The parser

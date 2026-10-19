@@ -25,6 +25,7 @@ CLINVAR_SCHEMA = (
     """
 CREATE TABLE IF NOT EXISTS clinvar_variants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Empty for a variant dbSNP has no rsID for (ADR-0046).
     rsid TEXT NOT NULL,
     chromosome TEXT NOT NULL,
     position INTEGER NOT NULL,
@@ -34,7 +35,20 @@ CREATE TABLE IF NOT EXISTS clinvar_variants (
     condition TEXT,
     gene TEXT,
     review_status TEXT,
-    allele_id INTEGER
+    allele_id INTEGER,
+    -- ClinVar's aggregate classification of the variant (variant_summary
+    -- ClinicalSignificance), and how many of the submitters it counts gave
+    -- this row's classification, of how many. ``outside_aggregate``: 0 the
+    -- submission counts toward the aggregate, 1 or 2 an outranked P/LP
+    -- submission kept by ADR-0045 whose tier agrees (1) or conflicts (2).
+    aggregate TEXT,
+    submitters_same INTEGER,
+    submitters_total INTEGER,
+    outside_aggregate INTEGER NOT NULL DEFAULT 0,
+    -- 1 for a normal-allele record (HGVS ``c.N=``): it names the reference
+    -- sequence's allele. Written REF == ALT on a build whose reference is
+    -- that allele (CASP12 rs497116 G>G on GRCh37).
+    normal_allele INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_clinvar_rsid ON clinvar_variants(rsid);

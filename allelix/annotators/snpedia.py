@@ -22,8 +22,16 @@ from allelix.annotators.base import (
     Annotator,
     LicenseDescriptor,
     carried_alt,
+    forward_alleles_at_call,
     is_clinvar_homref,
     variant_locus,
+)
+from allelix.databases.cache_state import (
+    READY,
+    CacheState,
+    CacheStatus,
+    cache_state,
+    connect_readonly,
 )
 from allelix.databases.manager import (
     download,
@@ -35,12 +43,24 @@ from allelix.databases.snpedia_loader import (
     install_prebuilt_cache,
 )
 from allelix.models import Annotation
-from allelix.utils.allele import complement
+from allelix.utils.allele import (
+    STRAND_ABSTAIN_REASONS,
+    STRAND_COMPLEMENT,
+    STRAND_DIRECT,
+    STRAND_NO_FIT,
+    STRAND_NOT_IN_IDENTITY,
+    STRAND_PALINDROMIC,
+    complement,
+    forward_strand_reading,
+    is_single_base,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
+    from allelix.annotators.base import ForwardSiteProvider
+    from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
 logger = logging.getLogger(__name__)
@@ -91,22 +111,20 @@ def _forward_genotype(
     return (allele1, allele2) if allele1 <= allele2 else (allele2, allele1)
 
 
-def _matching_forward_genotype(
-    sorted_user_alleles: tuple[str, str],
-    allele1: str,
-    allele2: str,
-    orientation: str | None,
-    *,
-    site_is_palindromic: bool,
-) -> tuple[str, str] | None:
-    """Return the normalized genotype if this SNPedia row safely matches."""
-    normalized_orientation = (orientation or "").strip().lower()
-    if normalized_orientation not in {"plus", "minus"}:
-        if site_is_palindromic:
-            return None
-        normalized_orientation = "plus"
-    forward = _forward_genotype(allele1, allele2, normalized_orientation)
-    return forward if forward == sorted_user_alleles else None
+def _known_orientation(orientation: str | None) -> str | None:
+    """``plus`` or ``minus`` when the page states it, else None."""
+    normalized = (orientation or "").strip().lower()
+    return normalized if normalized in {"plus", "minus"} else None
+
+
+def _orientation_without_identity(
+    orientation: str | None, site_is_palindromic: bool
+) -> str | None:
+    """A row's orientation from the page alone: unknown reads as plus unless palindromic."""
+    known = _known_orientation(orientation)
+    if known is not None:
+        return known
+    return None if site_is_palindromic else "plus"
 
 
 class SNPediaAnnotator(Annotator):
@@ -130,36 +148,45 @@ class SNPediaAnnotator(Annotator):
     def __init__(
         self,
         data_dir: Path,
-        clinvar_ref_provider: Callable[[str, str], str | None] | None = None,
+        clinvar_ref_provider: Callable[[str, str, tuple[str, int]], str | None] | None = None,
         normal_allele_provider: Callable[[str, str], str | None] | None = None,
+        forward_site_provider: ForwardSiteProvider | None = None,
     ) -> None:
         """Initialize with path to the data directory.
 
-        ``clinvar_ref_provider`` is a ``(rsid, build) -> ref_base | None``
+        ``clinvar_ref_provider`` is a ``(rsid, build, locus) -> ref_base | None``
         callable used by the ADR-0023 hom-ref check. In production it is
-        wired to ``ClinVarAnnotator.reference_for``. ``None`` disables the
+        wired to ``ClinVarAnnotator.reference_at``, which answers only where
+        ClinVar places the rsID at the call's locus. ``None`` disables the
         check (tests, standalone use).
 
         ``normal_allele_provider`` gives the normal allele where the build's
         reference carries a ClinVar variant allele, for deriving ``alt``
         (``base.carried_alt``); wired to ``ClinVarAnnotator.normal_allele_for``.
+
+        ``forward_site_provider`` gives each rsID's forward alleles on a
+        build (``RsidIdentityAnnotator.forward_sites``), the strand check
+        for genotype rows. ``None`` keeps the page's orientation
+        alone (tests, standalone use).
         """
         super().__init__(data_dir)
         self._db_path = data_dir / SNPEDIA_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
         self._clinvar_ref_provider = clinvar_ref_provider
         self._normal_allele_provider = normal_allele_provider
+        self._forward_site_provider = forward_site_provider
+        self._strand_abstained = dict.fromkeys(STRAND_ABSTAIN_REASONS, 0)
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 
     def setup(self) -> None:
         """Download the pre-built SNPedia cache from HuggingFace.
 
         The HuggingFace asset contains raw wiki markup (third-party,
-        CC-BY-NC-SA). After download, ``is_ready()`` triggers the
+        CC-BY-NC-SA). After download, ``prepare_cache()`` runs the
         client-side parse into structured genotype rows and stamps
         ``database_versions`` with proper version metadata.
         """
@@ -175,38 +202,67 @@ class SNPediaAnnotator(Annotator):
             gz_path.unlink()
         except OSError:
             logger.warning("Could not remove staged file at %s", gz_path)
-        self.is_ready()
+        self.prepare_cache()
 
     def is_ready(self) -> bool:
-        """Return True when the parsed SNPedia genotype table exists and has data.
+        """Return True when the parsed SNPedia genotype table exists and has data."""
+        return self.cache_status().ready
 
-        If raw pages exist but the structured table does not, automatically
-        parses the raw markup (one-time operation, ~2 minutes).
+    def cache_status(self) -> CacheStatus:
+        """State of the SNPedia cache (ADR-0048).
+
+        Raw pages not yet parsed, or parsed by an older parser, are
+        ``outdated``: the update step parses them (``prepare_cache``).
         """
-        if not self._db_path.exists():
+        status = cache_state(self._db_path, None)
+        if not status.ready:
+            return status
+        from allelix.databases.snpedia_parser import (
+            detect_raw_table,
+            has_structured_table,
+            parser_tag_is_current,
+        )
+
+        try:
+            with contextlib.closing(connect_readonly(self._db_path)) as conn:
+                if has_structured_table(conn):
+                    if parser_tag_is_current(conn):
+                        return READY
+                    return CacheStatus(
+                        CacheState.OUTDATED, self._db_path, "parser version changed"
+                    )
+                if detect_raw_table(conn) is not None:
+                    return CacheStatus(CacheState.OUTDATED, self._db_path, "pages not parsed yet")
+        except sqlite3.DatabaseError as exc:
+            return CacheStatus(CacheState.CORRUPT, self._db_path, str(exc))
+        return CacheStatus(
+            CacheState.CORRUPT, self._db_path, "no rows in snpedia_genotypes and no raw pages"
+        )
+
+    def prepare_cache(self) -> bool:
+        """Parse the raw pages into structured rows (one-time, ~2 minutes).
+
+        Also runs when the parser version changed. A legacy cache whose
+        ``remote_signal`` carries the current ``|pv:`` marker is stamped
+        instead of re-parsed.
+        """
+        if self.cache_status().state is not CacheState.OUTDATED:
             return False
         try:
             from allelix.databases.snpedia_parser import (
                 detect_raw_table,
+                has_structured_table,
                 parse_raw_pages,
                 parser_is_current,
             )
 
             with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
-                has_rows = False
-                with contextlib.suppress(sqlite3.OperationalError):
-                    has_rows = (
-                        conn.execute("SELECT COUNT(*) FROM snpedia_genotypes").fetchone()[0] > 0
-                    )
-
-                needs_reparse = has_rows and not parser_is_current(conn)
-                if has_rows and not needs_reparse:
+                has_rows = has_structured_table(conn)
+                if has_rows and parser_is_current(conn):
                     return True
-
                 raw_table = detect_raw_table(conn)
                 if raw_table is None:
                     return False
-
                 snp_count = conn.execute(
                     f"SELECT COUNT(*) FROM {raw_table} WHERE category='snp'"
                 ).fetchone()[0]
@@ -214,7 +270,7 @@ class SNPediaAnnotator(Annotator):
                     f"SELECT COUNT(*) FROM {raw_table} WHERE category='genotype'"
                 ).fetchone()[0]
 
-            reason = "parser version changed" if needs_reparse else "one-time"
+            reason = "parser version changed" if has_rows else "one-time"
             print(
                 f"Parsing {snp_count} SNP pages + {genotype_count} genotype pages"
                 f" into structured table ({reason}, ~5 min)...",
@@ -231,7 +287,7 @@ class SNPediaAnnotator(Annotator):
         if not self._db_path.exists():
             return None
         try:
-            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
+            with contextlib.closing(connect_readonly(self._db_path)) as conn:
                 row = conn.execute(
                     "SELECT version FROM database_versions WHERE name = ?",
                     (SNPEDIA_RECORD_NAME,),
@@ -247,7 +303,7 @@ class SNPediaAnnotator(Annotator):
         if not self._db_path.exists():
             return None
         try:
-            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
+            with contextlib.closing(connect_readonly(self._db_path)) as conn:
                 count = conn.execute("SELECT COUNT(*) FROM snpedia_genotypes").fetchone()[0]
                 return count
         except (sqlite3.OperationalError, sqlite3.DatabaseError):
@@ -267,11 +323,99 @@ class SNPediaAnnotator(Annotator):
         """Code-driven source — no cached signal to compare (ADR-0030)."""
         return None
 
+    def run_counts(self) -> dict[str, int]:
+        """SNPedia sites not assessed for strand, by reason."""
+        return dict(self._strand_abstained)
+
+    def _row_orientations(
+        self,
+        variant: Variant,
+        snp_id: str,
+        rows: list[tuple],
+        sites: dict[str, ForwardSite] | None,
+    ) -> list[str | None]:
+        """Each row's orientation for matching (``plus``/``minus``), or None to skip it.
+
+        Rows of single bases at an rsID are read against the identity
+        table's forward alleles: a stated orientation must put the
+        genotype among them; an unknown one takes the direct reading
+        of the site's alleles, else the complemented one. A/T and C/G
+        sites, rsIDs the table does not place at the call, and genotypes
+        that fit neither reading abstain, counted once per site and reason.
+        Other rows (indels, i-IDs), and every row when no identity table is
+        wired, keep the page's orientation with the palindrome guard.
+        """
+        site_is_palindromic = _site_is_palindromic(rows)
+        out = [_orientation_without_identity(row[6], site_is_palindromic) for row in rows]
+        if sites is None or not snp_id.startswith("rs"):
+            return out
+        snv = [is_single_base(row[0]) and is_single_base(row[1]) for row in rows]
+        if not any(snv):
+            return out
+        forward = forward_alleles_at_call(variant, sites)
+        unknown = {
+            allele
+            for row, is_snv in zip(rows, snv, strict=True)
+            if is_snv and _known_orientation(row[6]) is None
+            for allele in row[:2]
+        }
+        unknown_reading = (
+            forward_strand_reading(unknown, forward) if unknown and forward is not None else None
+        )
+        reasons: set[str] = set()
+        for i, (row, is_snv) in enumerate(zip(rows, snv, strict=True)):
+            if not is_snv:
+                continue
+            out[i] = None
+            if forward is None:
+                reasons.add(STRAND_NOT_IN_IDENTITY)
+                continue
+            known = _known_orientation(row[6])
+            if known is not None:
+                reading = forward_strand_reading(_forward_genotype(row[0], row[1], known), forward)
+                if reading == STRAND_DIRECT:
+                    out[i] = known
+                else:
+                    reasons.add(
+                        STRAND_PALINDROMIC if reading == STRAND_PALINDROMIC else STRAND_NO_FIT
+                    )
+            elif unknown_reading == STRAND_DIRECT:
+                out[i] = "plus"
+            elif unknown_reading == STRAND_COMPLEMENT:
+                out[i] = "minus"
+            elif unknown_reading is not None:
+                reasons.add(unknown_reading)
+        for reason in reasons:
+            self._strand_abstained[reason] += 1
+        return out
+
     def annotate(self, variant: Variant) -> list[Annotation]:
         """Return SNPedia annotations matching the user's genotype."""
-        if variant.is_no_call:
+        candidate = self._candidate(variant)
+        if candidate is None:
             return []
+        snp_id, snp_url_path, sorted_alleles = candidate
+        rows = (
+            self._connection()
+            .execute(
+                "SELECT allele1, allele2, magnitude, repute, summary, gene, orientation "
+                "FROM snpedia_genotypes "
+                "WHERE rsid = ?",
+                (snp_id,),
+            )
+            .fetchall()
+        )
+        if not rows:
+            return []
+        sites = self._forward_sites({snp_id}, variant.build)
+        return list(
+            self._annotations_for(variant, snp_id, snp_url_path, sorted_alleles, rows, sites)
+        )
 
+    def _candidate(self, variant: Variant) -> tuple[str, str, tuple[str, str]] | None:
+        """``(snp_id, page path, sorted alleles)`` for a call SNPedia can match, else None."""
+        if variant.is_no_call:
+            return None
         snp_id = variant.rsid.lower()
         if snp_id.startswith("rs"):
             snp_num = snp_id[2:]
@@ -280,78 +424,19 @@ class SNPediaAnnotator(Annotator):
             snp_num = snp_id[1:]
             snp_url_path = f"I{snp_num}"
         else:
-            return []
-
+            return None
         if not snp_num or not snp_num.isdigit():
-            return []
-
+            return None
         if snp_id.startswith("rs") and is_clinvar_homref(variant, self._clinvar_ref_provider):
-            return []
-
+            return None
         a1, a2 = variant.allele1.upper(), variant.allele2.upper()
         sorted_alleles = (a1, a2) if a1 <= a2 else (a2, a1)
+        return snp_id, snp_url_path, sorted_alleles
 
-        conn = self._connection()
-        rows = conn.execute(
-            "SELECT allele1, allele2, magnitude, repute, summary, gene, orientation "
-            "FROM snpedia_genotypes "
-            "WHERE rsid = ?",
-            (snp_id,),
-        ).fetchall()
-        site_is_palindromic = _site_is_palindromic(rows)
-
-        annotations: list[Annotation] = []
-        for allele1, allele2, magnitude, repute, summary, gene, orientation in rows:
-            forward_genotype = _matching_forward_genotype(
-                sorted_alleles,
-                allele1,
-                allele2,
-                orientation,
-                site_is_palindromic=site_is_palindromic,
-            )
-            if forward_genotype is None:
-                continue
-            if not summary:
-                continue
-
-            summary_lower = summary.lower()
-            if any(p in summary_lower for p in _SUMMARY_SUPPRESS_SUBSTRINGS):
-                continue
-
-            if magnitude is None:
-                magnitude = 0.0
-
-            repute_lower = (repute or "").strip().lower()
-            category = _REPUTE_CATEGORY.get(repute_lower, "trait")
-
-            description = f"SNPedia: {summary}"
-            forward_allele1, forward_allele2 = forward_genotype
-            alt, reference_carries_alt = carried_alt(
-                variant, forward_allele1, forward_allele2, self._normal_allele_provider
-            )
-            genotype_match = f"{forward_allele1}{forward_allele2}"
-
-            annotations.append(
-                Annotation(
-                    source=self.name,
-                    rsid=variant.rsid,
-                    significance=f"snpedia_{repute_lower}" if repute_lower else "snpedia_genotype",
-                    category=category,
-                    magnitude=magnitude,
-                    description=description,
-                    attribution=self.attribution,
-                    genotype_match=genotype_match,
-                    references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
-                    gene=gene or "",
-                    alt=alt,
-                    locus_ref=variant.ref,
-                    reference_carries_alt=reference_carries_alt,
-                    carried_alleles=(forward_allele1, forward_allele2),
-                    locus=variant_locus(variant),
-                )
-            )
-
-        return annotations
+    def _forward_sites(self, rsids: set[str], build: str) -> dict[str, ForwardSite] | None:
+        if self._forward_site_provider is None:
+            return None
+        return self._forward_site_provider({r for r in rsids if r.startswith("rs")}, build)
 
     def batch_annotate(self, variants: Iterable[Variant]) -> Iterator[Annotation]:
         """Bulk-annotate via chunked ``WHERE rsid IN (...)`` queries.
@@ -364,27 +449,11 @@ class SNPediaAnnotator(Annotator):
         per rsid, so the over-fetch is negligible vs. the saved
         per-variant round-trips.
         """
-        # Pre-filter per-variant — only candidates that can possibly match
         candidates: list[tuple[Variant, str, str, tuple[str, str]]] = []
         for variant in variants:
-            if variant.is_no_call:
-                continue
-            snp_id = variant.rsid.lower()
-            if snp_id.startswith("rs"):
-                snp_num = snp_id[2:]
-                snp_url_path = f"Rs{snp_num}"
-            elif snp_id.startswith("i"):
-                snp_num = snp_id[1:]
-                snp_url_path = f"I{snp_num}"
-            else:
-                continue
-            if not snp_num or not snp_num.isdigit():
-                continue
-            if snp_id.startswith("rs") and is_clinvar_homref(variant, self._clinvar_ref_provider):
-                continue
-            a1, a2 = variant.allele1.upper(), variant.allele2.upper()
-            sorted_alleles = (a1, a2) if a1 <= a2 else (a2, a1)
-            candidates.append((variant, snp_id, snp_url_path, sorted_alleles))
+            candidate = self._candidate(variant)
+            if candidate is not None:
+                candidates.append((variant, *candidate))
 
         if not candidates:
             return
@@ -404,50 +473,70 @@ class SNPediaAnnotator(Annotator):
             for row in cursor:
                 rows_by_rsid.setdefault(row[0], []).append(row[1:])
 
+        sites_by_build: dict[str, dict[str, ForwardSite] | None] = {}
+        for build in {variant.build for variant, *_ in candidates}:
+            wanted = {
+                snp_id
+                for variant, snp_id, _, _ in candidates
+                if variant.build == build and snp_id in rows_by_rsid
+            }
+            sites_by_build[build] = self._forward_sites(wanted, build)
+
         for variant, snp_id, snp_url_path, sorted_alleles in candidates:
             rows = rows_by_rsid.get(snp_id)
             if not rows:
                 continue
-            site_is_palindromic = _site_is_palindromic(rows)
-            for allele1, allele2, magnitude, repute, summary, gene, orientation in rows:
-                forward_genotype = _matching_forward_genotype(
-                    sorted_alleles,
-                    allele1,
-                    allele2,
-                    orientation,
-                    site_is_palindromic=site_is_palindromic,
-                )
-                if forward_genotype is None:
-                    continue
-                if not summary:
-                    continue
-                summary_lower = summary.lower()
-                if any(p in summary_lower for p in _SUMMARY_SUPPRESS_SUBSTRINGS):
-                    continue
-                if magnitude is None:
-                    magnitude = 0.0
-                repute_lower = (repute or "").strip().lower()
-                category = _REPUTE_CATEGORY.get(repute_lower, "trait")
-                description = f"SNPedia: {summary}"
-                forward_allele1, forward_allele2 = forward_genotype
-                alt, reference_carries_alt = carried_alt(
-                    variant, forward_allele1, forward_allele2, self._normal_allele_provider
-                )
-                genotype_match = f"{forward_allele1}{forward_allele2}"
-                yield Annotation(
-                    source=self.name,
-                    rsid=variant.rsid,
-                    significance=f"snpedia_{repute_lower}" if repute_lower else "snpedia_genotype",
-                    category=category,
-                    magnitude=magnitude,
-                    description=description,
-                    attribution=self.attribution,
-                    genotype_match=genotype_match,
-                    references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
-                    gene=gene or "",
-                    alt=alt,
-                    locus_ref=variant.ref,
-                    reference_carries_alt=reference_carries_alt,
-                    carried_alleles=(forward_allele1, forward_allele2),
-                    locus=variant_locus(variant),
-                )
+            yield from self._annotations_for(
+                variant, snp_id, snp_url_path, sorted_alleles, rows, sites_by_build[variant.build]
+            )
+
+    def _annotations_for(
+        self,
+        variant: Variant,
+        snp_id: str,
+        snp_url_path: str,
+        sorted_alleles: tuple[str, str],
+        rows: list[tuple],
+        sites: dict[str, ForwardSite] | None,
+    ) -> Iterator[Annotation]:
+        """The annotations of one call from its rsID's genotype rows."""
+        orientations = self._row_orientations(variant, snp_id, rows, sites)
+        for row, orientation in zip(rows, orientations, strict=True):
+            if orientation is None:
+                continue
+            allele1, allele2, magnitude, repute, summary, gene, _ = row
+            forward_genotype = _forward_genotype(allele1, allele2, orientation)
+            if forward_genotype != sorted_alleles:
+                continue
+            if not summary:
+                continue
+            summary_lower = summary.lower()
+            if any(p in summary_lower for p in _SUMMARY_SUPPRESS_SUBSTRINGS):
+                continue
+            if magnitude is None:
+                magnitude = 0.0
+            repute_lower = (repute or "").strip().lower()
+            category = _REPUTE_CATEGORY.get(repute_lower, "trait")
+            description = f"SNPedia: {summary}"
+            forward_allele1, forward_allele2 = forward_genotype
+            alt, reference_carries_alt = carried_alt(
+                variant, forward_allele1, forward_allele2, self._normal_allele_provider
+            )
+            genotype_match = f"{forward_allele1}{forward_allele2}"
+            yield Annotation(
+                source=self.name,
+                rsid=variant.rsid,
+                significance=f"snpedia_{repute_lower}" if repute_lower else "snpedia_genotype",
+                category=category,
+                magnitude=magnitude,
+                description=description,
+                attribution=self.attribution,
+                genotype_match=genotype_match,
+                references=[f"https://www.snpedia.com/index.php/{snp_url_path}"],
+                gene=gene or "",
+                alt=alt,
+                locus_ref=variant.ref,
+                reference_carries_alt=reference_carries_alt,
+                carried_alleles=(forward_allele1, forward_allele2),
+                locus=variant_locus(variant),
+            )

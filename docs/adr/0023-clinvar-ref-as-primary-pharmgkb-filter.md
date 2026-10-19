@@ -71,6 +71,8 @@ rebuild the cache.
 
 ### One-shot migration
 
+*Amended by ADR-0048:* the migration runs in the update step (`ClinVarAnnotator.prepare_cache()`), not in `is_ready()`, which never writes.
+
 Pre-mechanism caches (before the stamp existed) lack any `|iv:` marker.
 `stamp_existing_clinvar_cache(db_path)` in `manager.py` appends
 `|iv:{current}` to the existing `remote_signal` value. Called from
@@ -87,16 +89,28 @@ interpreter, not about the upstream data.
 
 ### When to increment
 
-Bump `CLINVAR_INTERPRETER_VERSION` when any of these change:
+Bump `CLINVAR_INTERPRETER_VERSION` only when what the loader stores
+changes: which rows are kept or dropped, how they are written, or a
+column. The stamp says what the cache holds, and a bump makes every user
+rebuild ClinVar (about 860 MB to download).
 
-- `_CLNSIG_MAGNITUDE` map (new or renamed CLNSIG terms)
-- Carrier rule logic in `annotate()`
-- Indel-anchor protection logic
-- Benign suppression policy (`_BENIGN_CLNSIGS`)
-- Any other logic that changes what annotations `annotate()` emits for the
-  same input data
-
-Do NOT bump for display-only changes (description wording, report rendering).
+**Amended 2026-10-16 (2.5).** This list used to include runtime logic
+(the `_CLNSIG_MAGNITUDE` map, the carrier rule in `annotate()`, indel-anchor
+protection, benign suppression). Those are read from the code at run time,
+so a change to them takes effect without a rebuild, and a bump would make
+every user download ClinVar again for nothing. Do NOT bump for runtime
+matching, scoring or display changes.
 
 **Tests.** `TestInterpreterVersionStamp` in `test_clinvar.py` with three
 tests: matching stamp accepted, missing stamp self-heals, old stamp rejected.
+
+## Amendment 2026-10-16 (2.5): ClinVar's REF only at the call's locus
+
+The hom-ref filter took ClinVar's REF by rsID and build, with no check that
+ClinVar's row sits at the call's position, so it depended on how each build
+places the rsID. ClinPGx and SNPedia now use
+`ClinVarAnnotator.reference_at(rsid, build, locus)`. It gives ClinVar's REF
+(or the normal allele, ADR-0039) only where ClinVar places the rsID at the
+call's own `(chromosome, position)`. An rsID placed elsewhere, or a call
+with no position, is not suppressed.
+

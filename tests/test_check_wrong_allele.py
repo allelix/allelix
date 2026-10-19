@@ -139,6 +139,18 @@ def test_rsid_no_cache_places_needs_the_input(tmp_path: Path, data_dir: Path, ca
     assert _run(report, data_dir, placed) == 0
 
 
+def test_row_without_rsid_is_placed_by_its_locus(tmp_path: Path, data_dir: Path, capsys) -> None:
+    """ADR-0046: a VCF finding without an rsID is checked at the report's
+    own chromosome and position, and fails when its values are another
+    allele's."""
+    at_locus = {"chromosome": "1", "position": 100}
+    report = _report(tmp_path, "GRCh38", [_ann("", **at_locus, **DIRECT)])
+    assert _run(report, data_dir, _input(tmp_path)) == 0
+    wrong = _report(tmp_path, "GRCh38", [_ann("", **at_locus, allele_frequency=0.01)])
+    assert _run(wrong, data_dir, _input(tmp_path)) == 1
+    assert "0/1 allele-direct, 1 non-direct" in capsys.readouterr().out
+
+
 def test_input_is_required(tmp_path: Path, data_dir: Path) -> None:
     report = _report(tmp_path, "GRCh38", [_ann(**DIRECT)])
     with pytest.raises(SystemExit) as exc:

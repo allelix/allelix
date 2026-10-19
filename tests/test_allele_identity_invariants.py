@@ -341,11 +341,10 @@ class TestLocusKeyedClinVarSelection:
         v = Variant("rs900170010", "3", 3_700_100, "T", "A", build="GRCh38", ref="T")
         assert _both_paths(locus_clinvar, v) == []
 
-    def test_reverse_strand_ref_is_accepted(self, locus_clinvar: ClinVarAnnotator) -> None:
-        """REF given as the complement (reverse-stranded input) still identifies the locus."""
+    def test_reverse_strand_ref_is_not_matched(self, locus_clinvar: ClinVarAnnotator) -> None:
+        """A REF given as the complement is not the same variant (ADR-0035 amendment)."""
         v = Variant("rs900170010", "3", 3_700_100, "C", "T", build="GRCh38", ref="C")
-        got = _both_paths(locus_clinvar, v)
-        assert [(a.alt, a.carried_alleles) for a in got] == [("A", ("G", "A"))]
+        assert _both_paths(locus_clinvar, v) == []
 
     @pytest.mark.parametrize(
         ("rsid", "chrom", "pos", "a1", "a2"),

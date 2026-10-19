@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, NotRequired, TypedDict
 
+from allelix.parsers._helpers import DamagedFileError, open_genotype_text
 from allelix.utils.build_detect import normalize_build_label
 
 if TYPE_CHECKING:
@@ -82,10 +84,37 @@ def build_statement(line: str) -> str | None:
 def read_header_build(file_path: Path) -> str | None:
     """``header_build_label`` over ``file_path``; None when it cannot be read."""
     try:
-        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+        with open_genotype_text(file_path, errors="replace") as fh:
             return header_build_label(fh)
-    except OSError:
+    except (OSError, DamagedFileError):
         return None
+
+
+@dataclass
+class ArrayInputStats:
+    """What one ``parse()`` run of an array file saw (ADR-0051).
+
+    The array counterpart of the VCF quality stats, in the JSON
+    ``input.array_quality``.
+
+    ``di_calls``: calls with a ``D`` or ``I`` allele, an array's codes for
+    a deletion and an insertion; counted by the pipeline. ClinVar never
+    matches them.
+    ``unreadable_genotypes``: calls read as no-calls because the genotype
+    field had a shape no rule reads.
+    ``not_genotyped``: rows a converter filled in as reference calls that
+    were not genotyped.
+    ``wrong_column_rows``: rows skipped for having the wrong number of
+    columns.
+
+    The last three are filled by parsers that can tell; the others leave
+    them at 0.
+    """
+
+    di_calls: int = 0
+    unreadable_genotypes: int = 0
+    not_genotyped: int = 0
+    wrong_column_rows: int = 0
 
 
 class GenotypeParser(ABC):
@@ -101,12 +130,16 @@ class GenotypeParser(ABC):
         file_extensions: Common file extensions (e.g., [".txt"]). Informational only;
             auto-detection uses `can_parse`, not extension matching.
         url: Vendor URL.
+        forced_warning: Set on an instance chosen with ``--format`` for a file
+            its own ``can_parse`` does not recognise: the warning every
+            report of that run carries. None otherwise.
     """
 
     name: ClassVar[str]
     display_name: ClassVar[str]
     file_extensions: ClassVar[list[str]]
     url: ClassVar[str]
+    forced_warning: str | None = None
 
     @abstractmethod
     def can_parse(self, file_path: Path) -> bool:
@@ -122,6 +155,10 @@ class GenotypeParser(ABC):
             True if this parser recognizes the format.
         """
         ...
+
+    def input_stats(self) -> ArrayInputStats | None:
+        """Counts from the most recent ``parse()``, or None when the parser keeps none."""
+        return None
 
     @abstractmethod
     def parse(self, file_path: Path) -> Iterator[Variant]:

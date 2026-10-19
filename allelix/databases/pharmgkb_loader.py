@@ -169,10 +169,13 @@ def schema_is_current(db_path: Path) -> bool:
       - all v0.6.0 columns on pharmgkb_annotations
       - the new pharmgkb_allele_function table (ADR-0018)
     """
-    if not db_path.exists():
+    from allelix.databases.cache_state import connect_readonly, is_wal
+
+    # A WAL cache is not opened (ADR-0048); the update step converts it first.
+    if not db_path.exists() or is_wal(db_path):
         return False
     try:
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        with contextlib.closing(connect_readonly(db_path)) as conn:
             try:
                 tables = {
                     row[0]

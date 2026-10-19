@@ -15,7 +15,6 @@ License: CC BY 4.0. Attribution: Cheng et al., Science 2023
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
@@ -26,6 +25,11 @@ from allelix.databases.alphamissense_loader import (
     ALPHAMISSENSE_EXPECTED_SHA256,
     install_prebuilt_cache,
 )
+from allelix.databases.cache_state import (
+    CacheStatus,
+    cache_state,
+    connect_readonly,
+)
 from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
 from allelix.databases.manager import (
     download,
@@ -34,6 +38,7 @@ from allelix.databases.manager import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
     from pathlib import Path
 
     from allelix.models import Annotation, Variant
@@ -81,7 +86,7 @@ class AlphaMissenseAnnotator(Annotator):
                     f"AlphaMissense cache not found at {self._db_path}. "
                     "Run `allelix db update` first."
                 )
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = connect_readonly(self._db_path)
             self._check_gnomad_version()
         return self._conn
 
@@ -135,10 +140,16 @@ class AlphaMissenseAnnotator(Annotator):
         is unknown, so it could pass as the current one after a bump. The
         installer stamps the current version, so ``db update`` replaces it.
         """
-        info = get_database_info(self._db_path, "alphamissense")
-        if info is None:
-            return False
-        return info.get("local_version_tag") == f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}"
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        """State of the AlphaMissense cache (ADR-0048)."""
+        return cache_state(
+            self._db_path,
+            "alphamissense",
+            tag=f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",
+            tables=("alphamissense_scores",),
+        )
 
     def version(self) -> str | None:
         """Return the cached database version, or None."""

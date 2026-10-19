@@ -73,77 +73,42 @@ class TestPanelCoverageHtml:
         body = out.read_text()
         assert "Panel coverage" not in body
 
-    def test_section_includes_counts_and_missing(self, tmp_path: Path):
+    def test_section_lists_every_rsid_with_its_state(self, tmp_path: Path):
         out = tmp_path / "r.html"
-        result = self._result_with_panel(
-            [_ann(rsid="rs1801133")],
-            panel_rsids=frozenset({"rs1801133", "rs4680", "rs999"}),
-            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680"}),
-            panel_annotated_rsids=frozenset({"rs1801133"}),
-        )
-        render_html(result, output_path=out)
-        body = out.read_text()
-        assert "Panel coverage" in body
-        assert "2/3 requested rsIDs genotyped" in body
-        # State 3: missing rsID surfaced with chip note.
-        assert "rs999" in body
-        assert "not genotyped on this chip" in body
-        # State 2: genotyped-but-no-findings rsID surfaced.
-        assert "rs4680" in body
-        assert "no annotations matched" in body
-
-    def test_panel_gt_column_renders_when_genotypes_supplied(self, tmp_path: Path):
-        """When `result.panel_genotypes` is supplied (the
-        rsid → "A/G" map run_analysis collected during the batch
-        flush), the HTML Panel Coverage table grows a GT column.
-        Genotyped rsIDs show their literal call; state-3 rows show
-        em dash; no-call rows surface their dash genotype (-/-, A/-)
-        so the no-call is visually obvious even though the v6
-        accounting still folds it into no_findings.
-        """
         result = self._result_with_panel(
             [_ann(rsid="rs1801133")],
             panel_rsids=frozenset({"rs1801133", "rs4680", "rs_nocall", "rs999"}),
             genotyped_panel_rsids=frozenset({"rs1801133", "rs4680", "rs_nocall"}),
             panel_annotated_rsids=frozenset({"rs1801133"}),
         )
-        result.panel_genotypes = {
-            "rs1801133": "A/G",
-            "rs4680": "C/T",
-            "rs_nocall": "-/-",
-        }
-        out = tmp_path / "r.html"
+        result.no_call_panel_rsids = frozenset({"rs_nocall"})
+        result.panel_genotypes = {"rs1801133": "A/G", "rs4680": "C/T", "rs_nocall": "-/-"}
         render_html(result, output_path=out)
         body = out.read_text()
-        # GT column header present.
-        assert "<th>GT</th>" in body
-        # State 2 row: rs4680 with its genotype rendered.
-        assert "C/T" in body
-        # No-call row: literal -/- visible to the user.
-        assert "rs_nocall" in body
-        assert "-/-" in body
-        # State 3 row: em dash in the GT cell.
-        assert "rs999" in body
-        # Em dash specifically — easier to grep without false-positives.
-        assert "<td>—</td>" in body
-
-    def test_panel_gt_column_omitted_when_no_genotype_map(self, tmp_path: Path):
-        """Back-compat: a result without panel_genotypes (e.g. older
-        callers, manual AnalysisResult construction) renders the
-        original two-column shape with no GT column."""
-        result = self._result_with_panel(
-            [_ann(rsid="rs1801133")],
-            panel_rsids=frozenset({"rs1801133", "rs4680", "rs999"}),
-            genotyped_panel_rsids=frozenset({"rs1801133", "rs4680"}),
-            panel_annotated_rsids=frozenset({"rs1801133"}),
+        assert (
+            "4 requested: 1 annotated, 1 typed (no annotation), 1 no call, 1 not on chip." in body
         )
-        # panel_genotypes deliberately left unset (None).
+        assert "<th>Genotype</th><th>State</th><th>Annotations</th>" in body
+        assert "<td><code>rs4680</code></td><td></td><td><code>C/T</code></td>" in body
+        assert "<td><code>-/-</code></td><td>no call</td><td>0</td>" in body
+        assert "<td><code>rs999</code></td><td></td><td></td><td>not on chip</td>" in body
+
+    def test_vcf_input_says_not_in_file(self, tmp_path: Path):
         out = tmp_path / "r.html"
+        result = self._result_with_panel(
+            [],
+            panel_rsids=frozenset({"rs999"}),
+            genotyped_panel_rsids=frozenset(),
+            panel_annotated_rsids=frozenset(),
+        )
+        result.parser_name = "vcf"
         render_html(result, output_path=out)
         body = out.read_text()
-        assert "Panel coverage" in body
-        # GT column header NOT present.
-        assert "<th>GT</th>" not in body
+        assert (
+            "1 requested: 0 annotated, 0 typed (no annotation), 0 no call, 1 not in file." in body
+        )
+        assert "may be reference at that position" in body
+        assert "not on chip" not in body
 
 
 class TestRenderHtml:
@@ -262,6 +227,22 @@ class TestBuildMismatchBanner:
         assert "Build mismatch" in body
         assert "the file says GRCh37, but its known-SNP positions say GRCh38 (5/5)" in body
         assert "notice-warn" in body
+
+    def test_banner_on_build_against_tentative_seeds(self, tmp_path: Path):
+        r = _result([_ann()])
+        r.build_diagnostics = _diag(
+            source="override",
+            file_label=None,
+            detected_build="GRCh38",
+            matched_count=2,
+            inspected_count=2,
+            position_confident=False,
+        )
+        out = tmp_path / "report.html"
+        render_html(r, output_path=out)
+        body = out.read_text()
+        assert "<strong>Build warning.</strong> --build grch37 was given" in body
+        assert "tentatively say GRCh38 (2/2)" in body
 
     def test_tentative_grch36_mismatch_is_not_described_as_authoritative(self, tmp_path: Path):
         r = _result([_ann()])
@@ -787,3 +768,32 @@ class TestJsHtmlContract:
         assert {"all", "bad", "good", "neutral"} <= html_filters
         for f in html_filters:
             assert f'"{f}"' in js
+
+
+class TestImputationNote:
+    """The "Imputed genotypes" note says how the input was imputed."""
+
+    def _body(self, tmp_path: Path, method: str) -> str:
+        r = _result([_ann()])
+        r.input_method = method
+        out = tmp_path / f"{method or 'none'}.html"
+        render_html(r, output_path=out)
+        return " ".join(out.read_text().split())
+
+    def test_imputed_array(self, tmp_path: Path) -> None:
+        body = self._body(tmp_path, "array-imputed")
+        assert "<h3>Imputed genotypes</h3>" in body
+        assert "This file extends a genotyping array by imputation" in body
+        assert "low-pass" not in body
+        assert "A genotyping array extended by imputation" in body  # the input-method banner
+
+    def test_low_pass_wording_is_unchanged(self, tmp_path: Path) -> None:
+        body = self._body(tmp_path, "low-pass-wgs-imputed")
+        assert (
+            "This file comes from low-pass whole genome sequencing: each position was read "
+            "only about twice, and most genotypes were filled in (imputed) from a reference "
+            "panel of other people. Imputation is accurate for common variants" in body
+        )
+
+    def test_measured_input_has_no_imputation_note(self, tmp_path: Path) -> None:
+        assert "<h3>Imputed genotypes</h3>" not in self._body(tmp_path, "")

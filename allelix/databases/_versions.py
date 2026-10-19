@@ -21,7 +21,18 @@ reject stale caches without forcing a full re-download.
 # dropped, so a REF == ALT row means this build's reference carries the
 # variant allele. An iv:4 cache still holds the old rows and must not be
 # read with the new rule.
-CLINVAR_INTERPRETER_VERSION = 5
+# iv:5→iv:6 (2.5): flagged submissions are not loaded, and a GeneSymbol
+# placeholder sentence ("covers 10 genes, ...") is stored as no gene.
+# iv:6→iv:7 (2.5): each row carries ClinVar's aggregate classification and
+# the submitter split, with outranked P/LP submissions kept where ADR-0045
+# says so. An iv:6 cache lacks those columns and must be rebuilt. Every
+# loader change bumps the version; users still rebuild once per release.
+# iv:7→iv:8 (2.5): variants without an rsID are kept with an empty rsid
+# (ADR-0046). An iv:7 cache lacks those rows and must be rebuilt.
+# iv:8→iv:9 (2.5): normal-allele SNV records written REF == ALT are kept
+# (CASP12 rs497116 on GRCh37), so a record reads the same on both builds,
+# and every row carries ``normal_allele``. An iv:8 cache lacks both.
+CLINVAR_INTERPRETER_VERSION = 9
 # Also bump for a change to how CPIC allele-function data is loaded: a bump
 # makes existing ClinPGx caches not ready, and `allelix db update` rebuilds
 # them, fetching the CPIC table again, so the change reaches them.

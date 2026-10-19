@@ -369,7 +369,9 @@ def schema_is_current(db_path: Path) -> bool:
         info = get_database_info(db_path, "gwas")
         if info is None:
             return False
-        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        from allelix.databases.cache_state import connect_readonly
+
+        with contextlib.closing(connect_readonly(db_path)) as conn:
             try:
                 cols = {row[1] for row in conn.execute("PRAGMA table_info(gwas_associations)")}
             except sqlite3.DatabaseError:

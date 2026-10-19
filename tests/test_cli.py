@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from allelix.cli import main
+from allelix.databases.cache_state import READY, CacheState, CacheStatus
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -116,7 +117,7 @@ class TestStatsCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["stats", str(f)])
         assert result.exit_code != 0
-        assert "No parser recognized" in result.output
+        assert "Allelix doesn't recognise the format of 'garbage.txt'" in result.output
 
     def test_stats_missing_file_errors(self, tmp_path):
         runner = CliRunner()
@@ -135,7 +136,9 @@ class TestSkippedLineReporting:
             "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
             "rs1\t1\t100\tA\tG\n"
             "junk\n"
-            "rs2\t2\tBAD\tA\tG\n",
+            "rs2\t2\tBAD\tA\tG\n"
+            # one known-SNP position, so the build line has evidence to check it
+            "rs1801133\t1\t11856378\tA\tG\n",
             encoding="utf-8",
         )
         return f
@@ -310,27 +313,23 @@ class TestAnalyzeCommand:
         # The dim build banner still appears.
         assert "Build: GRCh37" in result.output
 
-    def test_analyze_build_override_skips_detection(
+    def test_analyze_build_override_is_checked(
         self, mock_mhg_mislabeled_path, clinvar_data_dir: Path
     ):
-        """`--build grch37` forces the build and silences the mismatch
-        warning, even on the deliberately-mislabeled fixture.
+        """On the deliberately-mislabeled fixture (label 37, positions 38),
+        `--build grch38` forces the build and silences the mismatch warning;
+        `--build grch37` stops, because the positions confidently say GRCh38.
         """
         runner = CliRunner(env={"COLUMNS": "200"})
-        result = runner.invoke(
-            main,
-            [
-                "analyze",
-                str(mock_mhg_mislabeled_path),
-                "--data-dir",
-                str(clinvar_data_dir),
-                "--build",
-                "grch37",
-            ],
-        )
+        args = ["analyze", str(mock_mhg_mislabeled_path), "--data-dir", str(clinvar_data_dir)]
+        result = runner.invoke(main, [*args, "--build", "grch38"])
         assert result.exit_code == 0, result.output
         assert "Build mismatch" not in result.output
-        assert "Build: GRCh37 (forced with --build)" in result.output
+        assert "Build: GRCh38 (forced with --build; the file says GRCh37)" in result.output
+        result = runner.invoke(main, [*args, "--build", "grch37"])
+        assert result.exit_code != 0
+        output = " ".join(result.output.split())
+        assert "--build grch37 was given but the file's known-SNP positions say GRCh38" in output
 
     def test_analyze_unknown_format_errors(self, mock_mhg_path, clinvar_data_dir: Path):
         """Cover the ParserNotFoundError branch in analyze."""
@@ -530,6 +529,9 @@ class TestDbCommands:
             def is_ready(self):
                 return False
 
+            def cache_status(self):
+                return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
+
             def setup(self):
                 self.setup_called = True
 
@@ -579,6 +581,9 @@ class TestDbCommands:
 
             def is_ready(self):
                 return bool(extra)
+
+            def cache_status(self):
+                return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
 
             def setup(self):
                 self.setup_called = True
@@ -2853,6 +2858,45 @@ class TestExportPlinkCommand:
 
         bed = (tmp_path / "out.bed").read_bytes()
         assert bed[3] == 0x03
+
+    def test_multi_allelic_with_no_fitting_record_is_missing(self, tmp_path, monkeypatch):
+        """C/C at a site gnomAD lists as G>A and G>T fits neither: missing, counted, said."""
+        fixture = tmp_path / "donor.txt"
+        fixture.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            "# Sample ID\tTEST001\n"
+            "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            "rs1\t1\t100\tC\tC\n"
+            "rs2\t1\t200\tG\tT\n"
+        )
+
+        class _FakeGnomad:
+            def __init__(self, *a, **kw):
+                pass
+
+            def is_ready(self):
+                return True
+
+            def bulk_resolve_coordinates(self, rsids):
+                return {
+                    "rs1": [("1", 100, "G", "A"), ("1", 100, "G", "T")],
+                    "rs2": [("1", 200, "G", "T")],
+                }
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("allelix.annotators.gnomad.GnomadAnnotator", _FakeGnomad)
+
+        result = CliRunner().invoke(
+            main,
+            ["export", "plink", str(fixture), "-o", str(tmp_path / "out"), "--build", "grch37"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 call(s) fit neither gnomAD allele" in result.output
+        bim = [line.split("\t") for line in (tmp_path / "out.bim").read_text().splitlines()]
+        assert [row[4:6] for row in bim] == [["G", "A"], ["G", "T"]]
+        assert (tmp_path / "out.bed").read_bytes()[3:] == bytes([0x01, 0x02])
 
     def test_split_chromosome_sorted(self, tmp_path, monkeypatch):
         """CLI sorts variants so .bim has contiguous chromosome blocks.

@@ -21,22 +21,17 @@ validation:
        allelix stats <file>           # should detect as "Living DNA"
        allelix analyze <file>         # should parse and annotate
 
-2. **snps package** (format reference fixtures):
-   ``pip install snps`` then inspect ``snps/tests/input/`` for Living
-   DNA sample files. These are BSD-licensed format references, not
-   real genetic data.
-
-3. **Manual format validation**: Living DNA files are tab-delimited
+2. **Manual format validation**: Living DNA files are tab-delimited
    despite ``.csv`` extension. Verify with::
 
        head -20 <file>               # comments start with #
        awk -F'\\t' 'NF!=4 && !/^#/' <file> | head  # should be empty
 
-4. **Non-rs SNP IDs**: Real Living DNA files contain AX- and AFFX-
+3. **Non-rs SNP IDs**: Real Living DNA files contain AX- and AFFX-
    prefixed probe IDs and CHR:POS positional notation. These should
    pass through as-is in the rsid field. Verify::
 
-       allelix extract --snps AX-12345678 <file>  # should not crash
+       allelix extract --snps AX-39999901 <file>  # should not crash
 """
 
 from __future__ import annotations
@@ -117,8 +112,8 @@ class TestParse:
         mthfr = next(v for v in variants if v.rsid == "rs1801133")
         assert mthfr.chromosome == "1"
         assert mthfr.position == 11856378
-        assert mthfr.allele1 == "A"
-        assert mthfr.allele2 == "G"
+        assert mthfr.allele1 == "G"
+        assert mthfr.allele2 == "A"
         assert mthfr.is_heterozygous
 
     def test_concatenated_genotype_split(
@@ -126,59 +121,59 @@ class TestParse:
     ) -> None:
         variants = list(parser.parse(mock_livingdna_path))
         comt = next(v for v in variants if v.rsid == "rs4680")
-        assert comt.allele1 == "A"
-        assert comt.allele2 == "G"
+        assert comt.allele1 == "G"
+        assert comt.allele2 == "A"
         assert comt.is_heterozygous
 
     def test_homozygous_variant(self, parser: LivingDNAParser, mock_livingdna_path: Path) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        v = next(v for v in variants if v.rsid == "rs1065852")
+        v = next(v for v in variants if v.rsid == "rs3999990011")
         assert v.allele1 == "C"
         assert v.allele2 == "C"
         assert not v.is_heterozygous
 
     def test_no_calls_preserved(self, parser: LivingDNAParser, mock_livingdna_path: Path) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        no_call = next(v for v in variants if v.rsid == "rs9001001")
+        no_call = next(v for v in variants if v.rsid == "rs3999990001")
         assert no_call.is_no_call
         assert no_call.allele1 == "-"
         assert no_call.allele2 == "-"
 
     def test_x_chromosome(self, parser: LivingDNAParser, mock_livingdna_path: Path) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        x = next(v for v in variants if v.rsid == "rs9001003")
+        x = next(v for v in variants if v.rsid == "rs3999990003")
         assert x.chromosome == "X"
-        assert x.allele1 == "A"
-        assert x.allele2 == "G"
+        assert x.allele1 == "C"
+        assert x.allele2 == "T"
 
     def test_ax_prefixed_probe_id(
         self, parser: LivingDNAParser, mock_livingdna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        ax = next(v for v in variants if v.rsid == "AX-12345678")
-        assert ax.chromosome == "3"
-        assert ax.allele1 == "G"
-        assert ax.allele2 == "G"
+        ax = next(v for v in variants if v.rsid == "AX-39999901")
+        assert ax.chromosome == "4"
+        assert ax.allele1 == "T"
+        assert ax.allele2 == "T"
 
     def test_affx_prefixed_probe_id(
         self, parser: LivingDNAParser, mock_livingdna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        affx = next(v for v in variants if v.rsid == "AFFX-SP-000001")
-        assert affx.chromosome == "7"
-        assert affx.allele1 == "C"
-        assert affx.allele2 == "T"
+        affx = next(v for v in variants if v.rsid == "AFFX-SP-399999")
+        assert affx.chromosome == "8"
+        assert affx.allele1 == "A"
+        assert affx.allele2 == "G"
         assert affx.is_heterozygous
 
     def test_positional_notation_snp_id(
         self, parser: LivingDNAParser, mock_livingdna_path: Path
     ) -> None:
         variants = list(parser.parse(mock_livingdna_path))
-        pos = next(v for v in variants if v.rsid == "1:726912")
+        pos = next(v for v in variants if v.rsid == "1:2999901")
         assert pos.chromosome == "1"
-        assert pos.position == 726912
-        assert pos.allele1 == "A"
-        assert pos.allele2 == "A"
+        assert pos.position == 2999901
+        assert pos.allele1 == "C"
+        assert pos.allele2 == "C"
 
     def test_skips_comment_lines(self, parser: LivingDNAParser, tmp_path: Path) -> None:
         f = _write(

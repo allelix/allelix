@@ -1,20 +1,18 @@
 # Living DNA customer genotype data download file version: 1.0.1
-# This file is adapted from https://github.com/apriha/snps
-# Original: BSD 3-Clause License, Copyright (c) 2019, Andrew Riha
-# Format details from H600 Project wiki (h600.org/wiki/Microarray+File+Formats)
+# Written by hand for the Allelix tests; every genotype is invented.
 # Human Genome Reference Build 37 (GRCh37.p13).
 # Genotypes are presented on the forward strand.
 #
 # rsid	chromosome	position	genotype
-rs1801133	1	11856378	AG
-rs1801131	1	11854476	TG
-rs4680	22	19951271	AG
-rs1065852	22	42526694	CC
-rs429358	19	45411941	TT
-rs7412	19	45412079	CT
-rs5742904	2	21229160	CC
-rs9001001	1	100000	--
-rs9001003	X	2699520	AG
-AX-12345678	3	15000000	GG
-AFFX-SP-000001	7	20000000	CT
-1:726912	1	726912	AA
+1:2999901	1	2999901	CC
+rs1801131	1	11854476	TT
+rs1801133	1	11856378	GA
+rs3999990011	2	3999011	CC
+rs3999990001	3	3999001	--
+AX-39999901	4	39999901	TT
+rs3999990012	5	3999012	AT
+AFFX-SP-399999	8	39999902	AG
+rs429358	19	45411941	TC
+rs7412	19	45412079	CC
+rs4680	22	19951271	GA
+rs3999990003	X	39990003	CT

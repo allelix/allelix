@@ -76,5 +76,40 @@ def install_prebuilt_gz_cache(
             )
 
         conn.commit()
+        # ADR-0048: install in rollback-journal mode, which a read-only
+        # data directory can read; the published gnomAD, AlphaMissense and
+        # CADD files are WAL.
+        conn.execute("PRAGMA journal_mode=DELETE")
 
     os.replace(tmp_path, db_path)
+    remove_side_files(db_path)
+
+
+def remove_side_files(db_path: Path) -> None:
+    """Remove ``<name>-wal`` and ``<name>-shm`` left beside ``db_path``."""
+    for suffix in ("-wal", "-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            (db_path.parent / f"{db_path.name}{suffix}").unlink()
+
+
+def convert_to_rollback_journal(db_path: Path) -> bool:
+    """Switch an installed WAL cache to rollback-journal mode (ADR-0048).
+
+    For caches installed before the installer set the mode, so they are
+    converted by the next ``db update`` without a download. Returns True
+    when the file was converted.
+    """
+    from allelix.databases.cache_state import is_wal
+
+    if not is_wal(db_path):
+        return False
+    try:
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+    except sqlite3.OperationalError:
+        # Another process has it open, or the directory is read-only.
+        return False
+    if mode != "delete":
+        return False
+    remove_side_files(db_path)
+    return True

@@ -96,7 +96,7 @@ Test-count floor by release:
   drift execution, and complete VCF contig declarations)
 - v2.4.0: 2,100 collected
 - v2.4.1: 2,371 collected
-- Next release (after v2.4.1): at least 2,371 collected
+- v2.5.0: at least 3,896 collected
 
 Check lint:
 
@@ -581,6 +581,81 @@ python -m pytest tests/utils/test_build_decision.py \
 **Expected:** all pass, including the seed table check against the
 dbSNP snapshot in `tests/fixtures/dbsnp_seed_placements.json`.
 
+### 5l. Formats new in 2.5
+
+Genes for Good, deCODEme and zip downloads, on the committed synthetic
+fixtures.
+
+```bash
+F=tests/fixtures
+allelix analyze $F/mock_genesforgood_imputed.txt --output /tmp/allelix-review/genesforgood_imputed.json
+allelix analyze $F/mock_decodeme.csv --output /tmp/allelix-review/decodeme.json
+```
+
+**Expected:**
+
+- `genesforgood_imputed.json`: `genesforgood`, with `input.method`
+  `array-imputed`; the measured fixture (`mock_genesforgood.txt`) has
+  no method.
+- `decodeme.json`: `decodeme`, GRCh36 from `seeds`.
+- **Zip:** a zip holding `mock_23andme.txt` (and a `__MACOSX/` entry)
+  gives the same annotations as the plain file. A zip holding two
+  genotype files stops with "is a zip file holding 2 files".
+
+### 5m. Builds that stop in 2.5
+
+```bash
+F=tests/fixtures
+sed '1a\
+##contig=<ID=1,assembly=GRCh37>' $F/mock_vcf_no_signal.vcf > /tmp/allelix-review/label37_only.vcf
+allelix analyze /tmp/allelix-review/label37_only.vcf     # must stop
+allelix analyze $F/mock_vcf_chr_prefix_grch38.vcf --build grch37   # must stop
+```
+
+**Expected:**
+
+- **`label37_only.vcf` stops:** "the file says GRCh37 but carries no
+  known-SNP position to check it". A label alone no longer decides the
+  build.
+- **The `--build grch37` run stops:** "--build grch37 was given but the
+  file's contig lengths are GRCh38".
+- No stop writes a report.
+- An array file labelled GRCh36 (Build 36) with no known-SNP position is
+  exempt from the first stop and runs on GRCh36, as `--build grch36`
+  does (ADR-0025); `tests/parsers/test_twentythreeandme.py::TestGrch36Label`
+  covers it.
+
+### 5n. Report warnings, sources and strand abstentions
+
+- **`clinvar_skipped`:** make a data directory holding links to every
+  cache except `clinvar.*`. Run `allelix analyze
+  tests/fixtures/mock_23andme.txt --data-dir <that directory>
+  --no-update`. The JSON `report_warnings` has `clinvar_skipped`,
+  `sources` shows clinvar `skipped` with reason `missing`, and no
+  annotation comes from ClinVar.
+- **`input_trailing_bytes`:** gzip `mock_23andme.txt` and append bytes
+  that are not gzip data (a saved web page). The file is read, and
+  `report_warnings` has `input_trailing_bytes`.
+- **Every `report_warnings` entry** is `{code, message, count}`.
+- **The `sources` block, in every report:** each registered source
+  appears with `state` `used`, `ready_not_used` or `skipped`; a skipped
+  source has a reason; every annotator that ran is `used`. With
+  `--exclude-snpedia` (§6) SNPedia is `skipped:excluded`; in commercial
+  mode (§10) it is `skipped:license`.
+- **Strand abstentions:** the §7 GRCh38 report has a
+  `strand_abstentions` block with integer counts for `gwas` and
+  `snpedia`.
+- **Feature tests:**
+
+  ```bash
+  python -m pytest tests/test_sources.py tests/test_haploid_and_homozygous_warning.py \
+    tests/parsers/test_gzip_damage.py tests/test_gwas_snpedia_strand.py \
+    tests/parsers/test_zip.py tests/parsers/test_unidentified_files_rejected.py \
+    -q -rs --no-cov
+  ```
+
+  Expected: all pass, none skipped.
+
 ## 6. Cross-parser identity check
 
 The user1190 genotype exists in 6 format representations. All must
@@ -883,7 +958,7 @@ Open `/tmp/allelix-review/report.html` in a browser. Verify:
   stay empty)
 - ClinPGx AM scores show dimmed caveat indicator
 - Row borders are color-coded (red = pathogenic, green = benign)
-- Zygosity column shows Heterozygous / Homozygous for each row
+- Zygosity column shows Heterozygous / Homozygous / Hemizygous / Half call for each row; JSON `zygosity` holds the codes (`heterozygous`, `homozygous`, `hemizygous`, `half_call`, `no_call`)
 - On a GRCh38 enrichment report, CADD scores are color-coded (red ≥30,
   orange ≥20, gray <20) with tooltips
 - "Reading This Report" section is present
@@ -929,9 +1004,9 @@ print(f\"ClinPGx attribution URL: {[x.get('source_url') for x in clinpgx]}\")
 "
 ```
 
-**Expected:** Schema version matches the `SCHEMA_VERSION` constant
-in `allelix/reports/json_report.py`; the pass criteria give the
-expected value (ADR-0033 governs schema bump policy). This is the
+**Expected:** Schema version 9 for the 2.5 series, which is also the
+`SCHEMA_VERSION` constant in `allelix/reports/json_report.py` (ADR-0033
+governs schema bump policy). This is the
 GRCh38 `enrichment_check.json` produced in §7: multiple sources are
 present and gnomAD and AM enrichment counts are both > 0. The paired
 GRCh37 report in §7 reaches the same three sources through the rsID
@@ -1192,7 +1267,9 @@ grep -F 'Build mismatch: the file says GRCh37, but its known-SNP positions say G
 
 # 23andMe canonical-header check — this file should NOT be recognized as 23andMe
 allelix stats test_data/edge_cases/23andme_lookalike_rejected_by_PA.txt 2>&1
-# Expected: "No parser recognized" error
+# Expected: rejected, exit non-zero: "Allelix doesn't recognise the format of
+# …" (before 2.5's message change: "No parser recognized"). A file whose
+# source Allelix cannot identify is rejected, not read (2.5).
 
 # Genes for Good — 23andMe-format export from a different service
 allelix stats test_data/edge_cases/23andme_format_from_genes_for_good_service.txt
@@ -1210,14 +1287,17 @@ grep -F 'Warning: GRCh36 (hg18) detected from the known-SNP positions.' \
 # chr10 GRCh36 seed positions were corrected this was a tentative 3/4,
 # kept on GRCh36 by ADR-0025's fail-safe.)
 
-# Unsupported formats
+# Despite its name, this is a SNP,Chr,Allele1,Allele2 file with no position
+# column (not deCODEme's layout; deCODEme is §5l). 2.5 does not read files
+# without positions.
 allelix stats test_data/edge_cases/unsupported_decodeme.txt 2>&1
-# Expected: "No parser recognized" (decodeme is genuinely unsupported)
+# Expected: rejected, as the lookalike above
 
 # Previously-unsupported, now-supported: the 23andMe exome VCF is a valid
 # VCFv4.1 file and is recognized by the VCF parser added after this fixture
-# was named. Pin the regression — if "No parser recognized" comes back,
-# VCF detection broke.
+# was named. Pin the regression — if the rejection ("doesn't recognise the
+# format", or "No parser recognized" before 2.5) comes back, VCF detection
+# broke.
 allelix stats test_data/edge_cases/unsupported_23andme_exome_vcf.txt 2>&1
 # Expected: parser auto-detected as VCF, stats displayed (the
 # `unsupported_` prefix is historical — the fixture name predates VCF
@@ -1657,7 +1737,8 @@ Verify:
   - [ ] Injected `##INFO=<ID=ALLELIX_*,Number=A,Type=...,Description="...">`
     declarations for every source that produced annotations
   - [ ] Provenance block: `##ALLELIX_Version=<current version>`,
-    `##ALLELIX_VCF_SchemaVersion=0.3.0`,
+    `##ALLELIX_VCF_SchemaVersion=0.4.0`,
+    `##ALLELIX_SkippedSources=` (each skipped source and its reason, or `none`),
     `##ALLELIX_License=AGPL-3.0-or-later`,
     `##ALLELIX_RunDate=<ISO 8601 UTC>`,
     `##ALLELIX_Build=<ID=GRCh37|GRCh38,Source=override|contig_lengths|seeds|assembly_header|file_label|default>`
@@ -1793,7 +1874,8 @@ Skip if bcftools unavailable locally; CI runs it on every merge.
 Verify:
 
 - [ ] `##ALLELIX_Version` — Allelix version string
-- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version
+- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version (0.4.0)
+- [ ] `##ALLELIX_SkippedSources` — each skipped source and its reason, or `none`
 - [ ] One `##ALLELIX_Database=<Name=X,Version=Y>` per annotator used
 - [ ] `##ALLELIX_Build=<ID=...,Source=...>`: `ID` matches `--build` and
   `Source=override` if supplied, else the decided build and its source
@@ -1876,7 +1958,7 @@ All of the following must be true:
 - [ ] **ClinVar significance-sentinel ship-gate (§7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided', 'other', 'association', 'association not found')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). v2.2.1 added the three non-classification curatorial terms. Denylist form is reactive; durable allowlist form lives in the CLNSIG drift test (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) are present, and populated on GRCh37 input wherever the rsID identity table translates the allele
-- [ ] JSON report has schema version 8, with `input.build_source` and `input.build_evidence`; the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used; `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] JSON report has schema version 9, with `input.build_source` and `input.build_evidence`; `sources` lists all eight registered sources with a state, and `report_warnings` is empty when ClinVar ran; the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used, as `{requested, counts, variants}` with the four counts (`annotated`, `typed_no_annotation`, `no_call`, `not_on_chip`) summing to `requested`; array reports have `input.array_quality` and, when ClinVar ran, `input.probe_classes` (both null for VCF input); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
 - [ ] **Strand-aware carrier matching (ADR-0035)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
 - [ ] Config system gates SNPedia on `license.commercial`: the commercial-mode report has no SNPedia provenance or rows, §5a's personal-mode report has SNPedia, and `license.commercial` is back to its previous value
 - [ ] GWAS effect-type gate: only positively identified bare odds ratios
@@ -1885,7 +1967,7 @@ All of the following must be true:
 - [ ] SNPedia orientation gate: known minus rows normalize genotype + ALT;
       unknown palindromic rows abstain; known palindromic minus rows resolve
 - [ ] CADD opt-in: `db update --cadd` downloads the cache and shows the
-      license prompt; `sources.cadd = true` or analyze `--cadd` enables
+      license prompt; `sources.cadd = true` in config enables
       enrichment; GRCh38 scores are non-zero
 - [ ] CADD commercial gate: on `tests/fixtures/mock_vcf_chr_prefix_grch38.vcf`, personal mode has `cadd` provenance and CADD scores, commercial mode has neither, and `license.commercial` is back to its previous value
 - [ ] Edge case files produce expected behavior

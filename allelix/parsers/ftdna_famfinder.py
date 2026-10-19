@@ -61,8 +61,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
-from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import normalize_chromosome
+from allelix.models import DEFAULT_BUILD, NO_CALL_MARKER, Variant
+from allelix.parsers._helpers import (
+    NO_CALL_CODES,
+    DamagedFileError,
+    normalize_chromosome,
+    open_genotype_text,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
@@ -88,11 +93,11 @@ def _is_header_line(line: str) -> bool:
 def _normalize_allele(raw: str) -> str:
     """Map a single FamFinder allele cell to the Variant.allele convention.
 
-    Empty cell or ``-`` is the no-call signal — both map to ``-`` so
+    An empty cell or a no-call code (``-``, ``0``, ``N``) maps to ``-`` so
     downstream code (``Variant.is_no_call``) handles them uniformly.
     """
     stripped = raw.strip().upper()
-    if not stripped or stripped == "-":
+    if not stripped or stripped in NO_CALL_CODES:
         return "-"
     return stripped
 
@@ -113,7 +118,7 @@ class FTDNAFamFinderParser(GenotypeParser):
         accidentally match.
         """
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
+            with open_genotype_text(file_path) as fh:
                 marker_seen = False
                 for _ in range(SNIFF_LINE_LIMIT):
                     line = fh.readline()
@@ -131,13 +136,13 @@ class FTDNAFamFinderParser(GenotypeParser):
                     # be the header — anything else means this isn't a
                     # FamFinder file (or the file is malformed).
                     return marker_seen and _is_header_line(stripped)
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
         return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             header_seen = False
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
@@ -194,6 +199,7 @@ class FTDNAFamFinderParser(GenotypeParser):
                 # closes the trade-off the v2.3 follow-up was opened
                 # for; no real MT/Y haploid call is lost (the canonical
                 # shape on those chromosomes is unchanged).
+                haploid = False
                 if len(parts) == EXPECTED_COLUMNS - 1:
                     if normalized_chrom not in {"MT", "Y"}:
                         logger.warning(
@@ -206,6 +212,7 @@ class FTDNAFamFinderParser(GenotypeParser):
                         )
                         continue
                     allele2 = allele1
+                    haploid = True
                 else:
                     raw_allele2 = parts[4].strip()
                     if raw_allele2 == "":
@@ -219,6 +226,7 @@ class FTDNAFamFinderParser(GenotypeParser):
                             )
                             continue
                         allele2 = allele1
+                        haploid = True
                     else:
                         allele2 = _normalize_allele(parts[4])
 
@@ -235,6 +243,7 @@ class FTDNAFamFinderParser(GenotypeParser):
                     allele1=allele1,
                     allele2=allele2,
                     build=DEFAULT_BUILD,
+                    haploid=haploid and allele1 != NO_CALL_MARKER,
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:

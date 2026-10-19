@@ -37,7 +37,13 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import normalize_chromosome, split_genotype
+from allelix.parsers._helpers import (
+    DamagedFileError,
+    is_haploid_call,
+    normalize_chromosome,
+    open_genotype_text,
+    split_genotype,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
@@ -76,7 +82,7 @@ class FTDNAIlluminaParser(GenotypeParser):
         tab-delimited text has the same header.
         """
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
+            with open_genotype_text(file_path) as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
                     line = fh.readline()
                     if not line:
@@ -87,13 +93,13 @@ class FTDNAIlluminaParser(GenotypeParser):
                     if not stripped or stripped.startswith("#"):
                         continue
                     return _is_header_line(stripped)
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
         return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             header_seen = False
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
@@ -140,6 +146,7 @@ class FTDNAIlluminaParser(GenotypeParser):
                     allele1=allele1,
                     allele2=allele2,
                     build=DEFAULT_BUILD,
+                    haploid=is_haploid_call(genotype),
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:

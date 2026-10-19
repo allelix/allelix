@@ -89,38 +89,39 @@ def _render_with_panel(
 
 
 class TestPanelCoverageTerminal:
-    """The terminal warning surfaces panel rsIDs not in the input
-    file, in a count-of-N format."""
+    """The terminal prints the four panel coverage counts, then the
+    no-call and not-on-chip rsIDs (ADR-0051)."""
 
-    def test_no_panel_no_warning(self):
-        """Default analyze run never emits a coverage warning."""
+    def test_no_panel_no_lines(self):
+        """Default analyze run never prints panel coverage."""
         out, _ = _render([_ann()])
-        assert "panel variants" not in out
+        assert "Panel coverage" not in out
 
-    def test_warning_for_missing_panel_rsids(self):
+    def test_counts_and_not_on_chip_rsids(self):
         out = _render_with_panel(
             [_ann(rsid="rs1")],
             panel_rsids=frozenset({"rs1", "rs2", "rs3"}),
             genotyped_panel_rsids=frozenset({"rs1"}),
             panel_annotated_rsids=frozenset({"rs1"}),
         )
-        assert "2/3 panel variants not found in input" in out
-        assert "rs2" in out
-        assert "rs3" in out
+        assert (
+            "Panel coverage: 1 annotated / 0 typed (no annotation) / 0 no call / "
+            "2 not on chip" in out
+        )
+        assert "⚠ 2 not on chip: rs2, rs3" in out
 
-    def test_no_warning_when_all_genotyped(self):
-        """All panel rsIDs were on the chip — no warning needed."""
+    def test_no_warning_when_all_annotated(self):
         out = _render_with_panel(
             [_ann(rsid="rs1")],
             panel_rsids=frozenset({"rs1"}),
             genotyped_panel_rsids=frozenset({"rs1"}),
             panel_annotated_rsids=frozenset({"rs1"}),
         )
-        assert "panel variants" not in out
+        assert "Panel coverage: 1 annotated" in out
+        assert "⚠" not in out
 
-    def test_warning_truncates_long_missing_list(self):
-        """Show only the first 3 missing rsIDs in the terminal line; the
-        full list lives in the JSON/HTML report."""
+    def test_long_list_is_truncated(self):
+        """The first 3 rsIDs; the full list is in the JSON and HTML reports."""
         missing = {f"rs{i}" for i in range(10)}
         out = _render_with_panel(
             [],
@@ -128,8 +129,7 @@ class TestPanelCoverageTerminal:
             genotyped_panel_rsids=frozenset(),
             panel_annotated_rsids=frozenset(),
         )
-        assert "10/10 panel variants not found in input" in out
-        assert "…" in out
+        assert "⚠ 10 not on chip: rs0, rs1, rs2, …" in out
 
 
 class TestRenderTerminal:

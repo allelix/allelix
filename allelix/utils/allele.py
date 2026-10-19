@@ -153,6 +153,23 @@ def carried_in_source_orientation(allele1: str, allele2: str, source_alt: str) -
     return flip_genotype(allele1, allele2)
 
 
+def trim_allele_pair(position: int, ref: str, alt: str) -> tuple[int, str, str]:
+    """The VCF-style minimal form of one REF/ALT pair (ADR-0047).
+
+    Drops the bases REF and ALT share at the end, then at the start, while
+    both keep at least one base, so an indel keeps its anchor base. A
+    leading base dropped moves the position on by one. ``GTT>GT`` becomes
+    ``GT>G`` at the same position; ``CA>TA`` becomes ``C>T``; ``ACG>ATG``
+    becomes ``C>T`` one base on. No left-alignment: that needs the
+    reference sequence.
+    """
+    while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    while len(ref) > 1 and len(alt) > 1 and ref[0] == alt[0]:
+        ref, alt, position = ref[1:], alt[1:], position + 1
+    return position, ref, alt
+
+
 def resolve_rsid_at_locus(
     variant_ref: str | None,
     allele1: str,
@@ -307,3 +324,46 @@ def is_strand_ambiguous(ref: str, alt: str) -> bool:
     if ref not in _COMPLEMENT or alt not in _COMPLEMENT:
         return False
     return frozenset({ref, alt}) in _AMBIGUOUS_PAIRS
+
+
+# Strand readings of a source's alleles against a site's forward alleles
+# (ADR-0024): the two readings, then the three reasons to abstain.
+STRAND_DIRECT = "direct"
+STRAND_COMPLEMENT = "complement"
+STRAND_NOT_IN_IDENTITY = "not_in_identity_table"
+STRAND_PALINDROMIC = "palindromic"
+STRAND_NO_FIT = "no_fit"
+STRAND_ABSTAIN_REASONS: tuple[str, ...] = (
+    STRAND_NOT_IN_IDENTITY,
+    STRAND_PALINDROMIC,
+    STRAND_NO_FIT,
+)
+_BASES = frozenset("ACGT")
+
+
+def is_single_base(allele: str) -> bool:
+    """True for one of A, C, G, T."""
+    return allele in _BASES
+
+
+def forward_strand_reading(alleles: Iterable[str], forward: frozenset[str]) -> str:
+    """How a source's single-base ``alleles`` read on the forward strand.
+
+    ``forward`` is the site's REF plus ALTs on the input's build (the rsID
+    identity table). The abstain-first rule (ADR-0024):
+
+    1. Not an A/T or C/G site, and every allele is forward: ``direct``,
+       even where the complements are forward too.
+    2. Otherwise, every complement is forward: ``complement``.
+    3. An A/T or C/G site is ``palindromic``; anything else is ``no_fit``.
+    """
+    if forward in _AMBIGUOUS_PAIRS:
+        return STRAND_PALINDROMIC
+    wanted = set(alleles)
+    if not wanted or not wanted <= _BASES:
+        return STRAND_NO_FIT
+    if wanted <= forward:
+        return STRAND_DIRECT
+    if {complement(a) for a in wanted} <= forward:
+        return STRAND_COMPLEMENT
+    return STRAND_NO_FIT

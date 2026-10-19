@@ -347,6 +347,16 @@ _NUCLEAR = frozenset(_CONTIG_LENGTHS[BUILD_GRCH37])
 # UCSC hg19's chrM is the 16,571 bp Yoruba sequence, not the rCRS that
 # GRCh37 MT and ClinVar positions use.
 HG19_CHRM_LENGTH = 16571
+# The rCRS, the mitochondrial sequence GRCh37 MT and ClinVar use.
+RCRS_LENGTH = 16569
+# UCSC's names for the mitochondrion. GRCh37's own name is ``MT`` (also
+# written ``chrMT``), which is the rCRS by definition.
+_UCSC_MITO_NAMES = frozenset({"CHRM", "M"})
+
+
+def is_ucsc_mito_name(name: str) -> bool:
+    """True for UCSC's names for the mitochondrion, ``chrM`` and ``M``."""
+    return name.upper() in _UCSC_MITO_NAMES
 
 
 class LengthVerdict(NamedTuple):
@@ -518,13 +528,41 @@ def decide_build(
     ``NO_SEEDS`` when contig lengths decide and the seeds are only checked
     during the annotation pass (``check_late_seeds``).
 
+    Whatever decides the build (contig lengths, ``--build``, a label or
+    the seeds), a chrM declared with the hg19 length sets ``skip_mt``:
+    its coordinates are not the rCRS that GRCh37 MT and ClinVar use.
+
     Raises ``BuildDecisionError`` when the run must stop.
     """
+    decision = _decide_build(
+        file_name=file_name,
+        kind=kind,
+        override=override,
+        file_label=file_label,
+        default=default,
+        lengths=lengths,
+        seeds=seeds,
+    )
+    return decision._replace(skip_mt=lengths is not None and lengths.skip_mt)
+
+
+def _decide_build(
+    *,
+    file_name: str,
+    kind: str,
+    override: str | None,
+    file_label: str | None,
+    default: str | None,
+    lengths: LengthVerdict | None,
+    seeds: BuildDetectionResult,
+) -> BuildDecision:
+    """The decision itself; ``decide_build`` adds ``skip_mt``."""
     if override and override not in SUPPORTED_OVERRIDES:
         raise ValueError(
             f"Unsupported build override {override!r}: use one of {', '.join(SUPPORTED_OVERRIDES)}"
         )
     if override:
+        _check_override(file_name, override, lengths, seeds)
         return BuildDecision(override, SOURCE_OVERRIDE, file_label, seeds, lengths)
     label_text = f"the file says {file_label}" if file_label else "the file states no build"
     if lengths is not None and lengths.status != "none":
@@ -559,7 +597,6 @@ def decide_build(
             file_label,
             seeds,
             lengths,
-            skip_mt=lengths.skip_mt,
         )
     if seeds.inspected > 0 and seeds.build is None and not seeds.tied:
         # Seeds found but placed on no build are evidence against
@@ -609,6 +646,17 @@ def decide_build(
             tentative_grch36=True,
         )
     if file_label:
+        if seeds.inspected == 0 and not (kind == KIND_ARRAY and file_label == BUILD_GRCH36):
+            # A label with nothing to check it against (for example an
+            # mtDNA-only or X-only export, or a small panel VCF) does not
+            # decide alone: a wrong label attaches another build's records.
+            # A vendor GRCh36 label is exempt, like --build grch36: GRCh36
+            # turns position lookups off (ADR-0025), so it cannot.
+            raise _stop(
+                file_name,
+                f"{label_text} but carries no known-SNP position to check it",
+                [_seed_text(seeds), label_text],
+            )
         if tentative is not None and tentative != file_label:
             raise _stop(
                 file_name,
@@ -655,6 +703,64 @@ def decide_build(
     return BuildDecision(default, SOURCE_DEFAULT, None, seeds, lengths)
 
 
+def _override_stop(file_name: str, problem: str, evidence: list[str]) -> BuildDecisionError:
+    return BuildDecisionError(
+        f"Cannot use {file_name}: {problem}. Evidence: {'; '.join(evidence)}. "
+        "Check which genome build the file uses and run it again with that build "
+        "(command line: --build grch37 or --build grch38; for an old GRCh36 / hg18 "
+        "file, --build grch36, see docs/grch36-liftover.md)."
+    )
+
+
+def _check_override(
+    file_name: str,
+    override: str,
+    lengths: LengthVerdict | None,
+    seeds: BuildDetectionResult,
+) -> None:
+    """Stop when the file's own evidence confidently contradicts ``--build``.
+
+    Contig lengths of another build, or confident known-SNP positions for
+    another build, stop the run and name both builds. Tentative contrary
+    positions only warn (``build_text``). ``--build grch36`` is exempt: it
+    turns position lookups off, so it cannot attach another build's
+    records (ADR-0025).
+    """
+    if override == BUILD_GRCH36:
+        return
+    if lengths is not None and lengths.status == "match" and lengths.build != override:
+        raise _override_stop(
+            file_name,
+            f"--build {override.lower()} was given but the file's contig lengths are "
+            f"{lengths.build}",
+            [lengths.detail],
+        )
+    if seeds.is_confident and seeds.build != override:
+        raise _override_stop(
+            file_name,
+            f"--build {override.lower()} was given but the file's known-SNP positions say "
+            f"{seeds.build}",
+            [_seed_text(seeds)],
+        )
+
+
+def needs_late_seeds(decision: BuildDecision) -> bool:
+    """True when the decision's seeds are checked during the annotation pass.
+
+    Contig lengths decide a VCF without a pre-scan, with or without
+    ``--build``; the known-SNP records met during the pass then go to
+    ``check_late_seeds``. ``--build grch36`` is exempt (ADR-0025).
+    """
+    if decision.source == SOURCE_CONTIG_LENGTHS:
+        return True
+    return (
+        decision.source == SOURCE_OVERRIDE
+        and decision.build != BUILD_GRCH36
+        and decision.lengths is not None
+        and decision.lengths.status != "none"
+    )
+
+
 def check_late_seeds(decision: BuildDecision, seeds: BuildDetectionResult, file_name: str) -> None:
     """Stop when seeds seen during the annotation pass contradict contig lengths.
 
@@ -664,7 +770,20 @@ def check_late_seeds(decision: BuildDecision, seeds: BuildDetectionResult, file_
     tie that does not include the contig-length build (ADR-0044). A tie
     that includes it lets the run proceed; the caller shows the tie as an
     inconclusive warning.
+
+    Under ``--build`` with contig lengths (``needs_late_seeds``), only
+    confident positions for another build stop; tentative ones warn.
     """
+    if decision.source == SOURCE_OVERRIDE:
+        if decision.build != BUILD_GRCH36 and seeds.is_confident and seeds.build != decision.build:
+            raise _override_stop(
+                file_name,
+                f"--build {decision.build.lower()} was given but the file's known-SNP "
+                f"positions say {seeds.build} (found during the annotation pass, which ran "
+                "in full before this check; nothing was written)",
+                [_seed_text(seeds)],
+            )
+        return
     if decision.source != SOURCE_CONTIG_LENGTHS:
         return
     if seeds.tied and decision.build not in seeds.tied:

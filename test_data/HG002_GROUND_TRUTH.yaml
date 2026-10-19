@@ -98,14 +98,22 @@ vocabulary:
   # significance values — DO NOT TAG.
   clinvar_allowed:
     - clinvar_pathogenic
+    - clinvar_pathogenic/likely_pathogenic
     - clinvar_likely_pathogenic
+    - clinvar_pathogenic,_low_penetrance
+    - clinvar_likely_pathogenic,_low_penetrance
     - clinvar_drug_response
     - clinvar_risk_factor
+    - clinvar_established_risk_allele
     - clinvar_likely_risk_allele
     - clinvar_uncertain_risk_allele
     - clinvar_uncertain_significance
+    - clinvar_vus-high
+    - clinvar_vus-mid
+    - clinvar_vus-low
     - clinvar_conflicting_classifications
     - clinvar_conflicting_interpretations_of_pathogenicity
+    - clinvar_conflicting_classifications_of_pathogenicity
     - clinvar_protective
     - clinvar_affects
     - clinvar_confers_sensitivity
@@ -113,7 +121,9 @@ vocabulary:
     - clinvar_association
     - clinvar_association_not_found
     - clinvar_not_provided
+    - clinvar_no_classification_for_the_single_variant
     - clinvar_likely_benign
+    - clinvar_benign/likely_benign
     - clinvar_benign
 
   # PharmGKB level-of-evidence tokens. Loader emits one of these per

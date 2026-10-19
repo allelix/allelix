@@ -74,8 +74,8 @@ class TestParse:
         mthfr = next(v for v in variants if v.rsid == "rs1801133")
         assert mthfr.chromosome == "1"
         assert mthfr.position == 11856378
-        assert mthfr.allele1 == "A"
-        assert mthfr.allele2 == "G"
+        assert mthfr.allele1 == "G"
+        assert mthfr.allele2 == "A"
         assert mthfr.is_heterozygous
 
     def test_concatenated_genotype_split(
@@ -83,15 +83,15 @@ class TestParse:
     ) -> None:
         variants = list(parser.parse(mock_myheritage_path))
         comt = next(v for v in variants if v.rsid == "rs4680")
-        assert comt.allele1 == "A"
-        assert comt.allele2 == "G"
+        assert comt.allele1 == "G"
+        assert comt.allele2 == "A"
         assert comt.is_heterozygous
 
     def test_homozygous_variant(
         self, parser: MyHeritageParser, mock_myheritage_path: Path
     ) -> None:
         variants = list(parser.parse(mock_myheritage_path))
-        v = next(v for v in variants if v.rsid == "rs1065852")
+        v = next(v for v in variants if v.rsid == "rs3999990011")
         assert v.allele1 == "C"
         assert v.allele2 == "C"
         assert not v.is_heterozygous
@@ -100,7 +100,7 @@ class TestParse:
         self, parser: MyHeritageParser, mock_myheritage_path: Path
     ) -> None:
         variants = list(parser.parse(mock_myheritage_path))
-        no_call = next(v for v in variants if v.rsid == "rs9001001")
+        no_call = next(v for v in variants if v.rsid == "rs3999990001")
         assert no_call.is_no_call
         assert no_call.allele1 == "-"
         assert no_call.allele2 == "-"
@@ -109,26 +109,26 @@ class TestParse:
         self, parser: MyHeritageParser, mock_myheritage_path: Path
     ) -> None:
         variants = list(parser.parse(mock_myheritage_path))
-        mt = next(v for v in variants if v.rsid == "rs9001002")
+        mt = next(v for v in variants if v.rsid == "rs3999990002")
         assert mt.chromosome == "MT"
-        assert mt.allele1 == "A"
-        assert mt.allele2 == "A"
+        assert mt.allele1 == "G"
+        assert mt.allele2 == "G"
 
     def test_x_chromosome(self, parser: MyHeritageParser, mock_myheritage_path: Path) -> None:
         variants = list(parser.parse(mock_myheritage_path))
-        x = next(v for v in variants if v.rsid == "rs9001003")
+        x = next(v for v in variants if v.rsid == "rs3999990003")
         assert x.chromosome == "X"
-        assert x.allele1 == "A"
-        assert x.allele2 == "G"
+        assert x.allele1 == "C"
+        assert x.allele2 == "T"
 
     def test_y_chromosome_haploid(
         self, parser: MyHeritageParser, mock_myheritage_path: Path
     ) -> None:
         variants = list(parser.parse(mock_myheritage_path))
-        y = next(v for v in variants if v.rsid == "rs9001004")
+        y = next(v for v in variants if v.rsid == "rs3999990004")
         assert y.chromosome == "Y"
-        assert y.allele1 == "A"
-        assert y.allele2 == "A"
+        assert y.allele1 == "T"
+        assert y.allele2 == "T"
 
     def test_strips_double_quotes(self, parser: MyHeritageParser, tmp_path: Path) -> None:
         f = _write(

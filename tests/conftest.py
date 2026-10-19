@@ -19,6 +19,7 @@ from allelix.databases.pharmgkb_loader import (
     FUNCTION_CLASS_NORMAL,
     load_pharmgkb_tsv,
 )
+from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME, write_identity_db
 from allelix.databases.schema import CLINVAR_SCHEMA
 
 # Synthetic ClinVar cache rows used by clinvar_data_dir and
@@ -284,10 +285,8 @@ _MOCK_CLINVAR_ROWS_GRCH37: tuple[tuple, ...] = (
         "criteria_provided,_single_submitter",
         100050,
     ),
-    # rs999000444 — unmapped CLNSIG long-tail. "protective" is a
-    # real ClinVar term but is NOT in _CLNSIG_MAGNITUDE → falls to
-    # the 5.0 default. Pinned here for v2.3 to retire the
-    # silent 5.0-default surface; not actionable in v2.2.1.
+    # rs999000444: "protective", a real ClinVar term that once fell to
+    # the 5.0 default; ADR-0045 scores it 5.0 explicitly.
     (
         "rs999000444",
         "1",
@@ -609,6 +608,11 @@ _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
 )
 
 
+def pytest_report_header() -> str:
+    # Query plans depend on the SQLite library, so every log names it.
+    return f"sqlite: {sqlite3.sqlite_version}"
+
+
 def _build_synthetic_clinvar_cache(
     db_path: Path,
     build: str,
@@ -752,6 +756,21 @@ def mock_23andme_v5_is_generated_path() -> Path:
     pin regression coverage on the banner-variant tolerance in the parser.
     """
     path = FIXTURES_DIR / "mock_23andme_v5_is_generated.txt"
+    if not path.exists():
+        pytest.fail(f"Mock fixture missing: {path}")
+    return path
+
+
+@pytest.fixture
+def mock_23andme_v5_preamble_path() -> Path:
+    """Path to the v5 fixture with the file_id / signature / timestamp preamble.
+
+    Current v5 exports open with four comment lines (``file_id``,
+    ``signature``, ``timestamp``, a bare ``#``) and carry the banner on
+    line 5. Placeholder values; same body as
+    ``mock_23andme_v5_is_generated.txt``.
+    """
+    path = FIXTURES_DIR / "mock_23andme_v5_preamble.txt"
     if not path.exists():
         pytest.fail(f"Mock fixture missing: {path}")
     return path
@@ -914,6 +933,30 @@ def gwas_data_dir(tmp_path: Path, mock_gwas_tsv: Path) -> Path:
     return tmp_path
 
 
+# Synthetic identity rows for the mock GWAS rsIDs at the mock chips' loci:
+# (rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic). GWAS
+# and SNPedia read source alleles against them.
+MOCK_IDENTITY_ROWS: tuple[tuple[str, str, int, str, str, int, str, str, int], ...] = (
+    ("rs1801133", "1", 11856378, "G", "A", 11796321, "G", "A", 0),
+    ("rs4680", "22", 19951271, "G", "A", 19963748, "G", "A", 0),
+    ("rs1799853", "10", 96702047, "C", "T", 94942290, "C", "T", 0),
+    ("rs80357906", "17", 41209079, "G", "A", 43057062, "G", "A", 0),
+    ("rs4149056", "12", 21331549, "T", "C", 21178615, "T", "C", 0),
+    ("rs121918506", "17", 7577538, "G", "T", 7674222, "G", "T", 0),
+)
+
+
+def write_mock_identity(data_dir: Path) -> None:
+    """Write the synthetic rsID identity cache into ``data_dir``."""
+    write_identity_db(
+        MOCK_IDENTITY_ROWS,
+        data_dir / RSID_IDENTITY_DB_FILENAME,
+        version="dbSNP test",
+        source_url="test://identity",
+        downloaded_at="2026-10-10T00:00:00Z",
+    )
+
+
 @pytest.fixture
 def all_annotators_data_dir(
     tmp_path: Path,
@@ -922,8 +965,10 @@ def all_annotators_data_dir(
 ) -> Path:
     """Build a fresh data dir with all annotators ready (ClinVar + ClinPGx + GWAS).
 
-    Per-build ClinVar caches built from the synthetic row tables (ADR-0021).
+    Per-build ClinVar caches built from the synthetic row tables (ADR-0021),
+    and the rsID identity rows GWAS reads its risk alleles against.
     """
+    write_mock_identity(tmp_path)
     for build in ("GRCh37", "GRCh38"):
         _build_synthetic_clinvar_cache(
             tmp_path / clinvar_db_filename(build),

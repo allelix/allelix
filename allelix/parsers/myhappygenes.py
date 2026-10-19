@@ -30,6 +30,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
+from allelix.parsers._helpers import DamagedFileError, no_call_allele, open_genotype_text
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
@@ -56,20 +57,20 @@ class MyHappyGenesParser(GenotypeParser):
     def can_parse(self, file_path: Path) -> bool:
         """Recognize the file by its `# MyHappyGenes` signature line."""
         try:
-            with file_path.open("r", encoding="utf-8") as fh:
+            with open_genotype_text(file_path) as fh:
                 for _ in range(SNIFF_LINE_LIMIT):
                     line = fh.readline()
                     if not line:
                         return False
                     if SIGNATURE in line:
                         return True
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, DamagedFileError):
             return False
         return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
         """Stream Variant objects, skipping comments and malformed lines."""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             header_seen = False
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
@@ -108,15 +109,15 @@ class MyHappyGenesParser(GenotypeParser):
                     rsid=rsid,
                     chromosome=chrom,
                     position=position,
-                    allele1=allele1,
-                    allele2=allele2,
+                    allele1=no_call_allele(allele1),
+                    allele2=no_call_allele(allele2),
                     build=DEFAULT_BUILD,
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
         """Extract sample ID from the file header. Cheap — no full parse."""
         sample_id = ""
-        with file_path.open("r", encoding="utf-8") as fh:
+        with open_genotype_text(file_path) as fh:
             for raw in fh:
                 line = raw.rstrip("\r\n")
                 if not line:

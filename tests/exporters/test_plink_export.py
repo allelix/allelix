@@ -8,7 +8,7 @@ import shutil
 
 import pytest
 
-from allelix.exporters.plink import EmptyPlinkSetError, _orient_genotype, export_plink
+from allelix.exporters.plink import EmptyPlinkSetError, _fits_site, export_plink
 from allelix.models import Variant
 
 
@@ -135,41 +135,34 @@ class TestHetFallbackNoRefAlt:
 
 class TestHetMinusStrand:
     def test_het_minus_strand(self, tmp_path):
-        """User alleles C/T on minus strand; gnomAD says (A, G) forward."""
+        """C/T against gnomAD's forward (A, G) is not read as its complement: missing."""
         prefix = tmp_path / "out"
         ref_alt_map = {"rs1": ("A", "G")}
-        export_plink(iter([_v("rs1", a1="C", a2="T")]), prefix, "GRCh37", ref_alt_map)
-        bim = (tmp_path / "out.bim").read_text().strip()
-        parts = bim.split("\t")
-        assert parts[4] == "A"
-        assert parts[5] == "G"
-        bed = (tmp_path / "out.bed").read_bytes()
-        assert bed[3] == 0x02
+        counts = export_plink(iter([_v("rs1", a1="C", a2="T")]), prefix, "GRCh37", ref_alt_map)
+        assert counts.allele_mismatches == 1
+        parts = (tmp_path / "out.bim").read_text().strip().split("\t")
+        assert parts[4:6] == ["A", "G"]
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
 
 
-class TestCrossSubstitutionCollisionFallsBack:
-    def test_cross_substitution_collision_falls_back(self, tmp_path):
-        """User het A/G, gnomAD (A, C): alleles don't fit, must fall back."""
+class TestCrossSubstitutionCollision:
+    def test_cross_substitution_collision_is_missing(self, tmp_path):
+        """User het A/G, gnomAD (A, C): G is neither allele, so the call is missing."""
         prefix = tmp_path / "out"
         ref_alt_map = {"rs1": ("A", "C")}
-        written, _, _, _ = export_plink(
-            iter([_v("rs1", a1="A", a2="G")]), prefix, "GRCh37", ref_alt_map
-        )
-        assert written == 1
-        bim = (tmp_path / "out.bim").read_text().strip()
-        parts = bim.split("\t")
-        assert parts[4] == "A"
-        assert parts[5] == "G"
-        assert parts[5] != "C"
-        bed = (tmp_path / "out.bed").read_bytes()
-        assert bed[3] == 0x02
+        counts = export_plink(iter([_v("rs1", a1="A", a2="G")]), prefix, "GRCh37", ref_alt_map)
+        assert counts.written == 1
+        assert counts.allele_mismatches == 1
+        parts = (tmp_path / "out.bim").read_text().strip().split("\t")
+        assert parts[4:6] == ["A", "C"]
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
 
 
 class TestNoCallsSkipped:
     def test_no_calls_skipped(self, tmp_path):
         prefix = tmp_path / "out"
         variants = [_v("rs1", a1="A", a2="A"), _v("rs2", a1="-", a2="A")]
-        written, skipped, _, _ = export_plink(iter(variants), prefix, "GRCh37")
+        written, skipped, _, _, _ = export_plink(iter(variants), prefix, "GRCh37")
         assert written == 1
         assert skipped == 1
         bim_lines = (tmp_path / "out.bim").read_text().strip().split("\n")
@@ -202,7 +195,7 @@ class TestMonomorphicCount:
             _v("rs2", a1="C", a2="C"),
             _v("rs3", a1="T", a2="T"),
         ]
-        written, _, _, mono = export_plink(iter(variants), prefix, "GRCh37", ref_alt_map)
+        written, _, _, mono, _ = export_plink(iter(variants), prefix, "GRCh37", ref_alt_map)
         assert written == 3
         assert mono == 2
 
@@ -230,21 +223,24 @@ class TestRoundtripWithPlink:
         assert result.returncode == 0
 
 
-class TestOrientGenotypeIndelReturnsNone:
-    def test_orient_genotype_indel_returns_none(self):
-        """Multi-base alleles (indels) must fall back, not crash or miscode."""
-        assert _orient_genotype("A", "AT", "A", "AT") is None
-        assert _orient_genotype("AT", "A", "A", "AT") is None
-        assert _orient_genotype("AT", "AT", "A", "AT") is None
+class TestFitsSite:
+    def test_indel_alleles_do_not_fit(self):
+        """Multi-base alleles (indels) never fit a site."""
+        assert not _fits_site("A", "AT", "A", "AT")
+        assert not _fits_site("AT", "A", "A", "AT")
+        assert not _fits_site("AT", "AT", "A", "AT")
 
+    def test_alleles_fit_only_as_written(self):
+        """No complement reading: T/T does not fit a C>A site."""
+        assert _fits_site("C", "A", "C", "A")
+        assert _fits_site("A", "A", "C", "A")
+        assert not _fits_site("G", "T", "C", "A")
+        assert not _fits_site("T", "T", "C", "A")
 
-class TestOrientGenotypePalindromicReturnsNone:
-    def test_orient_genotype_palindromic_returns_none(self):
-        """Palindromic ref/alt (A/T, C/G) can't determine strand — must return None."""
-        assert _orient_genotype("A", "A", "A", "T") is None
-        assert _orient_genotype("A", "T", "A", "T") is None
-        assert _orient_genotype("C", "G", "C", "G") is None
-        assert _orient_genotype("G", "G", "C", "G") is None
+    def test_palindromic_alleles_fit_as_written(self):
+        assert _fits_site("A", "A", "A", "T")
+        assert _fits_site("C", "G", "C", "G")
+        assert not _fits_site("C", "C", "A", "T")
 
 
 class TestPalindromicRefAltFallsBack:
@@ -252,7 +248,7 @@ class TestPalindromicRefAltFallsBack:
         """Hom variant with palindromic ref/alt in map should use fallback coding."""
         prefix = tmp_path / "out"
         ref_alt_map = {"rs1": ("A", "T")}
-        written, _, _, mono = export_plink(
+        written, _, _, mono, _ = export_plink(
             iter([_v("rs1", a1="A", a2="A")]), prefix, "GRCh37", ref_alt_map
         )
         assert written == 1
@@ -293,21 +289,57 @@ class TestMultiAllelicStrandCollision:
         bed = (tmp_path / "out.bed").read_bytes()
         assert bed[3] == 0x03
 
-    def test_complement_collision_would_miscode(self, tmp_path):
-        """Prove that picking the wrong coord (G,A) miscodes the genotype.
-
-        User carries T/T forward. If ref_alt_map wrongly says (G,A),
-        _orient_genotype maps via complement: T->A, yielding hom-alt for
-        the A allele — the user gets exported as A/A instead of T/T.
-        """
+    def test_a_call_that_fits_neither_allele_is_missing(self, tmp_path):
+        """T/T at a G>A site is not read as its complement (A/A): it is missing, counted."""
         prefix = tmp_path / "out"
         wrong_map = {"rs1": ("G", "A")}
-        export_plink(iter([_v("rs1", a1="T", a2="T")]), prefix, "GRCh37", wrong_map)
-        bim = (tmp_path / "out.bim").read_text().strip()
-        parts = bim.split("\t")
-        assert parts[5] == "A"
+        counts = export_plink(iter([_v("rs1", a1="T", a2="T")]), prefix, "GRCh37", wrong_map)
+        assert counts.written == 1
+        assert counts.allele_mismatches == 1
+        parts = (tmp_path / "out.bim").read_text().strip().split("\t")
+        assert parts[4:6] == ["G", "A"]
         bed = (tmp_path / "out.bed").read_bytes()
-        assert bed[3] == 0x03
+        assert bed[3] == 0x01
+
+
+class TestNoComplementOnExport:
+    def test_hom_call_at_a_site_it_does_not_fit_is_missing(self, tmp_path):
+        """The issue's example: A/A at a C>T site was written as T/T."""
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="A", a2="A")]), prefix, "GRCh37", {"rs1": ("C", "T")}
+        )
+        assert counts.allele_mismatches == 1
+        assert counts.monomorphic == 0
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+
+    def test_het_call_at_a_site_it_does_not_fit_is_missing(self, tmp_path):
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="G", a2="A")]), prefix, "GRCh37", {"rs1": ("C", "T")}
+        )
+        assert counts.allele_mismatches == 1
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+
+    def test_palindromic_site_with_a_call_that_does_not_fit_is_missing(self, tmp_path):
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="C", a2="C")]), prefix, "GRCh37", {"rs1": ("A", "T")}
+        )
+        assert counts.allele_mismatches == 1
+        assert counts.monomorphic == 0
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+
+    def test_calls_that_fit_are_not_counted(self, tmp_path):
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="C", a2="T"), _v("rs2", pos=200, a1="T", a2="T")]),
+            prefix,
+            "GRCh37",
+            {"rs1": ("C", "T"), "rs2": ("C", "T")},
+        )
+        assert counts.allele_mismatches == 0
+        assert (tmp_path / "out.bed").read_bytes()[3:] == bytes([0x02, 0x03])
 
 
 class TestIndelsSkipped:
@@ -319,7 +351,7 @@ class TestIndelsSkipped:
             _v("rs2", a1="A", a2="AT"),
             _v("rs3", a1="GAC", a2="G"),
         ]
-        written, skipped, indel_skip, _ = export_plink(iter(variants), prefix, "GRCh37")
+        written, skipped, indel_skip, _, _ = export_plink(iter(variants), prefix, "GRCh37")
         assert written == 1
         assert skipped == 0
         assert indel_skip == 2
@@ -351,3 +383,39 @@ class TestAllNoCalls:
             export_plink(iter(variants), prefix, "GRCh37")
         assert (exc.value.no_calls, exc.value.indels) == (2, 0)
         assert list(tmp_path.iterdir()) == []
+
+
+class TestMultiAllelicPrefersAPlainRecord:
+    """A call that fits a palindromic and a plain record takes the plain one, in either order."""
+
+    @pytest.mark.parametrize(
+        "coords",
+        [
+            [("1", 100, "A", "T"), ("1", 100, "A", "C")],
+            [("1", 100, "A", "C"), ("1", 100, "A", "T")],
+        ],
+    )
+    def test_hom_ref_call_is_coded_against_the_plain_record(self, tmp_path, monkeypatch, coords):
+        from allelix.exporters.plink import resolve_ref_alt_via_gnomad
+
+        class _FakeGnomad:
+            def __init__(self, *a, **kw):
+                pass
+
+            def is_ready(self):
+                return True
+
+            def bulk_resolve_coordinates(self, rsids):
+                return {"rs1": coords}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("allelix.annotators.gnomad.GnomadAnnotator", _FakeGnomad)
+        call = _v("rs1", a1="A", a2="A")
+        ref_alt_map = resolve_ref_alt_via_gnomad({"rs1": call}, tmp_path)
+        assert ref_alt_map == {"rs1": ("A", "C")}
+        counts = export_plink(iter([call]), tmp_path / "out", "GRCh37", ref_alt_map)
+        assert counts.monomorphic == 0
+        assert (tmp_path / "out.bim").read_text().split("\t")[4:6] == ["A", "C\n"]
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x00

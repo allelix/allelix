@@ -43,24 +43,34 @@ def get_annotators(
     `cadd_full` enables CADD full mode (tabix queries against the
     complete 81 GB CADD file). Requires ``pysam`` and a local copy.
 
-    ADR-0023: ClinVar's `reference_for(rsid, build)` is wired into
+    ADR-0023: ClinVar's `reference_at(rsid, build, locus)` is wired into
     ClinPGx and SNPedia as the primary hom-ref suppression filter — the
     REF allele lookup universally determines whether the user is
     homozygous reference (and thus a non-finding for that variant).
     """
     rsid_identity = RsidIdentityAnnotator(data_dir)
-    clinvar = ClinVarAnnotator(data_dir, builds=clinvar_builds, include_benign=include_benign)
+    clinvar = ClinVarAnnotator(
+        data_dir,
+        builds=clinvar_builds,
+        include_benign=include_benign,
+        other_build_refs=rsid_identity.normal_alleles_on_other_build,
+    )
     pharmgkb = PharmGKBAnnotator(
         data_dir,
-        clinvar_ref_provider=clinvar.reference_for,
+        clinvar_ref_provider=clinvar.reference_at,
         palindromic_provider=rsid_identity.palindromic_rsids,
         normal_allele_provider=clinvar.normal_allele_for,
     )
-    gwas = GWASCatalogAnnotator(data_dir, filter_traits=gwas_filter_traits)
+    gwas = GWASCatalogAnnotator(
+        data_dir,
+        filter_traits=gwas_filter_traits,
+        forward_site_provider=rsid_identity.forward_sites,
+    )
     snpedia = SNPediaAnnotator(
         data_dir,
-        clinvar_ref_provider=clinvar.reference_for,
+        clinvar_ref_provider=clinvar.reference_at,
         normal_allele_provider=clinvar.normal_allele_for,
+        forward_site_provider=rsid_identity.forward_sites,
     )
     gnomad = GnomadAnnotator(data_dir)
     alphamissense = AlphaMissenseAnnotator(data_dir)

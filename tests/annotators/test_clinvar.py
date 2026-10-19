@@ -199,8 +199,14 @@ class TestTsvSetupWiring:
         etc.) in the cache; without the bump, existing iv:3 caches
         stayed poisoned across the fix. 2.4.2 bumped iv:4 -> iv:5: the
         loader classifies records by their HGVS name, so a REF == ALT row
-        means the build's reference carries the variant allele. Every
-        cache-content change requires an interpreter-version bump.
+        means the build's reference carries the variant allele. 2.5 bumped
+        iv:5 -> iv:6 (flagged submissions, gene placeholders), then
+        iv:6 -> iv:7 (aggregate classification, submitter split, outranked
+        rows; an iv:6 cache lacks the columns), then iv:7 -> iv:8
+        (variants without an rsID; an iv:7 cache lacks those rows), then
+        iv:8 -> iv:9 (normal-allele records written REF == ALT are kept,
+        with a ``normal_allele`` column). Every cache-content change
+        requires an interpreter-version bump; runtime changes do not.
 
         Pin the current value here so a future content-altering
         loader change is forced to revisit this assertion (and the
@@ -208,9 +214,9 @@ class TestTsvSetupWiring:
         whatever number is in the constant."""
         from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 
-        assert CLINVAR_INTERPRETER_VERSION == 5
+        assert CLINVAR_INTERPRETER_VERSION == 9
 
-    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4"])
+    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4", "iv:5", "iv:6", "iv:7"])
     def test_stale_cache_is_not_ready(self, tmp_path: Path, stale_iv: str):
         """Any iv-tag older than CLINVAR_INTERPRETER_VERSION must fail
         is_ready() so db update triggers a reingest.
@@ -282,13 +288,14 @@ class TestInterpreterVersionStamp:
         finally:
             ann.close()
 
-    def test_is_ready_self_heals_null_tag_with_baked_current_marker(
+    def test_prepare_cache_self_heals_null_tag_with_baked_current_marker(
         self, tmp_path: Path, build_synthetic_clinvar_cache
     ):
         """The preserved benefit: a legacy cache that DID stamp its
         interpreter version into remote_signal as `|iv:CURRENT` still
         self-heals without a redownload. NULL tag + matching baked
-        marker means we have positive version evidence."""
+        marker means we have positive version evidence. The heal runs in
+        the update step, not in is_ready() (ADR-0048)."""
         build = "GRCh37"
         db_path = tmp_path / clinvar_db_filename(build)
         build_synthetic_clinvar_cache(db_path, build)
@@ -302,6 +309,8 @@ class TestInterpreterVersionStamp:
             conn.commit()
         ann = ClinVarAnnotator(tmp_path, builds=(build,))
         try:
+            assert ann.is_ready() is False
+            assert ann.prepare_cache() is True
             assert ann.is_ready() is True
             with contextlib.closing(sqlite3.connect(db_path)) as conn:
                 row = conn.execute(
@@ -385,13 +394,13 @@ class TestGenotypeMatching:
 
 
 class TestStrandAwareCarrierMatch:
-    """ADR-0035: complement-strand reads match.
+    """A REF that is the complement of ClinVar's is not the same variant.
 
-    A clinical lab reports a SNP on the coding strand; the array reports the
-    same position on the forward reference strand. Complementary genotypes
-    are the same biological result and must produce the same set of
-    annotations. The v2.0.1 multi-allelic safety invariant is preserved
-    via the variant.ref orientation guard.
+    A VCF is forward strand by specification, and an array call's REF comes
+    from the identity table at the same forward locus as ClinVar's REF, so a
+    coding-strand reading never reaches ClinVar with a complemented REF from
+    a correct file. One that does is mis-coordinated input: it is not
+    matched, and a VCF record is counted as a REF mismatch.
     """
 
     def test_hom_ref_both_strands_no_annotation(self, annotator: ClinVarAnnotator):
@@ -407,25 +416,20 @@ class TestStrandAwareCarrierMatch:
         assert annotator.annotate(forward) == []
         assert annotator.annotate(coding) == []
 
-    def test_het_carrier_both_strands_same_annotation_set(self, annotator: ClinVarAnnotator):
-        """rs1801133 het carrier of ALT (A): forward G/A and coding-strand
-        C/T are the same biological result and must produce the same set
-        of ClinVar annotations.
+    def test_complemented_ref_does_not_match(self, annotator: ClinVarAnnotator):
+        """rs1801133 het carrier: forward G/A matches; the coding-strand
+        reading C/T with REF C does not, and as a VCF record it is counted.
         """
         forward = Variant("rs1801133", "1", 11796321, "G", "A", ref="G", build="GRCh38")
         coding = Variant("rs1801133", "1", 11796321, "C", "T", ref="C", build="GRCh38")
-        forward_results = annotator.annotate(forward)
-        coding_results = annotator.annotate(coding)
-        assert len(forward_results) == 1
-        assert len(coding_results) == 1
-        # Same ClinVar annotation surfaces on either strand reading.
-        assert forward_results[0].significance == coding_results[0].significance
-        assert forward_results[0].condition == coding_results[0].condition
-        assert forward_results[0].gene == coding_results[0].gene
-        # Strand-flip read still surfaces the user's actual diploid call,
-        # not a synthesized forward version. genotype_match is user-rendered.
-        assert forward_results[0].genotype_match == "AG"
-        assert coding_results[0].genotype_match == "CT"
+        assert len(annotator.annotate(forward)) == 1
+        assert annotator.annotate(coding) == []
+        assert annotator.run_counts()["ref_mismatches"] == 0
+        vcf_record = Variant(
+            "rs1801133", "1", 11796321, "C", "T", ref="C", build="GRCh38", ref_from_input=True
+        )
+        assert annotator.annotate(vcf_record) == []
+        assert annotator.run_counts()["ref_mismatches"] == 1
 
     def test_variant_ref_disagreement_abstains(self, annotator: ClinVarAnnotator):
         """Variant.ref disagreement (neither matches source ref nor its
@@ -1235,21 +1239,20 @@ class TestMultiScvSemantics:
         finally:
             ann.close()
 
-    def test_unmapped_clnsig_falls_to_default_magnitude(self, annotator: ClinVarAnnotator):
-        """A ClinVar term missing from the magnitude table falls back to 5.0.
+    def test_protective_is_scored(self, annotator: ClinVarAnnotator):
+        """ADR-0045: "protective", once unmapped and given the 5.0 default, is scored.
 
-        Fixture: rs999000444 on chr1 pos 200300, REF=G ALT=A,
-        single SCV with clinical_significance="protective" — a real
-        ClinVar term NOT in _CLNSIG_MAGNITUDE. The dict's 5.0 default
-        applies, equal to the analyze display floor — so the annotation
-        surfaces at exactly the floor without a real magnitude rule.
-        This test pins that fallback.
+        Fixture: rs999000444 on chr1 pos 200300, REF=G ALT=A, a single
+        "protective" submission. ADR-0045 scores it 5.0
+        (repute good). A classification Allelix does not score is hidden
+        and counted instead (tests/test_clinvar_aggregate_scoring.py).
         """
         v = Variant("rs999000444", "1", 200300, "G", "A", build="GRCh37")
         results = annotator.annotate(v)
         assert len(results) == 1
         a = results[0]
-        assert a.magnitude == 5.0  # default — feed this to the allowlist fix in v2.3
+        assert a.magnitude == 5.0
+        assert annotator.run_counts()["unrecognised_rows"] == 0
         assert a.gene == "UNMAPPED_CLNSIG"
 
     def test_multi_allelic_distinct_alts_survive_dedup(self, annotator: ClinVarAnnotator):

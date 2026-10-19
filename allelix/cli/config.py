@@ -88,7 +88,7 @@ def config_show(data_dir: Path | None) -> None:
 @_DATA_DIR_OPT
 @click.argument("key", required=False, default=None)
 def config_get(data_dir: Path | None, key: str | None) -> None:
-    r"""Get a configuration value (or dump entire config).
+    """Get a configuration value (or dump entire config).
 
     \b
     Keys:
@@ -105,7 +105,7 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
       allelix config get sources.cadd        # true
       allelix config get license.cadd        # false
       allelix config get options.cadd_full   # false
-    """
+    """  # noqa: D301 - plain string: click's \b marker is the backspace character
     from allelix.config import _serialize, load_config
 
     resolved = resolve_data_dir(data_dir)
@@ -142,7 +142,7 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
 @click.argument("key")
 @click.argument("value")
 def config_set(data_dir: Path | None, key: str, value: str) -> None:
-    r"""Set a configuration value.
+    """Set a configuration value.
 
     \b
     Keys:
@@ -161,7 +161,7 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
       allelix config set license.cadd true
       allelix config set options.cadd_full true
       allelix config set plausibility.homozygous_max_af 0.00005
-    """
+    """  # noqa: D301 - plain string: click's \b marker is the backspace character
     from allelix.config import load_config, parse_frequency, save_config
 
     resolved = resolve_data_dir(data_dir)

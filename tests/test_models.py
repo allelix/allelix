@@ -198,11 +198,11 @@ class TestAnnotation:
 
     def test_zygosity_no_call(self):
         a = self._minimal(genotype_match="A/-")
-        assert a.zygosity == "No Call"
+        assert a.zygosity == "No call"
 
     def test_zygosity_no_call_both(self):
         a = self._minimal(genotype_match="-/-")
-        assert a.zygosity == "No Call"
+        assert a.zygosity == "No call"
 
     def test_zygosity_single_allele(self):
         a = self._minimal(genotype_match="A")
@@ -214,8 +214,8 @@ class TestAnnotation:
 
     def test_zygosity_concat_no_call(self):
         a = self._minimal(genotype_match="A-")
-        assert a.zygosity == "No Call"
+        assert a.zygosity == "No call"
 
     def test_zygosity_concat_no_call_both(self):
         a = self._minimal(genotype_match="--")
-        assert a.zygosity == "No Call"
+        assert a.zygosity == "No call"

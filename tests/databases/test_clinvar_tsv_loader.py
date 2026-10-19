@@ -19,8 +19,14 @@ from typing import TYPE_CHECKING
 import pytest
 
 from allelix.databases.manager import (
+    CONTRIBUTES_TO_AGGREGATE,
+    OUTSIDE_AGGREGATE_AGREED,
+    OUTSIDE_AGGREGATE_CONFLICTING,
+    ClinVarFormatError,
     _decode_reported_phenotype,
+    check_tsv_header,
     describes_reference_allele,
+    is_disease_classification,
     iter_clinvar_tsv_records,
     load_clinvar_tsv,
 )
@@ -62,6 +68,7 @@ def _vs_row(
     review_status: str = "criteria provided, single submitter",
     variant_type: str = "single nucleotide variant",
     name: str | None = None,
+    aggregate: str = "Pathogenic",
 ) -> str:
     """Build one tab-separated variant_summary row at the right column positions."""
     cols = [""] * 43
@@ -71,7 +78,7 @@ def _vs_row(
     cols[3] = "672"
     cols[4] = gene
     cols[5] = "HGNC:1100"
-    cols[6] = "Pathogenic"
+    cols[6] = aggregate
     cols[7] = "1"
     cols[8] = "Jan 01, 2024"
     cols[9] = rs
@@ -184,12 +191,30 @@ class TestReferenceSequenceRecords:
             for r in iter_clinvar_tsv_records(vs, ss, build)
         )
 
-    def test_normal_allele_record_with_ref_equal_alt_is_dropped(self, tmp_path):
+    def test_normal_allele_record_with_ref_equal_alt_keeps_non_pathogenic_rows(self, tmp_path):
+        """Since iv:9 it is kept, flagged, like the same record on the other build."""
         vs = [_vs_row(name="NM_000130.5(F5):c.1601=", ref="C", alt="C", variation_id="2")]
         ss = [
             _ss_row(variation_id="2", significance="Pathogenic", scv="SCV1"),
             _ss_row(variation_id="2", significance="Benign", scv="SCV2"),
         ]
+        assert self._ingest(tmp_path, vs, ss, "GRCh38") == [(2, "C", "C", "Benign")]
+        vs_path = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, vs)
+        ss_path = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, ss)
+        flags = {r["normal_allele"] for r in iter_clinvar_tsv_records(vs_path, ss_path, "GRCh38")}
+        assert flags == {1}
+
+    def test_non_snv_with_ref_equal_alt_is_dropped(self, tmp_path):
+        vs = [
+            _vs_row(
+                name="NM_000130.5(F5):c.1601dup",
+                ref="C",
+                alt="C",
+                variation_id="3",
+                variant_type="Duplication",
+            )
+        ]
+        ss = [_ss_row(variation_id="3", significance="Benign", scv="SCV3")]
         assert self._ingest(tmp_path, vs, ss, "GRCh38") == []
 
     def test_normal_allele_record_keeps_only_non_pathogenic_rows(self, tmp_path):
@@ -378,23 +403,29 @@ class TestIterTsvRecords:
         with pytest.raises(ValueError, match="unsupported build"):
             list(iter_clinvar_tsv_records(vs, ss, "GRCh99"))
 
-    def test_skips_rows_without_rsid(self, tmp_path):
+    def test_keeps_rows_without_rsid(self, tmp_path):
+        """ADR-0046: a variant dbSNP has no rsID for (RS# -1, or empty) is
+        kept with an empty rsid, so VCF input can match it by locus."""
         vs = _write_tsv(
             tmp_path / "vs.tsv",
             _VS_HEADER,
             [
                 _vs_row(rs="-1", variation_id="100"),  # no dbSNP id
                 _vs_row(rs="500", variation_id="200"),  # valid
+                _vs_row(rs="", variation_id="300"),  # empty
             ],
         )
         ss = _write_tsv(
             tmp_path / "ss.tsv",
             _SS_HEADER,
-            [_ss_row(variation_id="100"), _ss_row(variation_id="200")],
+            [_ss_row(variation_id=vid) for vid in ("100", "200", "300")],
         )
         records = list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
-        assert len(records) == 1
-        assert records[0]["rsid"] == "rs500"
+        assert sorted((r["allele_id"], r["rsid"]) for r in records) == [
+            (100, ""),
+            (200, "rs500"),
+            (300, ""),
+        ]
 
     def test_skips_rows_with_na_ref_alt(self, tmp_path):
         """Complex / copy-number variants encode ref/alt as 'na' — the
@@ -794,7 +825,7 @@ class TestLoadClinvarTsv:
 
     def test_overwrites_existing_dest(self, tmp_path):
         """Re-running the loader against an existing cache file replaces it.
-        The unlink-then-rebuild path keeps the loader idempotent."""
+        The build-then-replace path keeps the loader idempotent."""
         vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
         ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
         db = tmp_path / "clinvar.sqlite"
@@ -803,6 +834,327 @@ class TestLoadClinvarTsv:
         with contextlib.closing(sqlite3.connect(db)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
         assert count == 1
+
+
+# ---------------- header check, flagged submissions, gene placeholders ----------------
+
+
+def _shifted(header: str) -> str:
+    """The header with one new column inserted before GeneSymbol."""
+    names = header.split("\t")
+    return "\t".join([*names[:4], "NewColumn", *names[4:]])
+
+
+class TestHeaderCheck:
+    def test_real_layout_passes(self, tmp_path):
+        """submission_summary's header follows ``#`` lines that explain each
+        column and hold no tab; the check reads the tabbed line."""
+        ss = _write_tsv(
+            tmp_path / "ss.tsv",
+            "##Overview of each current submission\n"
+            "#VariationID:      the identifier assigned by ClinVar\n" + _SS_HEADER,
+            [_ss_row()],
+        )
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
+        assert len(list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))) == 1
+
+    def test_inserted_column_fails(self, tmp_path):
+        vs = _write_tsv(tmp_path / "vs.tsv", _shifted(_VS_HEADER), [_vs_row()])
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
+        expected = r"column 5 is 'NewColumn', expected 'GeneSymbol'"
+        with pytest.raises(ClinVarFormatError, match=expected):
+            list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+
+    def test_renamed_submission_column_fails(self, tmp_path):
+        header = _SS_HEADER.replace("ContributesToAggregateClassification", "Contributes")
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
+        ss = _write_tsv(tmp_path / "ss.tsv", header, [_ss_row()])
+        with pytest.raises(ClinVarFormatError, match="ContributesToAggregateClassification"):
+            list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+
+    def test_removed_column_fails(self, tmp_path):
+        header = "\t".join(_SS_HEADER.split("\t")[:-1])
+        path = _write_tsv(tmp_path / "ss.tsv", header, [_ss_row()])
+        from allelix.databases.manager import _SS_REQUIRED_COLUMNS
+
+        with pytest.raises(ClinVarFormatError, match="column 16 is None"):
+            check_tsv_header(path, _SS_REQUIRED_COLUMNS)
+
+    def test_missing_header_fails(self, tmp_path):
+        vs = tmp_path / "vs.tsv"
+        vs.write_text(_vs_row() + "\n", encoding="utf-8")
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
+        with pytest.raises(ClinVarFormatError, match="no header row"):
+            list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+
+
+def test_unsorted_submission_summary_fails(tmp_path):
+    """The split and the tier rule are worked out per VariationID in one pass,
+    which needs submission_summary sorted by VariationID, as ClinVar ships it.
+    An unsorted file fails the load instead of splitting a variant in two."""
+    vs = _write_tsv(
+        tmp_path / "vs.tsv",
+        _VS_HEADER,
+        [_vs_row(variation_id="100"), _vs_row(variation_id="200", rs="200", position_vcf="5")],
+    )
+    ss = _write_tsv(
+        tmp_path / "ss.tsv",
+        _SS_HEADER,
+        [_ss_row(variation_id="200"), _ss_row(variation_id="100", scv="SCV000002.1")],
+    )
+    with pytest.raises(ClinVarFormatError, match="no longer sorted by VariationID"):
+        list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+
+
+class TestFailedLoadKeepsCache:
+    def _existing_cache(self, tmp_path):
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
+        db = tmp_path / "clinvar.sqlite"
+        load_clinvar_tsv(vs, ss, db, "GRCh38", remote_signal="md5:old")
+        return db, db.read_bytes()
+
+    def test_column_change_keeps_existing_cache(self, tmp_path):
+        db, before = self._existing_cache(tmp_path)
+        vs = _write_tsv(tmp_path / "vs2.tsv", _shifted(_VS_HEADER), [_vs_row()])
+        ss = _write_tsv(tmp_path / "ss2.tsv", _SS_HEADER, [_ss_row()])
+        with pytest.raises(ClinVarFormatError):
+            load_clinvar_tsv(vs, ss, db, "GRCh38", remote_signal="md5:new")
+        assert db.read_bytes() == before
+        assert not (tmp_path / "clinvar.sqlite.partial").exists()
+
+    def test_no_records_keeps_existing_cache(self, tmp_path):
+        """Files with the right header and no usable record (for example an
+        assembly renamed upstream) do not replace the cache with an empty one."""
+        db, before = self._existing_cache(tmp_path)
+        vs = _write_tsv(tmp_path / "vs2.tsv", _VS_HEADER, [_vs_row(assembly="GRCh38.p14")])
+        ss = _write_tsv(tmp_path / "ss2.tsv", _SS_HEADER, [_ss_row()])
+        with pytest.raises(ClinVarFormatError, match="no records"):
+            load_clinvar_tsv(vs, ss, db, "GRCh38", remote_signal="md5:new")
+        assert db.read_bytes() == before
+        assert not (tmp_path / "clinvar.sqlite.partial").exists()
+
+    def test_no_records_and_no_cache_leaves_nothing(self, tmp_path):
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row(assembly="GRCh38.p14")])
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
+        db = tmp_path / "clinvar.sqlite"
+        with pytest.raises(ClinVarFormatError):
+            load_clinvar_tsv(vs, ss, db, "GRCh38")
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["ss.tsv", "vs.tsv"]
+
+
+class TestFlaggedSubmissions:
+    def test_flagged_submission_is_not_loaded(self, tmp_path):
+        """ClinVar flags a submission it considers outdated or in error. When
+        every submission on a variant is flagged, the flagged ones are all
+        that contribute to its aggregate; they still are not loaded."""
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row()])
+        ss = _write_tsv(
+            tmp_path / "ss.tsv",
+            _SS_HEADER,
+            [
+                _ss_row(review_status="flagged submission", scv="SCV000001.1"),
+                _ss_row(significance="Uncertain significance", scv="SCV000002.1"),
+            ],
+        )
+        records = list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+        assert [r["clinical_significance"] for r in records] == ["Uncertain significance"]
+
+
+class TestGenePlaceholder:
+    @pytest.mark.parametrize(
+        ("gene_symbol", "stored"),
+        [
+            ("covers 10 genes, none of which curated to show dosage sensitivity", ""),
+            ("covers 22 genes, none of which curated to show dosage sensitivity", ""),
+            ("BRCA1", "BRCA1"),
+            ("CDKN2B;CDKN2B-AS1", "CDKN2B;CDKN2B-AS1"),
+            ("-", "-"),
+        ],
+    )
+    def test_placeholder_sentence_is_no_gene(self, tmp_path, gene_symbol, stored):
+        vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row(gene=gene_symbol)])
+        ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, [_ss_row()])
+        (record,) = iter_clinvar_tsv_records(vs, ss, "GRCh38")
+        assert record["gene"] == stored
+
+
+# ---------------- ADR-0045: aggregate, submitter split, outranked submissions ----------------
+
+
+def _records(tmp_path, vs_rows, ss_rows):
+    vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, vs_rows)
+    ss = _write_tsv(tmp_path / "ss.tsv", _SS_HEADER, ss_rows)
+    return list(iter_clinvar_tsv_records(vs, ss, "GRCh38"))
+
+
+def _sub(sig, n, *, review="criteria provided, single submitter", contributes="yes"):
+    return _ss_row(
+        significance=sig, review_status=review, scv=f"SCV{n:09d}.1", contributes=contributes
+    )
+
+
+class TestAggregateAndSplit:
+    def test_record_carries_aggregate_and_split(self, tmp_path):
+        """226007-shaped: ClinVar calls it Conflicting; 2 of 5 say Pathogenic."""
+        records = _records(
+            tmp_path,
+            [_vs_row(aggregate="Conflicting classifications of pathogenicity")],
+            [
+                _sub("Benign", 1),
+                _sub("Benign", 2),
+                _sub("Benign", 3),
+                _sub("Pathogenic", 4),
+                _sub("Pathogenic", 5),
+                _sub("not specified", 6),  # placeholder: not loaded, not counted
+            ],
+        )
+        by_sig = {(r["clinical_significance"], r["submitters_same"]) for r in records}
+        assert by_sig == {("Benign", 3), ("Pathogenic", 2)}
+        assert {r["submitters_total"] for r in records} == {5}
+        assert {r["aggregate"] for r in records} == {
+            "Conflicting classifications of pathogenicity"
+        }
+        assert {r["outside_aggregate"] for r in records} == {CONTRIBUTES_TO_AGGREGATE}
+
+    def test_flagged_submission_is_not_counted(self, tmp_path):
+        records = _records(
+            tmp_path,
+            [_vs_row()],
+            [_sub("Pathogenic", 1), _sub("Benign", 2, review="flagged submission")],
+        )
+        assert [(r["submitters_same"], r["submitters_total"]) for r in records] == [(1, 1)]
+
+    def test_outranked_submissions_are_counted_out_of_the_split(self, tmp_path):
+        records = _records(
+            tmp_path,
+            [_vs_row()],
+            [_sub("Pathogenic", 1), _sub("Benign", 2, contributes="no")],
+        )
+        assert [(r["submitters_same"], r["submitters_total"]) for r in records] == [(1, 1)]
+
+
+class TestOutrankedSubmissions:
+    """ADR-0045: a variant whose aggregate is not a disease classification."""
+
+    def _drug_response(self, tmp_path, outranked):
+        return _records(
+            tmp_path,
+            [_vs_row(aggregate="drug response")],
+            [_sub("drug response", 1, review="reviewed by expert panel"), *outranked],
+        )
+
+    def test_agreeing_top_tier_is_kept_as_submitted(self, tmp_path):
+        """F5-shaped: an expert panel's drug response outranks the disease calls."""
+        records = self._drug_response(
+            tmp_path,
+            [
+                _sub("Pathogenic", 2, contributes="no"),
+                _sub("Pathogenic", 3, contributes="no"),
+                _sub("Pathogenic, low penetrance", 4, contributes="no"),
+                _sub("risk factor", 5, contributes="no"),
+                _sub("Benign", 6, contributes="no", review="no assertion criteria provided"),
+            ],
+        )
+        kept = sorted(
+            (r["clinical_significance"], r["submitters_same"], r["submitters_total"])
+            for r in records
+            if r["outside_aggregate"] != CONTRIBUTES_TO_AGGREGATE
+        )
+        # Only the strongest tier is judged; the no-assertion Benign is below it.
+        assert kept == [
+            ("Pathogenic", 2, 3),
+            ("Pathogenic", 2, 3),
+            ("Pathogenic, low penetrance", 1, 3),
+        ]
+        assert {
+            r["outside_aggregate"]
+            for r in records
+            if r["clinical_significance"] != "drug response"
+        } == {OUTSIDE_AGGREGATE_AGREED}
+        assert all(r["aggregate"] == "drug response" for r in records)
+
+    def test_conflicting_top_tier_is_kept_and_marked(self, tmp_path):
+        """MTHFR-shaped: the top tier mixes Pathogenic with Benign and VUS."""
+        records = self._drug_response(
+            tmp_path,
+            [
+                _sub("Pathogenic", 2, contributes="no"),
+                _sub("Benign", 3, contributes="no"),
+                _sub("Uncertain significance", 4, contributes="no"),
+            ],
+        )
+        kept = [r for r in records if r["outside_aggregate"] != CONTRIBUTES_TO_AGGREGATE]
+        assert [(r["clinical_significance"], r["outside_aggregate"]) for r in kept] == [
+            ("Pathogenic", OUTSIDE_AGGREGATE_CONFLICTING)
+        ]
+        assert (kept[0]["submitters_same"], kept[0]["submitters_total"]) == (1, 3)
+
+    def test_pathogenic_only_below_the_top_tier_gives_no_row(self, tmp_path):
+        """VKORC1-shaped: the only P/LP is no-assertion; criteria-provided say Benign."""
+        records = self._drug_response(
+            tmp_path,
+            [
+                _sub("Pathogenic", 2, contributes="no", review="no assertion criteria provided"),
+                _sub("Benign", 3, contributes="no"),
+            ],
+        )
+        assert [r["clinical_significance"] for r in records] == ["drug response"]
+
+    def test_flagged_pathogenic_gives_no_row(self, tmp_path):
+        """APOE-shaped: the only outranked P/LP is flagged."""
+        records = self._drug_response(
+            tmp_path,
+            [
+                _sub("Pathogenic", 2, contributes="no", review="flagged submission"),
+                _sub("Benign", 3, contributes="no"),
+            ],
+        )
+        assert [r["clinical_significance"] for r in records] == ["drug response"]
+
+    def test_disease_aggregate_keeps_outranked_out(self, tmp_path):
+        """An expert panel's VUS outranks a Pathogenic submission: ClinVar's
+        aggregate is a disease call, so the outranked one stays out."""
+        records = _records(
+            tmp_path,
+            [_vs_row(aggregate="Uncertain significance")],
+            [
+                _sub("Uncertain significance", 1, review="reviewed by expert panel"),
+                _sub("Pathogenic", 2, contributes="no"),
+            ],
+        )
+        assert [r["clinical_significance"] for r in records] == ["Uncertain significance"]
+
+    def test_normal_allele_record_drops_outranked_pathogenic(self, tmp_path):
+        """A normal-allele record (c.N=) never gives a P/LP row, outranked or not."""
+        records = _records(
+            tmp_path,
+            [_vs_row(aggregate="drug response", name="NM_000130.5(F5):c.1601=")],
+            [
+                _sub("drug response", 1, review="reviewed by expert panel"),
+                _sub("Pathogenic", 2, contributes="no"),
+            ],
+        )
+        assert [r["clinical_significance"] for r in records] == ["drug response"]
+
+
+@pytest.mark.parametrize(
+    ("aggregate", "expected"),
+    [
+        ("Pathogenic", True),
+        ("Conflicting classifications of pathogenicity; risk factor", True),
+        ("Uncertain significance/Uncertain risk allele", True),
+        ("Benign/Likely benign; other", True),
+        ("drug response", False),
+        ("risk factor", False),
+        ("Likely risk allele", False),
+        ("association; protective", False),
+        ("not provided", False),
+        ("-", False),
+    ],
+)
+def test_is_disease_classification(aggregate, expected):
+    assert is_disease_classification(aggregate) is expected
 
 
 # ---------------- real-data integration test (@slow) ----------------
