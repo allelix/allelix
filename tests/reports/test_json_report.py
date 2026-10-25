@@ -144,6 +144,7 @@ class TestPanelCoverageJson:
             "state": "annotated",
             "genotype": None,
             "annotation_count": 1,
+            "reason": None,
         }
         assert [(v["rsid"], v["state"]) for v in cov["variants"][1:]] == [
             ("rs4680", "typed_no_annotation"),

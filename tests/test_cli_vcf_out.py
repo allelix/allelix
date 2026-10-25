@@ -55,7 +55,7 @@ class TestVcfOutHappyPath:
         text = out.read_text(encoding="utf-8")
         # Provenance block present.
         assert "##ALLELIX_Version=" in text
-        assert "##ALLELIX_VCF_SchemaVersion=0.4.0" in text
+        assert "##ALLELIX_VCF_SchemaVersion=0.5.0" in text
         assert "##ALLELIX_License=AGPL-3.0-or-later" in text
         assert "##ALLELIX_Build=<ID=GRCh38,Source=contig_lengths>" in text
         # ClinVar hit stamped on rs1801133 (MTHFR C677T carrier in mock).
@@ -318,7 +318,7 @@ class TestBcftoolsRoundTrip:
         header = proc.stdout
         assert "##INFO=<ID=ALLELIX_CLINVAR" in header
         # Provenance survives bcftools too.
-        assert "##ALLELIX_VCF_SchemaVersion=0.4.0" in header
+        assert "##ALLELIX_VCF_SchemaVersion=0.5.0" in header
         assert "##ALLELIX_License=AGPL-3.0-or-later" in header
 
     def test_bcftools_query_reads_allelix_info_field(

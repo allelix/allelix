@@ -81,7 +81,8 @@ def resolve_batch(
         assert identity is not None
         _populate_ref_from_identity(identity, variants)
     if clinvar is not None:
-        # bulk_resolve_rsids skips any build whose cache is missing.
+        # bulk_resolve_rsids skips any build whose cache is missing or not
+        # ready for this version.
         rsidless = [v for v in variants if not v.rsid.startswith("rs")]
         if rsidless:
             for (chrom, pos, ref, alt), rsid in clinvar.bulk_resolve_rsids(rsidless).items():

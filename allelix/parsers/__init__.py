@@ -10,6 +10,7 @@ from allelix.parsers._helpers import (
     DamagedFileError,
     InputContainerError,
     check_container,
+    check_gzip_start,
     quiet_input_notices,
 )
 from allelix.parsers.ancestrydna import AncestryDNAParser
@@ -71,7 +72,8 @@ def detect_parser(file_path: Path) -> GenotypeParser:
 
     Raises:
         ParserNotFoundError: If no parser recognizes the format.
-        DamagedFileError: A damaged zip download.
+        DamagedFileError: A damaged zip download, or a gzip file whose start
+            does not decompress (cut within its first bytes).
         InputContainerError: A zip with several files, a password or an
             unreadable compression method.
     """
@@ -80,6 +82,7 @@ def detect_parser(file_path: Path) -> GenotypeParser:
         for parser in PARSERS:
             if parser.can_parse(file_path):
                 return parser
+    check_gzip_start(file_path)
     raise ParserNotFoundError(
         f"Allelix doesn't recognise the format of {file_path.name!r}. Use the original "
         "file exactly as your testing company provided it, not edited or re-saved. If "

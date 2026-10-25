@@ -48,6 +48,8 @@ allelix analyze your_wgs.vcf.gz --keep-filtered --min-gq 10 --output report.html
 allelix analyze your_genotype_file.txt --filter-file my_panel.txt --output report.html
 # Panel coverage puts each requested rsID in one state: annotated, typed (no annotation),
 # no call, or not on chip ("not in file" for a VCF)
+# VCF coverage includes explicit REF/REF calls and explains rejected/excluded records.
+# Gene entries match constituent symbols in lists; hyphens inside symbols stay intact.
 
 # Annotated VCF output — VCF-in / VCF-out for pipeline integration
 # Writes a valid VCF with annotations as INFO fields + full provenance in the header.
@@ -386,11 +388,29 @@ The banner says where the build came from, for example `Build: GRCh38 (from the 
 
 The message names the evidence and asks you to say which build the file uses: `--build grch37` or `--build grch38`, or `--build grch36` for an old GRCh36 / hg18 file, which then runs with position-keyed lookups off (see [`docs/grch36-liftover.md`](https://github.com/allelix/allelix/blob/main/docs/grch36-liftover.md)). For `compare`, use `--build1` / `--build2`. A stop leaves no report, annotated VCF, diff, PLINK files or extract table behind. A forced build is recorded as such in every report.
 
+### Keeping input and output files safe
+
+Report `--output`, annotated `--vcf-out` and all three actual PLINK output paths
+must differ from the input, including symlink and hard-link aliases. These
+checks run before cache setup or output creation. Inputs that alias the former
+fixed report or PLINK `.tmp` path are also refused; unrelated old temp files
+are left untouched. Annotated VCF still refuses any existing output at the CLI.
+
+Writers use unique temporary files in the destination directory and publish
+only complete, closed content. Failure before publication preserves previous
+outputs. PLINK stages all three files first, then publishes each atomically;
+a later publication failure can leave complete new files next to unchanged old
+ones. Existing ordinary permission bits are retained when replacement is
+permitted; new staging files start private. Ownership, ACLs, extended attributes,
+crash durability and concurrent path swaps are outside this guarantee.
+
 ### Is my database stale? How fresh is the data?
 
 `allelix db status` shows the ingestion date of each cache. The freshness model is signal-driven: `allelix db update` queries an upstream freshness signal (md5 / etag) per source and re-ingests only when the signal changed. There's no time-based staleness — a 6-month-old cache against an unchanged source IS current.
 
-If you want to force a refresh: `allelix db update --force` re-downloads every cache regardless of freshness signal.
+If you want to force a refresh: `allelix db update --force` re-downloads every cache regardless of freshness signal. ClinVar is never refreshed unverified: its freshness signal is NCBI's checksum for the submission summary, which also verifies the download. If that checksum cannot be fetched (after one retry), ClinVar is not refreshed, with or without `--force`; the existing caches are kept, and a later `db update` tries again. The GWAS Catalog and ClinPGx publish no checksum, so `--force` refreshes them even when their freshness signal cannot be fetched; it stores no signal, and the next ordinary `db update` refreshes them once more when the signal is available again.
+
+A ClinPGx cache built while CPIC's allele-function data could not be fetched is marked as such: `db status` shows "(no CPIC)", and the next `db update` tries CPIC again. A cache from 2.5.0 that claims CPIC data but holds none is repaired the same way by an ordinary `db update`.
 
 ### Output reports contain real genome annotations
 
@@ -433,7 +453,7 @@ Release history: see [`CHANGELOG.md`](https://github.com/allelix/allelix/blob/ma
 
 ```bash
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,vcf-index]"   # the CI install: vcf-index (pysam) runs the indexed-VCF tests
 
 # One-time: install pre-commit hooks
 pre-commit install --hook-type pre-commit

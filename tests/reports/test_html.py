@@ -797,3 +797,54 @@ class TestImputationNote:
 
     def test_measured_input_has_no_imputation_note(self, tmp_path: Path) -> None:
         assert "<h3>Imputed genotypes</h3>" not in self._body(tmp_path, "")
+
+
+class TestMetricsPerAllele:
+    """gnomAD, AlphaMissense and CADD values belong to one allele each."""
+
+    @staticmethod
+    def _site(alt: str, **metrics) -> Annotation:
+        return _ann(
+            rsid="rs900960021",
+            genotype_match="AT",
+            gene="GENE",
+            alt=alt,
+            locus=("2", 5000),
+            locus_ref="G",
+            **metrics,
+        )
+
+    @staticmethod
+    def _payload(group: list[Annotation]) -> dict:
+        from allelix.reports.html import _build_variant_data
+
+        (entry,) = json.loads(_build_variant_data([group]))
+        return entry
+
+    def test_two_alleles_are_labelled_and_never_merged(self) -> None:
+        entry = self._payload(
+            [self._site("A", allele_frequency=0.1), self._site("T", cadd_phred=35.0)]
+        )
+        assert entry["allele_metrics"] == [
+            {"allele": "A", "allele_frequency": 0.1},
+            {"allele": "T", "cadd_phred": 35.0},
+        ]
+        for unlabelled in ("allele_frequency", "am_pathogenicity", "am_class", "cadd_phred"):
+            assert unlabelled not in entry
+
+    def test_one_allele_keeps_the_flat_fields(self) -> None:
+        entry = self._payload(
+            [self._site("A", allele_frequency=0.1), self._site("A", cadd_phred=35.0)]
+        )
+        assert entry["allele_frequency"] == 0.1 and entry["cadd_phred"] == 35.0
+        assert entry["allele_metrics"] == []
+
+    def test_page_labels_each_value_with_its_allele(self, tmp_path: Path) -> None:
+        out = tmp_path / "r.html"
+        render_html(
+            _result([self._site("A", allele_frequency=0.1), self._site("T", cadd_phred=35.0)]),
+            output_path=out,
+        )
+        body = out.read_text(encoding="utf-8")
+        assert 'metricRows(m, m.allele + ": ")' in body
+        assert 'metricRows(v, "")' in body

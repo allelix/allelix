@@ -91,7 +91,7 @@ def _split(page: str) -> tuple[str, str]:
 def _render(result: AnalysisResult, tmp_path: Path, **kwargs) -> str:
     out = tmp_path / "r.html"
     render_html(result, output_path=out, **kwargs)
-    return out.read_text()
+    return out.read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -177,3 +177,19 @@ def test_plain_summary_without_counts(tmp_path: Path) -> None:
 
 def test_details_closed_by_default(page: str) -> None:
     assert '<details class="tech-details" open' not in page
+
+
+def test_notice_reader_uses_utf8_with_a_cp1252_platform_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_text = Path.read_text
+
+    def platform_reader(path, encoding=None, errors=None):
+        return read_text(path, encoding=encoding or "cp1252", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", platform_reader)
+    page = _render(_full(), tmp_path)
+    test_short_disclaimer_visible_full_notice_inside(page)
+    plain = _render(_result(), tmp_path)
+    assert REGULATORY_NOTICE in _split(plain)[1]

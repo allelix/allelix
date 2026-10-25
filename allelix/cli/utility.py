@@ -21,6 +21,7 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
+from allelix.parsers._helpers import normalize_chromosome
 from allelix.reports._pipeline import BuildDiagnostics, UnusableInputError
 from allelix.reports.build_text import short_source
 from allelix.utils.build_detect import (
@@ -36,6 +37,7 @@ from allelix.utils.build_detect import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from allelix.exporters.plink import RecordKey
     from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
     from allelix.utils.build_detect import BuildDecision
@@ -54,6 +56,8 @@ def stats(
 
     High-value no-call warnings cover rsID-less VCF records too: calls are
     resolved to rsIDs with the installed databases first.
+
+    VCF genotype counts include reference-only records, before filtering.
     """
     from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
 
@@ -120,6 +124,17 @@ def stats(
             f"[red]{len(hv_warnings)}[/red]",
         )
     console.print(summary)
+    quality = getattr(parser, "quality_stats", None)
+    if quality is not None:
+        counts = Table(title="VCF Genotype Records")
+        counts.add_column("Metric", style="cyan")
+        counts.add_column("Count", style="green", justify="right")
+        counts.add_row("Genotype records", f"{quality.genotype_records:,}")
+        counts.add_row("Homozygous-reference", f"{quality.hom_ref_calls:,}")
+        counts.add_row("Non-reference", f"{quality.non_reference_calls:,}")
+        console.print(counts)
+        if quality.hom_ref_calls and not quality.non_reference_calls:
+            console.print("[yellow]Note:[/yellow] This file has no non-reference calls.")
     _helpers._emit_build_notices(diag, banner=False)
 
     if hv_warnings:
@@ -163,8 +178,9 @@ def extract(
     For VCF input, an indexed fast-path is used automatically when the
     file is gzipped, a ``.tbi`` index is present alongside, ``pysam`` is
     installed (``pip install allelix[vcf-index]``), and gnomAD is set up
-    to resolve rsIDs to coordinates. Falls back to a sequential scan
-    otherwise — correct for any VCF, just O(file size).
+    to resolve rsIDs to coordinates. Requests still unfound after indexed
+    lookup share one sequential pass, including mapped coordinate misses.
+    Unavailable indexes fall back to the normal sequential scan.
     """
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     wanted = {s.strip() for s in snps.split(",") if s.strip()}
@@ -292,7 +308,7 @@ def _execute_tabix_extract(
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
-    from allelix.parsers.vcf import _open_vcf, _parse_data_line, _read_header
+    from allelix.parsers.vcf import VcfParser, _open_vcf, _parse_data_line, _read_header
     from allelix.utils.build_detect import (
         KIND_VCF,
         NO_SEEDS,
@@ -342,9 +358,21 @@ def _execute_tabix_extract(
             return None
         tabix_file = pysam.TabixFile(str(file_path))
         try:
+            aliases = _tabix_contig_aliases(tabix_file)
+            row_cache: dict[tuple[str, int], list[Variant]] = {}
             seed_rows: list[Variant] = []
             for chrom, pos in known_seed_loci():
-                seed_rows.extend(_fetch_rows(tabix_file, chrom, pos, sample_idx, _parse_data_line))
+                seed_rows.extend(
+                    _fetch_rows(
+                        tabix_file,
+                        chrom,
+                        pos,
+                        sample_idx,
+                        _parse_data_line,
+                        contig_aliases=aliases,
+                        row_cache=row_cache,
+                    )
+                )
             late = detect_build(seed_rows)
             check_late_seeds(decision, late, file_path.name)
             for rsid, coords in coord_map.items():
@@ -360,6 +388,8 @@ def _execute_tabix_extract(
                         ),
                         parse_row=_parse_data_line,
                         build=BUILD_GRCH38,
+                        contig_aliases=aliases,
+                        row_cache=row_cache,
                     )
                     if hit is not None:
                         found[rsid] = hit
@@ -369,8 +399,17 @@ def _execute_tabix_extract(
     finally:
         for source in (clinvar, gnomad, identity):
             source.close()
-    # The fast path decides without seeds; the ones fetched above are its evidence.
-    _helpers._emit_build_notices(BuildDiagnostics.from_decision(decision, late))
+    pending = wanted - found.keys()
+    if pending:
+        # One pass for every unresolved request, including mapped fetch misses.
+        # The pending set excludes indexed no-calls and all other accepted hits.
+        found.update(
+            _sequential_extract(
+                VcfParser(sample=sample), file_path, pending, resolved_data_dir, build_override
+            )
+        )
+    else:
+        _helpers._emit_build_notices(BuildDiagnostics.from_decision(decision, late))
     return found
 
 
@@ -402,15 +441,26 @@ def _fetch_resolved(
     *,
     parse_row: Callable[[str, int], Variant | None],
     build: str,
+    contig_aliases: dict[str, tuple[str, ...]] | None = None,
+    row_cache: dict[tuple[str, int], list[Variant]] | None = None,
 ) -> Variant | None:
     """The row at ``chrom:pos`` that is ``rsid`` after resolution, or None.
 
-    gnomAD chromosomes are bare (``1``, ``X``); the VCF may use ``chr1``,
-    so both spellings are tried. Fetched rows take ``build`` (the
+    Contig aliases come from the index in its own order, using existing
+    chromosome normalization. Fetched rows take ``build`` (the
     coordinates' build) before resolution.
     """
     variants = [
-        replace(v, build=build) for v in _fetch_rows(tabix_file, chrom, pos, sample_idx, parse_row)
+        replace(v, build=build)
+        for v in _fetch_rows(
+            tabix_file,
+            chrom,
+            pos,
+            sample_idx,
+            parse_row,
+            contig_aliases=contig_aliases,
+            row_cache=row_cache,
+        )
     ]
     resolve(variants)
     for variant in variants:
@@ -419,16 +469,36 @@ def _fetch_resolved(
     return None
 
 
+def _tabix_contig_aliases(tabix_file: Any) -> dict[str, tuple[str, ...]]:  # noqa: ANN401
+    """Index-order spellings grouped by the existing chromosome normalization."""
+    names: dict[str, list[str]] = {}
+    for name in dict.fromkeys(tabix_file.contigs):
+        names.setdefault(normalize_chromosome(name), []).append(name)
+    return {chrom: tuple(actual) for chrom, actual in names.items()}
+
+
 def _fetch_rows(
     tabix_file: Any,  # noqa: ANN401 — pysam.TabixFile, no type stubs
     chrom: str,
     pos: int,
     sample_idx: int,
     parse_row: Callable[[str, int], Variant | None],
+    *,
+    contig_aliases: dict[str, tuple[str, ...]] | None = None,
+    row_cache: dict[tuple[str, int], list[Variant]] | None = None,
 ) -> list[Variant]:
-    """Parsed rows at ``chrom:pos``, trying the bare and ``chr`` contig spellings."""
+    """Parsed rows at an exact position, using actual index contigs in file order.
+
+    The optional cache belongs to one extraction and one sample binding.
+    """
+    canonical = normalize_chromosome(chrom)
+    key = (canonical, pos)
+    if row_cache is not None and key in row_cache:
+        return row_cache[key]
+    if contig_aliases is None:
+        contig_aliases = _tabix_contig_aliases(tabix_file)
     found: list[Variant] = []
-    for chrom_candidate in (chrom, f"chr{chrom}"):
+    for chrom_candidate in contig_aliases.get(canonical, ()):
         try:
             rows = list(tabix_file.fetch(chrom_candidate, pos - 1, pos))
         except (ValueError, OSError):
@@ -438,6 +508,8 @@ def _fetch_rows(
             for v in (parse_row(row, sample_idx) for row in rows)
             if v is not None and v.position == pos
         )
+    if row_cache is not None:
+        row_cache[key] = found
     return found
 
 
@@ -529,9 +601,11 @@ def compare(
 ) -> None:
     """Compare two genotype files — coverage overlap and concordance.
 
-    Reports shared rsIDs, file-specific rsIDs, genotype agreement,
+    Reports shared named identifiers and same-build unnamed records with
+    literal input REF/ALT identity, file-specific records, genotype agreement,
     strand-flip matches (complementary alleles on opposite strands),
-    discordant calls, and strand-ambiguous positions.
+    discordant calls, and strand-ambiguous positions. Coverage separates
+    parsed named/unnamed counts, eligible unique keys and omitted records.
     """
     from allelix.compare import compare_variants
     from allelix.reports._pipeline import decide_file_build
@@ -579,17 +653,34 @@ def compare(
     if result.build1 != result.build2:
         console.print(
             f"[yellow]Warning: builds differ ({result.build1} vs {result.build2}). "
-            "Position-based comparisons may be unreliable.[/yellow]"
+            "Unnamed records are omitted from comparison.[/yellow]"
         )
 
     table = Table(title="Coverage Summary")
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
-    table.add_row("File 1", f"{file1.name} ({result.file1_total:,} variants)")
-    table.add_row("File 2", f"{file2.name} ({result.file2_total:,} variants)")
+    table.add_row("File 1", f"{file1.name} ({result.file1_total:,} eligible variants)")
+    table.add_row("File 2", f"{file2.name} ({result.file2_total:,} eligible variants)")
+    for number in (1, 2):
+        table.add_row(
+            f"Input named / unnamed (file {number})",
+            f"{getattr(result, f'file{number}_input_named'):,} / "
+            f"{getattr(result, f'file{number}_input_unnamed'):,}",
+        )
+        table.add_row(
+            f"Eligible named / unnamed (file {number})",
+            f"{getattr(result, f'file{number}_named'):,} / "
+            f"{getattr(result, f'file{number}_unnamed'):,}",
+        )
+        table.add_row(
+            f"Omitted unnamed records (file {number})",
+            f"{getattr(result, f'file{number}_unnamed_omitted'):,}",
+        )
     table.add_row("Build (file 1)", result.build1)
     table.add_row("Build (file 2)", result.build2)
-    table.add_row("Shared rsIDs", f"{result.shared:,}")
+    table.add_row("Shared named identifiers", f"{result.shared_named:,}")
+    table.add_row("Unnamed variants compared by position", f"{result.shared_unnamed:,}")
+    table.add_row("Shared eligible variants", f"{result.shared:,}")
     table.add_row("File 1 only", f"{result.file1_only:,}")
     table.add_row("File 2 only", f"{result.file2_only:,}")
     console.print(table)
@@ -642,7 +733,10 @@ def export() -> None:
     "-o",
     type=click.Path(path_type=Path),
     default=None,
-    help="Base path for .bed/.bim/.fam (default: input stem).",
+    help=(
+        "Base path for .bed/.bim/.fam (default: input stem). Refuses input aliases; "
+        "stages all three before atomic publication per file."
+    ),
 )
 @_FORMAT_OPT
 @_BUILD_OPT
@@ -659,19 +753,35 @@ def export_plink_cmd(
     """Convert to PLINK1 binary format (.bed/.bim/.fam).
 
     Produces a single-sample, SNP-major .bed file suitable for downstream
-    tools (plink2 PCA, ADMIXTURE, PRSice). Uses gnomAD ref/alt for allele
-    coding when available; falls back to monomorphic (A2=0) for positions
-    without gnomAD coverage. A call whose alleles are not gnomAD's REF and
-    ALT as written is exported as missing and counted.
+    tools (plink2 PCA, ADMIXTURE, PRSice). REF/ALT for allele coding come
+    from the export's own build: the rsID identity table on GRCh37, gnomAD
+    on GRCh38. A site without a known pair falls back to monomorphic (A2=0)
+    for homozygous calls. A call whose alleles are not the site's REF and
+    ALT as written is exported as missing and counted. A variant without an
+    rsID gets the ID chr:pos:ref:alt.
     """
     from allelix.exporters.plink import (
         EmptyPlinkSetError,
+        coded_against,
+        default_plink_prefix,
         export_plink,
+        plink_paths,
+        plink_record_key,
+        plink_writable,
         resolve_ref_alt_via_gnomad,
+        resolve_ref_alt_via_gnomad_grch37,
+        resolve_ref_alt_via_identity,
     )
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
-    prefix = output_prefix if output_prefix else file_path.with_suffix("")
+    prefix = output_prefix if output_prefix else default_plink_prefix(file_path)
+    from allelix.reports import validate_output_path
+
+    try:
+        for destination in plink_paths(prefix).values():
+            validate_output_path(file_path, destination)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
     build_override = _helpers._normalize_cli_build(build)
     resolved = resolve_data_dir(data_dir)
 
@@ -694,18 +804,52 @@ def export_plink_cmd(
         key=lambda v: (chrom_order.get(v.chromosome, 99), v.chromosome, v.position),
     )
 
-    variant_by_rsid: dict[str, Variant] = {v.rsid: v for v in variants if not v.is_no_call}
+    # Coordinates, REF/ALT and genotype coding all come from one build.
+    grch38 = effective_build == "GRCh38"
+    identity_missing = False
+    ref_alt_map: dict[str, tuple[str, str]] = {}
+    # GRCh37 (and other builds): chosen per call, never shared by rsID.
+    record_alleles: dict[RecordKey, tuple[str, str]] | None = None if grch38 else {}
+    identity_map: dict[RecordKey, tuple[str, str]] | None = {}
+    gnomad_map: dict[RecordKey, tuple[str, str]] = {}
+    if grch38:
+        variant_by_rsid: dict[str, Variant] = {v.rsid: v for v in variants if not v.is_no_call}
+        try:
+            ref_alt_map = resolve_ref_alt_via_gnomad(variant_by_rsid, resolved)
+        except Exception:
+            console.print(
+                "[yellow]gnomAD coordinate resolution failed; "
+                "using fallback allele coding.[/yellow]"
+            )
+    elif effective_build == "GRCh37":
+        try:
+            identity_map = resolve_ref_alt_via_identity(variants, resolved)
+        except Exception:
+            console.print(
+                "[yellow]rsID identity table lookup failed; using fallback allele coding.[/yellow]"
+            )
+            identity_map = {}
+        identity_missing = identity_map is None
+        record_alleles = dict(identity_map or {})
+        # Then gnomAD's pair where it is not palindromic and the call fits it
+        # as written (a strand-inverted site cannot); else the fallback.
+        try:
+            gnomad_map = resolve_ref_alt_via_gnomad_grch37(variants, resolved, record_alleles)
+        except Exception:
+            console.print("[yellow]gnomAD lookup failed; using fallback allele coding.[/yellow]")
+            gnomad_map = {}
+        record_alleles.update(gnomad_map)
 
     try:
-        ref_alt_map = resolve_ref_alt_via_gnomad(variant_by_rsid, resolved)
-    except Exception:
-        console.print(
-            "[yellow]gnomAD coordinate resolution failed; using fallback allele coding.[/yellow]"
+        counts = export_plink(
+            iter(variants),
+            prefix,
+            effective_build,
+            ref_alt_map or None,
+            record_alleles=record_alleles,
+            # Only an ID with a colon can collide with a generated one.
+            supplied_ids={v.rsid for v in variants if ":" in v.rsid},
         )
-        ref_alt_map = {}
-
-    try:
-        counts = export_plink(iter(variants), prefix, effective_build, ref_alt_map or None)
     except EmptyPlinkSetError as exc:
         reasons = [f"{exc.no_calls:,} no-calls", f"{exc.indels:,} indels"]
         if diagnostics.mt_skipped:
@@ -731,17 +875,47 @@ def export_plink_cmd(
             f"[dim]{mono:,} markers ({pct:.0f}%) exported as monomorphic "
             f"(A2=0, ref/alt unknown or ambiguous).[/dim]"
         )
+    source = "gnomAD" if grch38 else "rsID identity table"
     if counts.allele_mismatches:
         console.print(
-            f"[yellow]{counts.allele_mismatches:,} call(s) fit neither gnomAD allele at "
+            f"[yellow]{counts.allele_mismatches:,} call(s) fit neither {source} allele at "
             "their site and were written as missing.[/yellow]"
         )
-    if not ref_alt_map:
+    unnamed = sum(1 for v in variants if not v.rsid and plink_writable(v))
+    if unnamed:
+        console.print(f"{unnamed:,} variant(s) without an rsID were given the ID chr:pos:ref:alt.")
+    if grch38 and not ref_alt_map:
         console.print(
             "[yellow]gnomAD not available — all homozygous markers exported "
             "as monomorphic.[/yellow]"
         )
         console.print("[yellow]Run `allelix db update` first for proper allele coding.[/yellow]")
+    elif not grch38:
+        writable = [v for v in variants if plink_writable(v)]
+        # As the writer decides: a call that fits a palindromic identity pair
+        # gets the fallback; one that does not fit is written missing against it.
+        identity_pairs = identity_map or {}
+        from_identity = sum(
+            1
+            for v in writable
+            if plink_record_key(v) in identity_pairs
+            and coded_against(v, identity_pairs[plink_record_key(v)])
+        )
+        from_gnomad = sum(1 for v in writable if plink_record_key(v) in gnomad_map)
+        fallback = len(writable) - from_identity - from_gnomad
+        if effective_build == "GRCh37":
+            console.print(
+                f"Allele coding: {from_identity:,} site(s) from the rsID identity table, "
+                f"{from_gnomad:,} from gnomAD, {fallback:,} with fallback coding."
+            )
+        elif fallback:
+            console.print(
+                f"[yellow]{fallback:,} site(s) used fallback coding on this build.[/yellow]"
+            )
+        if identity_missing:
+            console.print(
+                "[yellow]Run `allelix db update` first for proper allele coding.[/yellow]"
+            )
     console.print(
         "[dim]Single-sample export. Merging with other samples requires "
         "allele harmonization (--merge-mode or set-all-var-ids).[/dim]"

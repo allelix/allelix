@@ -98,6 +98,9 @@ class Variant:
     # call. The parsers still give both alleles (the called one twice), so
     # matching is unchanged; reports show the call as hemizygous.
     haploid: bool = False
+    # Complete literal input ALT field, independent of GT and quality masking.
+    # Internal comparison identity; existing model equality remains unchanged.
+    input_alt: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Normalize allele case at construction (ADR-0035).
@@ -126,6 +129,8 @@ class Variant:
             self.allele2 = self.allele2.upper()
         if self.ref is not None and self.ref != NO_CALL_MARKER:
             self.ref = self.ref.upper()
+        if self.input_alt is not None:
+            self.input_alt = self.input_alt.upper()
 
     @property
     def is_heterozygous(self) -> bool:

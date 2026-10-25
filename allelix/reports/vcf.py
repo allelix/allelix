@@ -36,7 +36,7 @@ for a fourth call site.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -44,18 +44,19 @@ from allelix import __version__
 from allelix.annotators import get_annotator_class
 from allelix.models import report_rank_key
 from allelix.parsers._helpers import normalize_chromosome
-from allelix.parsers.vcf import _open_vcf
+from allelix.parsers.vcf import _is_symbolic, _open_vcf, reference_row_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
 
     from allelix.models import Annotation
+    from allelix.parsers.vcf import Locus, RowKey
 
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.4.0"
+VCF_SCHEMA_VERSION = "0.5.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
@@ -69,6 +70,9 @@ from (ADR-0044); it was ``##ALLELIX_Build=<build>``.
 0.4.0: ``##ALLELIX_SkippedSources=`` lists each registered source that did
 not run, with its reason (``clinvar:outdated,cadd:disabled``), or ``none``,
 so an annotated VCF never reads as complete when a source was skipped.
+0.5.0: ``ALLELIX_CLINVAR`` also appears on an explicit ``0/0`` or haploid
+``0`` record, where its value is a finding for the allele the reference
+itself carries (ADR-0059). Re-annotation replaces earlier Allelix INFO.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -94,6 +98,9 @@ class VcfWriteInputs:
 
     annotations_by_key: dict[_VariantKey, list[Annotation]]
     recovered_rsids: dict[_VariantKey, str]
+    # Explicit reference records the analysis used, with the positions each
+    # covers (``VcfQualityStats.reference_rows``).
+    reference_rows: dict[RowKey, set[Locus]] = field(default_factory=dict)
 
 
 _logger = logging.getLogger(__name__)
@@ -142,7 +149,11 @@ _INFO_SPECS: dict[str, _InfoSpec] = {
     "clinvar": _InfoSpec(
         field="ALLELIX_CLINVAR",
         vcf_type="String",
-        description="ClinVar significance | rsID | gene",
+        description=(
+            "ClinVar significance | rsID | gene. On a homozygous-reference or "
+            "haploid reference record, the finding is for the allele the "
+            "reference itself carries."
+        ),
     ),
     "gnomad": _InfoSpec(
         field="ALLELIX_GNOMAD_AF",
@@ -427,15 +438,6 @@ def _missing_contig_ids(input_path: Path) -> list[str]:
     return [contig_id for contig_id in emitted if contig_id not in declared]
 
 
-def _is_symbolic(alt: str) -> bool:
-    """VCF symbolic ALT (``<NON_REF>``, ``<DEL>``, ``<*>``, …) or the spanning deletion ``*``.
-
-    We never look up annotations for symbolic alleles — the annotator
-    layer works on realized nucleotide substitutions.
-    """
-    return (alt.startswith("<") and alt.endswith(">")) or alt == "*"
-
-
 def _sources_used(
     annotations_by_key: Mapping[_VariantKey, list[Annotation]],
 ) -> set[str]:
@@ -479,6 +481,7 @@ def render_vcf(
     keep_filtered: bool = False,
     build_source: str | None = None,
     skipped_sources: list[tuple[str, str]] | None = None,
+    reference_rows: Mapping[RowKey, set[Locus]] | None = None,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -494,7 +497,11 @@ def render_vcf(
     skip annotation lookup and preserve their column position.
 
     Header behaviour: every input ``##`` and blank line passes through
-    verbatim. If the input omitted declarations for contigs present in its
+    verbatim, except the ``##INFO=<ID=ALLELIX_...`` declarations and
+    ``##ALLELIX_...`` provenance lines an earlier run wrote; those are
+    replaced by the current run's. ``ALLELIX_*`` INFO tokens on data rows
+    are removed the same way before the current result is stamped.
+    If the input omitted declarations for contigs present in its
     own data rows, minimal ``##contig=<ID=...>`` declarations are synthesized
     using the raw CHROM spelling. Those lines, injected ``##INFO``
     declarations, and the provenance / attribution block are inserted
@@ -502,12 +509,20 @@ def render_vcf(
     through unchanged.
 
     A row the caller rejected (FILTER not ``PASS`` / ``.``) is
-    copied unchanged and never stamped, unless ``keep_filtered`` is set;
+    never freshly stamped, unless ``keep_filtered`` is set;
     then it is stamped like any row and also carries ``ALLELIX_FILTER``.
+    Old ``ALLELIX_*`` tokens are removed from rejected rows and reference
+    blocks too, but those rows get no new findings. An explicit reference
+    call (``0/0`` or haploid ``0``) gets the pipeline's reference-carried
+    ClinVar finding in every non-symbolic ALT slot. Only the records in
+    ``reference_rows`` (the ones the analysis read that call from) get it.
 
     Returns the number of data lines stamped with at least one Allelix
     INFO field (either an annotation source or ``ALLELIX_ORIGINAL_ID``).
     """
+    from allelix.reports import staged_output, validate_output_path
+
+    validate_output_path(input_path, output_path, legacy_temp=False)
     if run_date is None:
         run_date = datetime.now(UTC)
     if recovered_rsids is None:
@@ -519,54 +534,61 @@ def render_vcf(
 
     stamped = 0
     header_written = False
+    reference_rows = reference_rows or {}
 
-    with (
-        _open_vcf(input_path) as fin,
-        output_path.open("w", encoding="utf-8", newline="\n") as fout,
-    ):
-        for raw_line in fin:
-            if not header_written and raw_line.startswith("##"):
-                fout.write(raw_line)
-                continue
-            if not header_written and raw_line.startswith("#CHROM"):
-                for contig_id in missing_contig_ids:
-                    fout.write(f"##contig=<ID={contig_id}>\n")
-                for h in _emit_info_declarations(
-                    sources_used,
-                    include_original_id=include_original_id,
+    with staged_output(output_path) as staged:
+        with (
+            _open_vcf(input_path) as fin,
+            staged.open_text(encoding="utf-8", newline="\n") as fout,
+        ):
+            for raw_line in fin:
+                if not header_written and raw_line.startswith("##"):
+                    # Drop what an earlier Allelix run wrote; it is re-emitted fresh.
+                    if not raw_line.startswith(("##INFO=<ID=ALLELIX_", "##ALLELIX_")):
+                        fout.write(raw_line)
+                    continue
+                if not header_written and raw_line.startswith("#CHROM"):
+                    for contig_id in missing_contig_ids:
+                        fout.write(f"##contig=<ID={contig_id}>\n")
+                    for h in _emit_info_declarations(
+                        sources_used,
+                        include_original_id=include_original_id,
+                        keep_filtered=keep_filtered,
+                    ):
+                        fout.write(h + "\n")
+                    for h in _emit_provenance_lines(
+                        build=build,
+                        build_source=build_source,
+                        annotators_used=annotators_used,
+                        run_date=run_date,
+                        skipped_sources=skipped_sources,
+                    ):
+                        fout.write(h + "\n")
+                    fout.write(raw_line)
+                    header_written = True
+                    continue
+                if not raw_line.strip():
+                    fout.write(raw_line)
+                    continue
+                if not header_written:
+                    # Data line before #CHROM — malformed input, but the parser
+                    # tolerates it and so do we. Pass through untouched.
+                    fout.write(raw_line)
+                    continue
+
+                new_line, row_stamped = _stamp_data_line(
+                    raw_line,
+                    sources_used=sources_used,
+                    annotations_by_key=annotations_by_key,
+                    recovered_rsids=recovered_rsids,
                     keep_filtered=keep_filtered,
-                ):
-                    fout.write(h + "\n")
-                for h in _emit_provenance_lines(
-                    build=build,
-                    build_source=build_source,
-                    annotators_used=annotators_used,
-                    run_date=run_date,
-                    skipped_sources=skipped_sources,
-                ):
-                    fout.write(h + "\n")
-                fout.write(raw_line)
-                header_written = True
-                continue
-            if not raw_line.strip():
-                fout.write(raw_line)
-                continue
-            if not header_written:
-                # Data line before #CHROM — malformed input, but the parser
-                # tolerates it and so do we. Pass through untouched.
-                fout.write(raw_line)
-                continue
+                    reference_rows=reference_rows,
+                )
+                fout.write(new_line)
+                if row_stamped:
+                    stamped += 1
 
-            new_line, row_stamped = _stamp_data_line(
-                raw_line,
-                sources_used=sources_used,
-                annotations_by_key=annotations_by_key,
-                recovered_rsids=recovered_rsids,
-                keep_filtered=keep_filtered,
-            )
-            fout.write(new_line)
-            if row_stamped:
-                stamped += 1
+        staged.publish()
 
     return stamped
 
@@ -578,6 +600,7 @@ def _stamp_data_line(
     annotations_by_key: Mapping[_VariantKey, list[Annotation]],
     recovered_rsids: Mapping[_VariantKey, str],
     keep_filtered: bool = False,
+    reference_rows: Mapping[RowKey, set[Locus]] | None = None,
 ) -> tuple[str, bool]:
     """Rewrite one VCF data line with Allelix INFO fields.
 
@@ -596,13 +619,22 @@ def _stamp_data_line(
         pos = int(pos_s)
     except ValueError:
         return raw_line, False
+    # Drop earlier Allelix tokens; other tokens keep their exact text.
+    info = (
+        ";".join(
+            token for token in info.split(";") if not token.split("=", 1)[0].startswith("ALLELIX_")
+        )
+        or "."
+    )
+    cols[7] = info
+    cleaned_line = "\t".join(cols) + "\n"
     caller_rejected = filt.strip() not in _UNFILTERED
     if caller_rejected and not keep_filtered:
         # Never put Allelix INFO on a row the caller rejected: other tools
         # would read it as an Allelix-endorsed call.
-        return raw_line, False
+        return cleaned_line, False
 
-    alts = alt_col.split(",")
+    alts = [] if alt_col in ("", ".") else alt_col.split(",")
     per_source: dict[str, list[str]] = {src: ["" for _ in alts] for src in sources_used}
     row_stamped = False
     original_id: str | None = None
@@ -618,11 +650,35 @@ def _stamp_data_line(
     # silently misses. Only the lookup key is normalized — the output
     # column preserves the user's convention unchanged.
     key_chrom = normalize_chromosome(chrom)
+    # A reference-carried ClinVar finding goes on the records it was read
+    # from, at the base of REF that covers its position.
+    reference_value = ""
+    candidates = []
+    for locus in (reference_rows or {}).get(reference_row_key(cols), ()):
+        base = ref[locus[1] - pos].upper()
+        for annotation in annotations_by_key.get((*locus, base, base), []):
+            if (
+                annotation.source == "clinvar"
+                and annotation.reference_carries_alt
+                and annotation.locus == locus
+                and annotation.locus_ref == base
+            ):
+                candidates.append(annotation)
+    for annotation in sorted(candidates, key=report_rank_key):
+        primary = _format_primary(annotation)
+        if primary is not None:
+            reference_value = primary[1]
+            break
 
     for i, alt in enumerate(alts):
         if _is_symbolic(alt):
             continue
-        key: _VariantKey = (key_chrom, pos, ref, alt)
+        # The REF exception is ClinVar-only. REF enrichment values must
+        # never be presented as properties of one of the listed ALTs.
+        if reference_value:
+            per_source["clinvar"][i] = reference_value
+            row_stamped = True
+        key: _VariantKey = (key_chrom, pos, ref.upper(), alt.upper())
         anns = annotations_by_key.get(key, [])
         # Primary sources: source-dispatched, one Annotation → one INFO
         # value slot. Where a source has several rows at the variant (two

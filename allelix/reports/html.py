@@ -44,7 +44,9 @@ from allelix.reports._pipeline import (
     COMMON_ALLELE_MAGNITUDE,
     PANEL_NOT_ON_CHIP,
     PANEL_STATES,
+    _enrichment_allele,
     is_vcf_parser,
+    panel_reason_label,
     panel_state_label,
     rollup_gwas_duplicates,
 )
@@ -839,12 +841,15 @@ def _panel_coverage_section(coverage: PanelCoverage | None, parser_name: str = "
         f"<td>{_escape(v['gene'] or '')}</td>"
         f"<td>{'<code>' + _escape(v['genotype']) + '</code>' if v['genotype'] else ''}</td>"
         f"<td>{panel_state_label(v['state'], vcf=vcf)}</td>"
-        f"<td>{v['annotation_count']}</td></tr>"
+        + (f"<td>{_escape(panel_reason_label(v['reason']))}</td>" if vcf else "")
+        + f"<td>{v['annotation_count']}</td></tr>"
         for v in coverage["variants"]
     )
     table = (
         "<table class='panel-coverage'><thead><tr><th>rsID</th><th>Gene</th>"
-        "<th>Genotype</th><th>State</th><th>Annotations</th></tr></thead>"
+        "<th>Genotype</th><th>State</th>"
+        + ("<th>Reason</th>" if vcf else "")
+        + "<th>Annotations</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
         if rows
         else ""
@@ -927,6 +932,18 @@ def _group_annotations(
 # ---------------------------------------------------------------------------
 
 
+def _add_metrics(target: dict, ann: Annotation) -> None:
+    """Copy the annotation's enrichment values into ``target`` where it has none yet."""
+    if ann.allele_frequency is not None and "allele_frequency" not in target:
+        target["allele_frequency"] = round(ann.allele_frequency, 6)
+    if ann.am_pathogenicity is not None and "am_pathogenicity" not in target:
+        target["am_pathogenicity"] = round(ann.am_pathogenicity, 4)
+    if ann.am_class and "am_class" not in target:
+        target["am_class"] = ann.am_class
+    if ann.cadd_phred is not None and "cadd_phred" not in target:
+        target["cadd_phred"] = round(ann.cadd_phred, 1)
+
+
 def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
     """Serialize grouped annotations to JSON for the detail sidebar."""
     variant_data = []
@@ -941,15 +958,18 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             "plausibility_reason": _not_assessed_reason(group),
             "annotations": [],
         }
-        for ann in sorted(group, key=lambda a: -a.magnitude):
-            if ann.allele_frequency is not None and "allele_frequency" not in entry:
-                entry["allele_frequency"] = round(ann.allele_frequency, 6)
-            if ann.am_pathogenicity is not None and "am_pathogenicity" not in entry:
-                entry["am_pathogenicity"] = round(ann.am_pathogenicity, 4)
-            if ann.am_class and "am_class" not in entry:
-                entry["am_class"] = ann.am_class
-            if ann.cadd_phred is not None and "cadd_phred" not in entry:
-                entry["cadd_phred"] = round(ann.cadd_phred, 1)
+        ordered = sorted(group, key=lambda a: -a.magnitude)
+        # gnomAD, AlphaMissense and CADD describe one allele each. A variant
+        # with more than one allele lists them per allele, never on one line.
+        alleles = [_enrichment_allele(ann) or ann.alt for ann in ordered]
+        several = len(set(alleles) - {""}) > 1
+        per_allele: dict[str, dict] = {}
+        for ann, allele in zip(ordered, alleles, strict=True):
+            _add_metrics(per_allele.setdefault(allele, {}) if several else entry, ann)
+        entry["allele_metrics"] = [
+            {"allele": allele, **metrics} for allele, metrics in per_allele.items() if metrics
+        ]
+        for ann in ordered:
             a: dict = {"source": ann.source, "magnitude": ann.magnitude}
             if ann.significance:
                 a["significance"] = ann.significance
@@ -1230,24 +1250,13 @@ document.addEventListener("DOMContentLoaded", function() {
 
     var hasMetrics = v.allele_frequency != null ||
                      v.am_pathogenicity != null || v.cadd_phred != null;
-    if (hasMetrics) {
+    if (hasMetrics || v.allele_metrics.length) {
       h += '<div class="source-header">VARIANT METRICS</div>';
-      if (v.allele_frequency != null)
-        h += fieldRow("Frequency",
-          (v.allele_frequency * 100).toFixed(1) + "%");
-      if (v.am_pathogenicity != null) {
-        var amText = v.am_pathogenicity.toFixed(3);
-        if (v.am_class) amText += " (" + v.am_class + ")";
-        h += fieldRow("AlphaMissense", amText);
-      }
-      if (v.cadd_phred != null) {
-        var cs = v.cadd_phred;
-        var tier = cs >= 30 ? "top 0.1%"
-                 : cs >= 20 ? "top 1%"
-                 : cs >= 10 ? "top 10%" : "";
-        var label = cs.toFixed(1) +
-          (tier ? " (" + tier + " most deleterious)" : "");
-        h += fieldRow("CADD PHRED", label);
+      if (hasMetrics) h += metricRows(v, "");
+      // More than one allele: each value is shown with the allele it is for.
+      for (var mi = 0; mi < v.allele_metrics.length; mi++) {
+        var m = v.allele_metrics[mi];
+        h += metricRows(m, m.allele + ": ");
       }
     }
 
@@ -1284,6 +1293,28 @@ document.addEventListener("DOMContentLoaded", function() {
       }
     }
     panelBody.innerHTML = h;
+  }
+
+  function metricRows(m, prefix) {
+    var rows = "";
+    if (m.allele_frequency != null)
+      rows += fieldRow("Frequency",
+        prefix + (m.allele_frequency * 100).toFixed(1) + "%");
+    if (m.am_pathogenicity != null) {
+      var amText = m.am_pathogenicity.toFixed(3);
+      if (m.am_class) amText += " (" + m.am_class + ")";
+      rows += fieldRow("AlphaMissense", prefix + amText);
+    }
+    if (m.cadd_phred != null) {
+      var cs = m.cadd_phred;
+      var tier = cs >= 30 ? "top 0.1%"
+               : cs >= 20 ? "top 1%"
+               : cs >= 10 ? "top 10%" : "";
+      var label = cs.toFixed(1) +
+        (tier ? " (" + tier + " most deleterious)" : "");
+      rows += fieldRow("CADD PHRED", prefix + label);
+    }
+    return rows;
   }
 
   function fieldRow(label, value) {
@@ -1643,5 +1674,5 @@ def render_html(
         f"{_license_attributions(result.annotators_used)}</footer>"
         "</body></html>"
     )
-    atomic_write_text(output_path, document)
+    atomic_write_text(output_path, document, input_path=result.file_path)
     return len(filtered)

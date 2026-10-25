@@ -52,3 +52,10 @@ Every fetch helper (`fetch_remote_text`, `head_request_headers`) returns `None` 
 - **Offline operation**: nothing here changes the offline-first principle (ADR-0004). Since v1.2.0, freshness checks run by default before analysis (`--no-update` to skip). If the network is unreachable, a warning is printed and analysis proceeds against the local cache. No network access occurs during annotation itself.
 - **Test surface**: the freshness logic is fully covered by the CLI test suite — match, differ, unverifiable, legacy-cache, and `--force` paths all have direct tests. Mocked HEAD/GET handlers in `tests/databases/test_remote_signal.py` exercise the network helpers without hitting live endpoints.
 - **Future signal sources**: SNPedia and GWAS Catalog (now implemented) plug into the same protocol — `fetch_remote_signal` returns whichever opaque, type-prefixed string the source publishes. No CLI changes needed for new annotators.
+
+## Amendment — 2.5.1
+
+ClinVar's TSV freshness signal still comes from the submission-summary
+checksum. ADR-0053 replaces first-token parsing with bounded, filename-aware
+MD5 validation and requires variant-summary integrity before refresh
+publication. Current equal-signal caches retain the small-probe update path.

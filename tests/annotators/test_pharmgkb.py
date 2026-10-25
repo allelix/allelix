@@ -660,3 +660,126 @@ class TestBatchAnnotateParity:
             assert per_variant == batched
         finally:
             ann.close()
+
+
+_PROBE = "pgkb:etag:test123|cpic:lastchange:2026-08-03"
+# Both rs1801133 alleles normal function: its rows become CPIC non-findings.
+_CPIC = {("rs1801133", "G"): "normal", ("rs1801133", "A"): "normal"}
+
+
+class TestCpicStampMatchesContent:
+    """The stored CPIC part of the signal says what the cache holds."""
+
+    @staticmethod
+    def _setup(tmp_path: Path, mock_pharmgkb_dir: Path, cpic) -> PharmGKBAnnotator:
+        ann = PharmGKBAnnotator(tmp_path)
+        fetch = {"side_effect": cpic} if isinstance(cpic, Exception) else {"return_value": cpic}
+        with (
+            patch.object(ann, "fetch_remote_signal", return_value=_PROBE),
+            patch(
+                "allelix.annotators.pharmgkb.download",
+                side_effect=lambda url, dest: _fake_download(mock_pharmgkb_dir, url, dest),
+            ),
+            patch("allelix.annotators.pharmgkb.fetch_cpic_allele_functions", **fetch),
+        ):
+            ann.setup()
+        return ann
+
+    @staticmethod
+    def _counts(tmp_path: Path) -> tuple[int, int, str]:
+        import sqlite3
+
+        with contextlib.closing(sqlite3.connect(tmp_path / "pharmgkb.sqlite")) as conn:
+            cpic_rows = conn.execute("SELECT COUNT(*) FROM pharmgkb_allele_function").fetchone()[0]
+            nonfindings = conn.execute(
+                "SELECT COUNT(*) FROM pharmgkb_annotations WHERE is_nonfinding = 1"
+            ).fetchone()[0]
+            stored = conn.execute(
+                "SELECT remote_signal FROM database_versions WHERE name = 'pharmgkb'"
+            ).fetchone()[0]
+        return cpic_rows, nonfindings, stored
+
+    @pytest.mark.parametrize("cpic", [urllib.error.URLError("CPIC is down"), {}])
+    def test_failed_or_empty_cpic_fetch_is_stamped_unavailable(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, cpic
+    ) -> None:
+        """The report's reproduction: the probe answered, the data fetch then failed."""
+        ann = self._setup(tmp_path, mock_pharmgkb_dir, cpic)
+        rows, _, stored = self._counts(tmp_path)
+        ann.close()
+        assert rows == 0
+        assert stored == "pgkb:etag:test123|cpic:unavailable"
+
+    def test_successful_fetch_keeps_the_probe_stamp(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path
+    ) -> None:
+        ann = self._setup(tmp_path, mock_pharmgkb_dir, _CPIC)
+        assert ann.cached_remote_signal() == _PROBE
+        ann.close()
+        rows, nonfindings, stored = self._counts(tmp_path)
+        assert rows == 2 and nonfindings > 0 and stored == _PROBE
+
+    @staticmethod
+    def _update(tmp_path: Path, mock_pharmgkb_dir: Path, monkeypatch, cpic):
+        import importlib
+
+        from click.testing import CliRunner
+
+        from allelix.annotators import pharmgkb as pharmgkb_module
+        from allelix.cli import main
+
+        downloads = []
+
+        def download(url, dest):
+            downloads.append(url)
+            _fake_download(mock_pharmgkb_dir, url, dest)
+
+        db_module = importlib.import_module("allelix.cli.db")
+        monkeypatch.setattr(
+            db_module, "get_annotators", lambda data, **kw: [PharmGKBAnnotator(data)]
+        )
+        monkeypatch.setattr(PharmGKBAnnotator, "fetch_remote_signal", lambda self: _PROBE)
+        monkeypatch.setattr(pharmgkb_module, "download", download)
+        monkeypatch.setattr(pharmgkb_module, "fetch_cpic_allele_functions", lambda: cpic)
+        result = CliRunner().invoke(main, ["db", "update", "--data-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        return downloads, " ".join(result.output.split())
+
+    def test_a_2_5_0_cache_with_no_cpic_rows_is_repaired_by_update(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, monkeypatch
+    ) -> None:
+        import sqlite3
+
+        # What 2.5.0 left: the probe's stamp, no CPIC rows, no CPIC non-findings.
+        self._setup(tmp_path, mock_pharmgkb_dir, {}).close()
+        with contextlib.closing(sqlite3.connect(tmp_path / "pharmgkb.sqlite")) as conn:
+            conn.execute("UPDATE database_versions SET remote_signal = ?", (_PROBE,))
+            conn.commit()
+        assert self._counts(tmp_path) == (0, 0, _PROBE)
+        with PharmGKBAnnotator(tmp_path) as ann:
+            assert ann.cached_remote_signal() == "pgkb:etag:test123|cpic:unavailable"
+
+        downloads, output = self._update(tmp_path, mock_pharmgkb_dir, monkeypatch, _CPIC)
+        assert len(downloads) == 1
+        assert "remote signal changed; refreshing" in output
+        rows, nonfindings, stored = self._counts(tmp_path)
+        assert rows == 2 and nonfindings > 0 and stored == _PROBE
+
+    def test_a_healthy_cache_is_not_rebuilt(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, monkeypatch
+    ) -> None:
+        self._setup(tmp_path, mock_pharmgkb_dir, _CPIC).close()
+        before = (tmp_path / "pharmgkb.sqlite").read_bytes()
+        downloads, output = self._update(tmp_path, mock_pharmgkb_dir, monkeypatch, _CPIC)
+        assert downloads == []
+        assert "already current" in output
+        assert (tmp_path / "pharmgkb.sqlite").read_bytes() == before
+
+    def test_a_persistent_cpic_outage_stays_unavailable_and_retries(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, monkeypatch
+    ) -> None:
+        self._setup(tmp_path, mock_pharmgkb_dir, {}).close()
+        downloads, output = self._update(tmp_path, mock_pharmgkb_dir, monkeypatch, {})
+        assert len(downloads) == 1
+        assert "CPIC unavailable" in output
+        assert self._counts(tmp_path)[2] == "pgkb:etag:test123|cpic:unavailable"

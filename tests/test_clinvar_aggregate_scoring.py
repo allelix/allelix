@@ -283,7 +283,7 @@ class TestDisplay:
         out = tmp_path / "r.json"
         render_json(self._result(data_dir, tmp_path), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["schema_version"] == SCHEMA_VERSION == "9"
+        assert payload["schema_version"] == SCHEMA_VERSION == "10"
         assert payload["clinvar"] == {
             "pathogenic_rows_scored_down": 4,
             "unrecognised_rows_hidden": 1,

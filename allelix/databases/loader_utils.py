@@ -99,9 +99,18 @@ def convert_to_rollback_journal(db_path: Path) -> bool:
     converted by the next ``db update`` without a download. Returns True
     when the file was converted.
     """
-    from allelix.databases.cache_state import is_wal
+    from allelix.databases.cache_state import directory_writable, is_wal
 
+    # SQLite opens, checkpoint/conversion and sidecar cleanup must all refer
+    # to the same installed target, including when reached through a symlink.
+    try:
+        db_path = db_path.resolve()
+    except (OSError, RuntimeError):
+        # Keep the previous no-op for unreadable paths and symlink cycles.
+        return False
     if not is_wal(db_path):
+        return False
+    if not directory_writable(db_path.parent):
         return False
     try:
         with contextlib.closing(sqlite3.connect(db_path)) as conn:

@@ -59,6 +59,14 @@ Each ADR captures one decision: the context that forced it, what we chose, and t
 - [ADR-0051: Count the array calls ClinVar cannot match, and panel coverage in four states](0051-array-calls-clinvar-cannot-match.md): `input.probe_classes` (i-probes at P/LP loci, D/I calls at P/LP rsIDs), `input.array_quality`, `Annotator.run_counts()`, `panel_coverage` as `{requested, counts, variants}`; supersedes ADR-0011's premise
 - [ADR-0052: A zero-star ClinVar P/LP submission on a common allele leaves the default report](0052-zero-star-plp-on-a-common-allele.md): a P/LP row without assertion criteria whose allele has a gnomAD frequency of 5% or more is scored 4.0, marked `common_allele_capped`, and counted; amends ADR-0045
 
+- [ADR-0053: ClinVar refresh integrity and publication](0053-clinvar-refresh-integrity.md)
+- [ADR-0054: Comparison identity and indexed extraction completeness](0054-compare-record-identity-and-indexed-extraction.md)
+- [ADR-0055: Explicit VCF panel observations and constituent gene filters](0055-explicit-panel-observations-gene-filters.md): bounded coverage separate from findings, JSON panel reasons, exact source-specific gene tokens
+- [ADR-0056: Protect input files and own staged output resources](0056-input-output-file-safety.md): input-alias preflight, unique owned temps and per-file publication
+- [ADR-0057: Check Windows cache directory permissions without writing](0057-windows-cache-permissions.md): effective-token AccessCheck, physical paths and conservative failures
+- [ADR-0058: Own analysis providers through their final use](0058-analysis-and-zip-resource-ownership.md): explicit callback owners, identity deduplication and partial ZIP cleanup
+- [ADR-0059: Annotated VCF refresh and explicit reference calls](0059-annotated-vcf-refresh-and-reference-calls.md): replace old Allelix INFO on re-annotation; stamp reference-carried ClinVar findings on `0/0` records
+
 ## Writing a new ADR
 
 1. Copy the latest ADR as a starting structure.

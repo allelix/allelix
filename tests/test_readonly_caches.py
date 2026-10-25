@@ -9,6 +9,7 @@ leaves caches in rollback-journal mode. All rows are synthetic.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import gzip
 import hashlib
@@ -16,6 +17,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -181,15 +183,118 @@ def _snapshot(directory: Path) -> dict[str, tuple[int, int, str]]:
     }
 
 
+def _windows_acl(path: Path, restore: str | None = None) -> str:
+    """Read or restore the fixture's DACL, retaining owner/group and inheritance."""
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    assert shell is not None, "Windows ACL fixtures require the installed PowerShell"
+    script = (
+        "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"
+        "$acl=Get-Acl -LiteralPath $env:ALLELIX_TEST_ACL_PATH;"
+    )
+    if restore is not None:
+        script += (
+            "$acl.SetSecurityDescriptorSddlForm($env:ALLELIX_TEST_ACL_SDDL,"
+            "[System.Security.AccessControl.AccessControlSections]::Access);"
+            "Set-Acl -LiteralPath $env:ALLELIX_TEST_ACL_PATH -AclObject $acl;"
+            "$acl=Get-Acl -LiteralPath $env:ALLELIX_TEST_ACL_PATH;"
+        )
+    script += "[Console]::Write($acl.Sddl)"
+    environment = dict(
+        os.environ, ALLELIX_TEST_ACL_PATH=str(path), ALLELIX_TEST_ACL_SDDL=restore or ""
+    )
+    result = subprocess.run(
+        [
+            shell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(script.encode("utf-16-le")).decode("ascii"),
+        ],
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip(), "ACL snapshot is empty"
+    return result.stdout.strip()
+
+
+def _restored_acl_matches(original: str, restored: str) -> bool:
+    """Require identical SDDL except an OS-added DACL AUTO_INHERITED marker.
+
+    SetSecurityInfo can add SE_DACL_AUTO_INHERITED while converting the
+    descriptor to the current inheritance model without changing semantics:
+    https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces
+    Preserve every ACE (including order/flags), owner, group and other control
+    marker. Only adding DACL AI is allowed; removing it or changing AR/P is not.
+    """
+    if restored == original:
+        return True
+    prefix, dacl_marker, dacl = restored.partition("D:")
+    flags, ace_marker, entries = dacl.partition("(")
+    if not dacl_marker or "(" in prefix or not ace_marker or flags.count("AI") != 1:
+        return False
+    previous_flags = flags.replace("AI", "", 1)
+    if previous_flags not in ("", "P", "AR", "PAR"):
+        return False
+    return original == f"{prefix}D:{previous_flags}({entries}"
+
+
 @contextlib.contextmanager
-def _read_only(directory: Path):
-    """Remove the directory's write bit for the block, then restore it."""
-    mode = directory.stat().st_mode
-    directory.chmod(stat.S_IRUSR | stat.S_IXUSR)
+def _denied_permissions(path: Path, *, read: bool = False):
+    """Prove denial and restore original access rules, ownership and inheritance."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    probe = path / ".permission-denial-probe" if not read else None
+
+    def allowed():
+        if probe is not None:
+            probe.write_bytes(b"synthetic permission probe")
+            probe.unlink()
+        else:
+            with path.open("rb") as fh:
+                fh.read(1)
+
+    allowed()
+    mode = path.stat().st_mode
+    acl = _windows_acl(path) if os.name == "nt" else None
     try:
+        if acl is not None:
+            rights = "(RD)" if read else "(WD,AD,WEA,WA,DE,DC)"
+            result = subprocess.run(
+                ["icacls", str(path), "/deny", f"*S-1-1-0:{rights}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+        else:
+            path.chmod(mode & ~(0o444 if read else 0o222))
+        if probe is None:
+            with pytest.raises(PermissionError):
+                allowed()
+        else:
+            with pytest.raises(PermissionError):
+                probe.write_bytes(b"synthetic permission probe")
+            assert not probe.exists(), "Directory denial must refuse file creation"
         yield
     finally:
-        directory.chmod(mode)
+        if acl is not None:
+            restored = _windows_acl(path, acl)
+            assert _restored_acl_matches(acl, restored), "Original ACL was not restored"
+        else:
+            path.chmod(mode)
+        if probe is not None:
+            probe.unlink(missing_ok=True)
+        allowed()
+
+
+def _read_only(directory: Path):
+    """A real directory-create denial, on POSIX and Windows alike."""
+    return _denied_permissions(directory)
 
 
 def _flat(text: str) -> str:
@@ -444,18 +549,42 @@ class TestSkippedSourceLines:
             in output
         )
 
-    def test_unreadable(self, data: Path, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("metadata_allows", [False, True], ids=["metadata", "open-denied"])
+    def test_unreadable(
+        self,
+        data: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        metadata_allows: bool,
+    ) -> None:
         path = data / "pharmgkb.sqlite"
-        path.chmod(0)
-        try:
+        if metadata_allows:
+            access = os.access
+
+            def metadata_access(candidate, mode, *args, **kwargs):
+                if candidate == path and mode == os.R_OK:
+                    return True
+                return access(candidate, mode, *args, **kwargs)
+
+            monkeypatch.setattr(os, "access", metadata_access)
+        with _denied_permissions(path, read=True):
+            if metadata_allows:
+                assert os.access(path, os.R_OK)
+            with pytest.raises(PermissionError) as denied:
+                path.read_bytes()
             code, output = _analyze(data, tmp_path / "r.json")
-        finally:
-            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
         assert code == 0, output
-        assert (
-            _flat(f"Skipping ClinPGx: cannot read {path}. Check the permissions on {path}.")
+        if metadata_allows:
+            assert _flat(f"({denied.value})") in output
+        # Metadata can reject the file before open, or the actual denied open
+        # supplies useful OS detail. Keep the entire diagnostic together.
+        assert any(
+            _flat(
+                f"Skipping ClinPGx: cannot read {path}{detail}. Check the permissions on {path}."
+            )
             in output
-        )
+            for detail in ("", f" ({denied.value})")
+        ), output
 
     def test_corrupt(self, data: Path, tmp_path: Path) -> None:
         path = data / "pharmgkb.sqlite"
@@ -793,7 +922,7 @@ class TestDbUpdateDownloadsOnlyWhatIsNeeded:
         calls: list[str] = []
         monkeypatch.setattr(
             "allelix.cli._helpers._run_setup",
-            lambda annotator: calls.append(annotator.name) or True,
+            lambda annotator, **kwargs: calls.append(annotator.name) or True,
         )
         real = db_module.get_annotators
 
@@ -846,8 +975,10 @@ class TestDbUpdateDownloadsOnlyWhatIsNeeded:
             result = CliRunner().invoke(main, ["db", "update", "--data-dir", str(data)])
         assert result.exit_code == 1, result.output
         assert setups == []
-        assert "alphamissense:" in result.output
-        assert "Nothing was downloaded" in result.output
+        # Rich wraps at 80 columns and the message holds the tmp path.
+        output = " ".join(result.output.split())
+        assert "alphamissense:" in output
+        assert "Nothing was downloaded" in output
         assert _snapshot(data) == before
 
 

@@ -241,11 +241,17 @@ class GWASCatalogAnnotator(Annotator):
             self._conn = connect_readonly(self._db_path)
         return self._conn
 
-    def setup(self) -> None:
-        """Download GWAS Catalog associations ZIP, extract TSV, and ingest."""
+    def setup(self, *, force: bool = False) -> None:
+        """Download GWAS Catalog associations ZIP, extract TSV, and ingest.
+
+        ``force`` (``db update --force``) refreshes when the freshness signal
+        is unavailable. The source publishes no checksum, so the download's
+        checks (TLS, Content-Length, row floor) are the same either way; no
+        signal is stored, so the next ordinary update refreshes again.
+        """
         url = GWAS_CATALOG_URL
         signal = self.fetch_remote_signal()
-        if signal is None:
+        if signal is None and not force:
             msg = (
                 "gwas: cannot verify remote freshness signal. "
                 "Refresh aborted to avoid persisting an incomplete cache stamp. "

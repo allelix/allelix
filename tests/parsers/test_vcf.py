@@ -253,7 +253,7 @@ class TestVcfType:
         f.write_text(
             "##fileformat=VCFv4.2\n"
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
-            "1\t10\t.\tA\tG\t.\t.\tEND=20\tGT\t0/0\n"
+            "1\t10\t.\tA\t<NON_REF>\t.\t.\tEND=20\tGT\t0/0\n"
         )
         assert VcfParser().vcf_type(f) == "gvcf"
 

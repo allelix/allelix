@@ -10,10 +10,13 @@ git clone https://github.com/allelix/allelix.git
 cd allelix
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,vcf-index]"
 git config core.hooksPath .githooks
 pre-commit install --hook-type pre-commit
 ```
+
+The `vcf-index` extra installs pysam, which the indexed-VCF tests need; it
+is the same install as CI's, so a local run is the CI run.
 
 System tools outside pip: ``bcftools`` (fast suite; its tests skip
 locally when it is missing, and CI installs it) and ``plink2`` (one
@@ -25,7 +28,7 @@ integration test in the slow suite; skips when missing):
   when absent locally; CI installs it unconditionally.
 - ``plink2`` — PLINK1 binary export round-trip integration test
   (marked ``@pytest.mark.integration``, excluded from fast CI, runs
-  in the weekly slow suite).
+  in the manually dispatched slow suite).
 
 Run the test suite:
 
@@ -79,9 +82,33 @@ is caught instead of hidden.
                                 # (auto-fetches the GWAS zip if missing)
 
 `pytest` runs everything locally, fast and slow; it fetches the GWAS zip
-if missing. Per-push CI runs only the fast tier
-(`-m "not slow and not integration"`). The slow and integration tests run
-in `slow.yml` every Monday and on manual dispatch.
+if missing. Hosted CI runs the fast tier
+(`-m "not slow and not integration"`) on pull requests targeting `main`,
+manual dispatch and publication refs. Development pushes and pull requests
+targeting `dev` do not start hosted CI. The
+slow and integration workflow is manually dispatched for release validation;
+it has no scheduled run.
+
+### Development checks and release gates
+
+During development, run the affected regression tests, lint, formatting
+and type checks locally. Regression tests must demonstrate the defect
+before the fix and pass afterwards. Use an adequately provisioned local
+machine for the full suite.
+
+Before merging to `main` or publishing, require a successful hosted CI run
+for the finished candidate, through the `main` pull request or manual
+dispatch, and record the resolved commit SHA. All matrix jobs, warning checks and
+coverage requirements must pass. Run the full release-validation
+battery, including slow and integration tests and their required tools,
+on that same candidate. Inspect and resolve failures and missing
+prerequisites before publishing.
+
+A changed candidate needs validation of the new commit. Batch related
+development work before dispatching another hosted matrix. Each hosted
+workflow cancels a superseded run of the same workflow and ref; a
+canceled run never supplies release evidence. Publication and version
+checks remain enabled.
 
 Lint and format:
 
@@ -473,20 +500,23 @@ Two hooks run locally:
 
 CI (`.github/workflows/ci.yml`) fires on:
 
-- Push to `main` or `dev`
+- Manual dispatch via the Actions UI (`workflow_dispatch`) for a finished candidate
+- Pull requests targeting `main` (before merge)
+- Push to `main`
 - Push of a `v*` tag
-- Pull requests targeting `main` or `dev` (so feature PRs to `dev` are
-  coverage / mypy / matrix-gated at PR time, not only post-merge)
-- Manual dispatch via the Actions UI (`workflow_dispatch`)
+
+Routine development pushes and pull requests targeting `dev` use local
+checks and review. They do not trigger a hosted matrix.
 
 CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
-fixtures only) on a Python 3.11 / 3.12 matrix. `@slow` and
+fixtures only) on a Python 3.11 / 3.12 / 3.13 matrix. A skipped test fails
+the run, so every fast test runs on every Python. `@slow` and
 `@integration`-marked tests are deselected in CI
 (`-m "not slow and not integration"`) because the runner doesn't
 have the ~1.5 GB real-genotype fixture set or the ~19 GB default annotator
 database cache — fetching either would push CI runtime past 45 minutes
-per push and burn GitHub Actions minutes that the local-run discipline
-already covers.
+per development update and consume GitHub Actions minutes already covered
+by deliberate local release validation.
 
 ### Where the slow / real-data battery actually runs
 
@@ -495,8 +525,7 @@ commit, following `test_data/FULL_TEST_PROTOCOL.md`. It includes the
 full pytest suite, fresh caches, both genome builds, all parser formats,
 and the GIAB / 1000 Genomes corpus. A release does not ship without it.
 
-`.github/workflows/slow.yml` also runs every Monday and by manual
-`workflow_dispatch`. It downloads a current ClinVar cache, executes the
+`.github/workflows/slow.yml` runs only by manual `workflow_dispatch`. It downloads a current ClinVar cache, executes the
 CLNSIG drift sentinel by exact node ID, emits JUnit XML, and fails unless
 that named test is present and passed; it then runs the slow + integration
 marker set. Every RC requires a manual dispatch against the same commit
@@ -507,8 +536,8 @@ release failure, not a green result.
 
 - The large public-genome corpus and all production-size caches exceed
   a practical per-push Actions budget.
-- Weekly/on-demand `slow.yml` catches live-source drift and integration
-  regressions between releases.
+- Manually dispatched `slow.yml` checks live-source drift and integration
+  behavior for the release candidate.
 - The local RC protocol supplies the larger, build-paired end-to-end
   signal and runs against the exact release commit before tagging.
 
@@ -623,7 +652,7 @@ When raising the floor:
    `gh run view <run_id> --log-failed | grep TOTAL`
    (or `--log` on a passing run; `TOTAL` line is the project number).
 3. Set the new floor slightly below the lowest CI number across the
-   3.11 / 3.12 matrix. Local numbers are not the source of truth.
+   3.11 / 3.12 / 3.13 matrix. Local numbers are not the source of truth.
 
 The floor-history comment in `pyproject.toml` records the CI-measured
 baseline at each ratchet so the next bump calibrates correctly.

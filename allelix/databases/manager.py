@@ -40,6 +40,7 @@ CLINVAR_VARIANT_SUMMARY_URL = (
 CLINVAR_SUBMISSION_SUMMARY_URL = (
     "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/submission_summary.txt.gz"
 )
+CLINVAR_MIN_ROWS = {"GRCh37": 5_000_000, "GRCh38": 5_000_000}
 INSERT_BATCH_SIZE = 5_000
 DOWNLOAD_TIMEOUT_SECONDS = 60
 SIGNAL_TIMEOUT_SECONDS = 15
@@ -58,7 +59,9 @@ class DatabaseInfo(TypedDict):
     local_version_tag: str | None
 
 
-def fetch_remote_text(url: str, timeout: float = SIGNAL_TIMEOUT_SECONDS) -> str | None:
+def fetch_remote_text(
+    url: str, timeout: float = SIGNAL_TIMEOUT_SECONDS, *, max_bytes: int | None = None
+) -> str | None:
     """Fetch a small text resource (e.g., a `.md5` file) and return its body.
 
     Returns None on any failure — `db update`'s freshness check treats
@@ -68,7 +71,10 @@ def fetch_remote_text(url: str, timeout: float = SIGNAL_TIMEOUT_SECONDS) -> str 
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read().decode("utf-8", errors="replace")
+            body = response.read() if max_bytes is None else response.read(max_bytes + 1)
+            if max_bytes is not None and len(body) > max_bytes:
+                return None
+            return body.decode("utf-8", errors="replace")
     except (OSError, ValueError) as exc:
         if hasattr(exc, "close"):
             exc.close()
@@ -835,6 +841,9 @@ def load_clinvar_tsv(
     source_url: str = "",
     remote_signal: str | None = None,
     aggregate_only: bool = True,
+    min_rows: int = 0,
+    previous_count: int | None = None,
+    record_name: str = "clinvar",
 ) -> None:
     """Build a ClinVar SQLite cache from the per-SCV TSV sources.
 
@@ -844,9 +853,10 @@ def load_clinvar_tsv(
     landed in v2.2.0.
 
     The cache is built beside ``db_path`` and replaces it only once it is
-    complete and holds records. A failure at any point (a changed column
-    layout, a broken download, an empty result) raises and leaves the
-    existing cache as it was.
+    complete, meets ``min_rows`` and at least 90% of ``previous_count``,
+    and carries final metadata under ``record_name``. Production setup
+    supplies the per-build policy and validates all selected candidates
+    before publishing any. Direct synthetic builds can use smaller floors.
     """
     partial = db_path.with_name(db_path.name + ".partial")
     partial.unlink(missing_ok=True)
@@ -859,6 +869,9 @@ def load_clinvar_tsv(
             source_url=source_url,
             remote_signal=remote_signal,
             aggregate_only=aggregate_only,
+            min_rows=min_rows,
+            previous_count=previous_count,
+            record_name=record_name,
         )
         os.replace(partial, db_path)
     finally:
@@ -883,6 +896,9 @@ def _build_clinvar_cache(
     source_url: str,
     remote_signal: str | None,
     aggregate_only: bool,
+    min_rows: int,
+    previous_count: int | None,
+    record_name: str,
 ) -> None:
     """Write a new ClinVar cache at ``db_path``; raise when it holds no records."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
@@ -925,37 +941,44 @@ def _build_clinvar_cache(
                 batch,
             )
         record_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
-        if record_count == 0:
-            msg = f"ClinVar {build}: the source files gave no records; the existing cache is kept"
-            raise ClinVarFormatError(msg)
-        if remote_signal:
-            from datetime import UTC, datetime
+        relative_floor = (9 * previous_count + 9) // 10 if previous_count is not None else 0
+        if record_count == 0 or record_count < min_rows or record_count < relative_floor:
+            problem = (
+                "the source files gave no records (0 rows)"
+                if record_count == 0
+                else f"candidate has {record_count:,} rows"
+            )
+            raise ClinVarFormatError(
+                f"ClinVar {build}: {problem}; "
+                f"old count {previous_count if previous_count is not None else 'absent'}; "
+                f"requires fixed floor {min_rows:,} and 90% floor {relative_floor:,}; "
+                "existing caches kept"
+            )
+        from datetime import UTC, datetime
 
-            from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
+        from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 
-            stamp_remote_signal(conn, "clinvar", remote_signal, source_url)
-            _ensure_local_version_tag_column(conn)
-            # stamp_remote_signal inserts version=NULL by design — it's a freshness-only
-            # stamper meant to upsert remote_signal onto existing rows
-            # (e.g. the baked-in metadata of the HF .sqlite.gz caches).
-            # Caches built from scratch by load_clinvar_tsv have no
-            # pre-existing row, so version stays NULL and `db status`
-            # shows "version: None". Stamp the build date here so the
-            # cache identifies itself. The old VCF loader effectively
-            # stamped from ClinVar's VCF ##fileDate header; the per-SCV
-            # TSVs don't carry one, so build-date is the practical
-            # equivalent. Freshness (remote_signal md5) is unchanged.
-            build_date = datetime.now(UTC).strftime("%Y-%m-%d")
-            conn.execute(
-                "UPDATE database_versions SET version = ?, "
-                "local_version_tag = ?, "
-                "record_count = ? WHERE name = ?",
-                (
-                    build_date,
-                    f"iv:{CLINVAR_INTERPRETER_VERSION}",
-                    record_count,
-                    "clinvar",
-                ),
+        # Build identity/count metadata is required even when freshness is unknown.
+        build_date = datetime.now(UTC).strftime("%Y-%m-%d")
+        tag = f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        stamp_remote_signal(conn, record_name, remote_signal, source_url)
+        conn.execute(
+            "UPDATE database_versions SET version = ?, local_version_tag = ?, "
+            "record_count = ? WHERE name = ?",
+            (build_date, tag, record_count, record_name),
+        )
+        metadata = conn.execute(
+            "SELECT source_url, version, local_version_tag, record_count, remote_signal, "
+            "downloaded_at FROM database_versions WHERE name = ?",
+            (record_name,),
+        ).fetchone()
+        if (
+            metadata is None
+            or metadata[:5] != (source_url, build_date, tag, record_count, remote_signal)
+            or not metadata[5]
+        ):
+            raise ClinVarFormatError(
+                f"ClinVar {build}: candidate metadata is invalid; existing caches kept"
             )
         conn.commit()
 
@@ -1042,7 +1065,7 @@ def _ensure_local_version_tag_column(conn: sqlite3.Connection) -> None:
 def stamp_remote_signal(
     conn: sqlite3.Connection,
     name: str,
-    remote_signal: str,
+    remote_signal: str | None,
     source_url: str = "",
 ) -> None:
     """Ensure ``database_versions`` exists and upsert the remote signal.

@@ -203,6 +203,8 @@ _UNCHECKED_FIELDS = {
     "spanning_deletion_calls",
     "half_calls",
     "clinvar_ref_mismatches",
+    "reference_source_conflicts",
+    "reference_ploidy_conflicts",
     "reference_carried_not_in_file",
     "malformed_rows",
     "no_genotype_rows",
@@ -210,7 +212,13 @@ _UNCHECKED_FIELDS = {
     "symbolic_allele_calls",
     "symbolic_rows",
 }
-_DESCRIPTIVE_FIELDS = {"trimmed_matches", "reference_carried_calls"}
+_DESCRIPTIVE_FIELDS = {
+    "trimmed_matches",
+    "reference_carried_calls",
+    "genotype_records",
+    "hom_ref_calls",
+    "non_reference_calls",
+}
 
 
 def _int_fields() -> set[str]:

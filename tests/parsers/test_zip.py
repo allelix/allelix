@@ -185,21 +185,27 @@ class TestDamaged:
             _variants(path)
 
     @pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+    @pytest.mark.parametrize("newline", [None, b"\n", b"\r\n"], ids=["fixture", "LF", "CRLF"])
     @pytest.mark.parametrize(
         ("copies", "message"),
         [
             # One read holds it all: the CRC (written for the declared part) fails.
             (1, "Bad CRC-32"),
             # Over several reads, the count passes the declared size first.
-            (200, "holds more than the 152,600 bytes its entry declares"),
+            (200, "holds more than the {declared:,} bytes its entry declares"),
         ],
     )
     def test_more_bytes_than_declared(
-        self, tmp_path: Path, method: int, copies: int, message: str
+        self, tmp_path: Path, method: int, copies: int, message: str, newline: bytes | None
     ) -> None:
         """zipfile alone would stop at the declared size and drop the rest."""
-        data = FIXTURE.read_bytes() * copies
-        path = _understated(tmp_path / "long.zip", data, len(data) // 2, method)
+        fixture = FIXTURE.read_bytes()
+        if newline is not None:
+            fixture = fixture.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(b"\n", newline)
+        data = fixture * copies
+        declared = len(data) // 2
+        path = _understated(tmp_path / "long.zip", data, declared, method)
+        message = message.format(declared=declared)
         with pytest.raises(DamagedFileError, match=message):
             _variants(path)
 

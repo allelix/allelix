@@ -277,6 +277,7 @@ class _FakeTabix:
 
     def __init__(self, rows: dict[str, list[str]]) -> None:
         self._rows = rows
+        self.contigs = tuple(rows)
 
     def fetch(self, chrom: str, start: int, end: int) -> list[str]:
         if chrom not in self._rows:

@@ -181,6 +181,60 @@ def _build_identity(data: Path) -> None:
     )
 
 
+def test_reference_only_factor_v_leiden_cli(f5_data: Path, tmp_path: Path) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from allelix.cli import main
+
+    path = tmp_path / "f5.vcf"
+    path.write_text(
+        "##fileformat=VCFv4.2\n##contig=<ID=1,length=249250621>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+        f"1\t{POS[GRCH37]}\t{F5}\tT\tC\t.\tPASS\t.\tGT:GQ\t0/0:99\n"
+    )
+    out = tmp_path / "f5.json"
+    result = CliRunner().invoke(
+        main,
+        ["analyze", str(path), "--no-update", "--data-dir", str(f5_data), "--output", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(out.read_text())
+    assert any(a["rsid"] == F5 and a["genotype_match"] == "TT" for a in payload["annotations"])
+    assert "This file has no non-reference calls." in result.output
+
+
+def test_factor_v_leiden_reference_call_is_stamped_in_vcf_out(
+    f5_data: Path, tmp_path: Path
+) -> None:
+    """GRCh37 0/0 at rs6025 carries the Leiden finding in --vcf-out, as in JSON."""
+    from click.testing import CliRunner
+
+    from allelix.cli import main
+
+    pysam = pytest.importorskip("pysam")
+    path = tmp_path / "f5.vcf"
+    path.write_text(
+        "##fileformat=VCFv4.2\n##contig=<ID=1,length=249250621>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
+        f"1\t{POS[GRCH37]}\t{F5}\tT\tC\t.\tPASS\t.\tGT:GQ\t0/0:99\n"
+    )
+    out = tmp_path / "f5.annotated.vcf"
+    result = CliRunner().invoke(
+        main,
+        ["analyze", str(path), "--no-update", "--data-dir", str(f5_data), "--vcf-out", str(out)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "1 stamped row(s)" in result.output
+    with pysam.VariantFile(str(out)) as stream:
+        record = next(stream)
+        assert (record.ref, record.alts) == ("T", ("C",))
+        assert record.samples["SAMPLE"]["GT"] == (0, 0)
+        (value,) = record.info["ALLELIX_CLINVAR"]
+        assert value.split("|")[1] == F5
+
+
 def _build_pharmgkb(data: Path) -> None:
     with contextlib.closing(sqlite3.connect(data / "pharmgkb.sqlite")) as conn:
         conn.executescript(PHARMGKB_SCHEMA)

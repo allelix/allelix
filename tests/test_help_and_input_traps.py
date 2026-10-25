@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -83,9 +84,11 @@ def test_db_path_example_runs_as_shown(tmp_path: Path) -> None:
     i = out.index("      ALLELIX_DATA=$(allelix db path)")
     script = "\n".join(line.strip() for line in out[i : i + 2])
     shown = script.replace("allelix db path", f"allelix db path --data-dir {tmp_path}")
-    allelix = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "allelix"
-    if not allelix.exists():
-        pytest.skip("no allelix entry point in .venv")
+    # The checkout's own entry point, else the one on PATH (CI installs there).
+    venv_allelix = Path(__file__).resolve().parents[1] / ".venv" / "bin" / "allelix"
+    allelix = str(venv_allelix) if venv_allelix.exists() else shutil.which("allelix")
+    if allelix is None:
+        pytest.skip("no allelix entry point in .venv or on PATH")
     shown = shown.replace("$(allelix ", f"$({allelix} ")
     result = subprocess.run(["sh", "-c", shown], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr

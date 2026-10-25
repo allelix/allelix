@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
 from click.testing import CliRunner
 
+from allelix.annotators.gnomad import GnomadAnnotator
 from allelix.cli import main
+from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
 from allelix.databases.cache_state import READY, CacheState, CacheStatus
+from allelix.databases.schema import GNOMAD_SCHEMA
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1259,7 +1263,8 @@ class TestDbCommands:
 
     def test_db_path_check_fails_on_readonly_dir(self, tmp_path: Path):
         import os
-        import stat
+
+        from test_readonly_caches import _read_only
 
         # chmod 0 is bypassed by root — root sees a "readonly"
         # dir as writable (DAC override) and the test silently passes
@@ -1273,9 +1278,7 @@ class TestDbCommands:
                 "test is non-hermetic in that environment. Run as a "
                 "non-root user to exercise the writability check."
             )
-        # Make the dir non-writable
-        os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
-        try:
+        with _read_only(tmp_path):
             runner = CliRunner()
             result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path), "--check"])
             assert result.exit_code == 1
@@ -1283,9 +1286,6 @@ class TestDbCommands:
             # whitespace so the assertion survives any line-wrapping.
             stderr_flat = " ".join(result.stderr.split())
             assert "not writable" in stderr_flat
-        finally:
-            # Restore so tmp_path cleanup works
-            os.chmod(tmp_path, stat.S_IRWXU)
 
     def test_db_clean_empty_dir_is_noop(self, tmp_path: Path):
         runner = CliRunner()
@@ -1371,8 +1371,10 @@ class TestDbCommands:
             main, ["db", "clean", "--data-dir", str(tmp_path), "--keep-cadd", "--yes"]
         )
         assert result.exit_code == 0
-        assert "Nothing to clean" in result.output
-        assert "CADD preserved" in result.output
+        # Rich wraps at 80 columns and the message holds the tmp path.
+        output = " ".join(result.output.split())
+        assert "Nothing to clean" in output
+        assert "CADD preserved" in output
         assert (tmp_path / "cadd.sqlite").exists()
 
     def test_db_clean_refuses_unrecognized_dir_even_with_yes(self, tmp_path: Path):
@@ -2825,18 +2827,12 @@ class TestExportPlinkCommand:
             "rs1\t1\t100\tT\tT\n"
         )
 
-        class _FakeGnomad:
-            def __init__(self, *a, **kw):
-                pass
-
+        class _FakeGnomad(GnomadAnnotator):
             def is_ready(self):
                 return True
 
             def bulk_resolve_coordinates(self, rsids):
                 return {"rs1": [("1", 100, "G", "A"), ("1", 100, "G", "T")]}
-
-            def close(self):
-                pass
 
         monkeypatch.setattr(
             "allelix.annotators.gnomad.GnomadAnnotator",
@@ -2847,7 +2843,8 @@ class TestExportPlinkCommand:
         prefix = tmp_path / "out"
         result = runner.invoke(
             main,
-            ["export", "plink", str(fixture), "-o", str(prefix), "--build", "grch37"],
+            # gnomAD codes GRCh38 exports only.
+            ["export", "plink", str(fixture), "-o", str(prefix), "--build", "grch38"],
         )
         assert result.exit_code == 0, result.output
 
@@ -2870,10 +2867,7 @@ class TestExportPlinkCommand:
             "rs2\t1\t200\tG\tT\n"
         )
 
-        class _FakeGnomad:
-            def __init__(self, *a, **kw):
-                pass
-
+        class _FakeGnomad(GnomadAnnotator):
             def is_ready(self):
                 return True
 
@@ -2883,14 +2877,11 @@ class TestExportPlinkCommand:
                     "rs2": [("1", 200, "G", "T")],
                 }
 
-            def close(self):
-                pass
-
         monkeypatch.setattr("allelix.annotators.gnomad.GnomadAnnotator", _FakeGnomad)
 
         result = CliRunner().invoke(
             main,
-            ["export", "plink", str(fixture), "-o", str(tmp_path / "out"), "--build", "grch37"],
+            ["export", "plink", str(fixture), "-o", str(tmp_path / "out"), "--build", "grch38"],
         )
         assert result.exit_code == 0, result.output
         assert "1 call(s) fit neither gnomAD allele" in result.output
@@ -2915,18 +2906,11 @@ class TestExportPlinkCommand:
             "rs3\t1\t300\tT\tT\n"
         )
 
-        monkeypatch.setattr(
-            "allelix.annotators.gnomad.GnomadAnnotator",
-            type(
-                "_NoGnomad",
-                (),
-                {
-                    "__init__": lambda self, *a, **kw: None,
-                    "is_ready": lambda self: False,
-                    "close": lambda self: None,
-                },
-            ),
-        )
+        class _NoGnomad(GnomadAnnotator):
+            def is_ready(self):
+                return False
+
+        monkeypatch.setattr("allelix.annotators.gnomad.GnomadAnnotator", _NoGnomad)
 
         runner = CliRunner()
         prefix = tmp_path / "out"
@@ -2940,6 +2924,66 @@ class TestExportPlinkCommand:
             line.split("\t")[0] for line in (tmp_path / "out.bim").read_text().strip().split("\n")
         ]
         assert chroms == ["1", "1", "2"], f"Expected contiguous chroms, got {chroms}"
+
+    @pytest.mark.parametrize("build", ["grch38", "grch37"])
+    def test_real_gnomad_cache_codes_alleles(self, tmp_path, build):
+        """The real annotators the CLI builds run the export end to end.
+
+        No test double: a synthetic gnomAD cache in the data directory gives
+        the REF/ALT coding of a GRCh38 export, so the export path's resource
+        handling is the production one. gnomAD is GRCh38 data: a GRCh37
+        export with no rsID identity table uses its pair only where it is not
+        palindromic and the call fits it as written, as both calls here do.
+        """
+        data = tmp_path / "data"
+        data.mkdir()
+        with contextlib.closing(sqlite3.connect(data / "gnomad.sqlite")) as conn:
+            conn.executescript(GNOMAD_SCHEMA)
+            conn.executemany(
+                "INSERT INTO gnomad_frequencies (chrom,pos,ref,alt,rsid,af) "
+                "VALUES (?,?,?,?,?,0.1)",
+                [("1", 100, "G", "T", "rs1"), ("1", 200, "G", "A", "rs2")],
+            )
+            conn.execute(
+                "INSERT INTO database_versions "
+                "(name,source_url,version,downloaded_at,record_count,local_version_tag) "
+                "VALUES ('gnomad','test://','synthetic','2001-01-01',2,?)",
+                (f"sv:{GNOMAD_SCHEMA_VERSION}",),
+            )
+            conn.commit()
+        fixture = tmp_path / "donor.txt"
+        fixture.write_text(
+            "# MyHappyGenes [TEMPUS]\n"
+            "# Sample ID\tTEST001\n"
+            "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
+            "rs1\t1\t100\tT\tT\n"
+            "rs2\t1\t200\tG\tA\n"
+        )
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "export",
+                "plink",
+                str(fixture),
+                "-o",
+                str(tmp_path / "out"),
+                "--build",
+                build,
+                "--data-dir",
+                str(data),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "resolution failed" not in result.output
+        bim = [line.split("\t") for line in (tmp_path / "out.bim").read_text().splitlines()]
+        bed = (tmp_path / "out.bed").read_bytes()[3:]
+        assert [row[4:6] for row in bim] == [["G", "T"], ["G", "A"]]
+        assert bed == bytes([0x03, 0x02])
+        if build == "grch37":
+            assert "0 site(s) from the rsID identity table, 2 from gnomAD, 0 with fallback" in (
+                " ".join(result.output.split())
+            )
 
 
 class TestBuildDiagnosticsMessages:

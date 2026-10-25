@@ -65,7 +65,7 @@ class TestSignalGuard:
         monkeypatch.setattr(
             ClinVarAnnotator, "_fetch_remote_signal_for_tsv", staticmethod(lambda: None)
         )
-        with pytest.raises(RuntimeError, match="cannot verify remote freshness signal"):
+        with pytest.raises(RuntimeError, match="checksum for submission_summary is unavailable"):
             ann.setup()
 
 
@@ -78,7 +78,7 @@ class TestTsvSetupWiring:
         - signal returns a deterministic hex md5
         - downloads create empty staging files (so the cleanup path runs)
         - load_clinvar_tsv writes a tiny synthetic cache so the per-build
-          rename + downstream assertions can verify the cache landed
+          metadata + downstream assertions can verify the cache landed
         - verify_file_hash is a no-op (the staging files aren't real md5s)
         """
         from allelix.annotators import clinvar as clinvar_module
@@ -90,6 +90,7 @@ class TestTsvSetupWiring:
             staticmethod(lambda: "md5:" + "a" * 32),
         )
         monkeypatch.setattr(clinvar_module, "verify_file_hash", lambda *_a, **_kw: None)
+        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda *_a, **_kw: "a" * 32)
 
         # Fake download: just create the destination file empty.
         def _fake_download(url, dest):
@@ -104,7 +105,15 @@ class TestTsvSetupWiring:
         load_calls: list[str] = []
 
         def _fake_loader(
-            vs_path, ss_path, db_path, build, *, source_url="", remote_signal=None, **_kw
+            vs_path,
+            ss_path,
+            db_path,
+            build,
+            *,
+            source_url="",
+            remote_signal=None,
+            record_name="clinvar",
+            **_kw,
         ):
             from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
             from allelix.databases.schema import CLINVAR_SCHEMA
@@ -125,8 +134,13 @@ class TestTsvSetupWiring:
                         "INSERT INTO database_versions "
                         "(name, source_url, version, downloaded_at, record_count, "
                         "remote_signal, local_version_tag) "
-                        "VALUES ('clinvar', ?, '20260101', '2026-06-17', 1, ?, ?)",
-                        (source_url, remote_signal, f"iv:{CLINVAR_INTERPRETER_VERSION}"),
+                        "VALUES (?, ?, '20260101', '2026-06-17', 1, ?, ?)",
+                        (
+                            record_name,
+                            source_url,
+                            remote_signal,
+                            f"iv:{CLINVAR_INTERPRETER_VERSION}",
+                        ),
                     )
                 conn.commit()
 
@@ -177,9 +191,8 @@ class TestTsvSetupWiring:
         finally:
             ann.close()
 
-    def test_setup_renames_database_versions_to_per_build(self, tmp_path: Path, monkeypatch):
-        """load_clinvar_tsv stamps the row with name='clinvar'; setup
-        must rename it to the per-build form so is_ready() can dispatch."""
+    def test_setup_stamps_database_versions_per_build(self, tmp_path: Path, monkeypatch):
+        """Candidate metadata uses the final per-build name before installation."""
         self._stub_downloads_and_loader(tmp_path, monkeypatch)
         ann = ClinVarAnnotator(tmp_path, builds=("GRCh38",))
         try:
@@ -187,7 +200,7 @@ class TestTsvSetupWiring:
             with contextlib.closing(sqlite3.connect(tmp_path / "clinvar.GRCh38.sqlite")) as conn:
                 names = {row[0] for row in conn.execute("SELECT name FROM database_versions")}
             assert "clinvar.GRCh38" in names
-            assert "clinvar" not in names  # renamed in place
+            assert "clinvar" not in names  # final candidate name
         finally:
             ann.close()
 
@@ -205,7 +218,8 @@ class TestTsvSetupWiring:
         rows; an iv:6 cache lacks the columns), then iv:7 -> iv:8
         (variants without an rsID; an iv:7 cache lacks those rows), then
         iv:8 -> iv:9 (normal-allele records written REF == ALT are kept,
-        with a ``normal_allele`` column). Every cache-content change
+        with a ``normal_allele`` column). 2.5.1's build-time integrity
+        checks change nothing stored, so they keep iv:9. Every cache-content change
         requires an interpreter-version bump; runtime changes do not.
 
         Pin the current value here so a future content-altering
@@ -216,7 +230,7 @@ class TestTsvSetupWiring:
 
         assert CLINVAR_INTERPRETER_VERSION == 9
 
-    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4", "iv:5", "iv:6", "iv:7"])
+    @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4", "iv:5", "iv:6", "iv:7", "iv:8"])
     def test_stale_cache_is_not_ready(self, tmp_path: Path, stale_iv: str):
         """Any iv-tag older than CLINVAR_INTERPRETER_VERSION must fail
         is_ready() so db update triggers a reingest.
@@ -568,20 +582,20 @@ class TestRemoteSignal:
         monkeypatch.setattr(
             clinvar_module,
             "fetch_remote_text",
-            lambda url: f"{valid_md5}  submission_summary.txt.gz\n",
+            lambda url, **_kw: f"{valid_md5}  submission_summary.txt.gz\n",
         )
         assert annotator.fetch_remote_signal() == f"md5:{valid_md5}"
 
     def test_fetch_returns_none_on_network_error(self, annotator: ClinVarAnnotator, monkeypatch):
         from allelix.annotators import clinvar as clinvar_module
 
-        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url: None)
+        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url, **_kw: None)
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_empty_md5_body(self, annotator: ClinVarAnnotator, monkeypatch):
         from allelix.annotators import clinvar as clinvar_module
 
-        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url: "   \n")
+        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url, **_kw: "   \n")
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_html_error_page(self, annotator: ClinVarAnnotator, monkeypatch):
@@ -598,7 +612,7 @@ class TestRemoteSignal:
             "<!DOCTYPE html>\n<html><head><title>503 Service "
             "Unavailable</title></head><body>...</body></html>\n"
         )
-        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url: html)
+        monkeypatch.setattr(clinvar_module, "fetch_remote_text", lambda url, **_kw: html)
         assert annotator.fetch_remote_signal() is None
 
     def test_fetch_returns_none_on_short_hex(self, annotator: ClinVarAnnotator, monkeypatch):
@@ -608,7 +622,7 @@ class TestRemoteSignal:
         monkeypatch.setattr(
             clinvar_module,
             "fetch_remote_text",
-            lambda url: "abcdef01  clinvar.vcf.gz\n",  # only 8 hex chars
+            lambda url, **_kw: "abcdef01  clinvar.vcf.gz\n",  # only 8 hex chars
         )
         assert annotator.fetch_remote_signal() is None
 
@@ -619,7 +633,7 @@ class TestRemoteSignal:
         monkeypatch.setattr(
             clinvar_module,
             "fetch_remote_text",
-            lambda url: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  clinvar.vcf.gz\n",
+            lambda url, **_kw: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  clinvar.vcf.gz\n",
         )
         assert annotator.fetch_remote_signal() is None
 

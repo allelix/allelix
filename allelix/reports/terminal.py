@@ -31,6 +31,7 @@ from allelix.reports._pipeline import (
     PANEL_NOT_ON_CHIP,
     PANEL_STATES,
     is_vcf_parser,
+    panel_reason_label,
     panel_state_label,
     rollup_gwas_duplicates,
 )
@@ -120,6 +121,19 @@ def _print_panel_coverage_warning(
             console.print(
                 f"[yellow]⚠[/yellow] {len(rsids)} {panel_state_label(state, vcf=vcf)}: {sample}"
             )
+    if vcf:
+        for variant in coverage["variants"]:
+            if variant["genotype"] or variant["reason"]:
+                console.print(
+                    escape(
+                        f"{variant['rsid']}: {variant['genotype'] or '—'}"
+                        + (
+                            f" ({panel_reason_label(variant['reason'])})"
+                            if variant["reason"]
+                            else ""
+                        )
+                    )
+                )
 
 
 def render_terminal_diff(
@@ -190,6 +204,9 @@ def render_terminal_diff(
             table.add_column("Condition", overflow="fold")
         for c in diff.changed:
             prev_mag_str = "—" if c.previous_magnitude is None else f"{c.previous_magnitude:.1f}"
+            genotype = c.current.genotype_match
+            if c.previous_genotype_match and c.previous_genotype_match != genotype:
+                genotype = f"{c.previous_genotype_match} -> {genotype}"
             row = [annotation_label(c.current)]
             if has_gene:
                 row.append(c.current.gene or "—")
@@ -200,7 +217,7 @@ def render_terminal_diff(
                     _compact_significance(c.current.significance, c.current.source),
                     prev_mag_str,
                     f"{c.current.magnitude:.1f}",
-                    c.current.genotype_match,
+                    genotype,
                 ]
             )
             if has_condition:

@@ -132,6 +132,7 @@ def test_array_json_has_all_four_states(tmp_path: Path, data: Path, panel: Path)
             "state": "annotated",
             "genotype": "A/G",
             "annotation_count": 1,
+            "reason": None,
         },
         {
             "rsid": "rs900952002",
@@ -139,6 +140,7 @@ def test_array_json_has_all_four_states(tmp_path: Path, data: Path, panel: Path)
             "state": "typed_no_annotation",
             "genotype": "G/G",
             "annotation_count": 0,
+            "reason": None,
         },
         {
             "rsid": "rs900952003",
@@ -146,6 +148,7 @@ def test_array_json_has_all_four_states(tmp_path: Path, data: Path, panel: Path)
             "state": "no_call",
             "genotype": "-/-",
             "annotation_count": 0,
+            "reason": None,
         },
         {
             "rsid": "rs900952004",
@@ -153,6 +156,7 @@ def test_array_json_has_all_four_states(tmp_path: Path, data: Path, panel: Path)
             "state": "no_call",
             "genotype": "A/-",
             "annotation_count": 0,
+            "reason": None,
         },
         {
             "rsid": "rs900952099",
@@ -160,6 +164,7 @@ def test_array_json_has_all_four_states(tmp_path: Path, data: Path, panel: Path)
             "state": "not_on_chip",
             "genotype": None,
             "annotation_count": 0,
+            "reason": None,
         },
     ]
 
@@ -212,3 +217,36 @@ def test_vcf_half_call_with_a_finding_is_annotated(
     # VCF input has no chip.
     assert "3 not in file" in output
     assert "not on chip" not in output
+
+
+def test_vcf_cli_explicit_reference_and_rejected_rows(
+    tmp_path: Path,
+    data: Path,
+    panel: Path,
+) -> None:
+    vcf = tmp_path / "coverage.vcf"
+    header = (
+        "##fileformat=VCFv4.2\n##contig=<ID=2,length=243199373>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+    )
+    rows = [("0/0", 99, "PASS"), ("0/1", 3, "PASS"), ("0/1", 99, "q10"), ("./.", 99, "PASS")]
+    vcf.write_text(
+        header
+        + "".join(
+            f"2\t{i * 1000}\t{_PANEL[i - 1]}\tG\tA\t50\t{filt}\t.\tGT:GQ\t{gt}:{gq}\n"
+            for i, (gt, gq, filt) in enumerate(rows, 1)
+        )
+    )
+    out = tmp_path / "coverage.json"
+    _analyze(data, panel, vcf, out)
+    coverage = json.loads(out.read_text())["panel_coverage"]
+    assert coverage["counts"] == {
+        "annotated": 0,
+        "typed_no_annotation": 1,
+        "no_call": 3,
+        "not_on_chip": 1,
+    }
+    assert coverage["variants"][0]["genotype"] == "G/G"
+    output = _analyze(data, panel, vcf, None)
+    assert "0 annotated / 1 typed (no annotation) / 3 no call / 1 not in file" in output
+    assert "Caller FILTER rejected" in output

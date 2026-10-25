@@ -76,3 +76,5 @@ None. `pharmgkb_allele_function` keeps its v0.7.0 schema. Only the data source c
 - **Mock fixture no longer ships rows whose sole purpose was exercising regex paths.** PA-010 (somatic-prose synthetic) and PA-011 (CPIC-template synthetic) deleted. PA-008 retained, simplified to exercise the structured-lookup path.
 - **The annotator's `setup()` adds one HTTP call** to fetch the CPIC lookup. Small (~5 MB of JSON). Failure is loud — the loader is never invoked, so the existing cache stays intact.
 - **The data classification principle (ADR-0016) is finally enforced end-to-end.** Filter input = structured table. Description text serves only its real purpose: display to the user in the report.
+
+*Amended (2.5.1):* the stored signal's CPIC part records what the cache holds. A build whose CPIC fetch failed or returned nothing is stamped `cpic:unavailable` even when CPIC's change-log probe answered, and a cache stamped with a CPIC date but holding no CPIC rows reports `cpic:unavailable` (a read-only one-row check), so `db status` shows "(no CPIC)" and the next `db update` rebuilds it. `PHARMGKB_INTERPRETER_VERSION` is unchanged: what the loader stores is the same.

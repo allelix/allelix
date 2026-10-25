@@ -2,6 +2,210 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-10-25
+
+No database needs rebuilding after upgrading: caches built by 2.5.0 stay
+current. The one exception is a ClinPGx cache that lacks the CPIC data it
+claims to have; the next `db update` repairs it (see Database updates).
+
+### Added
+
+- Python 3.13 is supported and tested.
+
+### Changed
+
+- JSON reports use schema 10 (2.5.0 wrote 9). `input.vcf_quality` adds
+  `genotype_records`, `hom_ref_calls`, `non_reference_calls`,
+  `reference_source_conflicts` and `reference_ploidy_conflicts`; each panel
+  variant gains a nullable `reason`; and each changed entry in the `diff`
+  block gains `previous_genotype_match`. `--diff` reads schemas 1 to 10 and
+  rejects newer ones.
+- The annotated VCF schema version (`##ALLELIX_VCF_SchemaVersion`) is now
+  0.5.0: `ALLELIX_CLINVAR` can now appear on a reference call (see Fixed).
+
+### Fixed
+
+Findings and reports:
+
+- A VCF reference call (`0/0`) whose REF contradicted the known base at a
+  ClinVar site could produce a false finding. Such calls no longer produce
+  one; the mismatch is counted and reported. A structural-variant record
+  with an `END` (for example `<DEL>`) no longer counts as a gVCF reference
+  block or produces findings inside its span. Where the reference
+  databases disagree about the base at a site, the call is left
+  unassessed, with its own count and note.
+- Reference calls rebuilt from a VCF keep a haploid genotype haploid
+  (shown as Hemizygous) and follow the same mitochondrial exclusions as
+  other calls. Haploid and diploid reference calls that disagree at one
+  site leave it unassessed, with its own count and note. Without
+  `--vcf-out`, many repeated reference records at one site no longer use
+  more memory per record.
+- A VCF holding only reference calls was refused as having no genotype
+  records. It is now analysed, with a note that it has no non-reference
+  calls; a file with no genotype records at all still stops. `stats`
+  shows reference and non-reference genotype counts, and JSON reports
+  include them.
+- Panel coverage (`--filter-file`) reported confident reference calls,
+  and calls rejected for quality or FILTER, as "not in file". They are now
+  shown as typed (with their reference genotype) or as no-calls with the
+  reason, without adding findings. A panel rsID found by position is
+  placed only where the rsID identity table places it unambiguously on
+  the file's build.
+- A gene filter dropped findings whose gene field lists several genes
+  (`GENE1;GENE2`). Each listed symbol now matches on its own, in comma- and
+  semicolon-separated lists and in the GWAS Catalog's ` - ` and ` x `
+  lists; hyphens inside a symbol stay part of it, and reports keep the
+  source's gene text.
+- `--diff` matched findings by source, variant and condition only, so a
+  second allele at the same variant (for example a new ClinVar finding for
+  T where the previous report had one for A) was not shown as new, and a
+  dropped allele not as removed. Findings are now matched with their
+  allele and genotype: the same allele with two genotypes stays two
+  findings, row order makes no difference, and a finding whose genotype
+  changed is listed as changed, showing both genotypes (`AG -> AA` in the
+  terminal, `previous_genotype_match` in JSON). Baselines from older
+  Allelix versions without an allele field are compared as before.
+- The HTML detail panel showed gnomAD frequency, AlphaMissense and CADD
+  values of different alleles together on unlabelled lines, so a
+  frequency for A could read as belonging to T. A variant with more than
+  one allele now shows each value with its allele ("A: 10.0%"); a
+  single-allele variant looks as before.
+
+Annotated VCF (`--vcf-out`):
+
+- Re-annotating a VCF that Allelix had already annotated kept the old
+  `ALLELIX_*` values, so a finding ClinVar had since withdrawn stayed in
+  the new file. Old `ALLELIX_*` INFO values, their `##INFO` declarations
+  and the `##ALLELIX_` header lines are now removed before the current
+  result is written, on every row, including filtered rows and reference
+  blocks. Other INFO values and the sample columns are unchanged.
+- Rows with lowercase REF/ALT (for example `g` to `a`) got no Allelix
+  values. They are now stamped like uppercase rows, and the file keeps its
+  original case.
+- A ClinVar finding for an allele the reference genome itself carries (for
+  example Factor V Leiden on GRCh37) was in the JSON and HTML reports but
+  missing from the annotated VCF. The explicit `0/0` or haploid `0` record
+  it came from now carries it in `ALLELIX_CLINVAR`, in each ALT slot, and
+  the field's description says what such a value means. gVCF reference
+  blocks are not stamped (one line covers many positions), nor are
+  records with ALT `.` (no ALT slot); such findings are in the JSON and
+  HTML reports only. To place these stamps, a run with `--vcf-out` keeps
+  one entry per such reference record in memory.
+
+`compare`, `extract` and `export plink`:
+
+- `compare` treated every VCF record without an ID as the same variant,
+  so two files with different unnamed variants could show one shared
+  variant and 100% concordance. On the same known build, unnamed records
+  are now compared by chromosome, position and REF/ALT, and named and
+  unnamed coverage are shown separately. Unnamed records on different
+  builds, or without usable REF/ALT, are left out and counted per file; a
+  comparison with no shared variants no longer reports full concordance.
+- With a `.tbi` index, `extract` could report a requested rsID as not in
+  the file when the index lookup missed it (no known position, or a
+  chromosome named differently, such as `chrM`). Such rsIDs are now looked
+  up by reading the file once, and chromosome names follow the index's own
+  (`M`, `MT`, `chrM`, `chrMT`, with or without `chr`). No-calls found
+  through the index are kept.
+- `export plink -o release.v1` wrote `release.bed`, `release.bim` and
+  `release.fam`, so `-o release.v2` overwrote it; the default prefix for
+  `my.genome.txt` was `my`. The endings are now added to the whole prefix
+  (`release.v1.bed`), and the default prefix drops only the genotype-file
+  ending (`my.genome`).
+- `export plink` left the BIM ID field empty for variants without an
+  rsID, so those lines had five fields instead of six. They now get
+  `chr:pos:ref:alt` (with `:2`, `:3` when that ID is already taken), and
+  the console says how many.
+- A GRCh37 `export plink` with gnomAD installed coded alleles with gnomAD's
+  GRCh38 REF/ALT at GRCh37 positions, so at sites where GRCh38 reads the
+  other strand a valid call was exported as missing. GRCh37 exports now
+  take REF/ALT from the rsID identity table's GRCh37 alleles, chosen for
+  each record. Where the table has no pair, gnomAD's pair is used when it
+  is not A/T or C/G and the call fits it as written, so a site GRCh38
+  writes on the other strand keeps the fallback coding instead of going
+  missing; the console counts the sites coded from each source. GRCh38
+  exports are unchanged. A GRCh36 export no longer uses gnomAD and gets
+  the fallback coding.
+- After upgrading from 2.4.x, and before `allelix db update`, `stats`,
+  `extract` and `export plink` on a VCF with records without an ID
+  stopped with a database error ("no such column: aggregate"), because
+  they read the old ClinVar cache. That cache is now skipped there, as
+  `analyze` skips it, until `db update` rebuilds it; the cache is not
+  changed.
+
+Input and output files:
+
+- An output path naming the input file (`--output`, `--vcf-out` or a PLINK
+  file, also through a link) overwrote the genotype file. Such a
+  destination is now refused before anything is written. Reports and
+  exports are written to a temporary file next to the destination and
+  moved into place only when complete, so a failed write keeps the
+  previous output, and an existing output keeps its file permissions.
+  PLINK's three files are replaced one at a time: if a later one fails,
+  the earlier ones are already the new, complete files.
+- A bgzipped `.vcf.gz` inside a zip that was cut exactly between two of
+  its blocks was read without the "may be truncated" warning that the same
+  file gets on its own. The zip member is now checked the same way, during
+  the normal read.
+- A gzip file cut within its first bytes (a download stopped almost at
+  once) was reported as a format Allelix doesn't recognise, with advice
+  about re-saved files. It now gets the "looks truncated or damaged"
+  error. A complete gzip file of an unknown format is still reported as
+  not recognised.
+- Database connections and partly opened zip files could be left for the
+  garbage collector to close, which Python 3.13 reports as warnings.
+  Each is now closed after its last use, also when a run fails or is
+  interrupted, and an error while closing never replaces the original
+  error.
+
+Database updates (`db update`):
+
+- ClinVar's variant summary download is now verified against NCBI's
+  published checksum, like the submission summary. A missing, malformed
+  or mismatching checksum stops the refresh, also with `--force`, and the
+  existing caches are kept.
+- A rebuilt ClinVar cache must hold at least 5,000,000 rows per genome
+  build and at least 90% of the previous cache's rows; otherwise the
+  refresh stops and the existing caches are kept. Both builds are checked
+  before either is replaced, and temporary downloads are removed
+  afterwards, on success or failure.
+- When NCBI's checksum for ClinVar's submission summary could not be
+  fetched, the error told the user to pass `--force`, and `--force` then
+  stopped with the same error. That checksum is both ClinVar's freshness
+  signal and what verifies the download, so a refresh is never done
+  without it. The fetch is now tried once more before giving up (a
+  passing network failure may clear, and `--force` gets that retry too),
+  and the message says plainly that ClinVar was not refreshed, the
+  existing caches are kept, and to try again later. The GWAS Catalog and
+  ClinPGx had the same loop: their error also said to pass `--force`, and
+  `--force` stopped in the same place. They publish no checksum, so their
+  downloads are checked the same way with or without the signal; `--force`
+  now refreshes them, stores no signal, and the next ordinary `db update`
+  refreshes them once more when the signal is back. Without `--force`, the
+  existing cache is kept.
+- When CPIC's allele-function data could not be fetched (or came back
+  empty) although its change log answered, the ClinPGx cache was stamped
+  as holding CPIC data. `db status` showed no "(no CPIC)" marker and
+  `db update` called the cache current for weeks, with the CPIC part of
+  the normal-function filter off, so rows CPIC would hide were shown. Such
+  a build is now stamped `cpic:unavailable`, and an existing cache that
+  claims CPIC data but holds none is shown as "(no CPIC)" and repaired by
+  the next ordinary `db update`. Healthy caches are not touched.
+
+Windows:
+
+- Checking whether the data directory is writable (cache readiness,
+  `db path --check`, the update step) now asks Windows for the folder's
+  permissions instead of writing a probe file. If that check itself
+  fails, the folder is reported as not writable.
+- A cache file reached through a symbolic link is now opened at its real
+  location, so changes already committed to it are not lost. Busy,
+  unreadable or unresolvable files are still left alone, and cache
+  contents and versions are unchanged.
+- Building the rsID identity table runs the `bash` found on PATH by its
+  full path, so Windows no longer starts a different program called
+  `bash`. A missing `bash` is reported before any data is fetched.
+
 ## [2.5.0] - 2026-10-19
 
 After upgrading, run `allelix db update`. This release changes how
@@ -3909,6 +4113,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.5.1]: https://github.com/allelix/allelix/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/allelix/allelix/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/allelix/allelix/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/allelix/allelix/compare/v2.4.0...v2.4.1

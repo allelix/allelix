@@ -42,12 +42,14 @@ damaged is not read as if it were complete:
 
 - If the file ends in the middle of its compressed data, or the data is
   corrupt, Allelix stops with an error naming the file ("looks truncated or
-  damaged"). Download or copy the file again.
+  damaged"). Download or copy the file again. This includes a gzip file cut
+  within its first bytes, before any line can be read: it gets the same
+  error, not "doesn't recognise the format".
 - A bgzipped file (the usual `.vcf.gz`) that was cut exactly between two
   of its blocks still reads without error, so Allelix checks for the
   end-of-file block that every complete bgzipped file ends with. If it is
   missing, the records before the cut are used and a warning says the file
-  may be truncated.
+  may be truncated. The same check runs on a bgzipped file inside a zip.
 - Bytes after the end of the compressed data that are not compressed data
   themselves (for example a web page saved onto the end of the file) are
   ignored with a warning; every complete record is read.
@@ -90,6 +92,87 @@ terminal summary, the top of the HTML report, and JSON `report_warnings`
 
 Zip checks still apply under `--format`: a zip with several files, a
 password-protected zip and a damaged zip stop as they do without it.
+
+## Reference calls in VCFs
+
+A homozygous-reference call (`0/0`, or a haploid `0`) is assessed where
+the reference genome itself carries a ClinVar variant allele, such as
+Factor V Leiden on GRCh37. Its input REF must agree with the known base
+at that position; a disagreement is counted in
+`input.vcf_quality.clinvar_ref_mismatches` and described on the console
+and in the HTML input-quality notes. Reference sources are checked first:
+single-base A/C/G/T REF evidence from the same identity-table build,
+chromosome and position is used regardless of its rsID. If those rows
+conflict with one another or with ClinVar's reference base, the call is
+not reconstructed and `input.vcf_quality.reference_source_conflicts`
+counts it. The note describes source ambiguity rather than blaming the
+input REF. Duplicate alias rows do not multiply that count. Missing,
+noncanonical, multi-base, or differently placed evidence does not create
+a conflict. These rejection checks do not assign rsIDs or infer an array
+probe's strand. Haploid calls keep one allele and
+are shown as Hemizygous. Reconstructed calls follow the same mitochondrial
+coordinate exclusions as other VCF calls.
+
+Matching reference observations must also agree about ploidy. If usable
+observations disagree between haploid and diploid, the site is left
+unassessed in either row order. JSON schema 10 adds the count of
+rejected matching observations in `input.vcf_quality.reference_ploidy_conflicts`,
+with a note on the console and in HTML. REF-mismatching observations are
+counted separately and do not establish ploidy. Reference-source conflicts
+take precedence; alias rows never multiply observation counts. Repeated
+and overlapping records retain only bounded base/ploidy counts per watched
+position, including a separate state for unusable explicit REF bases.
+With `--vcf-out`, the explicit reference records at watched positions are
+also remembered, one entry each, so the annotated VCF can stamp them.
+
+A reference block has ALT `<NON_REF>`, `<*>` or `.`, a homozygous-reference
+genotype, and an `END` position. Its REF describes the block's start;
+that base is checked only at positions explicitly written in REF, not
+against a different base inside the block. Structural-variant alleles
+such as `<DEL>`, `<DUP>` and breakends never provide reference coverage
+over their `END` span. Their unassessed-record counts are still reported.
+
+A VCF containing only reference calls is analysed and says
+"This file has no non-reference calls." A VCF with no genotype records
+still stops. `allelix stats` displays genotype-record, reference-call and
+non-reference-call counts, before filtering. JSON schema 10 adds the same
+counts as `genotype_records`, `hom_ref_calls` and `non_reference_calls`
+under `input.vcf_quality`. Reference blocks count as records, not as one
+record for every base they span. Non-reference counts include symbolic
+ALT genotypes; they do not imply those structural calls were assessed.
+Schema 10 also adds a nullable `reason` to panel coverage entries.
+Reports in schemas 1–10 can be used as `--diff` baselines; versions 11
+and later are rejected. `--diff` matches findings by source, variant, condition,
+allele and genotype, whatever their order; a finding left on both sides with
+a different genotype is listed as changed. An entry from an older report
+without an allele is matched without allele and genotype. Each changed entry
+in the JSON `diff` block carries `previous_genotype_match` (null when the
+baseline entry had none), and the terminal shows `AG -> AA` when it differs.
+
+## Annotated VCF: reference findings and re-annotation
+
+`analyze --vcf-out` puts a ClinVar finding for an allele the reference
+itself carries (see above) on the explicit `0/0` or haploid `0` record it
+came from, in `ALLELIX_CLINVAR`. The field is `Number=A`, so the same
+finding appears in each ALT slot, with `.` for symbolic ALTs; the field's
+description says that on a reference record the finding is for the
+reference allele. Only the record the analysis read the call from gets it,
+so the selected sample (`--sample`), the quality rules (`--min-gq`, FILTER)
+and the mitochondrial exclusions apply as in the report. A record whose REF
+has more than one base gets it when that REF starts at or covers the site.
+gnomAD, AlphaMissense and CADD values for the reference allele are not
+written, since they would read as values for the listed ALT.
+
+A gVCF reference block is never stamped, because one line covers many
+positions, and a record with ALT `.` has no ALT slot. A finding from
+either is in the JSON and HTML reports only.
+
+When the input is itself an Allelix-annotated VCF, the old `ALLELIX_*` INFO
+values, their `##INFO` declarations and the `##ALLELIX_` header lines are
+removed first, on every row (filtered rows and reference blocks included),
+and only the current result is written. Other INFO values keep their exact
+text and order. Lookups match REF/ALT case-insensitively; the file keeps
+its own case.
 
 ## Imputed VCFs
 
@@ -294,6 +377,34 @@ strand without GRCh37 or GRCh38 positions, and the report says how many. ClinVar
 CADD give nothing (see [grch36-liftover.md](grch36-liftover.md) to lift
 the file over first).
 
+## Comparing and extracting VCF calls
+
+`allelix compare first.vcf second.vcf` matches nonempty identifiers as
+before. Unnamed calls use normalized chromosome, position, input REF and
+the complete uppercase input ALT field when both effective file builds
+are the same known build. The ALT list is literal: reordered lists or
+different uncalled alternatives are distinct records. Quality-masked and
+explicit no-calls retain their original allele identity. No liftover,
+allele decomposition or genotype-based ALT inference is performed.
+
+The coverage table separates parsed named/unnamed observations from
+eligible unique named/unnamed keys. It labels shared unnamed variants
+compared by position and counts omitted unnamed observations per file.
+Unknown/different builds or missing input allele identity omit unnamed
+calls. Nonempty vendor identifiers remain on the named path; named and
+unnamed records do not match one another. Repeated identical keys retain
+the existing last-observation convention, so conflicting duplicate
+genotypes can depend on their order. Concordance percentages use shared
+eligible keys; no shared keys is displayed without a percentage.
+
+Indexed `allelix extract` preserves its normal build, sample, quality and
+resolution rules. Any requested identifiers not actually found in the
+index share one sequential pass, even if a coordinate mapping existed.
+Already-found calls, including no-calls, are retained. Unavailable or
+ineligible indexes use the normal sequential path. Actual index contigs
+are matched through chromosome normalization, including M/MT/chrM/chrMT
+and bare/prefixed autosomes; aliases are traversed in index order.
+
 ## MyHappyGenes (Tempus)
 
 Tab-delimited, five columns. The header states the build as "37.1", but
@@ -302,3 +413,42 @@ therefore checks the label against the positions of well-known SNPs across
 the whole file: confident positions win, with a warning when they disagree
 with the header; weaker evidence against the header stops the run and asks
 for `--build` (ADR-0021, ADR-0044).
+
+## PLINK export
+
+`allelix export plink` writes `<prefix>.bed`, `<prefix>.bim` and
+`<prefix>.fam`, adding the endings to the whole prefix: `-o release.v1`
+gives `release.v1.bed`. Without `-o`, the prefix is the input name minus one
+genotype-file ending (`.vcf.gz`, `.vcf.bgz`, `.txt`, `.csv`, `.tsv`, `.vcf`,
+`.zip` or `.gz`), so `my.genome.txt` gives `my.genome`.
+
+A1/A2 come from the export's own build: on GRCh37, the rsID identity table's
+GRCh37 REF/ALT for the record's rsID at the record's position, chosen for
+each record on its own; on GRCh38, gnomAD. A call that fits neither allele
+of that pair as written is exported as missing and counted. On GRCh37, a
+site the identity table has no pair for uses gnomAD's pair when it is not
+A/T or C/G and the call fits it as written: gnomAD holds GRCh38 alleles, and
+a site GRCh38 writes on the other strand cannot fit, so it is never written
+missing for that. Alleles are never complemented. Every other site keeps the
+fallback coding (a homozygous call is written with A2 `0`); the console
+counts the sites coded from the identity table, from gnomAD and with the
+fallback. Other builds always use the fallback.
+
+A variant without an rsID gets the ID `chr:pos:ref:alt` from the input, with
+`.` for an unknown part and `:2`, `:3` and so on when that ID is already
+taken by an ID the input supplies or an earlier generated one; the console
+says how many. IDs the
+input supplies are not changed.
+
+## Output file safety
+
+JSON/HTML reports, annotated VCF and PLINK exports reject destinations that
+alias the input. Report and PLINK checks include the former fixed `.tmp`
+names, although writers now allocate unique owned temporary files. Unrelated
+old temp files survive both successful and failed writes.
+
+Output content and format are unchanged. VCF remains streamed with UTF-8/LF;
+PLINK retains its existing bytes and order. Publication is atomic per file,
+with all PLINK content staged and closed before its first replacement. A
+later PLINK replacement failure can leave a mix of complete new files and
+unchanged prior files. See [ADR-0056](adr/0056-input-output-file-safety.md).

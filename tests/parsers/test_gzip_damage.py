@@ -322,3 +322,90 @@ class TestNoticesInTheReport:
         self._analyze(intact, clinvar_data_dir, out)
         codes = [w["code"] for w in json.loads(out.read_text())["report_warnings"]]
         assert not [c for c in codes if c.startswith("input_")]
+
+
+class TestBgzfInsideAZip:
+    """A ``.vcf.gz`` in a zip is held to the same end-block rule as the file itself."""
+
+    @staticmethod
+    def _zip(tmp_path: Path, member: Path, method: int) -> Path:
+        import zipfile
+
+        path = tmp_path / "cut.zip"
+        with zipfile.ZipFile(path, "w", compression=method) as archive:
+            archive.write(member, arcname=member.name)
+        return path
+
+    @pytest.mark.parametrize("method", ["deflated", "stored"])
+    def test_cut_bgzf_member_warns(
+        self, cut_at_boundary: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture, method: str
+    ) -> None:
+        import zipfile
+
+        compression = zipfile.ZIP_DEFLATED if method == "deflated" else zipfile.ZIP_STORED
+        path = self._zip(tmp_path, cut_at_boundary, compression)
+        with caplog.at_level(logging.WARNING, logger="allelix.parsers"):
+            got = list(VcfParser().parse(path))
+        assert got == list(VcfParser().parse(cut_at_boundary))
+        assert "cut.zip does not end with the BGZF end-of-file block" in caplog.text
+
+    def test_intact_bgzf_member_does_not_warn(
+        self, intact: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import zipfile
+
+        path = self._zip(tmp_path, intact, zipfile.ZIP_DEFLATED)
+        with caplog.at_level(logging.WARNING, logger="allelix.parsers"):
+            assert list(VcfParser().parse(path)) == list(VcfParser().parse(VCF))
+        assert "end-of-file block" not in caplog.text
+
+
+class TestCutWithinTheFirstBytes:
+    """A gzip file cut before its first line is damage, not an unknown format."""
+
+    @staticmethod
+    def _analyze(path: Path, data: Path) -> str:
+        result = CliRunner().invoke(
+            main, ["analyze", str(path), "--data-dir", str(data), "--no-update"]
+        )
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        return " ".join(result.output.split())
+
+    @pytest.mark.parametrize("length", [10, 30, 60, 200])
+    def test_early_cuts_are_damaged(
+        self, tmp_path: Path, clinvar_data_dir: Path, length: int
+    ) -> None:
+        text = (
+            "##fileformat=VCFv4.2\n##contig=<ID=1,length=249250621>\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+            + "".join(f"1\t{1000 * i}\trs{i}\tA\tG\t.\tPASS\t.\tGT\t0/1\n" for i in range(1, 3001))
+        )
+        path = tmp_path / f"cut{length}.vcf.gz"
+        path.write_bytes(gzip.compress(text.encode(), mtime=0)[:length])
+        output = self._analyze(path, clinvar_data_dir)
+        assert f"cut{length}.vcf.gz looks truncated or damaged" in output
+        assert "doesn't recognise" not in output
+
+    def test_malformed_gzip_header_is_damaged(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.vcf.gz"
+        path.write_bytes(b"\x1f\x8b\x08\xe0" + b"\x00" * 40)
+        with pytest.raises(DamagedFileError, match="looks truncated or damaged"):
+            detect_parser(path)
+
+    @pytest.mark.parametrize("size", [100, 200_000])
+    def test_valid_unknown_gzip_is_still_not_recognised(self, tmp_path: Path, size: int) -> None:
+        from allelix.parsers import ParserNotFoundError
+
+        path = tmp_path / "notes.txt.gz"
+        path.write_bytes(gzip.compress((b"just some notes\n" * size)[:size], mtime=0))
+        with pytest.raises(ParserNotFoundError, match="doesn't recognise"):
+            detect_parser(path)
+
+    def test_plain_unknown_text_is_still_not_recognised(self, tmp_path: Path) -> None:
+        from allelix.parsers import ParserNotFoundError
+
+        path = tmp_path / "notes.txt"
+        path.write_text("just some notes\n")
+        with pytest.raises(ParserNotFoundError, match="doesn't recognise"):
+            detect_parser(path)

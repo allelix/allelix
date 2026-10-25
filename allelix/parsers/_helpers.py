@@ -14,7 +14,7 @@ import io
 import logging
 import zipfile
 import zlib
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from typing import IO, TYPE_CHECKING, TextIO
 
@@ -162,6 +162,18 @@ class _GzipMembers(io.RawIOBase):
         self._decomp: zlib._Decompress | None = None
         self._members = 0
         self._done = False
+        # In a container, the first and last compressed bytes seen on the
+        # forward read stand in for the seek-based BGZF end-block check.
+        self._head = b""
+        self._tail = b""
+
+    def _read_raw(self, size: int = -1) -> bytes:
+        data = self._raw.read(size)
+        if self._in_container and data:
+            if len(self._head) < 14:
+                self._head += data[: 14 - len(self._head)]
+            self._tail = (self._tail + data)[-len(BGZF_EOF_BLOCK) :]
+        return data
 
     def readable(self) -> bool:
         return True
@@ -183,7 +195,7 @@ class _GzipMembers(io.RawIOBase):
         if self._decomp is None:
             self._start_member()
             return
-        data = self._in or self._raw.read(_READ_CHUNK)
+        data = self._in or self._read_raw(_READ_CHUNK)
         self._in = b""
         if not data:
             raise _damaged(self._path, "the compressed data ends in the middle of a block")
@@ -199,13 +211,16 @@ class _GzipMembers(io.RawIOBase):
 
     def _start_member(self) -> None:
         while len(self._in) < 2:
-            more = self._raw.read(_READ_CHUNK)
+            more = self._read_raw(_READ_CHUNK)
             if not more:
                 break
             self._in += more
         if not self._in:
             self._done = True
-            if self._members and not self._in_container:
+            if self._members and self._in_container:
+                if _is_bgzf_header(self._head) and self._tail != BGZF_EOF_BLOCK:
+                    _warn_bgzf_end(self._path)
+            elif self._members:
                 _check_bgzf_end(self._path)
             return
         if self._in[:2] == GZIP_MAGIC:
@@ -213,7 +228,7 @@ class _GzipMembers(io.RawIOBase):
             return
         if self._members == 0:
             raise _damaged(self._path, "not gzip data")
-        trailing = len(self._in) + len(self._raw.read())
+        trailing = len(self._in) + len(self._read_raw())
         self._in = b""
         self._done = True
         _warn_once(
@@ -236,6 +251,10 @@ def _check_bgzf_end(file_path: Path) -> None:
             raw.seek(size - len(BGZF_EOF_BLOCK))
             if raw.read() == BGZF_EOF_BLOCK:
                 return
+    _warn_bgzf_end(file_path)
+
+
+def _warn_bgzf_end(file_path: Path) -> None:
     _warn_once(
         file_path,
         "bgzf-eof",
@@ -243,6 +262,37 @@ def _check_bgzf_end(file_path: Path) -> None:
         "truncated: an interrupted download or copy loses the records after the cut "
         "without any other sign",
     )
+
+
+# How much of an unclaimed gzip file's start is decompressed to tell damage
+# from an unknown format, in and out.
+_GZIP_PROBE_BYTES = 64 << 10
+
+
+def check_gzip_start(file_path: Path) -> None:
+    """Raise ``DamagedFileError`` when a gzip file's start cannot be decompressed.
+
+    For a file no parser claimed: a cut within its first bytes leaves no
+    line to recognise, and is damage, not an unknown format. At most
+    ``_GZIP_PROBE_BYTES`` are read and produced. A complete first member,
+    or a start that fills that budget, is not damage; nor is a file that is
+    not gzip.
+    """
+    try:
+        with open(file_path, "rb") as raw:
+            head = raw.read(_GZIP_PROBE_BYTES)
+    except OSError:
+        return
+    if head[:2] != GZIP_MAGIC:
+        return
+    decomp = zlib.decompressobj(wbits=31)
+    try:
+        out = decomp.decompress(head, _GZIP_PROBE_BYTES)
+    except zlib.error as exc:
+        raise _damaged(file_path, f"corrupt compressed data: {exc}") from exc
+    whole_file_read = len(head) < _GZIP_PROBE_BYTES
+    if not decomp.eof and whole_file_read and len(out) < _GZIP_PROBE_BYTES:
+        raise _damaged(file_path, "the compressed data ends in the middle of a block")
 
 
 def _is_debris(info: zipfile.ZipInfo) -> bool:
@@ -322,12 +372,18 @@ class _ZipMember(io.RawIOBase):
 
     def __init__(self, file_path: Path) -> None:
         super().__init__()
+        self._archive: zipfile.ZipFile | None = None
+        self._member: IO[bytes] | None = None
         self._path = file_path
+        self._declared = 0
+        self._read = 0
         try:
-            self._archive = zipfile.ZipFile(file_path)
-        except zipfile.BadZipFile as exc:
-            raise _damaged(file_path, f"the zip directory is missing or corrupt: {exc}") from exc
-        try:
+            try:
+                self._archive = zipfile.ZipFile(file_path)
+            except zipfile.BadZipFile as exc:
+                raise _damaged(
+                    file_path, f"the zip directory is missing or corrupt: {exc}"
+                ) from exc
             info = _zip_member(file_path, self._archive)
             self._declared = info.file_size
             unbounded = copy.copy(info)
@@ -335,22 +391,43 @@ class _ZipMember(io.RawIOBase):
             unbounded.file_size = 1 << 62
             self._member = self._archive.open(unbounded)
         except BaseException:
-            self._archive.close()
+            # Preserve the meaningful refusal even if acquired-resource cleanup
+            # also fails. close() attempts every acquired resource and the base.
+            with suppress(BaseException):
+                self.close()
             raise
-        self._read = 0
 
     def readable(self) -> bool:
         return True
 
     def close(self) -> None:
-        if not self.closed:
-            self._member.close()
-            self._archive.close()
-        super().close()
+        member, archive = getattr(self, "_member", None), getattr(self, "_archive", None)
+        # Detach first: repeated close/GC never retries disposed owners, even
+        # when a close raises before releasing its own internal resource.
+        self._member = None
+        self._archive = None
+        failure: BaseException | None = None
+        for resource in (member, archive):
+            if resource is not None:
+                try:
+                    resource.close()
+                except BaseException as exc:
+                    if failure is None:
+                        failure = exc
+        try:
+            super().close()
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+        if failure is not None:
+            raise failure
 
     def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        member = self._member
+        if member is None:
+            raise ValueError("I/O operation on closed file.")
         try:
-            data = self._member.read(len(buffer))
+            data = member.read(len(buffer))
         except (zipfile.BadZipFile, zlib.error, EOFError, ValueError) as exc:
             # A CRC failure, corrupt deflate data or a member cut short.
             raise _damaged(self._path, f"corrupt zip member: {exc}") from exc

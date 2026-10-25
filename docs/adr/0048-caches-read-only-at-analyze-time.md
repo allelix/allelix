@@ -45,6 +45,12 @@ or a read-only directory.
 - **Every cache opens read-only**, through a `mode=ro` URI with the path
   quoted (`connect_readonly`). This covers annotator connections,
   readiness checks, `get_database_info` and the loaders' schema checks.
+  The URI resolves the physical installed file first, so SQLite finds its
+  WAL/SHM at the same location on Windows and POSIX. Update-time conversion
+  and subsequent sidecar cleanup use that same physical target. Unreadable,
+  dangling or cyclic links remain conversion no-ops. This path repair does
+  not change cache contents, interpretation or version tags and requires
+  no rebuild or download.
 - **A WAL cache is never opened**, not even for its version. The WAL check
   reads header bytes 18 and 19 without opening SQLite. `get_database_info`
   reports a WAL file as not present, so AlphaMissense's check of gnomAD's

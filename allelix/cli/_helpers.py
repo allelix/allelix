@@ -70,7 +70,6 @@ if TYPE_CHECKING:
     from allelix.databases.cache_state import CacheStatus
     from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
-    from allelix.parsers.vcf import VcfParser
     from allelix.reports._pipeline import BuildDiagnostics, StreamBuild
     from allelix.utils.build_detect import BuildDecision
 
@@ -392,13 +391,20 @@ def _resolved_variants(
     ``high_value``: rsIDs whose positions a VCF parser should watch, as
     ``analyze`` does, so rsID-less no-call records and gVCF blocks at those
     positions are classified (``_ResolvedStream.high_value_states``).
+
+    This context owns only the parser/build/resolution/output iterators it
+    creates. They close before the providers even if the returned stream is
+    retained or a consumer exits early; remaining rows are not consumed.
     """
     from allelix.annotators._resolution import resolve_rsidless
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+    from allelix.parsers.vcf import VcfParser
     from allelix.reports._pipeline import (
         StreamBuild,
+        _cleanup_on_exit,
+        _owned_annotators,
         decide_file_build,
         watch_high_value,
         with_effective_build,
@@ -415,28 +421,36 @@ def _resolved_variants(
     gnomad = GnomadAnnotator(resolved)
     identity = RsidIdentityAnnotator(resolved)
     hv = high_value or set()
-    placements = watch_high_value(parser, hv, identity)
-    try:
+    with _owned_annotators((clinvar, gnomad, identity)), _cleanup_on_exit() as cleanup:
+        if hv and isinstance(parser, VcfParser):
+            cleanup.callback(parser.watch, set(), set())
+        placements = watch_high_value(parser, hv, identity)
         record = StreamBuild(decision, parser=parser)
-        stream = with_effective_build(
-            parser.parse(file_path), decision=decision, file_name=file_path.name, record=record
+
+        def own_iterator(iterator: Iterator[Variant]) -> Iterator[Variant]:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                cleanup.callback(close)
+            return iterator
+
+        parsed = own_iterator(parser.parse(file_path))
+        stream = own_iterator(
+            with_effective_build(
+                parsed, decision=decision, file_name=file_path.name, record=record
+            )
         )
-        variants = resolve_rsidless(stream, clinvar=clinvar, gnomad=gnomad, identity=identity)
+        variants = own_iterator(
+            resolve_rsidless(stream, clinvar=clinvar, gnomad=gnomad, identity=identity)
+        )
+        output = own_iterator(_stop_as_click(variants, parser, file_path, record))
         yield _ResolvedStream(
-            _stop_as_click(variants, parser, file_path, record),
+            output,
             parser,
             placements,
             hv,
             decision,
             record,
         )
-    finally:
-        if placements is not None:
-            # watch_high_value only watches (and returns placements) for a
-            # VcfParser; stop watching so the registry singleton stays clean.
-            cast("VcfParser", parser).watch(set(), set())
-        for source in (clinvar, gnomad, identity):
-            source.close()
 
 
 def _stop_as_click(
@@ -481,16 +495,36 @@ def _reject_unusable(parser: GenotypeParser, file_path: Path, records: int) -> N
         raise click.ClickException(str(exc)) from exc
 
 
-def _run_setup(annotator: Annotator) -> bool:
-    """Invoke annotator.setup(). Returns True on success, False on failure."""
+def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
+    """Invoke annotator.setup(). Returns True on success, False on failure.
+
+    ``force`` reaches the sources whose setup can refresh without a freshness
+    signal (GWAS Catalog, ClinPGx: no checksum depends on it). ClinVar's
+    signal is the checksum that verifies its download, so it never can.
+    """
+    from allelix.annotators.gwas import GWASCatalogAnnotator
+    from allelix.annotators.pharmgkb import PharmGKBAnnotator
+
+    without_signal = False
     try:
-        annotator.setup()
+        if force and isinstance(annotator, (GWASCatalogAnnotator, PharmGKBAnnotator)):
+            without_signal = True
+            annotator.setup(force=True)
+        else:
+            annotator.setup()
     except Exception as exc:
         if hasattr(exc, "close"):
             exc.close()
         console.print(f"  [red]{annotator.name}: {exc}[/red]")
         return False
     sig = getattr(annotator, "cached_remote_signal", lambda: None)()
+    # No freshness signal stored: none at all, or (ClinPGx) only the CPIC mark.
+    no_pgkb_part = isinstance(annotator, PharmGKBAnnotator) and not (sig or "").startswith("pgkb:")
+    if without_signal and (sig is None or no_pgkb_part):
+        console.print(
+            f"  [yellow]{annotator.name}: refreshed without a freshness signal; none is "
+            "stored, so the next `db update` refreshes again once it is available.[/yellow]"
+        )
     if sig and "cpic:unavailable" in sig:
         console.print(
             f"  [yellow]{annotator.name}: updated (CPIC unavailable — "
@@ -585,7 +619,8 @@ def _parse_filter_file(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     r"""Parse a filter file into ``(gene_names, rsids)``.
 
     Lines matching ``^rs\d+$`` (case-insensitive) are rsIDs. Everything
-    else is a gene name. A ``#`` starts a comment, on its own line or after
+    else is a gene entry (comma/semicolon lists are split). A ``#`` starts
+    a comment, on its own line or after
     an entry (``rs1801133  # MTHFR``), and the rest of the line is ignored;
     rsIDs and gene names never contain ``#``. Blank lines are ignored.
     Gene names starting with ``RS`` (e.g., RSPO1, RSF1) are correctly
@@ -596,6 +631,8 @@ def _parse_filter_file(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     filter recorded in JSON output therefore looks identical regardless
     of how the user typed the entries in the filter file.
     """
+    from allelix.reports._pipeline import gene_tokens
+
     genes: set[str] = set()
     rsids: set[str] = set()
     # utf-8-sig: a list saved with a byte order mark keeps its first entry.
@@ -606,7 +643,7 @@ def _parse_filter_file(path: Path) -> tuple[frozenset[str], frozenset[str]]:
         if _RSID_PATTERN.match(line):
             rsids.add(line.lower())
         else:
-            genes.add(line.upper())
+            genes.update(gene_tokens(line))
     return frozenset(genes), frozenset(rsids)
 
 
@@ -818,15 +855,20 @@ def _run_analysis_command(
     keep_filtered: bool = False,
     min_gq: int | None = None,
 ) -> None:
-    resolved = resolve_data_dir(data_dir)
+    from allelix.reports import validate_output_path
+
+    try:
+        if output is not None:
+            validate_output_path(file_path, output)
+        if vcf_out is not None:
+            validate_output_path(file_path, vcf_out, legacy_temp=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # The parser first: a --format warning is printed before anything else.
     parser = _resolve_parser(
         file_path, fmt, sample=sample, keep_filtered=keep_filtered, min_gq=min_gq
     )
-    if not no_update:
-        _prepare_caches(get_annotators(resolved), resolved)
-        _maybe_refresh_databases(resolved)
-
     # --vcf-out preflight. Bail before any expensive setup so a
     # user who mistyped the flag or aimed it at a 23andMe file finds
     # out immediately, not after the analyze pipeline runs.
@@ -842,6 +884,11 @@ def _run_analysis_command(
                 f"--vcf-out refuses to overwrite an existing file: {vcf_out}. "
                 "Move or delete the existing file, or choose a different path."
             )
+
+    resolved = resolve_data_dir(data_dir)
+    if not no_update:
+        _prepare_caches(get_annotators(resolved), resolved)
+        _maybe_refresh_databases(resolved)
 
     from allelix.config import load_config
 
@@ -902,6 +949,7 @@ def _run_analysis_command(
             high_value_rsids=hv_rsids,
             panel_rsids=rsids,
             collect_vcf_write_inputs=vcf_out is not None,
+            resource_owners=registry,
         )
     except (BuildDecisionError, UnusableInputError) as exc:
         # ADR-0044: stop before any report, annotated VCF or diff is written.
@@ -1094,6 +1142,7 @@ def _run_analysis_command(
             annotations_by_key=result.vcf_write_inputs.annotations_by_key,
             recovered_rsids=result.vcf_write_inputs.recovered_rsids,
             keep_filtered=keep_filtered,
+            reference_rows=result.vcf_write_inputs.reference_rows,
         )
         console.print(
             f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to {vcf_out}[/green]"

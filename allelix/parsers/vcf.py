@@ -16,7 +16,8 @@ only.
 
 gVCF: explicit reference blocks for positions called as reference-
 confident. Detected by ``##ALT=<ID=NON_REF,...>`` in the header or
-by ``END=`` INFO tags. Reference blocks never yield a ``Variant`` —
+by homozygous-reference block records with ``END=`` INFO tags. Reference
+blocks never yield a ``Variant`` —
 they match nothing in any annotation database and would push the
 annotation pipeline through millions of zero-hit queries. Positions
 the caller registers with ``VcfParser.watch`` (high-value SNPs)
@@ -96,6 +97,12 @@ _REFERENCE_BLOCK_ALTS = frozenset({"<NON_REF>", "<*>"})
 
 
 @lru_cache(maxsize=1024)
+def _reference_block_alts(alt: str) -> bool:
+    """Whether ALT contains only reference-block placeholders."""
+    return alt == "." or all(a in _REFERENCE_BLOCK_ALTS for a in alt.split(","))
+
+
+@lru_cache(maxsize=1024)
 def _structural_kind(alt: str) -> str | None:
     """The structural-variant kind of an all-symbolic ALT column, or None.
 
@@ -163,7 +170,30 @@ REASON_SYMBOLIC = "symbolic_allele"  # the call is a structural / symbolic allel
 REASON_NO_COVERAGE = "no_coverage"  # gVCF: no record covers the position
 
 Locus = tuple[str, int]
+RowKey = tuple[str, ...]
 LocusState = tuple[str, str]  # (state, reason); reason is "" unless NO_CALL
+
+
+@dataclass(frozen=True)
+class ReferenceCall:
+    """Input base and declared ploidy at a watched reference position.
+
+    ``ref`` is None inside a block beyond the bases written in its REF:
+    the block's anchor base says nothing about that interior position.
+    An unusable explicit base is stored as "", never as an unknown base.
+    """
+
+    ref: str | None
+    haploid: bool
+
+
+@dataclass(frozen=True)
+class PanelObservation:
+    """One explicit panel record, kept separately from annotation and high-value state."""
+
+    state: str
+    genotype: str | None
+    reason: str | None
 
 
 @dataclass
@@ -198,9 +228,14 @@ class VcfQualityStats:
     ``clinvar_ref_mismatches``: one-base records at a ClinVar position
     whose REF is none of ClinVar's one-base REFs there, the complement
     included (mis-coordinated input); set by the pipeline.
+    ``reference_source_conflicts``: watched reference calls not reconstructed
+    because usable same-build reference sources disagree; the input REF
+    is not blamed when the sources cannot establish one reference base.
+    ``reference_ploidy_conflicts``: matching reference observations left
+    unassessed because they disagree about haploid versus diploid ploidy.
     ``reference_carried_calls``: hom-ref calls (a ``0/0`` call or a
     reference block) at a site where the build's reference carries a
-    ClinVar variant allele, assessed as homozygous for that allele.
+    ClinVar variant allele, assessed with its declared ploidy.
     ``reference_carried_not_in_file``: such sites a plain VCF has no
     record at. Both set by the pipeline.
     ``symbolic_rows`` / ``symbolic_kinds``: structural-variant and
@@ -208,8 +243,11 @@ class VcfQualityStats:
     ``<CNV>``, or breakends), counted whatever their FILTER, and their
     kinds. gVCF reference blocks are not counted. None of them is
     annotated; a file of nothing else is the wrong deliverable.
+    ``genotype_records`` counts valid genotype records before filtering;
+    ``hom_ref_calls`` counts non-structural reference genotypes, including
+    haploid calls, and ``non_reference_calls`` counts genotypes naming ALT.
     ``is_gvcf``: the file has reference blocks (``<NON_REF>`` in the
-    header or an ``END=`` record), so every position it does not cover
+    header or a hom-ref reference-block ALT with ``END=``), so every position it does not cover
     is genuinely uncovered.
     ``locus_states`` / ``rsid_states``: the ``(state, reason)`` of each
     watched position / rsID (``VcfParser.watch``) that a record covers.
@@ -229,13 +267,34 @@ class VcfQualityStats:
     symbolic_allele_calls: int = 0
     trimmed_matches: int = 0
     clinvar_ref_mismatches: int = 0
+    reference_source_conflicts: int = 0
+    reference_ploidy_conflicts: int = 0
     reference_carried_calls: int = 0
     reference_carried_not_in_file: int = 0
+    genotype_records: int = 0
+    hom_ref_calls: int = 0
+    non_reference_calls: int = 0
     symbolic_rows: int = 0
     symbolic_kinds: Counter[str] = field(default_factory=Counter)
     is_gvcf: bool = False
     locus_states: dict[Locus, LocusState] = field(default_factory=dict)
     rsid_states: dict[str, LocusState] = field(default_factory=dict)
+    # Six base states times two ploidies bound each locus to twelve keys.
+    reference_calls: dict[Locus, Counter[ReferenceCall]] = field(default_factory=dict)
+    # Explicit (non-block) records that gave a usable reference base at a
+    # watched position, by ``reference_row_key``, with the positions they
+    # cover: the annotated VCF stamps exactly these records.
+    reference_rows: dict[RowKey, set[Locus]] = field(default_factory=dict)
+
+
+def reference_row_key(cols: list[str]) -> RowKey:
+    """A data record as written, without its ID, QUAL and INFO.
+
+    CHROM, POS, REF, ALT, FILTER, FORMAT and every sample column: what decides
+    whether the record is a usable reference call. The annotated-VCF writer
+    rewrites ID and INFO, so they are left out.
+    """
+    return (cols[0], cols[1], cols[3], cols[4], cols[6], *cols[8:])
 
 
 def strongest_state(current: LocusState | None, new: LocusState | None) -> LocusState | None:
@@ -334,6 +393,11 @@ class VcfParser(GenotypeParser):
         self.quality_stats = VcfQualityStats(kept_filtered=keep_filtered, min_gq=min_gq)
         self._watch_loci: dict[str, list[int]] = {}
         self._watch_rsids: frozenset[str] = frozenset()
+        self._watch_rows = False
+        self._panel_rsids: frozenset[str] = frozenset()
+        self._panel_loci: dict[Locus, frozenset[str]] = {}
+        self._panel_skip_mt = False
+        self.panel_observations: dict[str, PanelObservation] = {}
         # Set by the build decision (GRCh37): records named as UCSC hg19
         # names the mitochondrion (chrM, M) are left out and counted in
         # ``ucsc_mito_dropped``, unless that name is declared with the rCRS
@@ -342,20 +406,42 @@ class VcfParser(GenotypeParser):
         self.rcrs_mito_names: frozenset[str] = frozenset()
         self.ucsc_mito_dropped = 0
 
-    def watch(self, loci: set[Locus], rsids: set[str]) -> None:
+    def watch(self, loci: set[Locus], rsids: set[str], *, rows: bool = False) -> None:
         """Record what the file says at these positions and rsIDs.
 
         ``loci`` are ``(chromosome, position)`` in Allelix's bare form; a
         record covers a position from POS through its ``END`` (reference
         blocks) or the end of its REF. Results land in
         ``quality_stats.locus_states`` / ``rsid_states`` after ``parse()``.
-        Pass empty sets to stop watching.
+        ``rows`` also keeps ``quality_stats.reference_rows`` for the
+        annotated-VCF writer; it grows with the records at those positions,
+        so only a run that writes a VCF asks for it. Pass empty sets to stop
+        watching.
         """
         by_chrom: dict[str, list[int]] = {}
         for chrom, pos in loci:
             by_chrom.setdefault(chrom, []).append(pos)
         self._watch_loci = {chrom: sorted(set(p)) for chrom, p in by_chrom.items()}
         self._watch_rsids = frozenset(rsids)
+        self._watch_rows = rows
+
+    def watch_panel(
+        self,
+        rsids: frozenset[str],
+        loci: dict[Locus, frozenset[str]] | None = None,
+        *,
+        skip_mt: bool = False,
+    ) -> None:
+        """Observe explicit panel rows only; never infer genotypes inside a block.
+
+        Placements, when supplied, must be on the already-decided build.
+        First occurrence wins with state, genotype and reason kept together.
+        Results reset on every parse and contain at most the requested rsIDs.
+        Empty rsIDs remove the observer without erasing the last parse's results.
+        """
+        self._panel_rsids = rsids
+        self._panel_loci = loci or {}
+        self._panel_skip_mt = skip_mt
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -426,10 +512,13 @@ class VcfParser(GenotypeParser):
         """
         stats = VcfQualityStats(kept_filtered=self._keep_filtered, min_gq=self._min_gq)
         self.quality_stats = stats
+        self.panel_observations = {}
         drop_mito = self.drop_ucsc_mito
         keep_mito = self.rcrs_mito_names
         self.ucsc_mito_dropped = 0
         watch_rsids = self._watch_rsids
+        watch_rows = self._watch_rows
+        empty_panel_ids: frozenset[str] = frozenset()
         watcher = _LocusWatcher(self._watch_loci) if self._watch_loci else None
         # Re-classifying a watched row must not count it twice.
         scratch = VcfQualityStats(kept_filtered=self._keep_filtered, min_gq=self._min_gq)
@@ -443,24 +532,60 @@ class VcfParser(GenotypeParser):
                     state = _parse_record(row, "", sample_idx, scratch, want_state=True)[1]
                     if state is None:
                         continue
+                    excluded_mito = (
+                        drop_mito and is_ucsc_mito_name(row[0]) and row[0] not in keep_mito
+                    )
+                    if state[0] == REFERENCE and excluded_mito:
+                        self.ucsc_mito_dropped += 1
                     for locus in loci:
                         merged = strongest_state(stats.locus_states.get(locus), state)
                         stats.locus_states[locus] = merged or state
+                        if state[0] == REFERENCE and not excluded_mito:
+                            offset = locus[1] - int(row[1])
+                            base = row[3][offset].upper() if offset < len(row[3]) else None
+                            if offset == 0 and not row[3]:
+                                base = ""
+                            if base is not None and base not in {"A", "C", "G", "T"}:
+                                base = ""
+                            gt = _sample_fields(row, sample_idx)["GT"]
+                            source = ReferenceCall(base, "/" not in gt and "|" not in gt)
+                            stats.reference_calls.setdefault(locus, Counter())[source] += 1
+                            if watch_rows and base and not _is_reference_block(row, sample_idx):
+                                key = reference_row_key(row)
+                                stats.reference_rows.setdefault(key, set()).add(locus)
 
             for line in handle:
                 stripped = line.rstrip("\n").rstrip("\r")
                 if not stripped or stripped.startswith("#"):
                     continue
                 cols = stripped.split("\t")
-                if not stats.is_gvcf and _info_end(cols) is not None:
+                if not stats.is_gvcf and _is_reference_block(cols, sample_idx):
                     stats.is_gvcf = True
                 rsid = ""
+                panel_ids = empty_panel_ids
+                if self._panel_rsids and len(cols) >= 8:
+                    direct_id = _canonical_rsid(cols[2])
+                    if direct_id in self._panel_rsids:
+                        panel_ids = frozenset({direct_id})
+                    if self._panel_loci:
+                        try:
+                            locus = (normalize_chromosome(cols[0]), int(cols[1]))
+                        except ValueError:
+                            pass
+                        else:
+                            panel_ids |= self._panel_loci.get(locus, empty_panel_ids)
                 if watch_rsids and len(cols) > 2 and cols[2] != ".":
                     rsid = _canonical_rsid(cols[2])
                     rsid = rsid if rsid in watch_rsids else ""
                 variant, state = _parse_record(
-                    cols, stripped, sample_idx, stats, want_state=bool(rsid)
+                    cols, stripped, sample_idx, stats, want_state=bool(rsid or panel_ids)
                 )
+                if panel_ids:
+                    observation = self._panel_observation(cols, variant, state)
+                    if observation is not None:
+                        for panel_id in panel_ids:
+                            if panel_id in self._panel_rsids:
+                                self.panel_observations.setdefault(panel_id, observation)
                 if rsid and state is not None:
                     merged = strongest_state(stats.rsid_states.get(rsid), state)
                     stats.rsid_states[rsid] = merged or state
@@ -476,6 +601,40 @@ class VcfParser(GenotypeParser):
                 yield variant
             if watcher is not None:
                 record(watcher.finish())
+
+    def _panel_observation(
+        self, cols: list[str], variant: Variant | None, state: LocusState | None
+    ) -> PanelObservation | None:
+        """Describe this explicit record using the parser's existing quality decision."""
+        try:
+            int(cols[1])
+        except ValueError:
+            return None
+        if self._panel_skip_mt and normalize_chromosome(cols[0]) == "MT":
+            return PanelObservation(NO_CALL, None, "excluded_mt")
+        if (
+            self.drop_ucsc_mito
+            and is_ucsc_mito_name(cols[0])
+            and cols[0] not in self.rcrs_mito_names
+        ):
+            return PanelObservation(NO_CALL, None, "excluded_ucsc_mito")
+        if state is None:
+            return PanelObservation(NO_CALL, None, "unusable_record")
+        if state[0] == REFERENCE:
+            # A block's REF describes its start, not the requested interior bases.
+            # Structural/symbolic rows do not establish an ordinary typed SNP.
+            if cols[4] not in (".", "") and _cannot_yield_call(cols[4]):
+                return PanelObservation(NO_CALL, None, "reference_block_or_symbolic")
+            ref = cols[3].upper()
+            if not ref or ref == ".":
+                return PanelObservation(NO_CALL, None, "unusable_record")
+            return PanelObservation(REFERENCE, f"{ref}/{ref}", None)
+        genotype = None
+        if variant is not None:
+            from allelix.models import half_call_genotype
+
+            genotype = half_call_genotype(variant) or variant.genotype
+        return PanelObservation(state[0], genotype, state[1] or None)
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
         """Return the canonical header-derivable metadata.
@@ -548,20 +707,20 @@ class VcfParser(GenotypeParser):
         Detection: ``##ALT=<ID=NON_REF,...>`` in the header is a
         strong gVCF signal. As a fallback, the first
         :data:`_GVCF_SNIFF_LIMIT` data lines are scanned for an
-        ``END=`` INFO tag (which gVCF uses to denote reference-block
-        end positions). Either signal flips the result to ``"gvcf"``.
+        homozygous-reference block with ``END=`` and ALT ``<NON_REF>``,
+        ``<*>`` or ``.``. Structural-variant spans are not reference blocks.
         """
         with _open_vcf(file_path) as handle:
             header = _read_header(handle)
             if header.has_non_ref_alt:
                 return "gvcf"
+            sample_idx = self._resolve_sample_index(header, file_path)
             for i, line in enumerate(handle):
                 if i >= _GVCF_SNIFF_LIMIT:
                     break
                 if line.startswith("#") or not line.strip():
                     continue
-                # INFO is column index 7 (0-based). Cheap presence check.
-                if "END=" in line:
+                if _is_reference_block(line.rstrip().split("\t"), sample_idx):
                     return "gvcf"
         return "plain"
 
@@ -817,6 +976,16 @@ def _parse_record(
         stats.symbolic_rows += 1
         stats.symbolic_kinds[kind] += 1
 
+    fields = _sample_fields(cols, sample_idx)
+    gt = _gt_indices(fields)
+    alts = [] if alt in (".", "") else alt.split(",")
+    if gt is not None and all(i == "." or (i.isdigit() and 0 <= int(i) <= len(alts)) for i in gt):
+        stats.genotype_records += 1
+        if all(i == "0" for i in gt) and kind is None:
+            stats.hom_ref_calls += 1
+        elif any(i not in ("0", ".") for i in gt):
+            stats.non_reference_calls += 1
+
     if filt not in _UNFILTERED:
         stats.filtered_rows += 1
         stats.filtered_by_label.update(label for label in filt.split(";") if label)
@@ -837,10 +1006,8 @@ def _parse_record(
         if alt in (".", ""):
             _count_alt_less_call(_gt_indices(_sample_fields(cols, sample_idx)), stats)
         return None, None
-    alts = [] if alt in (".", "") else alt.split(",")
-
-    fields = _sample_fields(cols, sample_idx)
-    gt = _gt_indices(fields)
+    if kind is not None:
+        return None, (NO_CALL, REASON_SYMBOLIC)
     if gt is None:
         # Sites-only file, no sample columns, or no GT in FORMAT; or a GT
         # that is neither haploid nor diploid.
@@ -916,6 +1083,7 @@ def _parse_record(
         ref=ref,
         ref_from_input=True,
         haploid=haploid,
+        input_alt=alt,
     )
     return variant, state
 
@@ -968,9 +1136,23 @@ def _info_end(cols: list[str]) -> int | None:
 
 
 def _row_stop(cols: list[str], start: int) -> int:
-    """Last position a record covers: its INFO ``END``, else the end of its REF."""
-    end = _info_end(cols)
+    """Reference-block END, otherwise the end of the explicit REF sequence."""
+    end = _info_end(cols) if _reference_block_alts(cols[4]) else None
     return end if end is not None else start + max(len(cols[3]), 1) - 1
+
+
+def _is_reference_block(cols: list[str], sample_idx: int) -> bool:
+    """A reference-block ALT, valid span, and hom-ref GT for the selected sample."""
+    if len(cols) < 8 or not _reference_block_alts(cols[4]):
+        return False
+    end = _info_end(cols)
+    try:
+        if end is None or end < int(cols[1]):
+            return False
+    except ValueError:
+        return False
+    gt = _gt_indices(_sample_fields(cols, sample_idx))
+    return gt is not None and all(i == "0" for i in gt)
 
 
 _NOTHING: list[tuple[list[str], list[Locus]]] = []  # shared; never mutated
@@ -982,12 +1164,11 @@ class _LocusWatcher:
     In a position-sorted file the records covering a watched position P all
     start at or before P. The watcher holds the rows that can still cover
     the current position: the rows sharing the latest start, plus earlier
-    variant records whose REF still reaches it (a deletion overlapping the
-    records after it). gVCF reference blocks tile the genome and do not
-    overlap later records, so an older block is let go once a new start
-    arrives. Only when the stream moves past a watched position are the
-    held rows' spans (``END`` or REF length) checked against it, so most
-    rows cost one ``int()`` and a few comparisons. A file that is not
+    records whose REF or reference-block END still reaches it. Reference
+    blocks can overlap later records; each covering observation is held
+    until its span expires. Expired rows are released at each new start.
+    Matching held rows to watched positions is deferred until the stream
+    moves past those positions. A file that is not
     sorted (a position goes backwards, or a chromosome comes back) switches
     to checking every row's span against every watched position.
     """
@@ -1053,13 +1234,10 @@ class _LocusWatcher:
     def _hold_new_start(self, cols: list[str], start: int) -> None:
         """Let go of held rows that cannot reach ``start``; hold ``cols``."""
         held = self._held
-        if len(held) == 1 and "END=" in held[0][0][7]:
-            # The common case: the previous row was a reference block.
-            held = []
-        elif held:
-            # Older variant records stay while their REF reaches the new
-            # start; older reference blocks (END=) never overlap it.
-            held = [h for h in held if h[1] + len(h[0][3]) > start and "END=" not in h[0][7]]
+        if held:
+            # Keep every row whose REF or reference-block END still covers
+            # the new start, releasing expired rows on the sorted path.
+            held = [h for h in held if _row_stop(h[0], h[1]) >= start]
         held.append((cols, start))
         self._held = held
         self._last_start = start

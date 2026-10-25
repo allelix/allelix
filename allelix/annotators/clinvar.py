@@ -14,7 +14,10 @@ and dispatches per-variant by `variant.build`.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor, variant_locus
@@ -50,7 +53,6 @@ from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Iterable, Iterator
-    from pathlib import Path
 
     from allelix.models import Variant
 
@@ -60,13 +62,29 @@ CLINVAR_SUPPORTED_BUILDS: tuple[str, ...] = ("GRCh37", "GRCh38")
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
-# a remote .md5 endpoint can return an HTML error page on a
-# transient blip. The first whitespace-separated token of the body is
-# what we treat as the hash, so without this gate `<!DOCTYPE` would be
-# accepted as the "signal" and later passed to `verify_file_hash`, which
-# would then delete the freshly downloaded VCF. MD5 is exactly 32 hex
-# digits; reject anything else.
 _MD5_HEX_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+_CHECKSUM_MAX_BYTES = 4096
+
+
+def _fetch_checksum(source_url: str) -> str | None:
+    """Read a bounded MD5 sidecar associated with this source's basename."""
+    body = fetch_remote_text(source_url + ".md5", max_bytes=_CHECKSUM_MAX_BYTES)
+    if not body or len(body.encode("utf-8")) > _CHECKSUM_MAX_BYTES:
+        return None
+    expected_name = source_url.rsplit("/", 1)[-1]
+    digests: set[str] = set()
+    for line in body.splitlines():
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        if not _MD5_HEX_RE.fullmatch(parts[0]):
+            return None
+        if len(parts) == 2:
+            filename = parts[1].strip().removeprefix("*")
+            if filename.rsplit("/", 1)[-1] != expected_name:
+                return None
+        digests.add(parts[0].lower())
+    return digests.pop() if len(digests) == 1 else None
 
 
 def clinvar_db_filename(build: str) -> str:
@@ -329,6 +347,9 @@ class ClinVarAnnotator(Annotator):
         # allele from the other build (the build's reference carries a
         # ClinVar variant allele), with that allele.
         self._normal_alleles: dict[str, dict[str, str]] = {}
+        # Per build, whether its cache is ready for this version: rsID
+        # resolution outside annotation uses only a ready cache.
+        self._ready_builds: dict[str, bool] = {}
 
     def serves_build(self, build: str) -> bool:
         """Only the builds this run manages (the ready caches, when any are)."""
@@ -375,75 +396,106 @@ class ClinVarAnnotator(Annotator):
         endpoint — that file drives the meaningful change cadence
         (per-SCV submissions land daily) and variant_summary turns over
         weekly on a slower clock.
+
+        Both compressed sources are checked before ingest. All selected
+        builds meet fixed/relative row floors and have final metadata
+        before publication. Replacements are individually atomic; a later
+        replacement failure reports any build already updated.
+
+        The freshness signal is NCBI's submission_summary checksum, which
+        also verifies that download, so a refresh is never done without it.
+        A failed fetch is tried once more (a transient failure may clear).
         """
-        signal = self._fetch_remote_signal_for_tsv()
+        signal = self._fetch_remote_signal_for_tsv() or self._fetch_remote_signal_for_tsv()
         if signal is None:
-            msg = (
-                "clinvar: cannot verify remote freshness signal. "
-                "Refresh aborted to avoid persisting an incomplete cache stamp. "
-                "Retry, or pass --force if you accept that next `db update` "
-                "will re-download to re-establish the signal."
+            raise RuntimeError(
+                "clinvar: ClinVar not refreshed: NCBI's checksum for submission_summary "
+                "is unavailable, so the download cannot be verified. Existing caches "
+                "kept; try again later."
             )
-            raise RuntimeError(msg)
 
         vs_url = _manager_module.CLINVAR_VARIANT_SUMMARY_URL
         ss_url = _manager_module.CLINVAR_SUBMISSION_SUMMARY_URL
-        vs_path = self.data_dir / "variant_summary.txt.gz"
-        ss_path = self.data_dir / "submission_summary.txt.gz"
-
-        download(vs_url, vs_path)
-        download(ss_url, ss_path)
-        # We don't md5-verify variant_summary; signal is calibrated against
-        # submission_summary (the more frequently-updated file) and that
-        # endpoint's md5 is what we hashed below. variant_summary integrity
-        # is asserted structurally by the loader (rows that fail to parse
-        # are skipped, mismatched assemblies are dropped).
-        try:
+        previous_counts = {build: self._previous_record_count(build) for build in self._builds}
+        variant_md5 = _fetch_checksum(vs_url)
+        if variant_md5 is None:
+            raise RuntimeError(
+                "clinvar: cannot verify variant_summary checksum; refresh aborted, "
+                "existing caches kept"
+            )
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # All owned downloads and candidates live on the cache filesystem.
+        # Validation completes for every selected build before publication.
+        with tempfile.TemporaryDirectory(prefix=".clinvar-", dir=self.data_dir) as temporary:
+            staging = Path(temporary)
+            vs_path = staging / "variant_summary.txt.gz"
+            ss_path = staging / "submission_summary.txt.gz"
+            download(vs_url, vs_path)
+            download(ss_url, ss_path)
+            verify_file_hash(vs_path, "md5", variant_md5)
             verify_file_hash(ss_path, "md5", signal.removeprefix("md5:"))
+            candidates = {}
             for build in self._builds:
-                self._setup_one_from_tsv(vs_path, ss_path, build, signal, vs_url)
-        finally:
-            for tmp in (vs_path, ss_path):
+                candidate = staging / clinvar_db_filename(build)
+                self._setup_one_from_tsv(
+                    vs_path, ss_path, candidate, build, signal, vs_url, previous_counts[build]
+                )
+                candidates[build] = candidate
+            self.close()
+            published: list[str] = []
+            for build, candidate in candidates.items():
                 try:
-                    tmp.unlink()
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    logger.warning("Could not remove staged TSV at %s", tmp)
+                    os.replace(candidate, self._db_paths[build])
+                except OSError as exc:
+                    kept = (
+                        "old cache kept"
+                        if self._db_paths[build].exists()
+                        else "no cache installed"
+                    )
+                    raise RuntimeError(
+                        f"ClinVar {build}: publication failed; {kept}; "
+                        f"already updated: {', '.join(published) or 'none'}. {exc}"
+                    ) from exc
+                published.append(build)
+
+    def _previous_record_count(self, build: str) -> int | None:
+        """Use existing metadata, refusing an unknown baseline without a full scan."""
+        path = self._db_paths[build]
+        if not path.exists():
+            return None
+        info = get_database_info(path, clinvar_record_name(build))
+        if info is None:
+            info = get_database_info(path, "clinvar")
+        count = info["record_count"] if info is not None else None
+        if type(count) is not int or count <= 0:
+            raise RuntimeError(
+                f"ClinVar {build}: existing cache record count is missing or invalid; "
+                "cannot establish the relative floor, existing caches kept"
+            )
+        return count
 
     def _setup_one_from_tsv(
         self,
         vs_path: Path,
         ss_path: Path,
+        candidate: Path,
         build: str,
         signal: str,
         source_url: str,
+        previous_count: int | None,
     ) -> None:
-        """Run the per-build cache build against an already-downloaded TSV pair."""
+        """Finish and validate a candidate against the downloaded source pair."""
         load_clinvar_tsv(
             vs_path,
             ss_path,
-            self._db_paths[build],
+            candidate,
             build,
             source_url=source_url,
             remote_signal=signal,
+            record_name=clinvar_record_name(build),
+            min_rows=_manager_module.CLINVAR_MIN_ROWS[build],
+            previous_count=previous_count,
         )
-        # load_clinvar_tsv stamps the record name as "clinvar"; for
-        # backward compatibility with the per-build record-name scheme
-        # (clinvar.GRCh37 / clinvar.GRCh38), rename the row in place.
-        # This keeps is_ready() / version() per-build dispatch working
-        # against the existing database_versions table layout.
-        import contextlib
-        import sqlite3
-
-        per_build_name = clinvar_record_name(build)
-        if per_build_name != "clinvar":
-            with contextlib.closing(sqlite3.connect(self._db_paths[build])) as conn:
-                conn.execute(
-                    "UPDATE database_versions SET name = ? WHERE name = 'clinvar'",
-                    (per_build_name,),
-                )
-                conn.commit()
 
     def is_ready(self) -> bool:
         """True iff EVERY managed build has a populated cache with the current tag."""
@@ -519,6 +571,7 @@ class ClinVarAnnotator(Annotator):
         self._conns.clear()
         self._ref_lookups.clear()
         self._normal_alleles.clear()
+        self._ready_builds.clear()
 
     def reference_for(self, rsid: str, build: str) -> str | None:
         """Return ClinVar's single-base REF allele for `rsid` in `build`, or None.
@@ -742,24 +795,8 @@ class ClinVarAnnotator(Annotator):
 
     @staticmethod
     def _fetch_remote_signal_for_tsv() -> str | None:
-        body = fetch_remote_text(_manager_module.CLINVAR_SUBMISSION_SUMMARY_URL + ".md5")
-        if not body:
-            return None
-        first_token = body.strip().split(None, 1)[0] if body.strip() else ""
-        if not _MD5_HEX_RE.fullmatch(first_token):
-            # CDN error page, redirect interstitial, or empty body. Treat
-            # as a transient signal failure rather than poisoning the
-            # cache: callers handle `None` as "freshness unknown, skip"
-            # in `db update`, and `setup()` raises rather than passing
-            # garbage to `verify_file_hash` (which would delete the TSV).
-            logger.warning(
-                "clinvar: submission_summary.md5 endpoint returned a body whose "
-                "first token is not a 32-char hex digest (got %r); treating as "
-                "no signal",
-                first_token[:32],
-            )
-            return None
-        return f"md5:{first_token}"
+        digest = _fetch_checksum(_manager_module.CLINVAR_SUBMISSION_SUMMARY_URL)
+        return f"md5:{digest}" if digest is not None else None
 
     def cached_remote_signal(self) -> str | None:
         """Return the signal stamped at the last successful setup, or None.
@@ -826,6 +863,9 @@ class ClinVarAnnotator(Annotator):
         per-SCV rows and ``1/2`` calls carrying two alts both resolve).
 
         Groups by ``variant.build`` and dispatches per-build (ADR-0021).
+        A build whose cache is missing or not ready for this version (an
+        older cache lacks columns this version reads) is skipped, as
+        annotation skips it; the cache is never changed here.
 
         The returned ``{(chrom, pos, ref, alt): rsid}`` mapping carries
         the resolved coordinates so the pipeline's enrichment phase can
@@ -847,7 +887,11 @@ class ClinVarAnnotator(Annotator):
 
         resolved: dict[tuple[str, int, str, str], str] = {}
         for build, build_variants in by_build.items():
-            conn = self._connection(build)
+            if build not in self._db_paths:
+                continue
+            if build not in self._ready_builds:
+                self._ready_builds[build] = self._build_status(build).ready
+            conn = self._connection(build) if self._ready_builds[build] else None
             if conn is None:
                 continue
             rows_at = self._rows_at_loci(conn, build_variants)

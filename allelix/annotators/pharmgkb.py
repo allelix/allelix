@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -65,6 +66,23 @@ _LOE_MAGNITUDE: dict[str, float] = {
 
 def _magnitude(level_of_evidence: str) -> float:
     return _LOE_MAGNITUDE.get(level_of_evidence.strip().lower(), 5.0)
+
+
+def _without_cpic(signal: str) -> str:
+    """The composite signal with its CPIC part marked unavailable; the ClinPGx part kept."""
+    return f"{signal.split('|cpic:', 1)[0]}|cpic:unavailable"
+
+
+def _has_cpic_rows(db_path: Path) -> bool:
+    """True when the cache holds at least one CPIC allele-function row (read-only)."""
+    try:
+        with contextlib.closing(connect_readonly(db_path)) as conn:
+            return (
+                conn.execute("SELECT 1 FROM pharmgkb_allele_function LIMIT 1").fetchone()
+                is not None
+            )
+    except sqlite3.Error:
+        return True  # an unreadable table is cache_status's to report, not a CPIC repair
 
 
 class PharmGKBAnnotator(Annotator):
@@ -130,7 +148,7 @@ class PharmGKBAnnotator(Annotator):
             self._conn = connect_readonly(self._db_path)
         return self._conn
 
-    def setup(self) -> None:
+    def setup(self, *, force: bool = False) -> None:
         """Download ClinPGx clinical annotations + CPIC allele functions, ingest atomically.
 
         Two sources are fetched: ClinPGx's `clinicalAnnotations.zip`
@@ -143,10 +161,15 @@ class PharmGKBAnnotator(Annotator):
         This is also how a cache built by an older interpreter version is
         rebuilt: ``is_ready()`` reports it stale and ``db update`` calls
         this, so the CPIC table is fetched again with the annotations.
+
+        ``force`` (``db update --force``) refreshes when the freshness signal
+        is unavailable. ClinPGx publishes no checksum, so the checks are the
+        same either way; no signal is stored, so the next ordinary update
+        refreshes again.
         """
         url = PHARMGKB_CLINICAL_URL
         signal = self.fetch_remote_signal()
-        if signal is None:
+        if signal is None and not force:
             msg = (
                 "pharmgkb: cannot verify remote freshness signal. "
                 "Refresh aborted to avoid persisting an incomplete cache stamp. "
@@ -168,6 +191,12 @@ class PharmGKBAnnotator(Annotator):
                 exc,
             )
             cpic_lookup = {}
+        if not cpic_lookup:
+            # The stamp says what was built: without CPIC rows the cache is
+            # marked "cpic:unavailable", so status says so and the next
+            # update retries even when CPIC's probe answered this time. A
+            # forced build without a ClinPGx signal keeps only that mark.
+            signal = _without_cpic(signal) if signal is not None else "cpic:unavailable"
         load_pharmgkb_tsv(
             zip_path,
             self._db_path,
@@ -265,11 +294,21 @@ class PharmGKBAnnotator(Annotator):
         return f"pgkb:{pgkb_signal}|cpic:{cpic_signal}"
 
     def cached_remote_signal(self) -> str | None:
-        """Return the remote signal stored at last successful download."""
+        """Return the remote signal stored at last successful download.
+
+        A cache whose stamp names CPIC data but whose CPIC table is empty
+        (2.5.0 stamped the probe's answer even when the data fetch then
+        failed) reports ``cpic:unavailable``, so ``db update`` repairs it
+        and ``db status`` shows it. One read-only row check; nothing else.
+        """
         info = get_database_info(self._db_path, "pharmgkb")
         if not info or not info["remote_signal"]:
             return None
-        return info["remote_signal"] or None
+        signal = info["remote_signal"]
+        claims_cpic = "|cpic:" in signal and not signal.endswith("|cpic:unavailable")
+        if claims_cpic and not _has_cpic_rows(self._db_path):
+            return _without_cpic(signal)
+        return signal
 
     def annotate(self, variant: Variant) -> list[Annotation]:
         """Return ClinPGx annotations for variants the user actually carries.

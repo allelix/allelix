@@ -6,10 +6,15 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterator
+    from typing import BinaryIO, TextIO
 
     from allelix.parsers.base import ArrayInputStats
     from allelix.parsers.vcf import VcfQualityStats
@@ -26,22 +31,147 @@ REGULATORY_NOTICE = (
 )
 
 
-def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
-    """Write `content` to `path` via a `.tmp` sibling + `os.replace`.
+def validate_output_path(input_path: Path, output_path: Path, *, legacy_temp: bool = True) -> None:
+    """Refuse input aliases, including the former fixed temp when applicable.
 
-    Mirrors `download()` atomicity: a killed process mid-write leaves
-    either the previous file or no file at the target, never a
-    half-written one.
+    Missing paths can be compared by resolved identity. Real resolution/stat
+    errors propagate rather than certifying an unknown path safe.
     """
-    tmp = path.with_name(path.name + ".tmp")
+    source = input_path.resolve()
     try:
-        tmp.write_text(content, encoding=encoding)
-        os.replace(tmp, path)
-    except Exception:
-        if tmp.exists():
-            with contextlib.suppress(OSError):
-                tmp.unlink()
-        raise
+        input_path.stat()
+    except FileNotFoundError:
+        source_exists = False
+    else:
+        source_exists = True
+    candidates = [output_path]
+    if legacy_temp:
+        candidates.append(output_path.with_name(output_path.name + ".tmp"))
+    for candidate in candidates:
+        same = candidate.resolve() == source
+        if not same:
+            try:
+                candidate.stat()
+            except FileNotFoundError:
+                pass
+            else:
+                if source_exists:
+                    same = candidate.samefile(input_path)
+        if same:
+            raise ValueError(
+                f"Output {output_path} aliases input {input_path} through {candidate}."
+            )
+
+
+class StagedOutput:
+    """One invocation's allocated file and descriptor, published only after close."""
+
+    def __init__(self, destination: Path) -> None:
+        """Allocate a private same-directory temp and remember ordinary destination mode."""
+        self.destination = destination
+        try:
+            existing = destination.stat()
+        except FileNotFoundError:
+            self.mode = None
+        else:
+            self.mode = existing.st_mode & 0o777 if stat.S_ISREG(existing.st_mode) else None
+        descriptor, name = tempfile.mkstemp(
+            dir=destination.parent, prefix="." + destination.name + ".", suffix=".tmp"
+        )
+        self.temporary = Path(name)
+        self.published = False
+        self.descriptor: int | None = descriptor
+        self.stream: TextIO | BinaryIO | None = None
+
+    def open_text(self, encoding: str | None = "utf-8", newline: str | None = None) -> TextIO:
+        """Transfer the allocated descriptor to a text stream exactly once."""
+        if self.descriptor is None:
+            raise RuntimeError("Staged descriptor already consumed")
+        stream = os.fdopen(self.descriptor, "w", encoding=encoding, newline=newline)
+        self.stream = stream
+        self.descriptor = None
+        return stream
+
+    def open_binary(self) -> BinaryIO:
+        """Transfer the allocated descriptor to a binary stream exactly once."""
+        if self.descriptor is None:
+            raise RuntimeError("Staged descriptor already consumed")
+        stream = os.fdopen(self.descriptor, "wb")
+        self.stream = stream
+        self.descriptor = None
+        return stream
+
+    def publish(self) -> None:
+        """Replace the destination with complete, closed content, retaining its mode."""
+        if self.published:
+            raise RuntimeError("Staged output already published")
+        if self.stream is None or not self.stream.closed:
+            raise RuntimeError("Staged output must close successfully before publication")
+        if self.mode is not None:
+            self.temporary.chmod(self.mode)
+        os.replace(self.temporary, self.destination)
+        self.published = True
+
+    def cleanup(self) -> None:
+        """Close and remove only resources allocated by this invocation."""
+        error: BaseException | None = None
+        try:
+            if self.stream is not None:
+                self.stream.close()
+            elif self.descriptor is not None:
+                descriptor, self.descriptor = self.descriptor, None
+                os.close(descriptor)
+        except BaseException as exc:
+            error = exc
+        try:
+            if not self.published:
+                try:
+                    self.temporary.unlink(missing_ok=True)
+                except PermissionError:
+                    if os.name != "nt":
+                        raise
+                    # Only this still-owned unpublished temp may need its
+                    # Windows readonly attribute cleared after failed replace.
+                    self.temporary.chmod(stat.S_IREAD | stat.S_IWRITE)
+                    self.temporary.unlink(missing_ok=True)
+        except BaseException as exc:
+            if error is None:
+                error = exc
+        if error is not None:
+            raise error
+
+
+@contextlib.contextmanager
+def staged_output(destination: Path) -> Iterator[StagedOutput]:
+    """Own one staged output through failures and interrupts; never delete final files."""
+    staged = StagedOutput(destination)
+    try:
+        yield staged
+    finally:
+        primary_error = sys.exc_info()[0] is not None
+        try:
+            staged.cleanup()
+        except BaseException:
+            if not primary_error:
+                raise
+
+
+def atomic_write_text(
+    path: Path, content: str, encoding: str = "utf-8", *, input_path: Path | None = None
+) -> None:
+    """Publish complete text through a private owned temp in the target directory.
+
+    Preserve an allowed ordinary destination's mode. Failures before publication
+    keep prior output; cleanup never touches unrelated old fixed temp paths.
+    Ownership, ACLs, xattrs, crash durability and concurrent path swaps are not
+    guaranteed.
+    """
+    if input_path is not None:
+        validate_output_path(input_path, path)
+    with staged_output(path) as staged:
+        with staged.open_text(encoding=encoding) as stream:
+            stream.write(content)
+        staged.publish()
 
 
 def vcf_quality_lines(stats: VcfQualityStats | None) -> list[str]:
@@ -53,6 +183,8 @@ def vcf_quality_lines(stats: VcfQualityStats | None) -> list[str]:
     if stats is None:
         return []
     lines: list[str] = []
+    if stats.hom_ref_calls and not stats.non_reference_calls:
+        lines.append("This file has no non-reference calls.")
     if stats.filtered_rows:
         labels = ", ".join(
             f"{label} {count:,}" for label, count in sorted(stats.filtered_by_label.items())
@@ -98,7 +230,20 @@ def vcf_quality_lines(stats: VcfQualityStats | None) -> list[str]:
         lines.append(
             f"{stats.reference_carried_calls:,} homozygous-reference call(s) at sites where "
             "a ClinVar record describes the allele the reference genome itself carries "
-            "were assessed as homozygous for that allele."
+            "were assessed with the ploidy declared by the file."
+        )
+    if stats.reference_source_conflicts:
+        lines.append(
+            f"{stats.reference_source_conflicts:,} reference call(s) were not assessed "
+            "because reference sources disagree at the same build and position. "
+            "The reference databases do not establish one reference base; "
+            "this is not an established input REF mismatch."
+        )
+    if stats.reference_ploidy_conflicts:
+        lines.append(
+            f"{stats.reference_ploidy_conflicts:,} reference call(s) were not assessed "
+            "because matching input observations disagree about ploidy "
+            "(haploid versus diploid) at the same position."
         )
     if stats.reference_carried_not_in_file:
         lines.append(
@@ -187,6 +332,8 @@ def input_left_unchecked(
         or stats.spanning_deletion_calls
         or stats.half_calls
         or stats.clinvar_ref_mismatches
+        or stats.reference_source_conflicts
+        or stats.reference_ploidy_conflicts
         or stats.reference_carried_not_in_file
         or stats.malformed_rows
         or stats.no_genotype_rows

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 import threading
 from dataclasses import dataclass, field, replace
+from itertools import chain
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from allelix.annotators._resolution import resolve_batch
@@ -224,6 +226,30 @@ def panel_state_label(state: str, *, vcf: bool) -> str:
     return _PANEL_STATE_LABELS[state]
 
 
+def panel_reason_label(reason: str | None) -> str:
+    """Plain-language explanation of an unusable explicit VCF panel record."""
+    return {
+        "no_call": "Caller no-call",
+        "filtered": "Caller FILTER rejected",
+        "low_gq_call": "Low genotype quality or zero depth",
+        "low_gq_block": "Low genotype quality or zero depth",
+        "spanning_deletion": "Spanning deletion not assessed",
+        "symbolic_allele": "Symbolic allele not assessed",
+        "excluded_mt": "MT excluded by existing build eligibility",
+        "excluded_ucsc_mito": "UCSC mitochondrial reference excluded",
+        "unusable_record": "No usable sample genotype",
+        "reference_block_or_symbolic": "Reference block or symbolic record not assessed",
+    }.get(reason or "", reason or "")
+
+
+def gene_tokens(value: str, *, source: str = "") -> frozenset[str]:
+    """Exact symbols in list fields; spaced GWAS flanking/interaction separators only."""
+    separator = r"[;,]|\s+-\s+|\s+[xX]\s+" if source == "gwas" else r"[;,]"
+    return frozenset(
+        token.strip().upper() for token in re.split(separator, value) if token.strip()
+    )
+
+
 class PanelVariant(TypedDict):
     """One requested panel rsID and its state."""
 
@@ -232,6 +258,7 @@ class PanelVariant(TypedDict):
     state: str
     genotype: str | None
     annotation_count: int
+    reason: str | None
 
 
 class PanelCoverage(TypedDict):
@@ -271,17 +298,16 @@ class AnalysisResult:
     panel_rsids: frozenset[str] | None = None
     genotyped_panel_rsids: frozenset[str] | None = None
     panel_annotated_rsids: frozenset[str] | None = None
-    # per-rsID genotype string (e.g. "C/T", "A/-", "-/-")
-    # for each panel rsID present in the input file. Populated only
-    # when --filter-file supplied a panel. None on default analyze
-    # runs (zero behavior change on the default path). The HTML
-    # Panel coverage section renders this in a GT column; JSON shape
-    # stays v6 untouched — display-only addition. The genotype-aware
-    # MECE redesign that lands this in JSON + terminal is planned for v2.3.
+    # Per-rsID genotype as the reports display it, collected only for a
+    # supplied panel. VCF observations also include explicit reference
+    # calls omitted from annotation. None on the default analyze path.
     panel_genotypes: dict[str, str] | None = None
     # Panel rsIDs whose call in the input is a no-call (either allele
-    # missing). None when no panel was supplied.
+    # missing), or an explicit VCF record rejected by quality/eligibility.
+    # None when no panel was supplied.
     no_call_panel_rsids: frozenset[str] | None = None
+    # Bounded, explicit VCF rejection/exclusion reasons; arrays keep their existing calls.
+    panel_reasons: dict[str, str] | None = None
     # variants reaching the annotator phase with ref=None.
     # Used by the CLI to surface the strand-aware-matching-inactive
     # info line once per run for array inputs.
@@ -342,7 +368,7 @@ class AnalysisResult:
         - ``annotated``: at least one shown annotation. It wins over a
           no-call, so a half call with a finding is annotated.
         - ``typed_no_annotation``: in the input and called, nothing shown.
-        - ``no_call``: in the input as a no-call (either allele missing).
+        - ``no_call``: present but unusable (missing, rejected or excluded).
         - ``not_on_chip``: not in the input ("not in file" for VCF input,
           where an absent rsID may be reference at that position).
 
@@ -386,6 +412,7 @@ class AnalysisResult:
                     "state": state,
                     "genotype": genotypes.get(rsid) if rsid in genotyped else None,
                     "annotation_count": len(hits),
+                    "reason": (self.panel_reasons or {}).get(rsid),
                 }
             )
         variants.sort(key=lambda v: (PANEL_STATES.index(v["state"]), v["rsid"]))
@@ -421,7 +448,9 @@ class AnalysisResult:
         Empty collections (vs None) mean "match nothing" — an empty
         filter file produces an empty report.
         """
-        gene_set = {g.upper() for g in genes} if genes is not None else None
+        # Materialize once so generator queries work across all source fields.
+        gene_queries = tuple(genes) if genes is not None else None
+        gene_sets: dict[str, set[str]] = {}
         rsid_set = {r.lower() for r in rsids} if rsids is not None else None
         out: list[Annotation] = []
         for a in self.annotations:
@@ -436,8 +465,18 @@ class AnalysisResult:
                 continue
             if category is not None and a.category != category:
                 continue
-            if gene_set is not None or rsid_set is not None:
-                gene_match = gene_set is not None and (a.gene or "").upper() in gene_set
+            if gene_queries is not None or rsid_set is not None:
+                gene_match = False
+                if gene_queries is not None:
+                    if a.source not in gene_sets:
+                        gene_sets[a.source] = {
+                            token
+                            for query in gene_queries
+                            for token in gene_tokens(query, source=a.source)
+                        }
+                    gene_match = bool(
+                        gene_sets[a.source] & gene_tokens(a.gene or "", source=a.source)
+                    )
                 rsid_match = rsid_set is not None and a.rsid.lower() in rsid_set
                 if not gene_match and not rsid_match:
                     continue
@@ -521,13 +560,16 @@ def watch_high_value(
     hv_set: set[str],
     identity: RsidIdentityAnnotator | None,
     extra_loci: set[Locus] | None = None,
+    *,
+    rows: bool = False,
 ) -> dict[str, dict[str, Locus]] | None:
     """Ask a VCF parser to record what the file says at high-value sites.
 
     Positions come from the identity table on both builds (the effective
     build is not known until streaming ends); rsIDs are watched directly
     as well, and so are ``extra_loci`` (ClinVar's reference-carried
-    sites). Returns the high-value placements, or None when there is no
+    sites). ``rows`` keeps the reference records for the annotated VCF
+    (``VcfParser.watch``). Returns the high-value placements, or None when there is no
     high-value list or the input is not a VCF.
     """
     from allelix.parsers.vcf import VcfParser
@@ -538,7 +580,7 @@ def watch_high_value(
     if hv_set and identity is not None and identity.is_ready():
         placements = identity.loci_of_rsids(hv_set)
     loci = {locus for p in placements.values() for locus in p.values()} | (extra_loci or set())
-    parser.watch(loci, hv_set)
+    parser.watch(loci, hv_set, rows=rows)
     return placements if hv_set else None
 
 
@@ -546,6 +588,7 @@ def reference_carried_calls(
     stats: VcfQualityStats | None,
     sites: dict[Locus, tuple[str, str, bool]],
     build: str,
+    identity: RsidIdentityAnnotator | None = None,
 ) -> list[Variant]:
     """Hom-ref calls at ClinVar's reference-carried sites, as that homozygous genotype.
 
@@ -563,10 +606,47 @@ def reference_carried_calls(
         return []
     calls: list[Variant] = []
     unseen = 0
+    identity_rows = (
+        identity.alleles_at_loci(build, set(sites))
+        if identity is not None and identity.is_ready()
+        else {}
+    )
     for (chrom, pos), (allele, rsid, normal_allele) in sorted(sites.items()):
         state = stats.locus_states.get((chrom, pos))
         if state is not None and state[0] == REFERENCE:
-            calls.append(Variant(rsid, chrom, pos, allele, allele, build=build, ref=allele))
+            matching = []
+            matching_count = 0
+            known_refs = {
+                ref.upper()
+                for ref, _alt, _placed_rsid in identity_rows.get((chrom, pos), [])
+                if len(ref) == 1 and ref.upper() in "ACGT"
+            }
+            conflict = len(known_refs | {allele}) > 1
+            for source, count in stats.reference_calls.get((chrom, pos), {}).items():
+                if conflict:
+                    stats.reference_source_conflicts += count
+                elif source.ref is not None and source.ref != allele:
+                    stats.clinvar_ref_mismatches += count
+                else:
+                    matching.append(source)
+                    matching_count += count
+            if len({source.haploid for source in matching}) > 1:
+                stats.reference_ploidy_conflicts += matching_count
+                continue
+            if matching:
+                calls.append(
+                    Variant(
+                        rsid,
+                        chrom,
+                        pos,
+                        allele,
+                        allele,
+                        build=build,
+                        ref=allele,
+                        ref_from_input=any(source.ref is not None for source in matching),
+                        haploid=matching[0].haploid,
+                    )
+                )
         elif state is None and not stats.is_gvcf and not normal_allele:
             unseen += 1
     stats.reference_carried_calls = len(calls)
@@ -904,7 +984,7 @@ def _with_trimmed_matches(
     """The VCF stats with the ClinVar annotator's trimmed matches and REF mismatches."""
     if stats is not None:
         stats.trimmed_matches = clinvar_counts.get("trimmed_matches", 0)
-        stats.clinvar_ref_mismatches = clinvar_counts.get("ref_mismatches", 0)
+        stats.clinvar_ref_mismatches += clinvar_counts.get("ref_mismatches", 0)
     return stats
 
 
@@ -942,6 +1022,33 @@ def _record_for(
     return hits[0] if hits else None
 
 
+@contextlib.contextmanager
+def _cleanup_on_exit() -> Iterator[contextlib.ExitStack]:
+    """Attempt every registered cleanup without replacing a primary error."""
+    stack = contextlib.ExitStack()
+    try:
+        yield stack
+    except BaseException:
+        # ExitStack still attempts every close. Cleanup must not replace the
+        # computation failure (including an interrupt) already being raised.
+        with contextlib.suppress(BaseException):
+            stack.close()
+        raise
+    else:
+        stack.close()
+
+
+@contextlib.contextmanager
+def _owned_annotators(owners: Iterable[Annotator | None]) -> Iterator[dict[int, Annotator]]:
+    """Close each per-run owner once, preserving a primary computation error."""
+    with _cleanup_on_exit() as stack:
+        entered: dict[int, Annotator] = {}
+        for owner in owners:
+            if owner is not None and id(owner) not in entered:
+                entered[id(owner)] = stack.enter_context(owner)
+        yield entered
+
+
 def run_analysis(
     file_path: Path,
     parser: GenotypeParser,
@@ -957,6 +1064,7 @@ def run_analysis(
     high_value_rsids: set[str] | None = None,
     panel_rsids: frozenset[str] | None = None,
     collect_vcf_write_inputs: bool = False,
+    resource_owners: Iterable[Annotator] = (),
 ) -> AnalysisResult:
     """Stream the file once; batch-annotate; return a fully-populated result.
 
@@ -992,68 +1100,65 @@ def run_analysis(
     during the pass are checked afterwards; a contradiction raises
     ``BuildDecisionError`` before anything is returned or written.
 
-    Annotators are entered into a `contextlib.ExitStack` so their
-    resources (e.g., SQLite connections) are deterministically closed.
+    All active annotators, optional providers and ``resource_owners`` are
+    owned from before metadata/build work through result construction.
+    Each distinct object closes once per run, including on failure.
+    Ownership does not activate an annotator or acquire its resources.
+    Direct callers must supply callback-only providers in ``resource_owners``;
+    arbitrary callback closures are not inspected. The CLI supplies its
+    complete registry, including skipped providers used by other sources.
     """
     from allelix.parsers.vcf import VcfParser
 
-    metadata = parser.get_metadata(file_path)
-    decision = decide_file_build(parser, file_path, metadata, override=build_override)
-    is_array = not isinstance(parser, VcfParser)
-    di_calls = 0
+    with _owned_annotators(
+        chain(annotators, (gnomad, alphamissense, cadd, identity), resource_owners)
+    ) as owners:
+        bound = [owners[id(a)] for a in annotators]
+        metadata = parser.get_metadata(file_path)
+        decision = decide_file_build(parser, file_path, metadata, override=build_override)
+        is_array = not isinstance(parser, VcfParser)
+        di_calls = 0
 
-    annotations: list[Annotation] = []
-    hv_variants: list[Variant] = []
-    hv_set: set[str] = high_value_rsids or set()
-    # rsIDs the input file actually carries that are in the
-    # supplied panel. Only collected when ``panel_rsids`` is non-empty
-    # (so a normal analyze run has zero overhead). Filtered at insert
-    # so a 600k-variant input contributes ~panel-size memory, not
-    # 600k rsids.
-    genotyped_panel: set[str] = set()
-    # per-rsID genotype for panel members. First-occurrence
-    # wins (a 23andMe-style chip emits one row per rsID anyway; multi-
-    # row input formats keep the earliest reading). HTML-only surface
-    # in v2.2.1; JSON + terminal addition planned for v2.3.
-    panel_genotypes_map: dict[str, str] = {}
-    no_call_panel: set[str] = set()
-    # Per-run diagnostic totals for ref-None and
-    # rsidless variants reaching the annotator phase. Used by the CLI
-    # to emit the "strand-aware inactive" info line and the
-    # "GRCh38 rsID-less undercount" warning.
-    no_ref_total = 0
-    rsidless_total = 0
-    total = 0
-    effective_build = decision.build
-    # Known-SNP records met during the pass; only kept when contig lengths
-    # decided (with or without --build), so check_late_seeds can compare
-    # them with the decision.
-    late_seeds: list[Variant] = []
-    track_seeds = needs_late_seeds(decision)
-    mt_skipped = 0
-    # Coords for rsIDs the pipeline resolved on the fly (real-world VCFs from
-    # variant callers emit ID=.). Lets the enrichment phase fall
-    # back to position-keyed gnomAD / AlphaMissense lookups for resolved
-    # rsIDs that don't appear in those caches' rsid index.
-    resolved_coords: dict[str, tuple[str, int, str, str]] = {}
-    # annotation dict keyed by (chrom, pos, ref, alt) for the
-    # annotated-VCF writer. Populated per batch inside ``_flush`` when
-    # ``collect_vcf_write_inputs`` is True. Values are references to the
-    # Annotation objects in ``annotations`` — enrichment mutations
-    # (gnomAD AF, AlphaMissense, CADD) that happen after streaming are
-    # visible through these refs without a per-annotation copy.
-    vcf_annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]] = {}
+        annotations: list[Annotation] = []
+        hv_variants: list[Variant] = []
+        hv_set: set[str] = high_value_rsids or set()
+        # rsIDs the input file actually carries that are in the
+        # supplied panel. Only collected when ``panel_rsids`` is non-empty
+        # (so a normal analyze run has zero overhead). Filtered at insert
+        # so a 600k-variant input contributes ~panel-size memory, not
+        # 600k rsids.
+        genotyped_panel: set[str] = set()
+        # First-occurrence genotype for panel members. VCF explicit observations
+        # replace the whole tuple below, including non-yielded reference/FILTER rows.
+        panel_genotypes_map: dict[str, str] = {}
+        no_call_panel: set[str] = set()
+        # Per-run diagnostic totals for ref-None and
+        # rsidless variants reaching the annotator phase. Used by the CLI
+        # to emit the "strand-aware inactive" info line and the
+        # "GRCh38 rsID-less undercount" warning.
+        no_ref_total = 0
+        rsidless_total = 0
+        total = 0
+        effective_build = decision.build
+        # Known-SNP records met during the pass; only kept when contig lengths
+        # decided (with or without --build), so check_late_seeds can compare
+        # them with the decision.
+        late_seeds: list[Variant] = []
+        track_seeds = needs_late_seeds(decision)
+        mt_skipped = 0
+        # Coords for rsIDs the pipeline resolved on the fly (real-world VCFs from
+        # variant callers emit ID=.). Lets the enrichment phase fall
+        # back to position-keyed gnomAD / AlphaMissense lookups for resolved
+        # rsIDs that don't appear in those caches' rsid index.
+        resolved_coords: dict[str, tuple[str, int, str, str]] = {}
+        # annotation dict keyed by (chrom, pos, ref, alt) for the
+        # annotated-VCF writer. Populated per batch inside ``_flush`` when
+        # ``collect_vcf_write_inputs`` is True. Values are references to the
+        # Annotation objects in ``annotations`` — enrichment mutations
+        # (gnomAD AF, AlphaMissense, CADD) that happen after streaming are
+        # visible through these refs without a per-annotation copy.
+        vcf_annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]] = {}
 
-    with contextlib.ExitStack() as stack:
-        bound = [stack.enter_context(a) for a in annotators]
-        # the optional enrichment annotators were previously
-        # constructed by callers and passed in by keyword without
-        # context-management; their SQLite connections leaked at GC
-        # time. Wire them into the same stack so cleanup is
-        # deterministic alongside the primary annotators.
-        for enrich in (gnomad, alphamissense, cadd, identity):
-            if enrich is not None:
-                stack.enter_context(enrich)
         clinvar_resolver = next((a for a in bound if a.name == "clinvar"), None)
 
         batch_buf: list[Variant] = []
@@ -1141,8 +1246,36 @@ def run_analysis(
             if clinvar_resolver is not None and parser.name == "vcf"
             else {}
         )
-        hv_placements = watch_high_value(parser, hv_set, identity, set(rc_sites))
-        try:
+        hv_placements = None
+        with _cleanup_on_exit() as cleanup:
+            if isinstance(parser, VcfParser):
+                # Register cleanup BEFORE invoking fallible watch methods:
+                # they may register state and then fail or be interrupted.
+                if hv_set or rc_sites:
+                    cleanup.callback(parser.watch, set(), set())
+                cleanup.callback(parser.watch_panel, frozenset())
+            hv_placements = watch_high_value(
+                parser, hv_set, identity, set(rc_sites), rows=collect_vcf_write_inputs
+            )
+            if isinstance(parser, VcfParser):
+                panel_loci: dict[Locus, set[str]] = {}
+                if (
+                    panel_rsids
+                    and identity is not None
+                    and identity.is_ready()
+                    and effective_build in _IDENTITY_BUILDS
+                ):
+                    # The existing per-build API abstains when identity rows disagree
+                    # on the locus; multiple alleles at one locus remain supported.
+                    for rsid, (chrom, pos, _alleles) in identity.forward_sites(
+                        set(panel_rsids), effective_build
+                    ).items():
+                        panel_loci.setdefault((chrom, pos), set()).add(rsid)
+                parser.watch_panel(
+                    panel_rsids or frozenset(),
+                    {locus: frozenset(rsids) for locus, rsids in panel_loci.items()},
+                    skip_mt=decision.skip_mt,
+                )
             for variant in parser.parse(file_path):
                 total += 1
                 if is_array and not {variant.allele1, variant.allele2}.isdisjoint(DI_ALLELES):
@@ -1153,129 +1286,156 @@ def run_analysis(
                 if track_seeds and known_snp_seed(variant) is not None:
                     late_seeds.append(variant)
                 _accept(replace(variant, build=effective_build))
-        finally:
-            if hv_placements is not None or rc_sites:
-                cast("VcfParser", parser).watch(set(), set())
         for call in reference_carried_calls(
-            getattr(parser, "quality_stats", None), rc_sites, effective_build
+            getattr(parser, "quality_stats", None), rc_sites, effective_build, identity
         ):
+            if decision.skip_mt and call.chromosome == "MT":
+                mt_skipped += 1
+                cast("VcfParser", parser).quality_stats.reference_carried_calls -= 1
+                continue
             _accept(call)
         _flush()
+        if isinstance(parser, VcfParser) and panel_rsids:
+            # Explicit observations include rows the annotation stream intentionally
+            # omits. Replace the complete first-record tuple, never just its state.
+            from allelix.parsers.vcf import NO_CALL
+
+            for rsid, observation in parser.panel_observations.items():
+                genotyped_panel.add(rsid)
+                if observation.genotype is None:
+                    panel_genotypes_map.pop(rsid, None)
+                else:
+                    panel_genotypes_map[rsid] = observation.genotype
+                if observation.state == NO_CALL:
+                    no_call_panel.add(rsid)
+                else:
+                    no_call_panel.discard(rsid)
         late = detect_build(late_seeds) if track_seeds else None
         if late is not None:
             check_late_seeds(decision, late, file_path.name)
 
-    # ADR-0040: one enrichment step for every build. Each annotation gets a
-    # GRCh38 ``(chrom, pos, ref, alt)`` key from its own locus (GRCh38
-    # input) or through the identity table (GRCh37 input; palindromic and
-    # reference-swapped alleles abstain), and gnomAD / AlphaMissense / CADD
-    # are all queried by that key. No rsID-keyed or MAX lookups:
-    # an annotation without an allele-specific key gets no value.
-    enrichment_keys = _enrichment_keys(annotations, effective_build, identity)
-    enriched_by = _enrich(enrichment_keys, gnomad, alphamissense, cadd)
-    # ADR-0041: zygosity x gnomAD frequency where gnomAD was queried;
-    # every other annotation says why it was not assessed (ADR-0050).
-    _flag_plausibility(
-        annotations, enrichment_keys, plausibility, gnomad_ran=gnomad in enriched_by
-    )
-    _score_down_common_zero_star(
-        annotations,
-        effective_build,
-        cast("ClinVarAnnotator | None", clinvar_resolver),
-        identity,
-        gnomad,
-    )
-    warnings = [w for w in [_multiple_homozygous_plp(annotations, plausibility)] if w]
-
-    annotators_used = [
-        (a.name, a.version()) for a in annotators if a.serves_build(effective_build)
-    ]
-    if identity is not None and identity.is_ready() and effective_build in _IDENTITY_BUILDS:
-        annotators_used.append((identity.name, identity.version()))
-    annotators_used.extend((e.name, e.version()) for e in enriched_by)
-
-    # panel coverage derives genotyped rsIDs above (state 2+3
-    # boundary) and annotated rsIDs from the post-enrichment annotation
-    # set (state 1 boundary). Empty frozensets vs None disambiguate
-    # "no panel supplied" from "panel supplied, zero hits".
-    if panel_rsids:
-        result_panel = frozenset(panel_rsids)
-        result_genotyped = frozenset(genotyped_panel)
-        result_annotated = frozenset(a.rsid for a in annotations if a.rsid in panel_rsids)
-        result_genotypes: dict[str, str] | None = dict(panel_genotypes_map)
-        result_no_calls: frozenset[str] | None = frozenset(no_call_panel)
-    else:
-        result_panel = None
-        result_genotyped = None
-        result_annotated = None
-        result_genotypes = None
-        result_no_calls = None
-
-    vcf_write_inputs: VcfWriteInputs | None = None
-    if collect_vcf_write_inputs:
-        # Import here to avoid a top-level cycle with allelix.reports.vcf
-        # (which reaches into the annotator registry for attribution).
-        from allelix.reports.vcf import VcfWriteInputs as _VcfWriteInputs
-
-        vcf_recovered_rsids = {
-            (chrom, pos, ref, alt): rsid
-            for rsid, (chrom, pos, ref, alt) in resolved_coords.items()
-        }
-        vcf_write_inputs = _VcfWriteInputs(
-            annotations_by_key=vcf_annotations_by_key,
-            recovered_rsids=vcf_recovered_rsids,
+        # ADR-0040: one enrichment step for every build. Each annotation gets a
+        # GRCh38 ``(chrom, pos, ref, alt)`` key from its own locus (GRCh38
+        # input) or through the identity table (GRCh37 input; palindromic and
+        # reference-swapped alleles abstain), and gnomAD / AlphaMissense / CADD
+        # are all queried by that key. No rsID-keyed or MAX lookups:
+        # an annotation without an allele-specific key gets no value.
+        enrichment_keys = _enrichment_keys(annotations, effective_build, identity)
+        enriched_by = _enrich(enrichment_keys, gnomad, alphamissense, cadd)
+        # ADR-0041: zygosity x gnomAD frequency where gnomAD was queried;
+        # every other annotation says why it was not assessed (ADR-0050).
+        _flag_plausibility(
+            annotations, enrichment_keys, plausibility, gnomad_ran=gnomad in enriched_by
         )
+        _score_down_common_zero_star(
+            annotations,
+            effective_build,
+            cast("ClinVarAnnotator | None", clinvar_resolver),
+            identity,
+            gnomad,
+        )
+        warnings = [w for w in [_multiple_homozygous_plp(annotations, plausibility)] if w]
 
-    clinvar_counts = clinvar_resolver.run_counts() if clinvar_resolver is not None else {}
-    # GWAS association rows and SNPedia sites whose strand was not settled.
-    strand_abstentions = {
-        a.name: a.run_counts()
-        for a in annotators
-        if a.name in STRAND_CHECKED_SOURCES and a.serves_build(effective_build)
-    }
-    array_quality: ArrayInputStats | None = None
-    if is_array:
-        # The parser's counts from this, its last, parse (ADR-0051).
-        array_quality = parser.input_stats() or ArrayInputStats()
-        array_quality.di_calls = di_calls
+        annotators_used = [
+            (a.name, a.version()) for a in annotators if a.serves_build(effective_build)
+        ]
+        if identity is not None and identity.is_ready() and effective_build in _IDENTITY_BUILDS:
+            annotators_used.append((identity.name, identity.version()))
+        annotators_used.extend((e.name, e.version()) for e in enriched_by)
 
-    return AnalysisResult(
-        report_warnings=warnings,
-        file_path=file_path,
-        parser_name=parser.name,
-        parser_display_name=parser.display_name,
-        sample_id=metadata["sample_id"],
-        input_method=metadata.get("method", ""),
-        build=effective_build,
-        total_variants=total,
-        skipped_count=skipped_count_provider(),
-        annotators_used=annotators_used,
-        annotations=annotations,
-        build_diagnostics=BuildDiagnostics.from_decision(
-            decision, late, mt_skipped, getattr(parser, "ucsc_mito_dropped", 0)
-        ),
-        hv_variants=hv_variants,
-        panel_rsids=result_panel,
-        genotyped_panel_rsids=result_genotyped,
-        panel_annotated_rsids=result_annotated,
-        panel_genotypes=result_genotypes,
-        no_call_panel_rsids=result_no_calls,
-        no_ref_variant_count=no_ref_total,
-        rsidless_variant_count=rsidless_total,
-        vcf_write_inputs=vcf_write_inputs,
-        vcf_quality=_with_trimmed_matches(getattr(parser, "quality_stats", None), clinvar_counts),
-        array_quality=array_quality,
-        probe_classes=_probe_classes(clinvar_resolver, clinvar_counts, effective_build)
-        if is_array
-        else None,
-        high_value_vcf_states=high_value_states(
-            getattr(parser, "quality_stats", None), hv_placements, hv_set, effective_build
-        ),
-        clinvar_scored_down=scored_down_count(annotations),
-        clinvar_unrecognised=clinvar_counts.get("unrecognised_rows", 0),
-        clinvar_common_allele=common_allele_count(annotations),
-        strand_abstentions=strand_abstentions,
-    )
+        # panel coverage derives genotyped rsIDs above (state 2+3
+        # boundary) and annotated rsIDs from the post-enrichment annotation
+        # set (state 1 boundary). Empty frozensets vs None disambiguate
+        # "no panel supplied" from "panel supplied, zero hits".
+        if panel_rsids:
+            result_panel = frozenset(panel_rsids)
+            result_genotyped = frozenset(genotyped_panel)
+            result_annotated = frozenset(a.rsid for a in annotations if a.rsid in panel_rsids)
+            result_genotypes: dict[str, str] | None = dict(panel_genotypes_map)
+            result_no_calls: frozenset[str] | None = frozenset(no_call_panel)
+        else:
+            result_panel = None
+            result_genotyped = None
+            result_annotated = None
+            result_genotypes = None
+            result_no_calls = None
+
+        vcf_write_inputs: VcfWriteInputs | None = None
+        if collect_vcf_write_inputs:
+            # Import here to avoid a top-level cycle with allelix.reports.vcf
+            # (which reaches into the annotator registry for attribution).
+            from allelix.reports.vcf import VcfWriteInputs as _VcfWriteInputs
+
+            vcf_recovered_rsids = {
+                (chrom, pos, ref, alt): rsid
+                for rsid, (chrom, pos, ref, alt) in resolved_coords.items()
+            }
+            vcf_stats = getattr(parser, "quality_stats", None)
+            vcf_write_inputs = _VcfWriteInputs(
+                annotations_by_key=vcf_annotations_by_key,
+                recovered_rsids=vcf_recovered_rsids,
+                reference_rows=vcf_stats.reference_rows if vcf_stats is not None else {},
+            )
+
+        clinvar_counts = clinvar_resolver.run_counts() if clinvar_resolver is not None else {}
+        # GWAS association rows and SNPedia sites whose strand was not settled.
+        strand_abstentions = {
+            a.name: a.run_counts()
+            for a in annotators
+            if a.name in STRAND_CHECKED_SOURCES and a.serves_build(effective_build)
+        }
+        array_quality: ArrayInputStats | None = None
+        if is_array:
+            # The parser's counts from this, its last, parse (ADR-0051).
+            array_quality = parser.input_stats() or ArrayInputStats()
+            array_quality.di_calls = di_calls
+
+        return AnalysisResult(
+            report_warnings=warnings,
+            file_path=file_path,
+            parser_name=parser.name,
+            parser_display_name=parser.display_name,
+            sample_id=metadata["sample_id"],
+            input_method=metadata.get("method", ""),
+            build=effective_build,
+            total_variants=total,
+            skipped_count=skipped_count_provider(),
+            annotators_used=annotators_used,
+            annotations=annotations,
+            build_diagnostics=BuildDiagnostics.from_decision(
+                decision, late, mt_skipped, getattr(parser, "ucsc_mito_dropped", 0)
+            ),
+            hv_variants=hv_variants,
+            panel_rsids=result_panel,
+            genotyped_panel_rsids=result_genotyped,
+            panel_annotated_rsids=result_annotated,
+            panel_genotypes=result_genotypes,
+            no_call_panel_rsids=result_no_calls,
+            panel_reasons={
+                rsid: observation.reason
+                for rsid, observation in parser.panel_observations.items()
+                if observation.reason is not None
+            }
+            if isinstance(parser, VcfParser) and panel_rsids
+            else None,
+            no_ref_variant_count=no_ref_total,
+            rsidless_variant_count=rsidless_total,
+            vcf_write_inputs=vcf_write_inputs,
+            vcf_quality=_with_trimmed_matches(
+                getattr(parser, "quality_stats", None), clinvar_counts
+            ),
+            array_quality=array_quality,
+            probe_classes=_probe_classes(clinvar_resolver, clinvar_counts, effective_build)
+            if is_array
+            else None,
+            high_value_vcf_states=high_value_states(
+                getattr(parser, "quality_stats", None), hv_placements, hv_set, effective_build
+            ),
+            clinvar_scored_down=scored_down_count(annotations),
+            clinvar_unrecognised=clinvar_counts.get("unrecognised_rows", 0),
+            clinvar_common_allele=common_allele_count(annotations),
+            strand_abstentions=strand_abstentions,
+        )
 
 
 # The pre-scan parses the file once more; its malformed-line warnings would
@@ -1332,6 +1492,8 @@ def reject_unusable_input(parser: GenotypeParser, file_path: Path, records: int)
     if records:
         return
     stats = getattr(parser, "quality_stats", None)
+    if stats is not None and stats.hom_ref_calls:
+        return
     if stats is not None and stats.symbolic_rows:
         raise UnusableInputError(structural_only_message(stats))
     if stats is not None and (stats.filtered_rows or stats.low_quality_calls):

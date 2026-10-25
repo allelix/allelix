@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from test_readonly_caches import _data_dir, _flat, _read_only
+from test_readonly_caches import _data_dir, _denied_permissions, _flat, _read_only
 
 from allelix.cli import main
 from allelix.reports._sources import (
@@ -130,16 +130,16 @@ class TestSourcesBlock:
         path = data / f"{name}.sqlite"
         if reason == "missing":
             path.unlink()
-        elif reason == "unreadable":
-            path.chmod(0)
-        else:
+        elif reason == "corrupt":
             path.write_bytes(b"x" * 4096)
         out = tmp_path / "r.json"
-        try:
+        denial = (
+            _denied_permissions(path, read=True)
+            if reason == "unreadable"
+            else contextlib.nullcontext()
+        )
+        with denial:
             code, output = _run(data, out)
-        finally:
-            if path.exists():
-                path.chmod(0o644)
         assert code == 0, output
         assert _sources(out)[name] == (SKIPPED, reason)
 
@@ -185,7 +185,7 @@ class TestSourcesBlock:
         assert code == 0, output
         header = [ln for ln in vcf_out.read_text().splitlines() if ln.startswith("##ALLELIX_")]
         assert "##ALLELIX_SkippedSources=alphamissense:wal,cadd:disabled" in header
-        assert "##ALLELIX_VCF_SchemaVersion=0.4.0" in header
+        assert "##ALLELIX_VCF_SchemaVersion=0.5.0" in header
 
     def test_threshold_note_names_only_sources_that_ran(self, data: Path, tmp_path: Path) -> None:
         html = tmp_path / "r.html"

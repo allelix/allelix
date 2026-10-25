@@ -97,6 +97,7 @@ Test-count floor by release:
 - v2.4.0: 2,100 collected
 - v2.4.1: 2,371 collected
 - v2.5.0: at least 3,896 collected
+- v2.5.1: at least 5,255 collected
 
 Check lint:
 
@@ -810,16 +811,23 @@ ClinVar loader gets the same gating posture as every other annotator.
 **(a) Per-SCV row shape (supersedes the previous join pin).**
 The v2.2 loader stores one row per (variant, SCV submission), not one
 row per variant with semicolons. Expect multiple rows per multi-SCV
-rsID, each carrying a single SCV's condition exactly as the submitter
-recorded it:
+variant, each carrying a single SCV's condition exactly as the submitter
+recorded it. How many SCVs one variant has follows NCBI's data and
+changes between ClinVar releases (rs1063192 had 2 rows in one cache and
+1 in a cache built ten days later), so the check counts alleles with
+several rows instead of relying on any single variant:
 
 ```bash
 sqlite3 "$ALLELIX_DATA_DIR/clinvar.GRCh38.sqlite" \
-  "SELECT rsid, COUNT(*) FROM clinvar_variants \
-   WHERE rsid IN ('rs1800896', 'rs1063192') GROUP BY rsid;"
-# Expected: ≥1 row per rsID. Multi-SCV variants will show >1 row
-# (e.g. rs1063192 typically shows 2+). A single combined row with a
-# semicolon-joined condition is a regression to the previous shape.
+  "SELECT COUNT(*) FROM clinvar_variants WHERE rsid = 'rs1800896';"
+# Expected: ≥1 row.
+sqlite3 "$ALLELIX_DATA_DIR/clinvar.GRCh38.sqlite" \
+  "SELECT COUNT(*) FROM (SELECT allele_id FROM clinvar_variants \
+   WHERE allele_id IS NOT NULL GROUP BY allele_id HAVING COUNT(*) > 1);"
+# Expected: at least 100,000 ClinVar alleles with more than one row
+# (898,674 of 2,891,556 alleles in a GRCh38 cache built in October 2026).
+# A per-variant cache (one combined row with a semicolon-joined
+# condition, the pre-2.2 shape) has none.
 ```
 
 The previous Frankenstein-pairing safety question is preserved
@@ -1004,7 +1012,7 @@ print(f\"ClinPGx attribution URL: {[x.get('source_url') for x in clinpgx]}\")
 "
 ```
 
-**Expected:** Schema version 9 for the 2.5 series, which is also the
+**Expected:** Schema version 10 for 2.5.1, which is also the
 `SCHEMA_VERSION` constant in `allelix/reports/json_report.py` (ADR-0033
 governs schema bump policy). This is the
 GRCh38 `enrichment_check.json` produced in §7: multiple sources are
@@ -1336,7 +1344,7 @@ print('BIM/BED alignment OK')
 BED data bytes (one byte per variant in SNP-major, single-sample mode).
 FAM has one sample line.
 
-### 16b. gnomAD ref/alt resolution
+### 16b. GRCh37 ref/alt resolution
 
 ```bash
 allelix export plink test_data/real/23andme/user1190_v5.txt -o /tmp/allelix-review/user1190_gnomad --build grch37
@@ -1346,18 +1354,22 @@ with_alt = sum(1 for l in lines if l.strip().split('\t')[5] != '0')
 mono = len(lines) - with_alt
 bed = open('/tmp/allelix-review/user1190_gnomad.bed', 'rb').read()[3:]  # one sample: one byte per marker
 het = sum(1 for b in bed if (b & 0b11) == 0b10)
-print(f'With ref/alt: {with_alt} (heterozygous: {het}, gnomAD-resolved homozygous: {with_alt - het})')
+print(f'With ref/alt: {with_alt} (heterozygous: {het}, resolved homozygous: {with_alt - het})')
 print(f'Monomorphic (A2=0): {mono}')
 "
 ```
 
-**Expected:** Heterozygous markers always carry both alleles. gnomAD
-adds ref/alt for the homozygous markers it covers; its cache holds exome
-variants (ADR-0026), so on an array file most homozygous markers stay
-monomorphic (user1190: about 62% of all markers are monomorphic). Pass
-when the ref/alt count is greater than the heterozygous count (gnomAD
-resolved some homozygous markers) and the monomorphic count equals the
-CLI's "N markers (P%) exported as monomorphic" line.
+**Expected:** Heterozygous markers always carry both alleles. On GRCh37
+a homozygous marker gets its ref/alt from the rsID identity table's
+GRCh37 pair at its position, else from gnomAD's pair when that pair is
+not strand-ambiguous (A/T, C/G) and the call fits it as written; the
+console's "Allele coding:" line counts each source. Neither covers most
+array sites (gnomAD's cache holds exome variants, ADR-0026), so most
+homozygous markers stay monomorphic (user1190: about 59% of all markers
+are monomorphic). Pass when the ref/alt count is greater than the
+heterozygous count (some homozygous markers were resolved) and the
+monomorphic count equals the CLI's "N markers (P%) exported as
+monomorphic" line.
 
 ### 16c. Roundtrip with plink2 (optional)
 
@@ -1710,7 +1722,7 @@ under `ALLELIX_ORIGINAL_ID`.
 
 Requires `bcftools` on `$PATH` for §20.6. Skip §20.6 if unavailable
 locally; CI installs bcftools unconditionally and runs the
-round-trip test on every push and PR.
+round-trip test as part of the hosted release gate.
 
 All §20 outputs go into one new directory per run: the writer refuses to
 overwrite an existing file, so fixed paths would fail on a second run.
@@ -1737,7 +1749,7 @@ Verify:
   - [ ] Injected `##INFO=<ID=ALLELIX_*,Number=A,Type=...,Description="...">`
     declarations for every source that produced annotations
   - [ ] Provenance block: `##ALLELIX_Version=<current version>`,
-    `##ALLELIX_VCF_SchemaVersion=0.4.0`,
+    `##ALLELIX_VCF_SchemaVersion=0.5.0`,
     `##ALLELIX_SkippedSources=` (each skipped source and its reason, or `none`),
     `##ALLELIX_License=AGPL-3.0-or-later`,
     `##ALLELIX_RunDate=<ISO 8601 UTC>`,
@@ -1874,7 +1886,7 @@ Skip if bcftools unavailable locally; CI runs it on every merge.
 Verify:
 
 - [ ] `##ALLELIX_Version` — Allelix version string
-- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version (0.4.0)
+- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version (0.5.0)
 - [ ] `##ALLELIX_SkippedSources` — each skipped source and its reason, or `none`
 - [ ] One `##ALLELIX_Database=<Name=X,Version=Y>` per annotator used
 - [ ] `##ALLELIX_Build=<ID=...,Source=...>`: `ID` matches `--build` and
@@ -1958,7 +1970,7 @@ All of the following must be true:
 - [ ] **ClinVar significance-sentinel ship-gate (§7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided', 'other', 'association', 'association not found')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). v2.2.1 added the three non-classification curatorial terms. Denylist form is reactive; durable allowlist form lives in the CLNSIG drift test (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) are present, and populated on GRCh37 input wherever the rsID identity table translates the allele
-- [ ] JSON report has schema version 9, with `input.build_source` and `input.build_evidence`; `sources` lists all eight registered sources with a state, and `report_warnings` is empty when ClinVar ran; the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used, as `{requested, counts, variants}` with the four counts (`annotated`, `typed_no_annotation`, `no_call`, `not_on_chip`) summing to `requested`; array reports have `input.array_quality` and, when ClinVar ran, `input.probe_classes` (both null for VCF input); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] JSON report has schema version 10, with `input.build_source` and `input.build_evidence`; `sources` lists all eight registered sources with a state, and `report_warnings` is empty when ClinVar ran; the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used, as `{requested, counts, variants}` with the four counts (`annotated`, `typed_no_annotation`, `no_call`, `not_on_chip`) summing to `requested`; array reports have `input.array_quality` and, when ClinVar ran, `input.probe_classes` (both null for VCF input); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
 - [ ] **Strand-aware carrier matching (ADR-0035)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
 - [ ] Config system gates SNPedia on `license.commercial`: the commercial-mode report has no SNPedia provenance or rows, §5a's personal-mode report has SNPedia, and `license.commercial` is back to its previous value
 - [ ] GWAS effect-type gate: only positively identified bare odds ratios
@@ -1987,7 +1999,7 @@ All of the following must be true:
       `Strand-flip match` rows. Its headline percentage includes no-calls and
       is not the pass criterion.
 - [ ] PLINK export produces valid .bed/.bim/.fam with correct magic and alignment
-- [ ] PLINK export resolves ref/alt from gnomAD when available
+- [ ] PLINK export resolves ref/alt from gnomAD when available (on GRCh37, from the rsID identity table first)
 - [ ] `allelix --version` reports the actual pyproject version even from a bare source checkout
 - [ ] **Gold-standard VCF battery (step 19)**: the bundled GIAB GRCh38 benchmark, GIAB GRCh37 benchmark, and HG00187 GATK-HC GRCh37 gVCF all analyze cleanly; `check_ground_truth.py` exits 0 on all four (`giab_grch38_benchmark`, `giab_grch37_benchmark`, `hg00187_gatkhc_gvcf`, `hg00187_gatkhc_gvcf_default`) — enforces each report's file, build and build source, the written and unique-key floors, published HG002 spot-checks at rs1801133 / rs7412 / rs6025, the significance vocabulary union, and per-row universal invariants, and fails on any YAML key it does not read; the optional same-sample HG002 DeepVariant gVCF is a strict superset of the benchmark rows at magnitude ≥ 5 (the same filter on both sides) when staged; `scripts/check_wrong_allele.py` exits 0 on every battery report (GIAB GRCh38 and GRCh37 with non-zero denominators); ClinVar emits per-SCV rows (multiple rows per multi-SCV rsID, each with its submitter's exact condition) — semicolon-joined rows are a regression to the previous shape
 

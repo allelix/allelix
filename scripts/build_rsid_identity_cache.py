@@ -18,7 +18,7 @@ runs on a 1 GB machine:
    and paired across builds, and the rows written to
    ``rsid_identity.sqlite`` (optionally gzipped, with its SHA-256).
 
-``curl`` and ``gzip`` must be on PATH. The work directory is deleted at
+``bash``, ``curl`` and ``gzip`` must be on PATH. The work directory is deleted at
 the end unless ``--keep-work`` is given.
 
 Usage (one command line):
@@ -109,6 +109,9 @@ def _progress(lines: Iterator[str], label: str) -> Iterator[str]:
 
 def filter_source(source: str, bloom: RsidBloom, out_path: Path) -> None:
     """Stream one dbSNP VCF (URL or path) through the Bloom filter into a TSV."""
+    bash = shutil.which("bash")
+    if bash is None:
+        raise SystemExit("bash is required on PATH to stream dbSNP; install Bash and retry.")
     if source.startswith(("http://", "https://")):
         cmd = f"curl -sSfL --retry 5 '{source}' | gzip -dc"
     else:
@@ -116,7 +119,7 @@ def filter_source(source: str, bloom: RsidBloom, out_path: Path) -> None:
     label = source.rsplit("/", 1)[-1]
     with (
         subprocess.Popen(
-            ["bash", "-o", "pipefail", "-c", cmd],
+            [bash, "-o", "pipefail", "-c", cmd],
             stdout=subprocess.PIPE,
             text=True,
             bufsize=1 << 20,

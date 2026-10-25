@@ -1209,6 +1209,7 @@ class TestRealClinvarTsvIngest:
         """Build a real GRCh38 cache from the real TSVs and check invariants."""
         from allelix.databases.manager import (
             _CLINVAR_PLACEHOLDER_CLNSIGS,
+            CLINVAR_MIN_ROWS,
             CLINVAR_SUBMISSION_SUMMARY_URL,
             CLINVAR_VARIANT_SUMMARY_URL,
         )
@@ -1217,10 +1218,18 @@ class TestRealClinvarTsvIngest:
         ss_path = _ensure_real_tsv("submission_summary.txt.gz", CLINVAR_SUBMISSION_SUMMARY_URL)
 
         db = tmp_path / "clinvar.GRCh38.sqlite"
-        load_clinvar_tsv(vs_path, ss_path, db, "GRCh38", remote_signal="real-data-test")
+        load_clinvar_tsv(
+            vs_path,
+            ss_path,
+            db,
+            "GRCh38",
+            remote_signal="real-data-test",
+            min_rows=CLINVAR_MIN_ROWS["GRCh38"],
+        )
 
         with contextlib.closing(sqlite3.connect(db)) as conn:
             row_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
+            assert row_count >= CLINVAR_MIN_ROWS["GRCh38"]
             distinct_rsids = conn.execute(
                 "SELECT COUNT(DISTINCT rsid) FROM clinvar_variants"
             ).fetchone()[0]

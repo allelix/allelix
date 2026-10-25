@@ -62,7 +62,10 @@ _OUTPUT_OPT = click.option(
     "--output",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="Write a report file (.html or .json). Omit for terminal output.",
+    help=(
+        "Write a report file (.html or .json). Refuses input aliases and publishes "
+        "atomically. Omit for terminal output."
+    ),
 )
 _REPORT_FORMAT_OPT = click.option(
     "--report-format",
@@ -217,6 +220,6 @@ _VCF_OUT_OPT = click.option(
     help=(
         "Write an annotated VCF at this path (v2.3.0+; experimental output "
         "contract, ADR-0036). Requires VCF or gVCF input. Refuses to "
-        "overwrite an existing file."
+        "overwrite an existing file or input aliases; publishes atomically."
     ),
 )

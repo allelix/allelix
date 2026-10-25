@@ -1,13 +1,15 @@
 name: Slow suite
 
-# Real-data / network / binary-dependent tests. Excluded from PR CI (they run
-# locally pre-commit per CONTRIBUTING.md). Run here on a weekly schedule so
-# upstream drift — notably ClinVar CLNSIG vocabulary changes — is still
-# caught in CI, plus on demand via the Actions tab.
+# Real-data / network / binary-dependent tests. Outside fast CI (they run
+# locally before release per CONTRIBUTING.md). Dispatch this workflow for
+# release validation when hosted execution is needed, including upstream
+# drift checks such as ClinVar CLNSIG vocabulary changes.
 on:
-  schedule:
-    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   slow:
@@ -39,7 +41,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,vcf-index]"
 
       - name: Generate test fixture
         run: python tests/generate_mock_data.py

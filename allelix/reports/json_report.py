@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "9",
+      "schema_version": "10",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -70,7 +70,11 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"
+# v9 -> v10 (2.5.1): ``input.vcf_quality`` adds the VCF genotype counts and the
+# reference-source/ploidy conflict counts; each panel variant adds nullable
+# ``reason`` for an explicit unusable VCF record (ADR-0055). Arrays emit null;
+# annotation shape is unchanged.
 # v8 -> v9 bump (one for every 2.5 report field, ADR-0045 first): every
 # annotation carries ``clinvar_aggregate`` (ClinVar's own classification of
 # the variant), ``submitters_same`` / ``submitters_total`` (the submitter
@@ -91,7 +95,7 @@ SCHEMA_VERSION = "9"
 # ``panel_coverage`` (ADR-0051) is ``{requested, counts, variants}``: ``counts``
 # has ``annotated``, ``typed_no_annotation``, ``no_call`` and
 # ``not_on_chip`` (summing to ``requested``), and each ``variants`` entry
-# is ``{rsid, gene, state, genotype, annotation_count}``. It replaces
+# is ``{rsid, gene, state, genotype, annotation_count, reason}``. It replaces
 # ``found`` / ``missing`` / ``no_findings``.
 # ``input.vcf_quality.clinvar_ref_mismatches`` counts one-base records at a
 # ClinVar position whose REF is none of ClinVar's one-base REFs there.
@@ -149,8 +153,13 @@ def _vcf_quality_dict(result: AnalysisResult) -> dict | None:
         "symbolic_allele_calls": stats.symbolic_allele_calls,
         "trimmed_matches": stats.trimmed_matches,
         "clinvar_ref_mismatches": stats.clinvar_ref_mismatches,
+        "reference_source_conflicts": stats.reference_source_conflicts,
+        "reference_ploidy_conflicts": stats.reference_ploidy_conflicts,
         "reference_carried_calls": stats.reference_carried_calls,
         "reference_carried_not_in_file": stats.reference_carried_not_in_file,
+        "genotype_records": stats.genotype_records,
+        "hom_ref_calls": stats.hom_ref_calls,
+        "non_reference_calls": stats.non_reference_calls,
     }
 
 
@@ -300,5 +309,9 @@ def render_json(
             "removed": diff.removed,
         }
 
-    atomic_write_text(output_path, json.dumps(payload, indent=2, sort_keys=False) + "\n")
+    atomic_write_text(
+        output_path,
+        json.dumps(payload, indent=2, sort_keys=False) + "\n",
+        input_path=result.file_path,
+    )
     return len(filtered)

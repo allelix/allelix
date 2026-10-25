@@ -207,6 +207,7 @@ class _StubTabixFile:
     def __init__(self, path: str) -> None:
         with open(path) as handle:
             self._rows = [line.rstrip("\n") for line in handle if not line.startswith("#")]
+        self.contigs = tuple(dict.fromkeys(row.split("\t")[0] for row in self._rows))
 
     def fetch(self, chrom: str, start: int, end: int) -> list[str]:
         return [

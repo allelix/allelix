@@ -294,8 +294,13 @@ class TestCallerFilterEndToEnd:
             "symbolic_allele_calls": 0,
             "trimmed_matches": 0,
             "clinvar_ref_mismatches": 0,
+            "reference_source_conflicts": 0,
+            "reference_ploidy_conflicts": 0,
             "reference_carried_calls": 0,
             "reference_carried_not_in_file": 0,
+            "genotype_records": 5,
+            "hom_ref_calls": 0,
+            "non_reference_calls": 5,
         }
         assert _stamped_rsids(vcf_text) == {"rs900740001", "rs900740002"}
         assert "ALLELIX_FILTER" not in vcf_text

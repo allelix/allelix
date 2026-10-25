@@ -272,7 +272,11 @@ class TestInfoDeclarations:
             run_date=_fixed_date(),
         )
         text = _read(out)
-        assert 'Type=String,Description="ClinVar significance | rsID | gene"' in text
+        assert 'Type=String,Description="ClinVar significance | rsID | gene.' in text
+        assert (
+            "On a homozygous-reference or haploid reference record, the finding "
+            "is for the allele the reference itself carries."
+        ) in text
         assert 'Type=Float,Description="gnomAD allele frequency"' in text
         assert 'Type=Float,Description="CADD PHRED score"' in text
 

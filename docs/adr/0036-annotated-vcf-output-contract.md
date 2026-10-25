@@ -188,3 +188,15 @@ partial-line garbage in production files.
 *Amended by ADR-0049:* the provenance block gains `##ALLELIX_SkippedSources=`, each registered source that did not run with its reason, or `none` (`VCF_SCHEMA_VERSION` 0.4.0).
 
 *Amended (2.5):* where a source has several rows at one variant, its slot holds the row the report lists first (highest magnitude, then rsID; ties keep the pipeline order), not the last one. The INFO shape is unchanged, so `VCF_SCHEMA_VERSION` stays 0.4.0.
+
+*Amended by ADR-0056:* the direct writer refuses input aliases and streams into
+an owned unique same-directory temp, closing successfully before publication.
+A prepublication failure preserves prior permitted output or leaves no newly
+named output. The CLI continues to refuse any existing VCF destination. The
+VCF content contract and schema version are unchanged.
+
+*Amended by ADR-0059:* re-annotation replaces owned INFO and provenance,
+including stale tags on blocks. Eligible explicit reference calls use
+the existing ClinVar field with a Description explaining REF; the
+Number/Type, value grammar and provenance shapes remain unchanged, and
+`VCF_SCHEMA_VERSION` goes to 0.5.0 for the change in meaning.

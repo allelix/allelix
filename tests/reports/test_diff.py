@@ -483,3 +483,197 @@ class TestDiffAnnotationToDict:
         assert d["previous_significance"] == "clinvar_pathogenic"
         assert d["previous_magnitude"] == 9.0
         assert "is_must_include" not in d
+
+
+def _allele_ann(alt: str, genotype: str = "AT") -> Annotation:
+    """A ClinVar finding for one ALT of a multi-allelic site (2:5000 G>A,T)."""
+    return Annotation(
+        source="clinvar",
+        rsid="rs900960021",
+        significance="clinvar_pathogenic",
+        category="clinical",
+        magnitude=9.0,
+        description="ClinVar classifies this allele as Pathogenic",
+        attribution="ClinVar",
+        genotype_match=genotype,
+        condition="Test condition",
+        gene="GENE",
+        alt=alt,
+    )
+
+
+def _public(annotations: list[Annotation]) -> list[dict]:
+    from allelix.models import annotation_to_public_dict
+
+    return [annotation_to_public_dict(a) for a in annotations]
+
+
+class TestDiffKeepsAllelesApart:
+    """Two ALTs at one variant with the same condition are two findings."""
+
+    def test_second_allele_is_new(self) -> None:
+        diff = compute_diff([_allele_ann("A"), _allele_ann("T")], _public([_allele_ann("A")]), "")
+        assert [a.alt for a in diff.new] == ["T"]
+        assert diff.removed == [] and diff.changed == []
+
+    def test_dropped_allele_is_removed(self) -> None:
+        diff = compute_diff([_allele_ann("A")], _public([_allele_ann("A"), _allele_ann("T")]), "")
+        assert [d["alt"] for d in diff.removed] == ["T"]
+        assert diff.new == [] and diff.changed == []
+
+    def test_genotype_only_change_is_changed(self) -> None:
+        diff = compute_diff([_allele_ann("A", "AA")], _public([_allele_ann("A", "AG")]), "")
+        assert [c.current.genotype_match for c in diff.changed] == ["AA"]
+        assert diff.new == [] and diff.removed == []
+
+    def test_previous_entry_without_alt_is_compared_the_old_way(self) -> None:
+        legacy = _public([_allele_ann("A", "AG")])
+        for entry in legacy:
+            del entry["alt"]
+        diff = compute_diff([_allele_ann("A", "AA")], legacy, "")
+        # Matched on the key without the allele; no genotype comparison.
+        assert not diff.has_changes
+
+    def test_schema_9_report_from_2_5_0_still_diffs(self, tmp_path: Path) -> None:
+        from allelix.reports.json_report import render_json
+        from tests.reports.test_html import _result
+
+        out = tmp_path / "baseline.json"
+        render_json(_result([_allele_ann("A")]), output_path=out)
+        payload = json.loads(out.read_text())
+        # 2.5.0 wrote schema 9: the same annotation fields, without the
+        # schema 10 additions (VCF counts, panel reasons).
+        payload["schema_version"] = "9"
+        out.write_text(json.dumps(payload))
+        previous = load_previous_report(out)
+        diff = compute_diff(
+            [_allele_ann("A"), _allele_ann("T")], previous["annotations"], previous["generated_at"]
+        )
+        assert [a.alt for a in diff.new] == ["T"]
+        assert diff.removed == [] and diff.changed == []
+
+
+class TestDiffKeepsGenotypesApart:
+    """One report can hold the same allele with two genotypes (two records)."""
+
+    def test_dropped_genotype_is_removed(self) -> None:
+        previous = _public([_allele_ann("A", "AG"), _allele_ann("A", "AA")])
+        diff = compute_diff([_allele_ann("A", "AA")], previous, "")
+        assert [d["genotype_match"] for d in diff.removed] == ["AG"]
+        assert diff.new == [] and diff.changed == []
+
+    def test_row_order_is_not_a_change(self) -> None:
+        previous = _public([_allele_ann("A", "AG"), _allele_ann("A", "AA")])
+        diff = compute_diff([_allele_ann("A", "AA"), _allele_ann("A", "AG")], previous, "")
+        assert not diff.has_changes
+
+    def test_one_of_two_genotypes_changing_is_changed(self) -> None:
+        previous = _public([_allele_ann("A", "AG"), _allele_ann("A", "AA")])
+        diff = compute_diff([_allele_ann("A", "AA"), _allele_ann("A", "GG")], previous, "")
+        assert [c.current.genotype_match for c in diff.changed] == ["GG"]
+        assert diff.new == [] and diff.removed == []
+
+
+def _cli_diff(tmp_path: Path, baseline_rows: list[str], current_rows: list[str]) -> dict:
+    from click.testing import CliRunner
+
+    from allelix.cli import main
+    from tests.test_clinvar_matching_batch import _vcf, _write_clinvar
+
+    data = tmp_path / "data"
+    data.mkdir()
+    _write_clinvar(data)
+    args = ["--data-dir", str(data), "--no-update", "--build", "grch37"]
+    baseline, current = tmp_path / "baseline.json", tmp_path / "current.json"
+    runner = CliRunner()
+    first = runner.invoke(
+        main,
+        [
+            "analyze",
+            str(_vcf(tmp_path / "b.vcf", baseline_rows)),
+            *args,
+            "--output",
+            str(baseline),
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(
+        main,
+        [
+            "analyze",
+            str(_vcf(tmp_path / "c.vcf", current_rows)),
+            *args,
+            "--output",
+            str(current),
+            "--diff",
+            str(baseline),
+        ],
+    )
+    assert second.exit_code == 0, second.output
+    return json.loads(current.read_text())["diff"]
+
+
+_HET = "2\t1000\trs900227001\tG\tA\t.\tPASS\t.\tGT:GQ\t0/1:99"
+_HOM = "2\t1000\trs900227001\tG\tA\t.\tPASS\t.\tGT:GQ\t1/1:99"
+
+
+def test_cli_diff_reports_a_dropped_genotype_as_removed(tmp_path: Path) -> None:
+    diff = _cli_diff(tmp_path, [_HET, _HOM], [_HOM])
+    assert [d["genotype_match"] for d in diff["removed"]] == ["AG"]
+    assert diff["new"] == [] and diff["changed"] == []
+
+
+def test_cli_diff_ignores_row_order(tmp_path: Path) -> None:
+    diff = _cli_diff(tmp_path, [_HET, _HOM], [_HOM, _HET])
+    assert diff["new"] == [] and diff["removed"] == [] and diff["changed"] == []
+
+
+def test_cli_diff_shows_a_genotype_only_change(tmp_path: Path) -> None:
+    diff = _cli_diff(tmp_path, [_HET], [_HOM])
+    assert diff["new"] == [] and diff["removed"] == []
+    (changed,) = diff["changed"]
+    assert (changed["previous_genotype_match"], changed["genotype_match"]) == ("AG", "AA")
+    assert changed["previous_significance"] == changed["significance"]
+
+
+def test_terminal_diff_shows_both_genotypes() -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from allelix.reports.terminal import render_terminal_diff
+
+    diff = compute_diff([_allele_ann("A", "AA")], _public([_allele_ann("A", "AG")]), "")
+    buf = StringIO()
+    render_terminal_diff(diff, Console(file=buf, force_terminal=False, width=200))
+    assert "AG -> AA" in buf.getvalue()
+
+
+def _summary(diff) -> tuple:
+    """A diff as plain data, for comparing two diffs."""
+    return (
+        sorted((a.alt, a.genotype_match) for a in diff.new),
+        sorted((d["alt"], d["genotype_match"]) for d in diff.removed),
+        sorted((c.current.genotype_match, c.previous_genotype_match) for c in diff.changed),
+    )
+
+
+class TestDiffDoesNotDependOnOrder:
+    """Leftover findings under one key pair the same way in any row order."""
+
+    def test_baseline_order_does_not_matter(self) -> None:
+        previous = [_allele_ann("A", "AG"), _allele_ann("A", "AA")]
+        current = [_allele_ann("A", "AT")]
+        forward = compute_diff(current, _public(previous), "")
+        backward = compute_diff(current, _public(previous[::-1]), "")
+        assert _summary(forward) == _summary(backward)
+        assert len(forward.changed) == 1 and len(forward.removed) == 1
+
+    def test_current_order_does_not_matter(self) -> None:
+        previous = _public([_allele_ann("A", "AG"), _allele_ann("A", "AA")])
+        current = [_allele_ann("A", "AT"), _allele_ann("A", "AC")]
+        forward = compute_diff(current, previous, "")
+        backward = compute_diff(current[::-1], previous, "")
+        assert _summary(forward) == _summary(backward)
+        assert forward.new == [] and forward.removed == []
+        assert len(forward.changed) == 2

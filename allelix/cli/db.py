@@ -176,7 +176,7 @@ def db_update(
 
             if not annotator.is_ready():
                 console.print(f"  [bold]{annotator.name}[/bold]: downloading…")
-                if _helpers._run_setup(annotator):
+                if _helpers._run_setup(annotator, force=force):
                     console.print(
                         f"  [green]✓ {annotator.name} ready[/green] "
                         f"(version {annotator.version() or '(unknown)'})"
@@ -187,7 +187,7 @@ def db_update(
 
             if force:
                 console.print(f"  [bold]{annotator.name}[/bold]: --force; refreshing…")
-                if _helpers._run_setup(annotator):
+                if _helpers._run_setup(annotator, force=force):
                     console.print(
                         f"  [green]✓ {annotator.name} refreshed[/green] "
                         f"(version {annotator.version() or '(unknown)'})"
@@ -207,10 +207,16 @@ def db_update(
 
             remote = annotator.fetch_remote_signal()
             if remote is None:
+                # ClinVar's signal is the checksum that verifies its download:
+                # --force cannot refresh without it either.
+                advice = (
+                    "; cache kept. ClinVar is never refreshed unverified; try again later."
+                    if annotator.name == "clinvar"
+                    else ". Pass --force to refresh anyway."
+                )
                 console.print(
                     f"  [yellow]{annotator.name}: cache present, but remote "
-                    "freshness can't be verified (network error or no signal). "
-                    "Pass --force to refresh anyway.[/yellow]"
+                    f"freshness can't be verified (network error or no signal){advice}[/yellow]"
                 )
                 continue
 
@@ -482,15 +488,16 @@ def db_path(data_dir: Path | None, check: bool) -> None:
     non-zero (and print a diagnostic to stderr) if it is not.
     Existence is guaranteed — the path is created on resolution.
     """  # noqa: D301 - plain string: click's \b marker is the backspace character
-    import os
     import sys
+
+    from allelix.databases.cache_state import directory_writable
 
     resolved = resolve_data_dir(data_dir)
     # Plain print (not rich console.print) so the output is shell-safe
     # for `$(allelix db path)` capture — no styling escape sequences.
     print(str(resolved))
 
-    if check and not os.access(resolved, os.W_OK):
+    if check and not directory_writable(resolved, require_search=False):
         print(f"error: path is not writable: {resolved}", file=sys.stderr)
         sys.exit(1)
 
