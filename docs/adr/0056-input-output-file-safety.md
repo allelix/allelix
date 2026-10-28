@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -50,3 +50,16 @@ collisions remain separate work. There is no claim of preserving ownership,
 ACLs, xattrs or link topology, crash durability, a three-file transaction, or
 protection from hostile concurrent path swaps. An uncatchable kill may leave
 an owned temp. Cross-platform behavior requires platform-specific verification.
+
+## Amendment 2026-10-25 (2.5.2): outputs that alias each other; new-file mode
+
+- **Two destinations of one run must be two files.** `analyze --output` and
+  `--vcf-out`, and the three PLINK outputs of a prefix, are compared before
+  any work (`same_destination`): resolved paths, which follow symlinks even
+  when they dangle, and `samefile` for existing hardlinks. A collision stops
+  the run, and nothing is written. The direct PLINK writer checks too, before
+  it reads its input.
+- **New-file mode.** A published output that did not exist before gets
+  `0666 & ~umask`, the mode the user would get from any new file, instead of
+  the staging temp's `0600`. An existing destination keeps its mode, as
+  before.

@@ -46,16 +46,24 @@ from allelix.reports._pipeline import (
 )
 from allelix.reports._sources import ReportWarning, build_sources, clinvar_skipped_warning
 from allelix.reports.association_text import strand_abstention_lines
-from allelix.reports.clinvar_text import common_allele_line, scored_down_line
+from allelix.reports.clinvar_text import (
+    common_allele_line,
+    scored_down_line,
+    scored_down_variant_text,
+)
 from allelix.reports.diff import compute_diff, load_previous_report
-from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
+from allelix.reports.high_value import (
+    DI_CALLS_NOT_CHECKED,
+    UNCHECKED_DI_CALL,
+    format_warnings,
+    load_high_value_snps,
+    scan_no_calls,
+    unchecked_sites,
+)
 from allelix.reports.html import render_html
 from allelix.reports.json_report import render_json
 from allelix.reports.terminal import render_terminal, render_terminal_diff
-from allelix.utils.build_detect import (
-    SOURCE_CONTIG_LENGTHS,
-    BuildDecisionError,
-)
+from allelix.utils.build_detect import BuildDecisionError, needs_late_seeds
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -66,6 +74,7 @@ if TYPE_CHECKING:
     from allelix.annotators.cadd import CaddAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+    from allelix.attribution import Placements
     from allelix.config import AllelixConfig
     from allelix.databases.cache_state import CacheStatus
     from allelix.models import Variant
@@ -96,6 +105,8 @@ def _percent(part: int, total: int) -> str:
 
 # Report-warning codes the parser logger prints itself, on stderr.
 _LOGGED_INPUT_NOTICES = frozenset(INPUT_NOTICE_CODES.values())
+# report_warnings code: --build forced a build no known-SNP position matches.
+BUILD_OVERRIDE_UNMATCHED = "build_override_unmatched"
 
 
 class _WarningCounter(logging.Handler):
@@ -321,8 +332,8 @@ _STALENESS_SECONDS = 7 * 24 * 60 * 60  # 7 days
 class _ResolvedStream:
     """Variants from ``_resolved_variants``, the build decision, and the high-value watch results.
 
-    When contig lengths decided the build, the known-SNP positions are
-    checked after the last variant, so a consumer must exhaust
+    When contig lengths decided the build or stand beside ``--build``, the
+    known-SNP positions are checked after the last variant, so a consumer must exhaust
     ``variants`` (``must_exhaust``) before it writes or prints a result.
     """
 
@@ -330,7 +341,7 @@ class _ResolvedStream:
         self,
         variants: Iterator[Variant],
         parser: GenotypeParser,
-        placements: dict[str, dict[str, tuple[str, int]]] | None,
+        placements: dict[str, list[tuple[str, int, str, str, int, str, str]]] | None,
         high_value: set[str],
         decision: BuildDecision,
         record: StreamBuild,
@@ -341,6 +352,7 @@ class _ResolvedStream:
         self._parser = parser
         self._placements = placements
         self._high_value = high_value
+        self._attribution: dict[str, tuple[Placements, dict[tuple[str, int], frozenset[str]]]] = {}
 
     def build_diagnostics(self) -> BuildDiagnostics:
         """The build decision with what the stream learnt; call after exhausting it."""
@@ -348,8 +360,39 @@ class _ResolvedStream:
 
     @property
     def must_exhaust(self) -> bool:
-        """True when stopping early would skip the late known-SNP check."""
-        return self.decision.source == SOURCE_CONTIG_LENGTHS
+        """True when stopping early would skip the late known-SNP check.
+
+        Contig lengths deciding the build, or confirming a ``--build``, both
+        leave the known-SNP check to the end of the pass (``needs_late_seeds``).
+        """
+        return needs_late_seeds(self.decision)
+
+    def high_value_targets(self, variant: Variant) -> set[str]:
+        """The high-value rsIDs a streamed call stands for (``allelix.attribution``).
+
+        VCF input (REF from the file): a call at one of an rsID's placements on
+        its build with that placement's REF, whatever its ID; by ID when the
+        rsID has no placement. Other input: by ID, as before.
+        """
+        from allelix.attribution import attributed_rsids, build_placements, placement_index
+
+        if not variant.ref_from_input or not self._placements:
+            return {variant.rsid} if variant.rsid in self._high_value else set()
+        cached = self._attribution.get(variant.build)
+        if cached is None:
+            places = build_placements(self._placements, variant.build)
+            cached = (places, placement_index(places))
+            self._attribution[variant.build] = cached
+        places, index = cached
+        return attributed_rsids(
+            self._high_value,
+            variant.chromosome,
+            variant.position,
+            variant.ref,
+            variant.rsid,
+            places,
+            index,
+        )
 
     def high_value_states(self, build: str) -> dict[str, tuple[str, str]] | None:
         """VCF input: what the file says at each high-value position.
@@ -777,6 +820,8 @@ def _emit_runtime_nudges(result: object, missing_resolvers: tuple[str, ...] = ()
     scored_down = scored_down_line(getattr(result, "clinvar_scored_down", 0))
     if scored_down:
         console.print(f"[dim]{scored_down}[/dim]")
+        for ann in getattr(result, "clinvar_scored_down_variants", []):
+            console.print(f"[dim]  {escape(scored_down_variant_text(ann))}[/dim]")
     common_allele = common_allele_line(getattr(result, "clinvar_common_allele", 0))
     if common_allele:
         console.print(f"[dim]{common_allele}[/dim]")
@@ -854,14 +899,28 @@ def _run_analysis_command(
     vcf_out: Path | None = None,
     keep_filtered: bool = False,
     min_gq: int | None = None,
+    filter_path: Path | None = None,
 ) -> None:
-    from allelix.reports import validate_output_path
+    from allelix.reports import check_writable, same_destination, validate_output_path
 
+    # Before any work (2.5.2): no output may be a file this run reads (the
+    # input, the --diff baseline, the --filter-file), and each must be writable.
+    inputs = [path for path in (file_path, diff_path, filter_path) if path is not None]
     try:
-        if output is not None:
-            validate_output_path(file_path, output)
-        if vcf_out is not None:
-            validate_output_path(file_path, vcf_out, legacy_temp=False)
+        for destination, legacy_temp in ((output, True), (vcf_out, False)):
+            if destination is None:
+                continue
+            for source in inputs:
+                validate_output_path(source, destination, legacy_temp=legacy_temp)
+        if output is not None and vcf_out is not None and same_destination(output, vcf_out):
+            msg = (
+                f"--output {output} and --vcf-out {vcf_out} name the same file; "
+                "choose two different paths."
+            )
+            raise ValueError(msg)
+        for destination in (output, vcf_out):
+            if destination is not None:
+                check_writable(destination)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -886,13 +945,13 @@ def _run_analysis_command(
             )
 
     resolved = resolve_data_dir(data_dir)
+    from allelix.config import load_config
+
+    # An unreadable config.toml stops the run before the update step writes.
+    cfg = load_config(resolved, create=not no_update)
     if not no_update:
         _prepare_caches(get_annotators(resolved), resolved)
         _maybe_refresh_databases(resolved)
-
-    from allelix.config import load_config
-
-    cfg = load_config(resolved, create=not no_update)
     _, ready, not_ready, registry = _ready_annotators(
         data_dir,
         include_benign=include_benign,
@@ -992,9 +1051,43 @@ def _run_analysis_command(
     forced = forced_warning(parser)
     if forced is not None:
         result.report_warnings.insert(0, forced)
+    # --build forced a build the file's known-SNP positions match none of
+    # (2.5.2): the build notice is already on the console; the report keeps it.
+    from allelix.reports.build_text import forced_unmatched_text
+
+    unmatched = (
+        forced_unmatched_text(result.build_diagnostics)
+        if result.build_diagnostics is not None
+        else None
+    )
+    if unmatched is not None:
+        result.report_warnings.insert(0, ReportWarning(BUILD_OVERRIDE_UNMATCHED, unmatched))
+    unchecked = unchecked_sites(
+        high_value,
+        result.hv_variants,
+        result.di_calls_at_plp,
+        result.vcf_quality.reference_carried_not_in_file_rsids
+        if result.vcf_quality is not None
+        else [],
+    )
+    di_unchecked = [site for site in unchecked if site.reason == UNCHECKED_DI_CALL]
+    if di_unchecked:
+        result.report_warnings.append(
+            ReportWarning(
+                DI_CALLS_NOT_CHECKED,
+                f"{len(di_unchecked)} call(s) at high-value or Pathogenic sites are written "
+                "as D or I and could not be checked: "
+                + "; ".join(site.text for site in di_unchecked),
+                len(di_unchecked),
+            )
+        )
     for report_warning in result.report_warnings:
-        if report_warning.code in _LOGGED_INPUT_NOTICES:
-            continue  # the parser logger already printed it as a "warning:" line
+        if report_warning.code in _LOGGED_INPUT_NOTICES or report_warning.code == (
+            BUILD_OVERRIDE_UNMATCHED
+        ):
+            continue  # already printed: a "warning:" line, or the build notice
+        if report_warning.code == DI_CALLS_NOT_CHECKED:
+            continue  # named in the high-value block below
         console.print(f"[bold yellow]Warning:[/bold yellow] {escape(report_warning.message)}")
 
     missing_resolvers = tuple(
@@ -1016,6 +1109,13 @@ def _run_analysis_command(
         )
         for line in format_warnings(hv_warnings):
             console.print(f"  [red]⚠[/red] {line}")
+    if unchecked:
+        console.print(
+            f"[bold red]Warning:[/bold red] {len(unchecked)} high-value or Pathogenic "
+            "site(s) could not be checked:"
+        )
+        for site in unchecked:
+            console.print(f"  [red]⚠[/red] {escape(site.text)}")
 
     if counter.count:
         console.print(
@@ -1058,12 +1158,35 @@ def _run_analysis_command(
             rsids=rsids,
             source_min_magnitudes=source_floors,
         )
+        # Below the display floor means the floors exclude the finding,
+        # before the GWAS rollup hides a PheCode sibling (2.5.2).
+        above_floor = {id(a) for a in filtered_for_diff}
         filtered_for_diff = rollup_gwas_duplicates(filtered_for_diff)
+        # Removal means absent from the current findings in scope, before any
+        # display floor: a finding scored below the floor is changed. The pool
+        # is the displayed findings, rolled up as the report shows them, plus
+        # the in-scope findings the report does not display; a hidden GWAS
+        # PheCode sibling never replaces a displayed parent.
+        displayed = {id(a) for a in filtered_for_diff}
+        undisplayed = [
+            a
+            for a in result.filter(min_magnitude=0.0, category=category, genes=genes, rsids=rsids)
+            if id(a) not in displayed
+        ]
         diff_result = compute_diff(
             filtered_for_diff,
             prev["annotations"],
             prev.get("generated_at", ""),
+            unfiltered=filtered_for_diff + undisplayed,
+            below_floor={id(a) for a in undisplayed if id(a) not in above_floor},
         )
+        previous_input = (prev.get("input") or {}).get("file")
+        if previous_input and previous_input != file_path.name:
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] the --diff baseline was made from "
+                f"{escape(previous_input)}, not {escape(file_path.name)}; the comparison "
+                "may be between two different people or files."
+            )
 
     if output is None:
         if diff_result is not None:
@@ -1105,6 +1228,7 @@ def _run_analysis_command(
                 source_min_magnitudes=source_floors,
                 diff=diff_result,
                 high_value_no_calls=hv_dicts,
+                high_value_unchecked=[site.to_dict() for site in unchecked] or None,
             )
         else:
             rendered = render_html(
@@ -1117,6 +1241,7 @@ def _run_analysis_command(
                 source_min_magnitudes=source_floors,
                 diff=diff_result,
                 high_value_no_calls=hv_warning_lines,
+                high_value_unchecked=[site.text for site in unchecked] or None,
             )
         console.print(f"[green]Wrote {rendered:,} annotation(s) to {output}[/green]")
 
@@ -1143,6 +1268,8 @@ def _run_analysis_command(
             recovered_rsids=result.vcf_write_inputs.recovered_rsids,
             keep_filtered=keep_filtered,
             reference_rows=result.vcf_write_inputs.reference_rows,
+            record_rows=result.vcf_write_inputs.record_rows,
+            record_recovered=result.vcf_write_inputs.record_recovered,
         )
         console.print(
             f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to {vcf_out}[/green]"

@@ -38,6 +38,12 @@ effective build. The pipeline reports the tentative position result and uses
 the existing fallback order: explicit override, header, chromosome-prefix
 inference, then GRCh37. ADR-0025's GRCh36 fail-safe remains unchanged.
 
+*Superseded in part by ADR-0044:* the fallback order above (header,
+chromosome-prefix inference, then GRCh37) no longer applies. ADR-0044 and
+`utils/build_detect.py` decide the build from contig lengths, confident
+positions, the label and the format default, and stop the run where the
+evidence does not decide. The three-seed / 80% threshold here is unchanged.
+
 ## Consequences
 
 - One noisy seed no longer defeats a well-supported 4/5 position result.

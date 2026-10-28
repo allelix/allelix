@@ -52,3 +52,41 @@ HTML reports, and the docs say so.
 value layout changes, but `ALLELIX_CLINVAR` on a reference record now
 describes the allele the reference carries rather than the ALT, which is a
 change in meaning for anyone reading the file.
+
+## Amendment 2026-10-25 (2.5.2): a field of its own, on every record that carries REF
+
+Two faults in the decision above:
+- A het or half call (`0/1`, `0/.`) at a site where the reference carries a
+  ClinVar allele had that finding in the JSON but not in the VCF. Only
+  `0/0` records were stamped.
+- The finding on a `0/0` record was repeated in every ALT slot of a
+  `Number=A` field, where it read as a finding for the ALT.
+
+The decision now:
+- **A field of its own.** VCF schema 0.6.0 adds `ALLELIX_CLINVAR_REF`:
+  `Number=1`, `Type=String`, value `significance|rsID|gene`, with the
+  escaping and the report-rank choice of `ALLELIX_CLINVAR`. It holds the
+  highest-ranked ClinVar finding for the allele the reference itself
+  carries, on that record. `ALLELIX_CLINVAR` stays `Number=A` and carries
+  only findings for the record's carried ALT alleles. A record can have
+  both.
+- **Every record whose call carries REF.** That is a het, a half call, a
+  hom-ref or haploid reference call, and a single-position record with ALT
+  `.` and no `END`. With `Number=1` the last needs no ALT slot, and its site
+  is exact: an all-sites `0/0` at F5 on GRCh37 is a homozygous Leiden carrier,
+  and a VCF reader must see it. A multi-base REF is stamped where it covers
+  the site, as before.
+- **Blocks excluded.** gVCF `END` reference blocks stay unstamped: a block
+  spans many positions and has no single site.
+- **Only the record the call was read from.** This applies to every field:
+  ALT findings, enrichment and recovered rsIDs as well. The parser numbers
+  data records, and each call keeps its number. The writer stamps a key's
+  findings only on the records whose own call carries that allele. A
+  duplicate at the same CHROM, POS, REF and ALT whose call is a no-call,
+  low quality, hom-ref or another ALT borrows nothing. A recovered rsID goes
+  on the record whose own call it was recovered for.
+- **Re-annotation** removes stale values of both fields.
+- **Half calls with ALT `.`.** A single-position record with ALT `.` and GT
+  `0/.` is now read as a half call of REF, like the same GT on a record with
+  an ALT. Before, it gave no call, and its finding was lost from the JSON
+  too.

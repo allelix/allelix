@@ -12,7 +12,7 @@ PHRED-scaled score where 10 = top 10% most deleterious, 20 = top 1%,
 (frequency only), CADD covers coding, non-coding, and regulatory
 variants — making it a complementary enrichment signal.
 
-CADD is the first non-commercial data source in allelix. The CADD
+CADD is the first opt-in data source in allelix. The CADD
 license (University of Washington / Hudson River Biotechnology) permits
 free non-commercial use; commercial use requires a separate license.
 This breaks the assumption that all sources can be downloaded silently
@@ -68,6 +68,11 @@ variants that appear only in whole-genome or whole-exome sequencing data
 and are not in any pre-computed database. If your input is a genotyping
 chip file, cache mode is all you need.
 
+**Amended 2026-10-25 (2.5.2):** full mode scores more variants, but CADD
+only enriches findings the other sources make (`CaddAnnotator.annotate`
+returns nothing). A novel or private variant no other source reports
+therefore gains no finding from CADD.
+
 ### Strand normalization
 
 Array genotype data may report alleles on the minus strand. CADD scores
@@ -75,6 +80,15 @@ are reference-forward. `resolve_strand()` maps array alleles to
 reference orientation using gnomAD ref/alt as ground truth. Palindromic
 SNPs (A/T, C/G ref/alt pairs) cannot be resolved and return None — the
 variant gets no CADD score rather than a wrong one.
+
+*Superseded by ADR-0040 (2.5.x):* the strand route above, and the full-mode
+skip of non-GRCh38 input, no longer apply. Enrichment (gnomAD,
+AlphaMissense, CADD in either mode) looks up exact GRCh38 keys:
+chromosome, position, REF and ALT. GRCh37 input is translated to those keys
+through the rsID identity table. A row the identity table flags palindromic
+whose REF differs between the builds, and an allele that is the GRCh38
+reference, get no value rather than a guess. GRCh36 input is never
+enriched.
 
 ### Indel coverage
 

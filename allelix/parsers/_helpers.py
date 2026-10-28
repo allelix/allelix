@@ -16,7 +16,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from typing import IO, TYPE_CHECKING, TextIO
+from typing import IO, TYPE_CHECKING, TextIO, cast
 
 from allelix.models import NO_CALL_MARKER
 
@@ -36,6 +36,7 @@ _notice_logger = logging.getLogger(INPUT_NOTICE_LOGGER)
 INPUT_NOTICE_CODES = {
     "trailing": "input_trailing_bytes",
     "bgzf-eof": "input_possibly_truncated",
+    "stray": "input_stray_characters",
 }
 
 GZIP_MAGIC = b"\x1f\x8b"
@@ -449,7 +450,61 @@ class _ZipMember(io.RawIOBase):
         return len(data)
 
 
+# Characters typed before the first ``#`` of a file's first line (``X#AncestryDNA
+# raw data download``): at most this many are dropped, with a notice.
+STRAY_PREFIX_MAX = 8
+
+
+class _StrayPrefixText(io.TextIOBase):
+    """Text that drops a few characters typed before the first ``#`` of line one.
+
+    Only the first non-blank line, only when it does not start with ``#``
+    but has one within ``STRAY_PREFIX_MAX`` characters. What follows still
+    has to pass each reader's own header check, so a reader recognises the
+    file only by its real banner. The dropped characters are reported once
+    (input notice ``input_stray_characters``).
+    """
+
+    def __init__(self, inner: TextIO, file_path: Path) -> None:
+        super().__init__()
+        self._inner = inner
+        self._path = file_path
+        self._first = True
+
+    def readable(self) -> bool:
+        return True
+
+    def readline(self, size: int | None = -1) -> str:  # type: ignore[override]
+        line = self._inner.readline(-1 if size is None else size)
+        if self._first and line.strip():
+            self._first = False
+            hash_at = line.find("#")
+            if 0 < hash_at <= STRAY_PREFIX_MAX:
+                _warn_once(
+                    self._path,
+                    "stray",
+                    f"{self._path.name}: {hash_at} character(s) before the first '#' on its "
+                    "first line were ignored; the file looks edited.",
+                )
+                line = line[hash_at:]
+        return line
+
+    def read(self, size: int | None = -1) -> str:
+        if self._first and (size is None or size < 0):
+            return self.readline() + self._inner.read()
+        return self._inner.read(-1 if size is None else size)
+
+    def close(self) -> None:
+        self._inner.close()
+        super().close()
+
+
 def open_genotype_text(file_path: Path, errors: str = "strict") -> TextIO:
+    """``_open_genotype_text`` with stray characters before line one's ``#`` dropped."""
+    return cast("TextIO", _StrayPrefixText(_open_genotype_text(file_path, errors), file_path))
+
+
+def _open_genotype_text(file_path: Path, errors: str = "strict") -> TextIO:
     """Open a genotype file in text mode, gzipped or not, without a byte order mark.
 
     Sniffs the gzip magic bytes (``1f 8b``) rather than trusting the

@@ -536,6 +536,9 @@ class TestDbCommands:
             def cache_status(self):
                 return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
 
+            def setup_destinations(self):
+                return ()
+
             def setup(self):
                 self.setup_called = True
 
@@ -588,6 +591,9 @@ class TestDbCommands:
 
             def cache_status(self):
                 return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
+
+            def setup_destinations(self):
+                return ()
 
             def setup(self):
                 self.setup_called = True
@@ -1796,10 +1802,14 @@ class TestDiffOption:
         assert result.exit_code == 0, result.output
         assert "No changes" in result.output
 
-    def test_diff_detects_removed_annotations(
+    def test_raising_the_floor_removes_nothing(
         self, mock_mhg_path, all_annotators_data_dir: Path, tmp_path: Path
     ):
-        """Raising min-magnitude should cause some annotations to disappear from current."""
+        """A higher --min-magnitude hides findings but removes none (2.5.2).
+
+        Removal means absent from the current findings before any display
+        floor; the findings below the new floor are still there, unchanged.
+        """
 
         baseline = tmp_path / "baseline.json"
         runner = CliRunner(env={"COLUMNS": "200"})
@@ -1832,7 +1842,7 @@ class TestDiffOption:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "removed" in result.output
+        assert "removed" not in result.output
 
     def test_diff_json_output_includes_diff_key(
         self, mock_mhg_path, all_annotators_data_dir: Path, tmp_path: Path

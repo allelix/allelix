@@ -73,6 +73,19 @@ ADR-0045 (ClinVar's aggregate), ADR-0050 (`is_pathogenic_aggregate`).
   (`T/.`). HTML lists every rsID with its state; the terminal report
   prints the four counts and flags the no-call and not-on-chip rsIDs.
 
+### Amendment 2026-10-25 (2.5.2): D/I calls at high-value and P/LP sites are named
+
+The aggregate D/I count stays. Every D/I call at a high-value rsID, or at
+an rsID ClinVar classifies Pathogenic or Likely pathogenic, is also named:
+its gene, the variant's name where the high-value list gives one
+(`6174delT`, `5382insC`, `F508del`; new optional `name` field), its rsID,
+and the call as written. It is marked as not checked: neither a finding
+nor a normal result. The list is in JSON `report_warnings`
+(`di_calls_not_checked`) and `high_value_unchecked`, in the HTML
+high-value section, and in the console's high-value block. Carriers and
+non-carriers get the same entry, because nothing is interpreted. That is
+2.6. A D/I call at any other rsID is counted only.
+
 ## Consequences
 
 - Schema 9 gains `input.array_quality` and `input.probe_classes`, and

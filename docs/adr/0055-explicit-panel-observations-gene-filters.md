@@ -1,6 +1,6 @@
 # ADR-0055: Explicit VCF panel observations and constituent gene filters
 
-**Status:** Proposed
+**Status:** Accepted (2026-10-22)
 **Date:** 2026-10-20
 
 ## Context
@@ -36,6 +36,9 @@ FILTER rejection, low quality/zero depth, spanning deletion, symbolic or
 unusable record, and existing mitochondrial exclusions. HTML adds a Reason
 column for VCF only; terminal VCF coverage shows genotypes and reason text.
 The diff loader accepts schemas 1 through 10 and rejects future versions.
+(That was the contract when this ADR was written. Since 2.5.2 the report
+is schema 11 and `--diff` reads schemas 1 through 11; see
+[docs/formats.md](../formats.md).)
 The annotated VCF contract does not change.
 
 Gene matching tokenizes comma/semicolon lists, trims whitespace and compares
@@ -57,3 +60,35 @@ data, mitochondrial exclusions, parser reuse, output reasons, actual JSON
 writer-to-diff consumption, legacy/future schemas and source-specific filters.
 Integration with other unmerged changes requires affected checks and review
 again. No whole-genome or live-source validation is claimed here.
+
+## Amendment 2026-10-25 (2.5.2): one attribution for panel coverage and the high-value scan
+
+Panel coverage took a record by its ID anywhere, or at a placement from
+`forward_sites` by locus alone. So a deletion starting at a SNP's position
+counted as coverage of the SNP. An rsID with two placements on the build
+abstained. A rejected first record (filtered, low quality, missing) hid a
+usable duplicate. The high-value scan had the same gaps: it took ID matches
+anywhere, and any record covering the position.
+
+The decision now (supervisor ruling): panel coverage and the high-value scan
+use one predicate, `allelix.attribution`.
+
+- **With a placement.** A VCF record speaks for an rsID when its chromosome
+  and position are one of the rsID's identity placements on the build (every
+  placement, `RsidIdentityAnnotator.placements`), and its REF equals that
+  placement's REF, case-insensitive. Its ID and ALT do not decide it.
+- **Without a placement** (the rsID is not in the table, or the table is not
+  ready), the ID decides, as before.
+- **Text-chip input** keeps rsID matching. Annotation of such files matches
+  by rsID, and a placement-only rule would make coverage disagree with the
+  findings.
+- **Reference blocks** still give the high-value scan position states
+  (`low_gq_block`, `no_coverage` on a gVCF). They are coverage of a position,
+  not a record attributed to an rsID. Panel coverage still never takes
+  interior genotypes from a block.
+- **Duplicates.** The first observation wins, except that a usable call or
+  reference record replaces an earlier no-call. This holds in panel coverage
+  (parser observations and streamed calls alike).
+- **The streamed calls** the high-value scan and panel coverage read follow
+  the same predicate: in `analyze`, and in `stats` for its high-value no-call
+  count.

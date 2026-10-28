@@ -4,8 +4,8 @@
 
 ADR-0035: rollup reads ``trait`` / ``phecode`` / ``p_value`` from
 structured Annotation fields. Tests construct GWAS rows with the structured
-fields populated and let the helper render a matching ``description`` so
-MTAG-via-description detection still works.
+fields populated, the MTAG suffix in ``trait`` as the catalog writes it, and
+a matching ``description``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def _mk(
         attribution="GWAS Catalog",
         genotype_match="AC",
         is_must_include=must,
-        trait=trait,
+        trait=trait + mtag_suffix,
         p_value=p_value,
         phecode=phecode,
     )

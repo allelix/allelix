@@ -41,9 +41,10 @@ from allelix.parsers._helpers import (
     DamagedFileError,
     is_haploid_call,
     open_genotype_text,
+    split_csv_line,
     split_genotype,
 )
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, header_build_label
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -102,6 +103,8 @@ class TwentyThreeAndMeParser(GenotypeParser):
                         return False
                     if not line.strip():
                         continue
+                    # A spreadsheet's CSV save quotes a comment that holds a comma.
+                    line = line.removeprefix('"')
                     if not line.startswith("#"):
                         return False
                     if any(line.startswith(p) for p in _CANONICAL_PREFIXES):
@@ -115,13 +118,22 @@ class TwentyThreeAndMeParser(GenotypeParser):
         with open_genotype_text(file_path) as fh:
             for lineno, raw in enumerate(fh, start=1):
                 line = raw.rstrip("\r\n")
-                if not line or line.startswith("#"):
+                # A spreadsheet's CSV save quotes a comment that holds a comma.
+                if not line or line.startswith(("#", '"#')):
                     continue
 
                 # A row re-saved with spaces instead of tabs (a text editor or
                 # spreadsheet round trip) is split on runs of whitespace; rsIDs,
-                # chromosomes, positions and genotypes hold none.
-                parts = line.split("\t") if "\t" in line else line.split()
+                # chromosomes, positions and genotypes hold none. A row a
+                # spreadsheet saved as CSV is split on commas, its quotes and
+                # padding beyond the four columns dropped (an empty genotype
+                # stays a no-call).
+                if "\t" in line:
+                    parts = line.split("\t")
+                elif "," in line:
+                    parts = split_csv_line(line, EXPECTED_COLUMNS)
+                else:
+                    parts = line.split()
                 if len(parts) != EXPECTED_COLUMNS:
                     logger.warning(
                         "Line %d: expected %d columns, got %d — skipping",
@@ -151,9 +163,24 @@ class TwentyThreeAndMeParser(GenotypeParser):
                 )
 
     def get_metadata(self, file_path: Path) -> GenotypeMetadata:
-        """Extract the header's build line. 23andMe files have no sample ID field."""
-        return GenotypeMetadata(
-            format=self.name,
-            sample_id="",
-            build=read_header_build(file_path),
-        )
+        """Extract the header's build line. 23andMe files have no sample ID field.
+
+        A comment line a spreadsheet quoted (``"# ..., build 37",,,``) is read
+        as the comment it holds, so it neither stops the header scan nor
+        hides a build stated on it.
+        """
+        try:
+            with open_genotype_text(file_path, errors="replace") as fh:
+                build = header_build_label(_unquoted_comment(raw) for raw in fh)
+        except (OSError, DamagedFileError):
+            build = None
+        return GenotypeMetadata(format=self.name, sample_id="", build=build)
+
+
+def _unquoted_comment(raw: str) -> str:
+    """``raw`` with a spreadsheet's CSV quoting of a ``#`` comment removed."""
+    line = raw.rstrip("\r\n").lstrip("\ufeff")
+    if not line.startswith('"#'):
+        return raw
+    line = line[1:].rstrip(",")
+    return line.removesuffix('"').replace('""', '"')

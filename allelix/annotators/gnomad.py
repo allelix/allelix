@@ -291,6 +291,32 @@ class GnomadAnnotator(Annotator):
                     result[(rsid, alt)] = af
         return result
 
+    def sites_frequencies(
+        self, sites: set[tuple[str, int, str]]
+    ) -> dict[tuple[str, int, str], dict[str, float | None]]:
+        """Every ALT gnomAD lists at each ``(chrom, pos, ref)``, with its frequency.
+
+        An ALT whose frequency gnomAD does not give is kept, as None; a site
+        gnomAD does not list is absent. Each site is a prefix of the
+        ``(chrom, pos, ref, alt)`` primary key.
+        """
+        result: dict[tuple[str, int, str], dict[str, float | None]] = {}
+        if not sites:
+            return result
+        conn = self._connection()
+        site_list = sorted(sites)
+        batch_size = _BULK_BATCH_SIZE // 3
+        for i in range(0, len(site_list), batch_size):
+            batch = site_list[i : i + batch_size]
+            clauses = " OR ".join(["(chrom = ? AND pos = ? AND ref = ?)"] * len(batch))
+            params = [v for site in batch for v in site]
+            for chrom, pos, ref, alt, af in conn.execute(
+                f"SELECT chrom, pos, ref, alt, af FROM gnomad_frequencies WHERE {clauses}",
+                params,
+            ):
+                result.setdefault((chrom, pos, ref), {})[alt] = af
+        return result
+
     def bulk_lookup_by_position(
         self, keys: set[tuple[str, int, str, str]]
     ) -> dict[tuple[str, int, str, str], float]:

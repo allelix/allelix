@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
+from rich.markup import escape
 from rich.table import Table
 
 from allelix.cli import _helpers, main
@@ -21,6 +23,7 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
+from allelix.models import NO_CALL_MARKER
 from allelix.parsers._helpers import normalize_chromosome
 from allelix.reports._pipeline import BuildDiagnostics, UnusableInputError
 from allelix.reports.build_text import short_source
@@ -84,8 +87,10 @@ def stats(
         ) as resolved:
             for variant in resolved.variants:
                 total += 1
-                if variant.rsid in hv_rsids:
-                    hv_variants.append(variant)
+                for target in resolved.high_value_targets(variant):
+                    hv_variants.append(
+                        variant if variant.rsid == target else replace(variant, rsid=target)
+                    )
                 if variant.is_no_call:
                     no_calls += 1
                 elif variant.is_heterozygous:
@@ -209,32 +214,212 @@ def _sequential_extract(
 ) -> dict[str, Variant]:
     """Stream the file once; collect Variants whose rsID is in ``wanted``.
 
-    Streaming early-exit once all wanted rsIDs are found — for arrays
-    that yield <1 M variants this is fast enough on any input. No early
-    exit when contig lengths decided the build: the known-SNP check at
-    the end of the stream must run before anything is printed (ADR-0044).
-
     Variant callers emit ``ID=.`` or positional pseudo-IDs
     (DeepVariant, DRAGEN, the GIAB GRCh38 benchmark). The stream goes
     through the shared rsID-less resolution step (``_resolved_variants``:
     build detection, then ClinVar / identity table / gnomAD), so a wanted
     rsID matches whether the file named it or a resolver recovered it.
+
+    A VCF's reference and rejected records count too (2.5.2): an explicit
+    ``0/0`` (``0|0``, haploid ``0``, ALT ``.``) is a REF/REF call, a gVCF
+    reference block covering a placement is that site's REF/REF, and a
+    filtered, low-quality or zero-depth record is a no-call
+    (``VcfParser.watch_extract``). A call resolution leaves without an rsID
+    (a no-call, a REF-only half call) counts for every rsID placed at its
+    position. One choice among them, the indexed
+    path's too (``_extract_choice``, ADR-0054).
+
+    The stream stops early once every request is settled (``_settled``: a
+    usable call at its best-ranked placement, by header contig order then
+    POS, or any call for an rsID without placements; without header contigs
+    a placed rsID is never settled early), except when contig lengths
+    decided the build: the known-SNP check at the end of the stream must run
+    before anything is printed (ADR-0044).
     """
+    from allelix.parsers.vcf import VcfParser
+
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
-    found: dict[str, Variant] = {}
+    streamed: dict[str, list[Variant]] = {}
+    sequence = 0
     try:
         with _helpers._resolved_variants(
             parser, file_path, data_dir=data_dir, build_override=build_override
         ) as resolved:
+            placements = _extract_placements(wanted, data_dir, resolved.decision.build)
+            if isinstance(parser, VcfParser):
+                loci: dict[str, list[tuple[int, str]]] = {}
+                for places in placements.values():
+                    for (chrom, pos), ref in places.items():
+                        loci.setdefault(chrom, []).append((pos, ref))
+                parser.watch_extract(frozenset(wanted), loci)
+            placed_at: dict[tuple[str, int], list[str]] = {}
+            for rsid, places in placements.items():
+                for locus in places:
+                    placed_at.setdefault(locus, []).append(rsid)
             for variant in resolved.variants:
-                if variant.rsid in wanted and variant.rsid not in found:
-                    found[variant.rsid] = variant
-                    if len(found) == len(wanted) and not resolved.must_exhaust:
-                        break
+                sequence += 1
+                if variant.record_index is None:
+                    variant.record_index = sequence
+                if variant.rsid in wanted:
+                    streamed.setdefault(variant.rsid, []).append(variant)
+                else:
+                    # A call recovery could not name (a no-call, a half call
+                    # carrying only REF) is still the call at a placement.
+                    locus = (normalize_chromosome(variant.chromosome), variant.position)
+                    targets = placed_at.get(locus, []) if _unnamed(variant) else []
+                    if not targets:
+                        continue
+                    for rsid in targets:
+                        streamed.setdefault(rsid, []).append(replace(variant, rsid=rsid))
+                rank = _contig_rank(getattr(parser, "contig_order", []))
+                skip = resolved.decision.skip_mt
+                if not resolved.must_exhaust and all(
+                    _settled(r, streamed, parser, placements, rank, skip_mt=skip) for r in wanted
+                ):
+                    break
+            skip_mt = resolved.decision.skip_mt
             _helpers._emit_build_notices(resolved.build_diagnostics())
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
+        if isinstance(parser, VcfParser):
+            parser.watch_extract(frozenset())
+    rank = _contig_rank(getattr(parser, "contig_order", []))
+    found: dict[str, Variant] = {}
+    for rsid in wanted:
+        candidates = _candidates(rsid, streamed, parser, placements)
+        if skip_mt:
+            # As the stream: MT records are left out when chrM has the hg19 length.
+            candidates = [v for v in candidates if v.chromosome != "MT"]
+        if candidates:
+            found[rsid] = _extract_choice(candidates, placements.get(rsid, {}), rank)
     return found
+
+
+# ``extract`` (2.5.2): each requested rsID's placements on the build, with REF.
+_Placed = dict[str, dict[tuple[str, int], str]]
+
+
+def _extract_placements(wanted: set[str], data_dir: Path | None, build: str) -> _Placed:
+    """Where each requested rsID sits on ``build``, with its REF.
+
+    GRCh38: gnomAD's placements (the indexed path fetches the same), and
+    the rsID identity table's GRCh38 placements for every rsID gnomAD does
+    not place, or for all of them when gnomAD is not ready (2.5.2).
+    GRCh37: the identity table's GRCh37 placements, never GRCh38
+    coordinates. Empty without them.
+    """
+    from allelix.annotators.gnomad import GnomadAnnotator
+    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+
+    resolved_dir = resolve_data_dir(data_dir)
+    out: _Placed = {}
+    if build == BUILD_GRCH38:
+        gnomad = GnomadAnnotator(resolved_dir)
+        with gnomad:
+            if gnomad.is_ready():
+                for rsid, rows in gnomad.bulk_resolve_coordinates(wanted).items():
+                    for chrom, pos, ref, _alt in rows:
+                        out.setdefault(rsid, {})[(normalize_chromosome(chrom), pos)] = ref.upper()
+    if build not in ("GRCh37", BUILD_GRCH38):
+        return out
+    unplaced = wanted - out.keys()
+    if not unplaced:
+        return out
+    identity = RsidIdentityAnnotator(resolved_dir)
+    with identity:
+        if not identity.is_ready():
+            return out
+        rows_by_rsid = identity.placements(unplaced)
+    for rsid, identity_rows in rows_by_rsid.items():
+        for chrom, pos37, ref37, _a37, pos38, ref38, _a38 in identity_rows:
+            pos, ref = (pos37, ref37) if build == "GRCh37" else (pos38, ref38)
+            out.setdefault(rsid, {})[(normalize_chromosome(chrom), pos)] = ref.upper()
+    return out
+
+
+def _candidates(
+    rsid: str, streamed: dict[str, list[Variant]], parser: GenotypeParser, placements: _Placed
+) -> list[Variant]:
+    """The streamed calls for ``rsid`` and its reference/rejected-record calls."""
+    places = placements.get(rsid, {})
+    out = list(streamed.get(rsid, []))
+    for named, locus, variant in getattr(parser, "extract_candidates", []):
+        if named == rsid or (locus is not None and locus in places):
+            out.append(variant if variant.rsid == rsid else replace(variant, rsid=rsid))
+    return out
+
+
+def _settled(
+    rsid: str,
+    streamed: dict[str, list[Variant]],
+    parser: GenotypeParser,
+    placements: _Placed,
+    rank: dict[str, int],
+    *,
+    skip_mt: bool = False,
+) -> bool:
+    """Whether no later record can change ``rsid``'s choice, in any record order.
+
+    An rsID without placements is settled by its first call. One with
+    placements is settled only by a usable call at its best-ranked placement
+    (header contig order, then POS): nothing later in the file can rank
+    before it, even when the body's contigs are not in header order.
+
+    With ``skip_mt`` the MT records and placements are left out first, as
+    the final choice leaves them out: an excluded call cannot settle a
+    request, and an rsID placed only on MT is not settled early.
+    """
+    places = placements.get(rsid, {})
+    candidates = _candidates(rsid, streamed, parser, placements)
+    if skip_mt:
+        candidates = [v for v in candidates if v.chromosome != "MT"]
+        if places:
+            places = {locus: ref for locus, ref in places.items() if locus[0] != "MT"}
+            if not places:
+                return False
+    if not places:
+        return bool(candidates)
+    if not rank:
+        return False
+    best = min(places, key=lambda locus: (rank.get(locus[0], len(rank)), locus[1]))
+    return any((v.chromosome, v.position) == best and not v.is_no_call for v in candidates)
+
+
+def _contig_rank(contig_order: list[str]) -> dict[str, int]:
+    """Each normalized contig's place in the header's order."""
+    rank: dict[str, int] = {}
+    for name in contig_order:
+        rank.setdefault(normalize_chromosome(name), len(rank))
+    return rank
+
+
+def _extract_choice(
+    candidates: list[Variant], places: dict[tuple[str, int], str], rank: dict[str, int]
+) -> Variant:
+    """The one call ``extract`` shows for an rsID (supervisor ruling, ADR-0054).
+
+    1. A call at one of its placements beats one elsewhere; a no-call at a
+       placement still beats a usable call elsewhere.
+    2. Among calls at a placement, a usable call beats a no-call or a
+       rejected record.
+    3. Then file order: the header's contig order, then POS, then line.
+       Without a header contig list (array files), line order alone.
+    """
+
+    def key(v: Variant) -> tuple[bool, bool, int, int, int]:
+        mapped = (v.chromosome, v.position) in places
+        line = v.record_index if v.record_index is not None else 0
+        if not rank:
+            return (not mapped, mapped and v.is_no_call, 0, 0, line)
+        return (
+            not mapped,
+            mapped and v.is_no_call,
+            rank.get(v.chromosome, len(rank)),
+            v.position,
+            line,
+        )
+
+    return min(candidates, key=key)
 
 
 def _try_tabix_extract(
@@ -266,13 +451,40 @@ def _try_tabix_extract(
     except ImportError:
         return None
 
-    # The remaining body requires pysam + gnomAD ready, neither of which
-    # the test environment has. The tabix fetch was validated manually
-    # with pysam installed and a gnomAD cache present; unit tests cover
-    # the not-viable return-None paths above.
-    return _execute_tabix_extract(  # pragma: no cover
-        file_path, wanted, sample, data_dir, pysam, build_override
+    # Check 3: the index opens, and its rows can be read. A corrupt or
+    # unreadable one is named, and the sequential scan reads the file
+    # instead (2.5.2).
+    problem = _tabix_index_problem(file_path, tbi_path, pysam)
+    if problem is None:
+        try:
+            return _execute_tabix_extract(
+                file_path, wanted, sample, data_dir, pysam, build_override
+            )
+        except _IndexReadError as exc:
+            problem = str(exc)
+    console.print(
+        f"[yellow]Warning: the index {escape(str(tbi_path))} cannot be used "
+        f"({escape(problem)}); reading {escape(file_path.name)} sequentially.[/yellow]"
     )
+    return None
+
+
+def _tabix_index_problem(
+    file_path: Path,
+    tbi_path: Path,
+    pysam: Any,  # noqa: ANN401 — pysam ships no type stubs
+) -> str | None:
+    """Why ``tbi_path`` cannot index ``file_path``, or None when it opens."""
+    if not os.access(tbi_path, os.R_OK):
+        return "it cannot be read"
+    quiet = pysam.set_verbosity(0)
+    try:
+        pysam.TabixFile(str(file_path)).close()
+    except (OSError, ValueError) as exc:
+        return str(exc) or type(exc).__name__
+    finally:
+        pysam.set_verbosity(quiet)
+    return None
 
 
 def _execute_tabix_extract(
@@ -290,8 +502,9 @@ def _execute_tabix_extract(
     in-execution failure (gnomAD not ready, invalid sample binding,
     etc.) so the caller falls back to sequential scan.
 
-    gnomAD gives each wanted rsID's GRCh38 coordinates, which is where
-    the rows are fetched, so the fast path runs only on a VCF whose build
+    Rows are fetched at each wanted rsID's GRCh38 placements
+    (``_extract_placements``: gnomAD's, then the identity table's for the
+    rsIDs gnomAD does not place), so the fast path runs only on a VCF whose build
     is GRCh38: forced with ``--build``, or decided by its contig lengths
     (``_tabix_fast_path_allowed``, ADR-0044). Any other VCF, including one
     labelled ``assembly=GRCh38`` without contig lengths and one whose header
@@ -353,9 +566,7 @@ def _execute_tabix_extract(
     try:
         if not gnomad.is_ready():
             return None
-        coord_map = gnomad.bulk_resolve_coordinates(wanted)
-        if not coord_map:
-            return None
+        placements = _extract_placements(wanted, resolved_data_dir, BUILD_GRCH38)
         tabix_file = pysam.TabixFile(str(file_path))
         try:
             aliases = _tabix_contig_aliases(tabix_file)
@@ -375,25 +586,30 @@ def _execute_tabix_extract(
                 )
             late = detect_build(seed_rows)
             check_late_seeds(decision, late, file_path.name)
-            for rsid, coords in coord_map.items():
-                for chrom, pos, _ref, _alt in coords:
-                    hit = _fetch_resolved(
-                        tabix_file,
-                        chrom,
-                        pos,
-                        rsid,
-                        sample_idx,
-                        lambda batch: resolve_batch(
-                            batch, clinvar=clinvar, gnomad=gnomad, identity=identity
-                        ),
-                        parse_row=_parse_data_line,
-                        build=BUILD_GRCH38,
-                        contig_aliases=aliases,
-                        row_cache=row_cache,
+            rank = _contig_rank(list(header.contig_lengths))
+            raw_cache: dict[tuple[str, int], list[str]] = {}
+            for rsid, places in placements.items():
+                # Every placement is fetched; the choice is the sequential
+                # path's (``_extract_choice``), never gnomAD's row order.
+                candidates: list[Variant] = []
+                for (chrom, pos), ref in places.items():
+                    candidates.extend(
+                        _indexed_candidates(
+                            tabix_file,
+                            rsid,
+                            chrom,
+                            pos,
+                            ref,
+                            sample_idx,
+                            lambda batch: resolve_batch(
+                                batch, clinvar=clinvar, gnomad=gnomad, identity=identity
+                            ),
+                            aliases,
+                            raw_cache,
+                        )
                     )
-                    if hit is not None:
-                        found[rsid] = hit
-                        break
+                if candidates:
+                    found[rsid] = _extract_choice(candidates, places, rank)
         finally:
             tabix_file.close()
     finally:
@@ -429,6 +645,94 @@ def _tabix_fast_path_allowed(decision: BuildDecision) -> bool:
         and decision.source in (SOURCE_OVERRIDE, SOURCE_CONTIG_LENGTHS)
         and not decision.skip_mt
     )
+
+
+class _IndexReadError(Exception):
+    """Reading rows through the index failed: the index cannot be used (2.5.2)."""
+
+
+def _read_index_rows(rows: Any) -> list[str]:  # noqa: ANN401 — pysam iterator, no type stubs
+    """The rows of one fetch; a failure while reading them is the index's.
+
+    Creating the iterator fails for a region the index does not hold, which
+    is skipped; reading fails when the index points at unreadable data.
+    """
+    try:
+        return list(rows)
+    except (ValueError, OSError) as exc:
+        raise _IndexReadError(str(exc) or type(exc).__name__) from exc
+
+
+def _indexed_candidates(
+    tabix_file: Any,  # noqa: ANN401 — pysam.TabixFile, no type stubs
+    rsid: str,
+    chrom: str,
+    pos: int,
+    ref: str,
+    sample_idx: int,
+    resolve: Callable[[list[Variant]], None],
+    contig_aliases: dict[str, tuple[str, ...]],
+    raw_cache: dict[tuple[str, int], list[str]] | None = None,
+) -> list[Variant]:
+    """``rsid``'s calls from the records an index returns at one placement.
+
+    The same calls as the sequential path (2.5.2): a record's call when it
+    starts there and, after rsID resolution, is ``rsid``; otherwise its
+    reference or rejected-record call (``extract_reference_candidates``),
+    including a gVCF block covering the position; or a call that resolution
+    left without an rsID (a no-call, a REF-only half call). Each call keeps its order
+    among the fetched records as ``record_index``. ``raw_cache`` keeps each
+    interval's rows for the extraction, so an interval is fetched once.
+    """
+    from allelix.parsers.vcf import VcfQualityStats, _parse_record, extract_reference_candidates
+
+    stats = VcfQualityStats()
+    streamed: list[Variant] = []
+    out: list[Variant] = []
+    loci = {chrom: [(pos, ref)]}
+    lines = raw_cache.get((chrom, pos)) if raw_cache is not None else None
+    if lines is None:
+        lines = []
+        for name in contig_aliases.get(chrom, ()):
+            try:
+                rows = tabix_file.fetch(name, pos - 1, pos)
+            except (ValueError, OSError):
+                continue
+            lines.extend(_read_index_rows(rows))
+        if raw_cache is not None:
+            raw_cache[(chrom, pos)] = lines
+    for order, line in enumerate(lines, start=1):
+        cols = line.split("\t")
+        variant, state = _parse_record(cols, line, sample_idx, stats, want_state=True)
+        if variant is not None:
+            if variant.position == pos:
+                variant = replace(variant, build=BUILD_GRCH38)
+                variant.record_index = order
+                streamed.append(variant)
+        elif state is not None:
+            for named, locus, call in extract_reference_candidates(
+                cols, state, order, rsids=frozenset({rsid}), loci=loci
+            ):
+                if named == rsid or locus == (chrom, pos):
+                    out.append(call if call.rsid == rsid else replace(call, rsid=rsid))
+    resolve(streamed)
+    out.extend(v for v in streamed if v.rsid == rsid)
+    # A call recovery could not name is the call at this placement too.
+    out.extend(replace(v, rsid=rsid) for v in streamed if _unnamed(v))
+    return out
+
+
+def _unnamed(variant: Variant) -> bool:
+    """Whether resolution could not name a call because it carries no ALT.
+
+    A no-call, or a half call whose one allele is REF, at a placement is that
+    rsID's call. A call carrying an ALT is named by resolution when it is the
+    rsID's variant; left without an rsID, it is another variant, not this one.
+    """
+    if variant.rsid.startswith("rs"):
+        return False
+    called = {a.upper() for a in (variant.allele1, variant.allele2) if a and a != NO_CALL_MARKER}
+    return not called or (variant.ref is not None and called == {variant.ref.upper()})
 
 
 def _fetch_resolved(
@@ -500,9 +804,10 @@ def _fetch_rows(
     found: list[Variant] = []
     for chrom_candidate in contig_aliases.get(canonical, ()):
         try:
-            rows = list(tabix_file.fetch(chrom_candidate, pos - 1, pos))
+            fetched = tabix_file.fetch(chrom_candidate, pos - 1, pos)
         except (ValueError, OSError):
             continue
+        rows = _read_index_rows(fetched)
         found.extend(
             v
             for v in (parse_row(row, sample_idx) for row in rows)
@@ -530,8 +835,9 @@ def _maybe_print_vcf_index_hint(file_path: Path) -> None:
         import pysam  # noqa: F401
     except ImportError:
         console.print(
-            "[dim]Tip: pip install allelix[vcf-index] for fast indexed "
-            "extraction on large VCFs.[/dim]"
+            "[dim]Tip: pip install allelix\\[vcf-index] for fast indexed "
+            "extraction on large VCFs.[/dim]",
+            highlight=False,
         )
 
 
@@ -638,9 +944,8 @@ def compare(
         except UnusableInputError as exc:
             raise click.ClickException(str(exc)) from exc
         except BuildDecisionError as exc:
-            raise click.ClickException(
-                f"{exc} For compare, give the build of this file with {flag}."
-            ) from exc
+            hint = f" For compare, give the build of this file with {flag}."
+            raise click.ClickException(f"{exc}{hint if exc.suggest_override else ''}") from exc
         late_record = late if needs_late_seeds(decision) else None
         _helpers._emit_build_notices(
             BuildDiagnostics.from_decision(decision, late_record),
@@ -754,32 +1059,39 @@ def export_plink_cmd(
 
     Produces a single-sample, SNP-major .bed file suitable for downstream
     tools (plink2 PCA, ADMIXTURE, PRSice). REF/ALT for allele coding come
-    from the export's own build: the rsID identity table on GRCh37, gnomAD
-    on GRCh38. A site without a known pair falls back to monomorphic (A2=0)
-    for homozygous calls. A call whose alleles are not the site's REF and
-    ALT as written is exported as missing and counted. A variant without an
-    rsID gets the ID chr:pos:ref:alt.
+    from the export's own build, chosen for each record at its own position:
+    the rsID identity table on GRCh37, gnomAD on GRCh38. On GRCh37, a site
+    the identity table has no pair for uses gnomAD's pair when it is not
+    A/T or C/G and the call fits it as written. A site without a known pair
+    falls back to monomorphic (A2=0) for homozygous calls; a
+    two-ALT call whose alleles are both the site's keeps its observed pair.
+    A call with an allele that is not the site's is exported as missing and
+    counted. A variant without an rsID gets the ID chr:pos:ref:alt.
     """
     from allelix.exporters.plink import (
         EmptyPlinkSetError,
+        check_plink_destinations,
         coded_against,
         default_plink_prefix,
         export_plink,
         plink_paths,
         plink_record_key,
         plink_writable,
-        resolve_ref_alt_via_gnomad,
         resolve_ref_alt_via_gnomad_grch37,
+        resolve_ref_alt_via_gnomad_records,
         resolve_ref_alt_via_identity,
     )
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     prefix = output_prefix if output_prefix else default_plink_prefix(file_path)
-    from allelix.reports import validate_output_path
+    from allelix.reports import check_writable, validate_output_path
 
     try:
         for destination in plink_paths(prefix).values():
             validate_output_path(file_path, destination)
+        check_plink_destinations(prefix)
+        for destination in plink_paths(prefix).values():
+            check_writable(destination)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     build_override = _helpers._normalize_cli_build(build)
@@ -807,20 +1119,22 @@ def export_plink_cmd(
     # Coordinates, REF/ALT and genotype coding all come from one build.
     grch38 = effective_build == "GRCh38"
     identity_missing = False
-    ref_alt_map: dict[str, tuple[str, str]] = {}
-    # GRCh37 (and other builds): chosen per call, never shared by rsID.
-    record_alleles: dict[RecordKey, tuple[str, str]] | None = None if grch38 else {}
+    gnomad_ready = False
+    # Chosen per call on every build, never shared by rsID (2.5.2).
+    record_alleles: dict[RecordKey, tuple[str, str]] = {}
     identity_map: dict[RecordKey, tuple[str, str]] | None = {}
     gnomad_map: dict[RecordKey, tuple[str, str]] = {}
     if grch38:
-        variant_by_rsid: dict[str, Variant] = {v.rsid: v for v in variants if not v.is_no_call}
         try:
-            ref_alt_map = resolve_ref_alt_via_gnomad(variant_by_rsid, resolved)
+            gnomad_pairs = resolve_ref_alt_via_gnomad_records(variants, resolved)
         except Exception:
             console.print(
                 "[yellow]gnomAD coordinate resolution failed; "
                 "using fallback allele coding.[/yellow]"
             )
+            gnomad_pairs = None
+        gnomad_ready = gnomad_pairs is not None
+        record_alleles = dict(gnomad_pairs or {})
     elif effective_build == "GRCh37":
         try:
             identity_map = resolve_ref_alt_via_identity(variants, resolved)
@@ -845,7 +1159,7 @@ def export_plink_cmd(
             iter(variants),
             prefix,
             effective_build,
-            ref_alt_map or None,
+            None,
             record_alleles=record_alleles,
             # Only an ID with a colon can collide with a generated one.
             supplied_ids={v.rsid for v in variants if ":" in v.rsid},
@@ -884,7 +1198,7 @@ def export_plink_cmd(
     unnamed = sum(1 for v in variants if not v.rsid and plink_writable(v))
     if unnamed:
         console.print(f"{unnamed:,} variant(s) without an rsID were given the ID chr:pos:ref:alt.")
-    if grch38 and not ref_alt_map:
+    if grch38 and not gnomad_ready:
         console.print(
             "[yellow]gnomAD not available — all homozygous markers exported "
             "as monomorphic.[/yellow]"

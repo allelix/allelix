@@ -260,7 +260,9 @@ def test_cli_plain_and_indexed_mixed_lookup_have_identical_tables(
     data = _cache(
         tmp_path / "data", [("1", 100, "A", "G", "rs900500001" if placed else "rs900500088")]
     )
-    monkeypatch.setitem(sys.modules, "pysam", SimpleNamespace(TabixFile=_Index))
+    monkeypatch.setitem(
+        sys.modules, "pysam", SimpleNamespace(TabixFile=_Index, set_verbosity=lambda _level: 0)
+    )
     outputs = []
     for path in (plain, compressed):
         result = CliRunner(env={"COLUMNS": "140"}).invoke(

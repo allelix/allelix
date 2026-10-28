@@ -2,6 +2,256 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.2] - 2026-10-28
+
+No database needs rebuilding after upgrading: caches built by 2.5.1 stay
+current. ClinVar condition names in an existing cache are cleaned as they
+are read. The first ClinVar build after upgrading starts
+`clinvar-build.log` in the data directory.
+
+### Changed
+
+- JSON reports use schema 11 (2.5.1 wrote 10). Each changed entry in the
+  `diff` block adds `below_display_floor`. The report adds
+  `clinvar.scored_down_variants` and `high_value_unchecked`, and the
+  `report_warnings` code `di_calls_not_checked`. `--diff` reads schemas 1
+  to 11.
+- The annotated VCF schema version is now 0.6.0. A ClinVar finding for an
+  allele the reference itself carries (Factor V Leiden on GRCh37, for
+  example) is written in a new field, `ALLELIX_CLINVAR_REF` (`Number=1`,
+  `significance|rsID|gene`), and no longer in the ALT slots of
+  `ALLELIX_CLINVAR`. `ALLELIX_CLINVAR` now describes carried ALT alleles
+  only. A record can carry both fields.
+
+### Fixed
+
+- ClinPGx and SNPedia no longer report the normal genotype at a site where
+  one build's reference carries the variant allele (F5 rs6025 CC on GRCh37)
+  when ClinVar for the input's build is not installed. The normal allele
+  then comes from the other build's ClinVar, or from gnomAD's major allele.
+  Without either, the row is shown as before.
+- ClinPGx, SNPedia and the GWAS Catalog give a VCF record written with
+  padding bases (`GC>AC`, or `CG>CA` one base before) the findings they
+  give the plain `G>A` record. Before, only ClinVar trimmed the alleles,
+  and the other sources found nothing.
+- A two-ALT call whose second ALT is a deletion with the same bases as the
+  trimmed first ALT (`AC,A` at REF `GC`, `1/2`) is heterozygous. Before,
+  the deletion was counted as a second copy, and the call could be marked
+  implausible.
+- The variants that ClinVar's Conflicting or Benign classification scored
+  down are named, with their submitter split ("GALT rs75391579: 40 of 41
+  submitters Pathogenic; ..."), on the console, in HTML and in JSON
+  `clinvar.scored_down_variants`. Before, only their number was given.
+  Their scores are unchanged.
+- Array calls written as D or I (a deletion or an insertion) at a
+  high-value rsID, or at an rsID ClinVar classifies Pathogenic or Likely
+  pathogenic, are named as not checked. The entry gives the gene, the
+  variant's name (BRCA2 6174delT, BRCA1 5382insC, CFTR F508del), the rsID
+  and the call. It is in JSON `report_warnings` and `high_value_unchecked`,
+  in the HTML high-value section, and on the console. Before, the only sign
+  was an aggregate count, the same for carriers and non-carriers. The calls
+  are still not interpreted.
+- On a plain VCF, a high-value site where the reference genome carries a
+  ClinVar variant allele and the file has no record (CYP3A5 rs776746 on
+  GRCh37) is named as not checked. Before, it was only counted.
+- GWAS findings reported twice, once for the plain trait and once for its
+  "(MTAG)" re-analysis, are now reported once, under the plain trait. The
+  rollup meant to merge them never matched the two rows. It now matches the
+  suffix in any case and spacing. The two rows must share the rsID, the risk
+  allele and the base trait; they can come from different studies and
+  papers. An "(MTAG)" finding with no plain twin is kept. An "(MTAG)" row
+  whose risk allele differs from the plain row's is not a duplicate and is
+  kept too: someone who carries only the MTAG row's allele sees that row and
+  not the plain one, so that row can be the only finding the call carries.
+  On the user1190 genome with the 2026-10-25 GWAS Catalog snapshot, 92
+  duplicates go and 52 rows with a different risk allele stay; counts drift
+  with future database snapshots, while the twin rule is the stable
+  regression invariant.
+- A ClinVar build (`allelix db update`, or an automatic update) appends its
+  evidence to `clinvar-build.log` in the data directory on every outcome,
+  including a refusal and a rollback: each source file's MD5 and size, and
+  the rows accepted, joined, yielded, inserted and finally counted. Before,
+  a refused build kept only the final count, and the sources were gone.
+- ClinVar condition names no longer carry MedGen IDs
+  ("Congenital factor V deficiency; C0856761:Budd-Chiari syndrome" now reads
+  "Congenital factor V deficiency; Budd-Chiari syndrome"). A submission can
+  separate its conditions with `;` as well as `|`, and only the first ID was
+  removed. Existing caches are cleaned as they are read, with no rebuild, and
+  a `--diff` baseline from an earlier version is matched with the clean name,
+  so the finding does not show as removed and new. A name's own colon or
+  ID-like word stays ("C3 deficiency: severe").
+- Panel coverage (`--filter-file`) and the high-value no-call warnings
+  agree on which VCF record speaks for an rsID. It is the record at one of
+  the rsID's identity placements with that placement's REF, whatever its ID
+  or ALT. Without a placement, it is the record with the rsID as its ID.
+  Before:
+  - a deletion starting at a SNP's position counted as coverage of the SNP;
+  - the rsID's ID on a record elsewhere was taken as that rsID;
+  - an rsID placed at two positions got no coverage;
+  - a filtered or low-quality first record hid a usable duplicate.
+  Text-chip files still match by rsID.
+- `export plink` on GRCh38 codes each record by gnomAD's alleles at that
+  record's own position. Before, records sharing an rsID shared one pair: a
+  `1/2` call (A/T at a G>A,T site) was written missing, and of two split
+  records for one site, one was written missing. A two-ALT call now keeps
+  its observed alleles.
+- `extract` shows confident reference calls. A `0/0` record, or a gVCF
+  reference block covering the rsID's position, is shown as the site's
+  REF/REF. Before, it said "not in file", while panel coverage showed the
+  same record as typed. A filtered or low-quality record is shown as a
+  no-call.
+- `extract` shows the same record with and without a tabix index when a
+  file holds several records for one rsID:
+  - a record at the rsID's placement beats one elsewhere;
+  - among those, a usable call beats a no-call;
+  - then file order.
+
+  Before, the indexed and sequential paths could show different calls.
+- A file whose known-SNP positions match no supported build stops with
+  a message that asks for the original file, instead of suggesting
+  `--build`. A run forced with `--build` over such a file still runs, but
+  warns: a "Build warning" names the evidence (0 of N positions match) on
+  the console and in the HTML, and JSON `report_warnings` keeps it
+  (`build_override_unmatched`). Before, forcing the build hid it entirely.
+- `extract --build` on a VCF that declares contig lengths reads to the end
+  of the file before it prints, so the known-SNP check still runs. Before,
+  when the requested rsIDs came early, extract stopped there. It printed
+  the genotypes without the warning above, even when known-SNP positions
+  later in the file placed it on the other build, which stops the run.
+- `analyze` refuses an `--output` and a `--vcf-out` that name the same file
+  (one path in two spellings, a symlink, a linked folder or a hardlink),
+  before any work. Before, the run finished and the VCF replaced the report.
+  `export plink` refuses a prefix whose three outputs are not three files.
+- No output may name a file the run reads. `--output` or `--vcf-out`
+  naming the `--diff` baseline or the `--filter-file`, in any of the
+  spellings above, is refused before any work, in `analyze`, `methylation`
+  and `pharmacogenomics`. Before, the report replaced the baseline or the
+  filter file.
+- An output that cannot be written (a read-only file, or a read-only or
+  missing folder) stops `analyze`, `methylation`, `pharmacogenomics`,
+  `export plink` and `config set` with an error naming the path (exit
+  status 1), before any work. `db update` stops the same way before a
+  download, and `db clean` before deleting anything. So does every command
+  given a data directory that cannot be created. Before, these failed
+  with a traceback, most of them after the work was done.
+- `extract` reads a VCF whose `.tbi` index is corrupt or unreadable, or
+  points at data that cannot be read, sequentially, with a warning naming
+  the index. Before, it stopped with a traceback, or gave no warning.
+- `extract` on a GRCh38 VCF without rsIDs finds a call at a site that the
+  rsID identity table places and gnomAD does not. Before, with gnomAD set
+  up, the site was looked up through gnomAD alone, and the call was reported
+  as "not in file" with no warning. With and without a tabix index.
+- `extract` on a VCF without rsIDs shows a no-call (`./.`, haploid `.`) or a
+  half call carrying only the reference (`0/.`) at a requested rsID's
+  position. Before, these were reported as "not in file".
+- The tip `extract` prints for a `.vcf.gz` without pysam names
+  `pip install allelix[vcf-index]`. Before, it printed `pip install allelix`.
+- `--min-magnitude`, `--gwas-min-magnitude` and `--snpedia-min-magnitude`
+  take finite numbers only: `nan`, `inf` and `-inf` are a usage error (exit
+  status 2). Before, they were accepted, and the JSON report held `NaN` or
+  `Infinity`, which is not standard JSON.
+- A `config.toml` that cannot be read or parsed (malformed TOML, binary
+  bytes) stops every command that reads it with an error naming the file,
+  and nothing is written. Before, it stopped with a traceback.
+- `config get` and `config set` reject an unknown source name in
+  `sources.<name>` or `license.<name>` (a typo, a non-ASCII name, an empty
+  name) like any other unknown key, and the config is not changed. Before,
+  `config set` accepted it, and a non-ASCII name left a `config.toml` that
+  could not be read. Unknown source names already in a config file are
+  ignored.
+- `config set` writes `config.toml` through a temporary file, so an
+  interrupted or failed write keeps the previous file. Before, an interrupt
+  could leave it truncated.
+- New report, annotated VCF and PLINK files get the mode your umask gives a
+  new file (`0644` under the usual `022`), as before 2.5.0. They were
+  created `0600`. An existing file keeps its mode.
+- `--diff` identifies a finding by its source, variant, condition and
+  allele, and compares its classification and text. Before:
+  - a ClinVar reclassification (Pathogenic to Likely pathogenic, for
+    example) was listed as one removed and one new finding, and so was a
+    reworded SNPedia, ClinPGx or GWAS text;
+  - a finding now scored below the display floor (a Pathogenic 9.0 capped
+    to 4.0 by its aggregate) was listed as removed.
+  It is now one changed finding, shown with both magnitudes and marked below
+  the display floor. A finding is removed only when the current run has no
+  such finding at all.
+- `--diff` warns when the baseline report was made from a different input
+  file.
+- `--vcf-out` writes the reference finding (see Changed) on every record whose call
+  carries the reference allele. Before, a het or half call at such a site
+  (`0/1`, `0/.`) had the finding in the JSON but not in the VCF. A
+  single-position record with ALT `.` (an all-sites VCF) now gets it too.
+  gVCF reference blocks stay unstamped.
+- `--vcf-out` stamps findings, enrichment values and recovered rsIDs only
+  on the record the analysis read a call from. A second record at the same
+  position and alleles that gave no such call (low genotype quality, a
+  no-call, a hom-ref) was stamped like the first.
+- `--vcf-out` writes the recovered rsID in the ID column of a record whose
+  call carries two different ALT alleles (`1/2`), with
+  `ALLELIX_ORIGINAL_ID=.`. The analysis already used that rsID, but the
+  annotated VCF left the ID as `.`. The VCF's ID column now agrees with the
+  report.
+- A single-position VCF record with ALT `.` and genotype `0/.` is read as a
+  half call of the reference allele, as on a record with an ALT, so a
+  ClinVar finding there reaches the JSON and HTML reports.
+
+- GRCh37 input gets gnomAD frequencies, AlphaMissense scores and CADD
+  scores at many more ClinVar rows. The identity table's site-wide
+  "palindromic" flag blocked every allele at a flagged site, including the
+  many sites with three or more alleles. A flagged row whose GRCh37 and
+  GRCh38 reference bases are equal now translates as written. Every allele
+  translated before is translated as before. `scripts/check_wrong_allele.py`
+  follows the same rule.
+- The "several rare homozygous Pathogenic calls" warning counts a call
+  only when gnomAD was asked about it: a rare frequency, or an allele
+  looked up and absent. A call gnomAD could not be asked about (gnomAD not
+  installed, or a GRCh37 allele that cannot be translated) no longer
+  counts as rare.
+
+- A download with a few characters typed before the `#` of its first line
+  (such as `X#AncestryDNA raw data download`) is read. Before, the stray
+  characters stopped detection and the file got "doesn't recognise the
+  format". Up to 8 characters on the first line are ignored, with a
+  warning on the console and in JSON `report_warnings`
+  (`input_stray_characters`); the rest of the line must still be the
+  vendor's banner.
+- A 23andMe export re-saved by a spreadsheet as CSV is read. Its rows are
+  comma-separated (and may be quoted), its comment lines padded with commas
+  or quoted. Before, the banner was recognised and then every row was
+  skipped, so the run stopped with "contains no genotype records".
+
+### Documentation
+
+- Command help and the documentation match current behavior. `--format`
+  warns only when the reader does not recognise the file. `--min-magnitude 0`
+  removes only the global floor. `db update --force` still needs NCBI's
+  checksums for ClinVar. `db clean` also removes `clinvar-build.log`. The
+  README covers CADD full mode's files and the fast test command. Older ADRs
+  carry amendments where later releases changed their decisions.
+- The README now describes how a VCF's reference calls are read: a `0/0`
+  call or a gVCF reference block can carry a ClinVar finding where the
+  reference genome itself carries the variant allele, and a position a
+  plain VCF does not cover is unknown, not reference. ClinVar's REF = ALT
+  records are described as they are reported.
+- The GRCh36 conversion guide gives a full recipe for array files:
+  zero-based BED positions, new chromosome and position, complemented
+  genotypes where the mapping is inverted, and the new build line.
+- The contributor guide's annotator example uses the current cache
+  readiness check and a read-only connection, and its single-file test
+  commands pass `--no-cov`.
+- The test-data README no longer says the baselines hold only CC0 content:
+  they leave out SNPedia, and the other sources' licenses still apply.
+- The full test protocol installs the `vcf-index` extra, creates its
+  output folder first, and states the current expectations for `db status`
+  before CADD is installed, ClinVar's forward-strand matching, `--force`
+  when NCBI's checksum is unavailable, re-annotated VCF headers, reference
+  calls in the annotated VCF, provenance headers and `report_warnings`.
+- Decision records: ADR-0055 and ADR-0058 are marked Accepted; ADR-0012,
+  ADR-0016 and ADR-0047 gain dated notes; a file path in ADR-0023 is
+  corrected.
+- The example reports' README compares the historical snapshot with 2.5.1
+  output.
+
 ## [2.5.1] - 2026-10-25
 
 No database needs rebuilding after upgrading: caches built by 2.5.0 stay
@@ -4113,6 +4363,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.5.2]: https://github.com/allelix/allelix/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/allelix/allelix/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/allelix/allelix/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/allelix/allelix/compare/v2.4.1...v2.4.2

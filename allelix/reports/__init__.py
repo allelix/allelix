@@ -31,6 +31,55 @@ REGULATORY_NOTICE = (
 )
 
 
+def same_destination(first: Path, second: Path) -> bool:
+    """Whether two output paths name one file (2.5.2).
+
+    The same path in any spelling (relative or absolute), through a symlink,
+    even a dangling one, or a linked parent folder, or two hardlinks of one
+    existing file. Checked before any work, so one output never overwrites
+    another.
+    """
+    if first.resolve() == second.resolve():
+        return True
+    try:
+        return first.exists() and second.exists() and first.samefile(second)
+    except OSError:
+        return False
+
+
+class UnwritableDestinationError(OSError):
+    """An output this process cannot write; the message names the path (2.5.2)."""
+
+
+def check_writable(destination: Path) -> None:
+    """Refuse a destination that cannot be written, before any work starts (2.5.2).
+
+    An existing file must be writable (a read-only one is never replaced),
+    and the folder that will hold it must exist and accept a new file, the
+    staging temp. Raises ``UnwritableDestinationError`` naming the path.
+    """
+    if destination.is_dir():
+        msg = f"Cannot write {destination}: it is a directory."
+        raise UnwritableDestinationError(msg)
+    if destination.exists() and not os.access(destination, os.W_OK):
+        msg = f"Cannot write {destination}: the file is read-only."
+        raise UnwritableDestinationError(msg)
+    folder = destination.absolute().parent
+    if not folder.is_dir():
+        msg = f"Cannot write {destination}: the folder {folder} does not exist."
+        raise UnwritableDestinationError(msg)
+    if not os.access(folder, os.W_OK | os.X_OK):
+        msg = f"Cannot write {destination}: the folder {folder} is not writable."
+        raise UnwritableDestinationError(msg)
+
+
+def current_umask() -> int:
+    """The process umask (read by setting it and restoring it at once)."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
 def validate_output_path(input_path: Path, output_path: Path, *, legacy_temp: bool = True) -> None:
     """Refuse input aliases, including the former fixed temp when applicable.
 
@@ -75,9 +124,13 @@ class StagedOutput:
             self.mode = None
         else:
             self.mode = existing.st_mode & 0o777 if stat.S_ISREG(existing.st_mode) else None
-        descriptor, name = tempfile.mkstemp(
-            dir=destination.parent, prefix="." + destination.name + ".", suffix=".tmp"
-        )
+        try:
+            descriptor, name = tempfile.mkstemp(
+                dir=destination.parent, prefix="." + destination.name + ".", suffix=".tmp"
+            )
+        except OSError as exc:
+            msg = f"Cannot write {destination}: {exc.strerror or exc}."
+            raise UnwritableDestinationError(msg) from exc
         self.temporary = Path(name)
         self.published = False
         self.descriptor: int | None = descriptor
@@ -102,13 +155,17 @@ class StagedOutput:
         return stream
 
     def publish(self) -> None:
-        """Replace the destination with complete, closed content, retaining its mode."""
+        """Replace the destination with complete, closed content.
+
+        An existing destination keeps its mode. A new one gets the mode the
+        user's umask gives a new file (0644 under umask 022), not the private
+        0600 of the staging temp (2.5.2).
+        """
         if self.published:
             raise RuntimeError("Staged output already published")
         if self.stream is None or not self.stream.closed:
             raise RuntimeError("Staged output must close successfully before publication")
-        if self.mode is not None:
-            self.temporary.chmod(self.mode)
+        self.temporary.chmod(self.mode if self.mode is not None else 0o666 & ~current_umask())
         os.replace(self.temporary, self.destination)
         self.published = True
 

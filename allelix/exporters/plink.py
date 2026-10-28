@@ -84,6 +84,22 @@ def plink_paths(prefix: Path) -> dict[str, Path]:
     return {ext: prefix.with_name(prefix.name + ext) for ext in (".fam", ".bim", ".bed")}
 
 
+def check_plink_destinations(prefix: Path) -> None:
+    """Refuse a prefix whose three outputs are not three different files (2.5.2).
+
+    A ``.bim`` linked to the ``.fam``, say, would let one write replace the
+    other. Raises ``ValueError`` naming the pair; checked before any work.
+    """
+    from itertools import combinations
+
+    from allelix.reports import same_destination
+
+    for (_ext_a, first), (_ext_b, second) in combinations(plink_paths(prefix).items(), 2):
+        if same_destination(first, second):
+            msg = f"PLINK outputs {first} and {second} name the same file; choose another prefix."
+            raise ValueError(msg)
+
+
 def default_plink_prefix(input_path: Path) -> Path:
     """The input path minus one known genotype-file ending (``my.genome.txt`` → ``my.genome``)."""
     name = input_path.name
@@ -175,6 +191,7 @@ def export_plink(
     """
     from allelix.reports import staged_output
 
+    check_plink_destinations(prefix)
     final = plink_paths(prefix)
     with contextlib.ExitStack() as owned:
         stages = {ext: owned.enter_context(staged_output(path)) for ext, path in final.items()}
@@ -307,6 +324,54 @@ def resolve_ref_alt_via_gnomad(
         return result
     finally:
         gnomad.close()
+
+
+def resolve_ref_alt_via_gnomad_records(
+    variants: Iterable[Variant], data_dir: Path
+) -> dict[RecordKey, tuple[str, str]] | None:
+    """GRCh38 (ref, alt) for each call from gnomAD, chosen per record; None without gnomAD.
+
+    Keyed by ``plink_record_key``, as on GRCh37, so two records sharing an
+    rsID (split multi-allelic rows, or the rsID at two positions) never share
+    one pair (2.5.2). Only gnomAD's rows for the call's rsID at the call's own
+    chromosome and position count:
+
+    - the first pair the call fits as written, preferring one that is not
+      palindromic;
+    - none fits, but every called allele is one of the site's alleles (a
+      ``1/2`` call at a site gnomAD lists as two pairs): no pair, so the
+      exporter's fallback keeps the observed alleles;
+    - none fits and an allele is foreign to the site: the first pair, which
+      the exporter writes as missing and counts.
+
+    A call gnomAD does not place at its position gets no pair (fallback).
+    """
+    from allelix.annotators.gnomad import GnomadAnnotator
+
+    named = [v for v in variants if v.rsid and plink_writable(v)]
+    gnomad = GnomadAnnotator(data_dir)
+    with gnomad:
+        if not gnomad.is_ready():
+            return None
+        coords = gnomad.bulk_resolve_coordinates({v.rsid for v in named}) if named else {}
+    result: dict[RecordKey, tuple[str, str]] = {}
+    for v in named:
+        pairs = [
+            (ref, alt)
+            for chrom, pos, ref, alt in coords.get(v.rsid, [])
+            if (chrom, pos) == (v.chromosome, v.position)
+            and ref in _NUCLEOTIDES
+            and alt in _NUCLEOTIDES
+        ]
+        if not pairs:
+            continue
+        fitting = [pair for pair in pairs if _fits_site(v.allele1, v.allele2, *pair)]
+        plain = [pair for pair in fitting if not is_strand_ambiguous(*pair)]
+        if plain or fitting:
+            result[plink_record_key(v)] = (plain or fitting)[0]
+        elif {v.allele1, v.allele2} - {allele for pair in pairs for allele in pair}:
+            result[plink_record_key(v)] = pairs[0]
+    return result
 
 
 def resolve_ref_alt_via_identity(

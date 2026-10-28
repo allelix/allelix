@@ -1,7 +1,7 @@
 # ADR-0058: Own analysis providers through their final use
 
 Date: 2026-10-21
-Status: Proposed
+Status: Accepted (2026-10-22)
 
 ## Context
 

@@ -34,6 +34,8 @@ class HighValueSNP:
     gene: str
     cluster: str
     note: str
+    # The variant's common name (``6174delT``, ``F508del``), when it has one.
+    name: str = ""
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ def _load_yaml(path: Path) -> dict[str, HighValueSNP]:
             gene=entry.get("gene", ""),
             cluster=entry.get("cluster", ""),
             note=entry.get("note", ""),
+            name=entry.get("name", ""),
         )
     return out
 
@@ -157,6 +160,99 @@ def scan_no_calls(
             )
         )
     return warnings
+
+
+# The report warning that names D/I calls at high-value or Pathogenic sites.
+DI_CALLS_NOT_CHECKED = "di_calls_not_checked"
+
+# Why a high-value or Pathogenic site could not be checked.
+UNCHECKED_DI_CALL = "di_call"
+UNCHECKED_NOT_IN_FILE = "reference_carried_not_in_file"
+
+
+@dataclass(frozen=True)
+class UncheckedSite:
+    """A high-value or ClinVar Pathogenic/Likely pathogenic site the run could not check.
+
+    ``reason`` is ``di_call`` (an array call written as D or I, a deletion
+    or insertion code no source can be matched to; ``call`` is the call as
+    written) or ``reference_carried_not_in_file`` (a plain VCF with no
+    record where the reference genome carries the ClinVar variant allele,
+    so a person homozygous for it has no record either).
+    """
+
+    rsid: str
+    gene: str
+    name: str
+    reason: str
+    call: str = ""
+
+    @property
+    def text(self) -> str:
+        """The site and why it was not checked, in one line."""
+        label = " ".join(part for part in (self.gene, self.name) if part)
+        site = f"{label} ({self.rsid})" if label else self.rsid
+        if self.reason == UNCHECKED_DI_CALL:
+            return (
+                f"{site}: called {self.call}, a deletion or insertion code that Allelix "
+                "cannot check against its sources. Not assessed: this is neither a "
+                "finding nor a normal result."
+            )
+        return (
+            f"{site}: no record in this VCF. The reference genome carries the ClinVar "
+            "variant allele here, so a person homozygous for it has no record either; "
+            "not assessed. A gVCF or an all-sites VCF says which."
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        """The JSON report's ``high_value_unchecked`` entry."""
+        return {
+            "rsid": self.rsid,
+            "gene": self.gene,
+            "name": self.name,
+            "reason": self.reason,
+            "call": self.call,
+            "message": self.text,
+        }
+
+
+def unchecked_sites(
+    high_value: dict[str, HighValueSNP],
+    variants: list[Variant],
+    di_calls_at_plp: dict[str, tuple[str, str]],
+    not_in_file: list[str],
+) -> list[UncheckedSite]:
+    """The high-value and ClinVar P/LP sites that could not be checked, by rsID.
+
+    A D/I array call is named at a high-value rsID (``variants``) or at an
+    rsID ClinVar classifies Pathogenic or Likely pathogenic
+    (``di_calls_at_plp``: rsID -> call, gene). A reference-carried site with
+    no record in a plain VCF (``not_in_file``) is named when it is high-value.
+    """
+    from allelix.models import DI_ALLELES
+
+    calls: dict[str, tuple[str, str]] = dict(di_calls_at_plp)
+    for v in variants:
+        if v.rsid in high_value and not {v.allele1, v.allele2}.isdisjoint(DI_ALLELES):
+            calls.setdefault(v.rsid, (v.genotype, ""))
+    sites: list[UncheckedSite] = []
+    for rsid, (call, gene) in sorted(calls.items()):
+        snp = high_value.get(rsid)
+        sites.append(
+            UncheckedSite(
+                rsid=rsid,
+                gene=snp.gene if snp is not None and snp.gene else gene,
+                name=snp.name if snp is not None else "",
+                reason=UNCHECKED_DI_CALL,
+                call=call,
+            )
+        )
+    for rsid in sorted(set(not_in_file) & set(high_value)):
+        snp = high_value[rsid]
+        sites.append(
+            UncheckedSite(rsid=rsid, gene=snp.gene, name=snp.name, reason=UNCHECKED_NOT_IN_FILE)
+        )
+    return sites
 
 
 def format_warnings(warnings: list[NoCallWarning]) -> list[str]:

@@ -36,12 +36,12 @@ The mapping uses genome-wide significance conventions from statistical genetics:
 
 | P-value threshold | Base magnitude | Rationale |
 |---|---|---|
-| p < 5×10⁻¹⁰⁰ | 8.0 | Hyper-significant (huge meta-analyses) |
-| p < 5×10⁻²⁰ | 7.0 | Strong GWAS signal, well-replicated |
-| p < 5×10⁻⁸ | 6.0 | Genome-wide significant (standard threshold) |
-| p < 5×10⁻⁶ | 4.0 | Suggestive (sub-threshold) |
-| p < 5×10⁻⁴ | 3.0 | Nominal |
-| p ≥ 5×10⁻⁴ or None | 2.0 | Weak or unparseable |
+| p ≤ 5×10⁻¹⁰⁰ | 8.0 | Hyper-significant (huge meta-analyses) |
+| p ≤ 5×10⁻²⁰ | 7.0 | Strong GWAS signal, well-replicated |
+| p ≤ 5×10⁻⁸ | 6.0 | Genome-wide significant (standard threshold) |
+| p ≤ 5×10⁻⁶ | 4.0 | Suggestive (sub-threshold) |
+| p ≤ 5×10⁻⁴ | 3.0 | Nominal |
+| p > 5×10⁻⁴ or None | 2.0 | Weak or unparseable |
 
 The 5×10⁻⁸ threshold is the Bonferroni-corrected boundary for ~1M independent
 tests, universally accepted as "genome-wide significant" since Hoggart et al.
@@ -67,7 +67,7 @@ variant with OR = 5.0.
 | Source | Max magnitude | Scoring basis |
 |---|---|---|
 | ClinVar | 9.0 | Categorical CLNSIG (ADR-0008) |
-| PharmGKB | 8.0 | Level of Evidence (LoE 1A → 8.0) |
+| ClinPGx (formerly PharmGKB) | 9.0 | Level of Evidence (LoE 1A → 9.0 in `pharmgkb.py`; 8.0 when this ADR was written) |
 | GWAS Catalog | 9.0 | Continuous p-value + OR (this ADR) |
 
 ClinVar Pathogenic and GWAS hyper-significant + large-effect associations both
@@ -199,6 +199,13 @@ per-source filter and subjects GWAS annotations to only the global
 `--min-magnitude` threshold. Combined with `--min-magnitude 0`, this produces
 the full GWAS dump.
 
+*Corrected 2026-10-25 (2.5.2):* the full dump also needs `--gwas-all`;
+without it, the trait-category filter below still excludes rows. The
+complete recipe is `--min-magnitude 0 --gwas-min-magnitude 0 --gwas-all`,
+and a focused report also needs `--include-gwas`. The report still rolls up
+MTAG twins and PheCode hierarchies for display (see 'MTAG and PheCode
+rollup' below).
+
 ## Trait-category filtering (amended 2026-05-19)
 
 The per-source magnitude floor (9.0) reduced GWAS output from thousands to
@@ -272,7 +279,10 @@ with no preference between them.
   applied (default: True via `get_annotators()`).
 - `--gwas-all` CLI flag sets `filter_traits=False`, disabling category
   filtering. Combined with `--gwas-min-magnitude 0`, this produces the
-  complete unfiltered GWAS dump.
+  complete unfiltered GWAS dump. *Corrected 2026-10-25 (2.5.2):* the global
+  floor applies too, so the recipe is `--min-magnitude 0
+  --gwas-min-magnitude 0 --gwas-all` (plus `--include-gwas` in a focused
+  report), and the display rollup still applies.
 
 ### Verified against real data
 
@@ -453,6 +463,20 @@ by rollup, only by global magnitude.
 Rollup is conservative — distinct concepts (different base traits, different
 PheCode parent numbers) are never collapsed. Substring detection only, no
 regex (ADR-0016).
+
+**Amended 2026-10-25 (2.5.2): the suffix is read from the trait.** The
+catalog writes "(MTAG)" in the trait itself, so the rollup takes it from the
+structured `trait` and removes it before matching. Earlier, the twin key
+kept the suffix, so an MTAG row never found its plain twin, and both were
+reported. The suffix matches in any case and with any spacing around or
+inside the parentheses (`(mtag)`, `( MTAG )`). "(MTAG)" anywhere other than
+the end of the trait is not a suffix. An MTAG row and its plain twin must
+also share the rsID and the risk allele. The study and the paper are not
+compared: the catalog gives an MTAG analysis its own study accession
+(GCST005141 beside GCST005142 from one paper), and often its own
+publication, so the plain row from any study is the twin. An MTAG row that
+differs in rsID, base trait or risk allele is kept. Detection is still
+substring and character tests, no regex.
 
 **Implementation:** `rollup_gwas_duplicates()` in `allelix/reports/_pipeline.py`.
 Called by all three renderers (terminal, JSON, HTML) immediately after

@@ -37,6 +37,14 @@ pipeline. Instead, it implements graceful degradation:
    gnomAD all use rsID lookups — build-independent. These fire on GRCh36 files
    exactly as they do on GRCh37/38.
 
+   *Amended by later policy:* only ClinPGx, which matches by rsID, still
+   runs as on newer builds. GWAS Catalog risk alleles and single-base
+   SNPedia genotypes are not assessed on GRCh36, because their strand cannot
+   be checked, and the report counts them. gnomAD, AlphaMissense and CADD
+   enrichment are skipped, because their caches are GRCh38-only and are
+   keyed by position and allele (ADR-0040). See
+   [`docs/grch36-liftover.md`](../grch36-liftover.md).
+
 3. **Skip ClinVar position matching.** ClinVar queries by chromosome+position
    against per-build caches. With no GRCh36 cache, `annotate()` returns `[]`
    for GRCh36 variants. This is safe — no false matches, no silent

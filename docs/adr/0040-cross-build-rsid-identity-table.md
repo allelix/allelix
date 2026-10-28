@@ -114,3 +114,22 @@ when ClinVar holds its rsID.
 - Rebuilding the table (for a new dbSNP release or a larger annotator rsID
   set) means re-running the build script and re-pinning the cache URL and
   SHA-256.
+
+## Amendment 2026-10-25 (2.5.2): equal references lift the palindromic veto
+
+The site-wide `palindromic` flag vetoed every row of a flagged site. The
+shipped cache sets it on many sites with three or more alleles, and those
+rows lost their gnomAD, AlphaMissense and CADD values on GRCh37 input.
+
+One thing changes. A flagged row whose GRCh37 and GRCh38 reference bases are
+equal translates as written: with the reference unchanged, the same-strand
+reading needs no strand guess. A flagged row whose references differ still
+abstains. Everything else stays as before:
+- strand-inverted pairs that are not flagged are still translated by
+  complement;
+- unflagged A/T and C/G pairs keep their translation;
+- alleles that became the GRCh38 reference abstain.
+
+Over the shipped table no key that translated before is lost or translated
+differently. `scripts/check_wrong_allele.py` applies the same rule
+independently.

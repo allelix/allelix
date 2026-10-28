@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     # ``(rsids, build) -> {rsid: (chrom, pos, forward alleles)}``; wired to
     # ``RsidIdentityAnnotator.forward_sites``.
     ForwardSiteProvider = Callable[[set[str], str], dict[str, tuple[str, int, frozenset[str]]]]
+    # ``(rsid, build, locus) -> normal allele | None``; ``locus`` is None without a position.
+    NormalAlleleProvider = Callable[[str, str, tuple[str, int] | None], str | None]
 
 
 @dataclass(frozen=True)
@@ -128,7 +130,7 @@ def carried_alt(
     variant: Variant,
     allele1: str,
     allele2: str,
-    normal_allele_provider: Callable[[str, str], str | None] | None,
+    normal_allele_provider: NormalAlleleProvider | None,
 ) -> tuple[str, bool]:
     """The non-normal allele of a matched genotype, for per-genotype sources.
 
@@ -137,13 +139,16 @@ def carried_alt(
     reference carries a ClinVar variant allele: there
     ``normal_allele_provider`` (``ClinVarAnnotator.normal_allele_for``) gives
     the normal allele from the other build (C at F5 rs6025 on GRCh37, whose
-    reference is the Leiden T). The alt is then the same on both builds,
+    reference is the Leiden T). It is given the call's locus (None without a
+    position), so evidence for one placement of an rsID is not applied to
+    another. The alt is then the same on both builds,
     and it can equal ``variant.ref``, which the Annotation is told through
     ``reference_carries_alt``.
     """
     normal = variant.ref
     if normal is not None and normal_allele_provider is not None and variant.rsid.startswith("rs"):
-        other = normal_allele_provider(variant.rsid, variant.build)
+        locus = variant_locus(variant) if variant.position else None
+        other = normal_allele_provider(variant.rsid, variant.build, locus)
         if other is not None and len(other) == 1 and other != normal:
             normal = other
     alt = derive_alt_from_diploid(normal, allele1, allele2)
@@ -265,6 +270,15 @@ class Annotator(ABC):
         without (ready or missing).
         """
         return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
+
+    def setup_destinations(self) -> tuple[Path, ...]:
+        """The files ``setup()`` replaces or appends to, checked before a download (2.5.2).
+
+        The default is the one cache file of a source that keeps it in
+        ``_db_path``; a source with other files overrides this.
+        """
+        db_path: Path | None = getattr(self, "_db_path", None)
+        return (db_path,) if db_path is not None else ()
 
     def prepare_cache(self) -> bool:
         """Bring an outdated cache up to date from local data only (ADR-0048).

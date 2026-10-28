@@ -239,6 +239,7 @@ def test_member_is_streamed_not_extracted(tmp_path: Path) -> None:
     path = _zip(tmp_path / "dl.zip", {"genome.txt": FIXTURE.read_bytes()})
     before = sorted(p.name for p in tmp_path.iterdir())
     with _helpers.open_genotype_text(path) as fh:
-        assert isinstance(fh, io.TextIOWrapper)
+        # A text stream over the zip member, behind the stray-prefix filter.
+        assert isinstance(fh._inner, io.TextIOWrapper)  # type: ignore[attr-defined]
         fh.readline()
     assert sorted(p.name for p in tmp_path.iterdir()) == before

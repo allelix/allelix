@@ -58,6 +58,12 @@ Both warnings are printed once on the console, and an `analyze` report
 lists them at the top with its other warnings (JSON `report_warnings`,
 codes `input_possibly_truncated` and `input_trailing_bytes`).
 
+A few characters typed before the `#` of a file's first line (for example
+`X#AncestryDNA raw data download`, an edited download) are ignored, up to
+8 of them, with a warning (`input_stray_characters`). The rest of the line
+still has to be the vendor's banner, so this never makes Allelix read a
+file it would not otherwise recognise.
+
 ## Forcing a format
 
 Allelix reads a file only when it recognises its source: each reader checks
@@ -141,31 +147,52 @@ under `input.vcf_quality`. Reference blocks count as records, not as one
 record for every base they span. Non-reference counts include symbolic
 ALT genotypes; they do not imply those structural calls were assessed.
 Schema 10 also adds a nullable `reason` to panel coverage entries.
-Reports in schemas 1–10 can be used as `--diff` baselines; versions 11
-and later are rejected. `--diff` matches findings by source, variant, condition,
-allele and genotype, whatever their order; a finding left on both sides with
-a different genotype is listed as changed. An entry from an older report
-without an allele is matched without allele and genotype. Each changed entry
-in the JSON `diff` block carries `previous_genotype_match` (null when the
-baseline entry had none), and the terminal shows `AG -> AA` when it differs.
+Reports in schemas 1–11 can be used as `--diff` baselines; versions 12
+and later are rejected. `--diff` identifies a finding by its source, variant
+(rsID, or locus without one), condition and allele, whatever the order of
+either report. Its classification, magnitude, genotype and the text
+generated from them are compared, not used to identify it: a ClinVar
+reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
+finding, not a removed and a new one. An entry from an older report without
+an allele is matched without the allele.
+
+A baseline finding is removed only when the current run has no finding with
+its identity at all, before the display floors. A finding still there but
+now scored below `--min-magnitude` (a Pathogenic 9.0 now capped to 4.0, say)
+is changed, shown with its old and new magnitude, and marked below the
+display floor; it stays out of the annotation list. New findings are the
+ones the report shows. Schema 11 adds `below_display_floor` to each changed
+entry in the JSON `diff` block, which also carries `previous_genotype_match`
+(null when the baseline entry had none); the terminal shows `AG -> AA` when
+it differs. When the baseline was made from a different input file, the run
+says so with a warning.
 
 ## Annotated VCF: reference findings and re-annotation
 
-`analyze --vcf-out` puts a ClinVar finding for an allele the reference
-itself carries (see above) on the explicit `0/0` or haploid `0` record it
-came from, in `ALLELIX_CLINVAR`. The field is `Number=A`, so the same
-finding appears in each ALT slot, with `.` for symbolic ALTs; the field's
-description says that on a reference record the finding is for the
-reference allele. Only the record the analysis read the call from gets it,
-so the selected sample (`--sample`), the quality rules (`--min-gq`, FILTER)
-and the mitochondrial exclusions apply as in the report. A record whose REF
-has more than one base gets it when that REF starts at or covers the site.
-gnomAD, AlphaMissense and CADD values for the reference allele are not
-written, since they would read as values for the listed ALT.
+`analyze --vcf-out` writes a ClinVar finding for an allele the reference
+itself carries (see above) in its own field, `ALLELIX_CLINVAR_REF`
+(`Number=1`, `significance|rsID|gene`, VCF schema 0.6.0). It holds the
+highest-ranked such finding for the record, and never sits in an ALT slot.
+`ALLELIX_CLINVAR` stays `Number=A` and describes carried ALT alleles only;
+a record can have both, as a `0/1` at a site with findings for REF and ALT.
 
-A gVCF reference block is never stamped, because one line covers many
-positions, and a record with ALT `.` has no ALT slot. A finding from
-either is in the JSON and HTML reports only.
+The field goes on every record whose call carries the reference allele:
+a het (`0/1`, `1|0`), a half call (`0/.`), a hom-ref (`0/0`, haploid `0`),
+and a single-position record with ALT `.` (an all-sites VCF), whose site is
+exact. A record whose REF has more than one base gets it when that REF
+starts at or covers the site. gnomAD, AlphaMissense and CADD values for the
+reference allele are not written, since they would read as values for an
+ALT.
+
+A gVCF reference block (`END=`) is never stamped, because one line covers
+many positions; its finding is in the JSON and HTML reports only.
+
+Every Allelix field, ALT findings, enrichment and recovered rsIDs included,
+goes only on the record the analysis read a call from that carries its
+allele. The selected sample (`--sample`), the quality rules (`--min-gq`, DP
+0, FILTER) and the mitochondrial exclusions apply as in the report. A
+second record at the same CHROM, POS, REF and ALT that gave no such call (a
+low-quality, no-call or hom-ref duplicate) borrows nothing.
 
 When the input is itself an Allelix-annotated VCF, the old `ALLELIX_*` INFO
 values, their `##INFO` declarations and the `##ALLELIX_` header lines are
@@ -308,6 +335,11 @@ A tab-delimited text file: a comment block, then one genotype per row
 by its banner line, `# This data file generated by 23andMe` or, in v5
 exports from June 2026, `# This data file is generated by 23andMe.`
 
+A file re-saved by a spreadsheet is read too: rows separated by spaces or
+by commas instead of tabs, fields in quotes, comment lines padded with
+commas or quoted. Keep the original download if you can; a spreadsheet
+can change values it thinks are numbers or dates.
+
 Current v5 exports start with three identification lines before the banner
 (values replaced with placeholders here):
 
@@ -323,8 +355,9 @@ The banner does not have to be the first line; Allelix looks for it in the
 first 50 comment lines. A file with the banner removed is not recognised
 as 23andMe.
 
-A row with no tab in it is split on spaces instead, so a file that a text
-editor or spreadsheet re-saved with spaces between the columns still reads.
+A row with no tab is split on commas as CSV; a row with neither tabs nor
+commas is split on spaces, so a file that a text editor or spreadsheet
+re-saved with spaces between the columns still reads.
 
 ## Genes for Good
 
@@ -362,8 +395,10 @@ deCODEme, deCODE genetics' consumer service (closed in 2013), delivered
 row. Allelix recognises the file by that column line.
 
 `YourCode` is the genotype (`--` for a no-call) and `Strand` says which
-strand it is written on. Every other format and annotation source uses the
-plus strand, so a `-` row's call is complemented (`TG` becomes `AC`). This
+strand it is written on. Allelix compares calls on the plus strand, as
+every other format writes them, so a `-` row's call is complemented (`TG`
+becomes `AC`). Sources keep their own orientation: SNPedia pages say plus,
+minus or unknown, and a minus page is complemented before matching. This
 was checked on real deCODEme files against real 23andMe exports: minus-strand
 calls match only after complementing, plus-strand calls only as given.
 `Variation` is written on the same strand as the call, so it is not used.
@@ -397,6 +432,21 @@ the existing last-observation convention, so conflicting duplicate
 genotypes can depend on their order. Concordance percentages use shared
 eligible keys; no shared keys is displayed without a percentage.
 
+`allelix extract` shows confident reference calls too. An explicit `0/0`
+(or `0|0`, haploid `0`, ALT `.`) record is shown as REF/REF. A gVCF reference
+block covering the rsID's position is shown as that site's REF/REF. A
+filtered, low-quality or zero-depth record is a no-call. In a VCF without
+rsIDs, a no-call (`./.`, haploid `.`) or a half call carrying only REF
+(`0/.`) at the rsID's position is shown too.
+
+When a file holds several records for one requested rsID, extract shows one,
+by the same order with or without an index (ADR-0054):
+1. a record at one of the rsID's placements (on GRCh38 gnomAD's, or the
+   rsID identity table's when gnomAD does not place the rsID; on GRCh37 the
+   identity table's) beats one elsewhere, even as a no-call;
+2. among those, a usable call beats a no-call or a rejected record;
+3. then the header's contig order, POS and line order.
+
 Indexed `allelix extract` preserves its normal build, sample, quality and
 resolution rules. Any requested identifiers not actually found in the
 index share one sequential pass, even if a coordinate mapping existed.
@@ -422,10 +472,16 @@ gives `release.v1.bed`. Without `-o`, the prefix is the input name minus one
 genotype-file ending (`.vcf.gz`, `.vcf.bgz`, `.txt`, `.csv`, `.tsv`, `.vcf`,
 `.zip` or `.gz`), so `my.genome.txt` gives `my.genome`.
 
-A1/A2 come from the export's own build: on GRCh37, the rsID identity table's
-GRCh37 REF/ALT for the record's rsID at the record's position, chosen for
-each record on its own; on GRCh38, gnomAD. A call that fits neither allele
-of that pair as written is exported as missing and counted. On GRCh37, a
+A1/A2 come from the export's own build where it has a pair (on GRCh37, the
+gnomAD fallback below can supply one), chosen for each record on its own:
+on GRCh37, the rsID identity table's GRCh37 REF/ALT for the record's rsID at
+the record's position; on GRCh38, gnomAD's REF/ALT for the record's rsID at
+the record's position, preferring a pair that is not A/T or C/G. Two records
+with one rsID (split multi-allelic rows, or one rsID at two positions) never
+share a pair. A call that carries two ALTs (`1/2`) fits no single pair; when
+both its alleles are alleles of the site, it keeps its observed pair through
+the fallback coding below. A call with an allele that is not one of the
+site's is exported as missing and counted. On GRCh37, a
 site the identity table has no pair for uses gnomAD's pair when it is not
 A/T or C/G and the call fits it as written: gnomAD holds GRCh38 alleles, and
 a site GRCh38 writes on the other strand cannot fit, so it is never written
@@ -446,6 +502,16 @@ JSON/HTML reports, annotated VCF and PLINK exports reject destinations that
 alias the input. Report and PLINK checks include the former fixed `.tmp`
 names, although writers now allocate unique owned temporary files. Unrelated
 old temp files survive both successful and failed writes.
+
+Two outputs of one run never name the same file. `analyze` refuses an
+`--output` and a `--vcf-out` that resolve to one file, and `export plink`
+refuses a prefix whose `.bed`, `.bim` and `.fam` are not three files. That
+covers the same path spelled two ways, a symlink (even a dangling one), a
+linked parent folder and a hardlink. The check runs before any work starts,
+and nothing is written.
+
+A new output file gets the mode your umask gives any new file (`0644` under
+the usual `022`); an existing one keeps its mode.
 
 Output content and format are unchanged. VCF remains streamed with UTF-8/LF;
 PLINK retains its existing bytes and order. Publication is atomic per file,

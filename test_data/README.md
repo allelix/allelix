@@ -17,7 +17,9 @@ verification.
   in `transcoded/README.md`.
 - **`baselines/`** — Frozen `allelix analyze` output keyed per release.
   Diff against the previous release to detect regressions. Generated with
-  `--exclude-snpedia` so the JSON contains only CC0-compatible content.
+  `--exclude-snpedia`, so the JSON holds no SNPedia content. The other
+  sources' licenses and attributions (see [Licensing](#licensing)) still
+  apply.
 - **`edge_cases/`** — Files that exercise specific parser quirks (23andMe
   canonical-header check, GRCh36 position detection, MHG/Tempus
   build-mismatch warning, unsupported formats). Documented in

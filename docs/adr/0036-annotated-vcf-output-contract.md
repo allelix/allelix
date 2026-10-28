@@ -200,3 +200,12 @@ including stale tags on blocks. Eligible explicit reference calls use
 the existing ClinVar field with a Description explaining REF; the
 Number/Type, value grammar and provenance shapes remain unchanged, and
 `VCF_SCHEMA_VERSION` goes to 0.5.0 for the change in meaning.
+
+*Amended by ADR-0059 (2.5.2):* the per-source fields stay `Number=A`, one
+value per ALT. Three record-level fields are `Number=1`:
+`ALLELIX_ORIGINAL_ID` (the ID before rsID recovery), `ALLELIX_FILTER` (the
+FILTER of a row kept with `--keep-filtered`) and, new here,
+`ALLELIX_CLINVAR_REF`, which holds a ClinVar finding for the allele the
+reference itself carries, on a record whose call carries REF. Reference
+findings no longer occupy ALT slots. Every field is written only on the record
+the analysis read a carrying call from. `VCF_SCHEMA_VERSION` goes to 0.6.0.

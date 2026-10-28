@@ -24,7 +24,17 @@ def default_data_dir() -> Path:
 
 
 def resolve_data_dir(override: Path | None = None) -> Path:
-    """Return the data directory to use, creating it if it doesn't exist."""
+    """Return the data directory to use, creating it if it doesn't exist.
+
+    A directory that cannot be created raises ``UnwritableDestinationError``
+    naming it (2.5.2).
+    """
     path = override.expanduser() if override else default_data_dir()
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        from allelix.reports import UnwritableDestinationError
+
+        msg = f"Cannot create the data directory {path}: {exc.strerror or exc}."
+        raise UnwritableDestinationError(msg) from exc
     return path

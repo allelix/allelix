@@ -57,6 +57,12 @@ the alt allele through the enrichment lookup path, which touches the
 Annotation model, pipeline keying, and both enrichment annotators. This
 is deferred to a post-v1.4.0 patch.
 
+*Resolved:* enrichment no longer aggregates by rsID. Each annotation is
+looked up at its exact GRCh38 key (chromosome, position, REF and the
+carried ALT), with GRCh37 input translated through the rsID identity
+table, so a multi-allelic site gets the carried allele's value (see
+ADR-0039 and ADR-0040).
+
 ## Consequences
 
 **Positive:**
@@ -74,7 +80,8 @@ is deferred to a post-v1.4.0 patch.
 
 - Large download (~8 GB on disk after decompression)
 - Build-time gnomAD dependency adds ordering constraint
-- MAX aggregation over-reports at multi-allelic sites (documented, deferred)
+- MAX aggregation over-reported at multi-allelic sites (resolved by
+  allele-keyed enrichment, ADR-0039 / ADR-0040)
 
 **Future:**
 

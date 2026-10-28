@@ -44,10 +44,17 @@ from allelix import __version__
 from allelix.annotators import get_annotator_class
 from allelix.models import report_rank_key
 from allelix.parsers._helpers import normalize_chromosome
-from allelix.parsers.vcf import _is_symbolic, _open_vcf, reference_row_key
+from allelix.parsers.vcf import (
+    _info_end,
+    _is_symbolic,
+    _open_vcf,
+    _reference_block_alts,
+    is_data_line,
+    reference_row_key,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
 
     from allelix.models import Annotation
@@ -56,7 +63,7 @@ if TYPE_CHECKING:
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.5.0"
+VCF_SCHEMA_VERSION = "0.6.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
@@ -73,6 +80,14 @@ so an annotated VCF never reads as complete when a source was skipped.
 0.5.0: ``ALLELIX_CLINVAR`` also appears on an explicit ``0/0`` or haploid
 ``0`` record, where its value is a finding for the allele the reference
 itself carries (ADR-0059). Re-annotation replaces earlier Allelix INFO.
+0.6.0: such a finding is written in ``ALLELIX_CLINVAR_REF`` (``Number=1``,
+``significance|rsID|gene``), never in an ALT slot. It appears on every
+record whose call carries the reference allele: het, half call, hom-ref,
+haploid, and a single-position record with ALT ``.``; not on a gVCF
+``END`` block. ``ALLELIX_CLINVAR`` describes carried ALT alleles only.
+Every field is written only on the records the analysis read a call from
+that carries its allele: a duplicate record at the same CHROM, POS, REF
+and ALT that gave no such call (low GQ, no call, hom-ref) borrows nothing.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -101,6 +116,11 @@ class VcfWriteInputs:
     # Explicit reference records the analysis used, with the positions each
     # covers (``VcfQualityStats.reference_rows``).
     reference_rows: dict[RowKey, set[Locus]] = field(default_factory=dict)
+    # For each key in ``annotations_by_key``, the input records
+    # (``Variant.record_index``) whose own call carries it.
+    record_rows: dict[_VariantKey, set[int]] | None = None
+    # The rsID recovered for a record's own call, by record number.
+    record_recovered: dict[int, str] = field(default_factory=dict)
 
 
 _logger = logging.getLogger(__name__)
@@ -149,11 +169,7 @@ _INFO_SPECS: dict[str, _InfoSpec] = {
     "clinvar": _InfoSpec(
         field="ALLELIX_CLINVAR",
         vcf_type="String",
-        description=(
-            "ClinVar significance | rsID | gene. On a homozygous-reference or "
-            "haploid reference record, the finding is for the allele the "
-            "reference itself carries."
-        ),
+        description="ClinVar significance | rsID | gene, for each carried ALT allele",
     ),
     "gnomad": _InfoSpec(
         field="ALLELIX_GNOMAD_AF",
@@ -180,6 +196,14 @@ _INFO_SPECS: dict[str, _InfoSpec] = {
 _PRIMARY_SOURCES: frozenset[str] = frozenset({"clinvar", "gwas", "pharmgkb", "snpedia"})
 _ENRICHMENT_SOURCES: frozenset[str] = frozenset({"alphamissense", "cadd", "gnomad"})
 
+# A ClinVar finding for the allele the reference itself carries (ADR-0059's
+# 2.5.2 amendment): one value per record, never an ALT slot.
+_CLINVAR_REF_FIELD = "ALLELIX_CLINVAR_REF"
+_CLINVAR_REF_DESCRIPTION = (
+    "ClinVar significance | rsID | gene of the highest-ranked finding for the allele "
+    "the reference itself carries at this record, where the call carries the "
+    "reference allele"
+)
 _ORIGINAL_ID_FIELD = "ALLELIX_ORIGINAL_ID"
 # the input row's FILTER, repeated on a stamped row that the caller
 # rejected and the user kept with --keep-filtered.
@@ -366,7 +390,11 @@ def _emit_provenance_lines(
 
 
 def _emit_info_declarations(
-    sources_used: set[str], *, include_original_id: bool, keep_filtered: bool = False
+    sources_used: set[str],
+    *,
+    include_original_id: bool,
+    keep_filtered: bool = False,
+    include_clinvar_ref: bool = False,
 ) -> list[str]:
     """Emit ``##INFO=<>`` declarations for the sources used in this run.
 
@@ -382,6 +410,11 @@ def _emit_info_declarations(
                 f"##INFO=<ID={spec.field},Number=A,Type={spec.vcf_type},"
                 f'Description="{spec.description}">'
             )
+    if include_clinvar_ref:
+        lines.append(
+            f"##INFO=<ID={_CLINVAR_REF_FIELD},Number=1,Type=String,"
+            f'Description="{_CLINVAR_REF_DESCRIPTION}">'
+        )
     if include_original_id:
         lines.append(
             f"##INFO=<ID={_ORIGINAL_ID_FIELD},Number=1,Type=String,"
@@ -482,6 +515,8 @@ def render_vcf(
     build_source: str | None = None,
     skipped_sources: list[tuple[str, str]] | None = None,
     reference_rows: Mapping[RowKey, set[Locus]] | None = None,
+    record_rows: Mapping[_VariantKey, set[int]] | None = None,
+    record_recovered: Mapping[int, str] | None = None,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -512,10 +547,19 @@ def render_vcf(
     never freshly stamped, unless ``keep_filtered`` is set;
     then it is stamped like any row and also carries ``ALLELIX_FILTER``.
     Old ``ALLELIX_*`` tokens are removed from rejected rows and reference
-    blocks too, but those rows get no new findings. An explicit reference
-    call (``0/0`` or haploid ``0``) gets the pipeline's reference-carried
-    ClinVar finding in every non-symbolic ALT slot. Only the records in
-    ``reference_rows`` (the ones the analysis read that call from) get it.
+    blocks too, but those rows get no new findings.
+
+    ``record_rows`` names, for each key, the records (numbered as
+    ``is_data_line`` counts them) whose own call carries that allele; a
+    key's findings and enrichment go on those records only, and a recovered
+    rsID goes on the record whose call it was recovered for
+    (``record_recovered``). None stamps every record at the key, as before
+    2.5.2 (direct callers), with ``recovered_rsids`` by key.
+    A ClinVar finding for the allele the reference itself carries goes in
+    ``ALLELIX_CLINVAR_REF``, on a record whose call carries the reference
+    allele (in ``record_rows`` at ``(chrom, pos, REF, REF)``; never without
+    ``record_rows``) or an explicit reference record in ``reference_rows``;
+    never in an ALT slot.
 
     Returns the number of data lines stamped with at least one Allelix
     INFO field (either an annotation source or ``ALLELIX_ORIGINAL_ID``).
@@ -529,12 +573,19 @@ def render_vcf(
         recovered_rsids = {}
 
     sources_used = _sources_used(annotations_by_key)
-    include_original_id = bool(recovered_rsids)
+    record_recovered = record_recovered or {}
+    include_original_id = bool(record_recovered if record_rows is not None else recovered_rsids)
+    include_clinvar_ref = any(
+        a.source == "clinvar" and a.reference_carries_alt
+        for anns in annotations_by_key.values()
+        for a in anns
+    )
     missing_contig_ids = _missing_contig_ids(input_path)
 
     stamped = 0
     header_written = False
     reference_rows = reference_rows or {}
+    record_index = -1
 
     with staged_output(output_path) as staged:
         with (
@@ -554,6 +605,7 @@ def render_vcf(
                         sources_used,
                         include_original_id=include_original_id,
                         keep_filtered=keep_filtered,
+                        include_clinvar_ref=include_clinvar_ref,
                     ):
                         fout.write(h + "\n")
                     for h in _emit_provenance_lines(
@@ -567,12 +619,16 @@ def render_vcf(
                     fout.write(raw_line)
                     header_written = True
                     continue
-                if not raw_line.strip():
-                    fout.write(raw_line)
-                    continue
                 if not header_written:
                     # Data line before #CHROM — malformed input, but the parser
                     # tolerates it and so do we. Pass through untouched.
+                    fout.write(raw_line)
+                    continue
+                if not is_data_line(raw_line.rstrip("\n").rstrip("\r")):
+                    fout.write(raw_line)
+                    continue
+                record_index += 1
+                if not raw_line.strip():
                     fout.write(raw_line)
                     continue
 
@@ -583,6 +639,9 @@ def render_vcf(
                     recovered_rsids=recovered_rsids,
                     keep_filtered=keep_filtered,
                     reference_rows=reference_rows,
+                    record_rows=record_rows,
+                    record_index=record_index,
+                    record_recovered=record_recovered,
                 )
                 fout.write(new_line)
                 if row_stamped:
@@ -601,6 +660,9 @@ def _stamp_data_line(
     recovered_rsids: Mapping[_VariantKey, str],
     keep_filtered: bool = False,
     reference_rows: Mapping[RowKey, set[Locus]] | None = None,
+    record_rows: Mapping[_VariantKey, set[int]] | None = None,
+    record_index: int = -1,
+    record_recovered: Mapping[int, str] | None = None,
 ) -> tuple[str, bool]:
     """Rewrite one VCF data line with Allelix INFO fields.
 
@@ -650,36 +712,24 @@ def _stamp_data_line(
     # silently misses. Only the lookup key is normalized — the output
     # column preserves the user's convention unchanged.
     key_chrom = normalize_chromosome(chrom)
-    # A reference-carried ClinVar finding goes on the records it was read
-    # from, at the base of REF that covers its position.
-    reference_value = ""
-    candidates = []
-    for locus in (reference_rows or {}).get(reference_row_key(cols), ()):
-        base = ref[locus[1] - pos].upper()
-        for annotation in annotations_by_key.get((*locus, base, base), []):
-            if (
-                annotation.source == "clinvar"
-                and annotation.reference_carries_alt
-                and annotation.locus == locus
-                and annotation.locus_ref == base
-            ):
-                candidates.append(annotation)
-    for annotation in sorted(candidates, key=report_rank_key):
-        primary = _format_primary(annotation)
-        if primary is not None:
-            reference_value = primary[1]
-            break
+
+    def own(key: _VariantKey) -> bool:
+        """Whether this record's own call carries ``key``'s allele (2.5.2)."""
+        return record_rows is None or record_index in record_rows.get(key, ())
+
+    def carries_reference(key: _VariantKey) -> bool:
+        """Whether this record's own call carries REF: needs ``record_rows``."""
+        return record_rows is not None and record_index in record_rows.get(key, ())
+
+    reference_value = _reference_value(
+        cols, key_chrom, pos, ref, annotations_by_key, reference_rows or {}, carries_reference
+    )
 
     for i, alt in enumerate(alts):
         if _is_symbolic(alt):
             continue
-        # The REF exception is ClinVar-only. REF enrichment values must
-        # never be presented as properties of one of the listed ALTs.
-        if reference_value:
-            per_source["clinvar"][i] = reference_value
-            row_stamped = True
         key: _VariantKey = (key_chrom, pos, ref.upper(), alt.upper())
-        anns = annotations_by_key.get(key, [])
+        anns = annotations_by_key.get(key, []) if own(key) else []
         # Primary sources: source-dispatched, one Annotation → one INFO
         # value slot. Where a source has several rows at the variant (two
         # ClinVar conditions, say), the slot takes the row the report
@@ -708,11 +758,18 @@ def _stamp_data_line(
         # First recovered rsID at this row wins. In practice the pipeline
         # emits at most one recovered rsID per position, but the loop is
         # defensive against future callers that key per-ALT.
-        if recovered is None and key in recovered_rsids:
+        if record_rows is None and recovered is None and key in recovered_rsids:
             recovered = recovered_rsids[key]
             original_id = id_col
+    if record_rows is not None and record_index in (record_recovered or {}):
+        recovered = (record_recovered or {})[record_index]
+        original_id = id_col
 
     allelix_info = _build_info_field(per_source)
+    if reference_value:
+        ref_frag = f"{_CLINVAR_REF_FIELD}={reference_value}"
+        allelix_info = f"{allelix_info};{ref_frag}" if allelix_info else ref_frag
+        row_stamped = True
     if recovered is not None and original_id is not None:
         orig_frag = f"{_ORIGINAL_ID_FIELD}={_sanitize_info_value(original_id)}"
         allelix_info = f"{allelix_info};{orig_frag}" if allelix_info else orig_frag
@@ -725,3 +782,46 @@ def _stamp_data_line(
     new_id = recovered if recovered is not None else id_col
     new_cols = [chrom, pos_s, new_id, ref, alt_col, qual, filt, info, *tail]
     return "\t".join(new_cols) + "\n", row_stamped or recovered is not None
+
+
+def _reference_value(
+    cols: list[str],
+    key_chrom: str,
+    pos: int,
+    ref: str,
+    annotations_by_key: Mapping[_VariantKey, list[Annotation]],
+    reference_rows: Mapping[RowKey, set[Locus]],
+    carries_reference: Callable[[_VariantKey], bool],
+) -> str:
+    """The ``ALLELIX_CLINVAR_REF`` value of one record, or "".
+
+    The highest-ranked ClinVar finding for an allele the reference itself
+    carries, from a call read off this record: a call carrying REF (het,
+    half call; keyed ``(chrom, pos, REF, REF)``), or an explicit reference
+    record the analysis used (``reference_rows``), at the base of REF that
+    covers the finding's position.
+    """
+    loci: list[tuple[Locus, str]] = []
+    upper = ref.upper()
+    if len(upper) == 1 and carries_reference((key_chrom, pos, upper, upper)):
+        loci.append(((key_chrom, pos), upper))
+    # A reference block spans many positions: never stamped (ADR-0059).
+    block = _info_end(cols) is not None and _reference_block_alts(cols[4])
+    for locus in () if block else reference_rows.get(reference_row_key(cols), ()):
+        offset = locus[1] - pos
+        if 0 <= offset < len(upper):
+            loci.append((locus, upper[offset]))
+    candidates = [
+        annotation
+        for locus, base in loci
+        for annotation in annotations_by_key.get((*locus, base, base), [])
+        if annotation.source == "clinvar"
+        and annotation.reference_carries_alt
+        and annotation.locus == locus
+        and annotation.locus_ref == base
+    ]
+    for annotation in sorted(candidates, key=report_rank_key):
+        primary = _format_primary(annotation)
+        if primary is not None:
+            return primary[1]
+    return ""

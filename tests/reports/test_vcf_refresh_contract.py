@@ -115,6 +115,8 @@ def _write(src: Path, out: Path, result) -> int:
         annotations_by_key=wi.annotations_by_key,
         recovered_rsids=wi.recovered_rsids,
         reference_rows=wi.reference_rows,
+        record_rows=wi.record_rows,
+        record_recovered=wi.record_recovered,
         run_date=FIXED,
     )
 
@@ -289,19 +291,15 @@ def test_pipeline_explicit_reference_decodes_in_each_concrete_slot(
     assert _body(src)[0][:7] == _body(out)[0][:7]
     assert _body(src)[0][8:] == _body(out)[0][8:]
     with pysam.VariantFile(str(out)) as stream:
-        declaration = stream.header.info["ALLELIX_CLINVAR"]
-        assert declaration.number == "A"
-        assert declaration.description == (
-            "ClinVar significance | rsID | gene. On a homozygous-reference or "
-            "haploid reference record, the finding is for the allele the "
-            "reference itself carries."
-        )
+        # VCF schema 0.6.0: the reference finding has its own scalar field,
+        # never an ALT slot.
+        declaration = stream.header.info["ALLELIX_CLINVAR_REF"]
+        assert declaration.number == 1
+        assert "the reference itself carries" in declaration.description
         record = next(stream)
         assert record.samples["S"]["GT"] == ((0,) if gt == "0" else (0, 0))
-        assert record.info["ALLELIX_CLINVAR"] == tuple(
-            "." if allele == "<NON_REF>" else "clinvar_pathogenic|rs900230001|GENE"
-            for allele in alt.split(",")
-        )
+        assert record.info["ALLELIX_CLINVAR_REF"] == "clinvar_pathogenic|rs900230001|GENE"
+        assert "ALLELIX_CLINVAR" not in record.info
 
 
 @pytest.mark.parametrize("gt,gq,min_gq", [("0/0", 99, 20), ("0/0", 3, 0), ("0", 99, 20)])
@@ -337,7 +335,7 @@ def test_cli_passes_selected_sample_and_actual_quality_policy(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "ALLELIX_CLINVAR=clinvar_pathogenic|rs900230001|GENE" in _body(out)[0][7]
+    assert "ALLELIX_CLINVAR_REF=clinvar_pathogenic|rs900230001|GENE" in _body(out)[0][7]
     assert _body(src)[0][8:] == _body(out)[0][8:]
     assert "1 stamped row(s)" in result.output
 
@@ -355,7 +353,8 @@ def test_reference_enrichment_is_not_an_alt_annotation(tmp_path: Path, data: Pat
     out = tmp_path / "out.vcf"
     assert _write(src, out, result) == 1
     info = _body(out)[0][7]
-    assert "ALLELIX_CLINVAR=" in info
+    assert "ALLELIX_CLINVAR_REF=" in info
+    assert "ALLELIX_CLINVAR=" not in info
     assert "ALLELIX_GNOMAD_AF=" not in info
     assert "ALLELIX_ALPHAMISSENSE=" not in info
     assert "ALLELIX_CADD=" not in info
@@ -378,11 +377,11 @@ def test_selected_sample_output_decodes(
     pysam = pytest.importorskip("pysam")
     test_cli_passes_selected_sample_and_actual_quality_policy(tmp_path, data, gt, gq, min_gq)
     with pysam.VariantFile(str(tmp_path / "out.vcf")) as stream:
-        assert stream.header.info["ALLELIX_CLINVAR"].number == "A"
+        assert stream.header.info["ALLELIX_CLINVAR_REF"].number == 1
         record = next(stream)
         assert record.samples["FIRST"]["GT"] == (1, 1)
         assert record.samples["SECOND"]["GT"] == ((0,) if gt == "0" else (0, 0))
-        assert record.info["ALLELIX_CLINVAR"] == ("clinvar_pathogenic|rs900230001|GENE",)
+        assert record.info["ALLELIX_CLINVAR_REF"] == "clinvar_pathogenic|rs900230001|GENE"
 
 
 @pytest.mark.parametrize(
@@ -472,7 +471,7 @@ def test_owned_declaration_replaced_and_lookalike_kept(
         assert record.info["KEEP"] == "value"
         if finding:
             assert record.info["ALLELIX_CLINVAR"] == ("clinvar_pathogenic|rs900227001|GENE",)
-            assert "homozygous-reference" in stream.header.info["ALLELIX_CLINVAR"].description
+            assert "carried ALT" in stream.header.info["ALLELIX_CLINVAR"].description
         else:
             assert "ALLELIX_CLINVAR" not in stream.header.info
             assert "ALLELIX_CLINVAR" not in record.info
@@ -544,9 +543,9 @@ def test_pipeline_reannotation_replaces_stale_values_and_is_idempotent(
 
 
 @pytest.mark.parametrize(
-    "alt,pos", [("<NON_REF>", 1990), ("<*>", 1990), (".", 1990), ("<NON_REF>", 2000), (".", 2000)]
+    "alt,pos", [("<NON_REF>", 1990), ("<*>", 1990), (".", 1990), ("<NON_REF>", 2000)]
 )
-def test_reference_blocks_and_zero_alt_slots_remain_unstamped(
+def test_reference_blocks_remain_unstamped(
     tmp_path: Path,
     data: Path,
     alt: str,
@@ -562,6 +561,16 @@ def test_reference_blocks_and_zero_alt_slots_remain_unstamped(
     out = tmp_path / "out.vcf"
     assert _write(src, out, result) == 0
     assert _body(src) == _body(out)
+
+
+def test_single_position_alt_dot_record_is_stamped(tmp_path: Path, data: Path) -> None:
+    """VCF schema 0.6.0: the scalar field needs no ALT slot, and the site is exact."""
+    src = _input(tmp_path, [_row(pos=2000, ref="T", alt=".", gt="0/0", rsid=".", info=PLAIN)])
+    result = _analysis(src, data)
+    assert len(result.annotations) == 1 and result.annotations[0].reference_carries_alt
+    out = tmp_path / "out.vcf"
+    assert _write(src, out, result) == 1
+    assert _body(out)[0][7] == PLAIN + ";ALLELIX_CLINVAR_REF=clinvar_pathogenic|rs900230001|GENE"
 
 
 @pytest.mark.parametrize(
@@ -644,7 +653,7 @@ def test_excluded_ucsc_mito_record_does_not_borrow_the_mt_stamp(
     assert [a["rsid"] for a in report["annotations"]] == ["rs900250001"]
     assert report["input"]["build_evidence"]["mt_records_skipped"] == 1
     assert [(r[0], r[7]) for r in records] == [
-        ("MT", "ALLELIX_CLINVAR=clinvar_pathogenic|rs900250001|GENE"),
+        ("MT", "ALLELIX_CLINVAR_REF=clinvar_pathogenic|rs900250001|GENE"),
         ("chrM", "."),
     ]
 
@@ -660,4 +669,4 @@ def test_multi_base_ref_record_carries_its_reference_finding(
         ("rs900230001", "TT")
     ]
     assert records[0][3:5] == [ref, alt]
-    assert records[0][7] == "ALLELIX_CLINVAR=clinvar_pathogenic|rs900230001|GENE"
+    assert records[0][7] == "ALLELIX_CLINVAR_REF=clinvar_pathogenic|rs900230001|GENE"

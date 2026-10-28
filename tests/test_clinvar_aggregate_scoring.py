@@ -283,11 +283,13 @@ class TestDisplay:
         out = tmp_path / "r.json"
         render_json(self._result(data_dir, tmp_path), output_path=out)
         payload = json.loads(out.read_text())
-        assert payload["schema_version"] == SCHEMA_VERSION == "10"
+        assert payload["schema_version"] == SCHEMA_VERSION == "11"
         assert payload["clinvar"] == {
             "pathogenic_rows_scored_down": 4,
             "unrecognised_rows_hidden": 1,
             "common_allele_rows_scored_down": 0,
+            # The result is built with the count alone (no named variants).
+            "scored_down_variants": [],
         }
         row = next(a for a in payload["annotations"] if a["rsid"] == "rs101")
         assert row["clinvar_aggregate"] == CONFLICTING

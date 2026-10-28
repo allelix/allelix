@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.5.1"
+version = "2.5.2"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -120,8 +120,8 @@ filterwarnings = [
 #
 # *** CI is the floor's source of truth, NOT local. ***
 # Local readings overstate coverage on this codebase because the CI
-# matrix (3.11 + 3.12) misses a few lines that newer Python versions
-# happen to execute. Calibrate the next ratchet from the CI matrix
+# matrix (3.11, 3.12 and 3.13) misses a few lines that newer Python
+# versions happen to execute. Calibrate the next ratchet from the CI matrix
 # output (gh run view <run_id> --log-failed | grep TOTAL), never from
 # a local pytest run.
 #

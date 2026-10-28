@@ -25,6 +25,17 @@ _UNKNOWN_KEY = (
 )
 
 
+def _source_key(key: str, prefix: str) -> str:
+    """The known source name in a ``sources.<name>`` or ``license.<name>`` key, or an error."""
+    from allelix.config import KNOWN_SOURCES
+
+    name = key[len(prefix) :]
+    if name not in KNOWN_SOURCES:
+        known = ", ".join(sorted(KNOWN_SOURCES))
+        raise click.ClickException(f"Unknown source {name!r} in {key!r}. Known sources: {known}")
+    return name
+
+
 def _plausibility_key(key: str) -> str:
     """The threshold name in a ``plausibility.<name>`` key, or a usage error."""
     from allelix.config import PLAUSIBILITY_KEYS
@@ -117,18 +128,11 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
         return
 
     if key.startswith("sources."):
-        source_name = key[len("sources.") :]
-        val = cfg.sources.get(source_name)
-        if val is None:
-            raise click.ClickException(
-                f"Unknown source {source_name!r}. Known sources: {', '.join(sorted(cfg.sources))}"
-            )
-        click.echo(str(val).lower())
+        click.echo(str(cfg.sources[_source_key(key, "sources.")]).lower())
     elif key == "license.commercial":
         click.echo(str(cfg.commercial).lower())
     elif key.startswith("license."):
-        source_name = key[len("license.") :]
-        click.echo(str(cfg.license_held(source_name)).lower())
+        click.echo(str(cfg.license_held(_source_key(key, "license."))).lower())
     elif key == "options.cadd_full":
         click.echo(str(cfg.cadd_full).lower())
     elif key.startswith("plausibility."):
@@ -186,12 +190,11 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
     bool_val = val_lower == "true"
 
     if key.startswith("sources."):
-        source_name = key[len("sources.") :]
-        cfg.sources[source_name] = bool_val
+        cfg.sources[_source_key(key, "sources.")] = bool_val
     elif key == "license.commercial":
         cfg.commercial = bool_val
     elif key.startswith("license."):
-        source_name = key[len("license.") :]
+        source_name = _source_key(key, "license.")
         if bool_val:
             from allelix.annotators import get_annotator_class
 
@@ -203,13 +206,6 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
                 )
             cfg.license_overrides[source_name] = True
         else:
-            from allelix.annotators import get_annotator_class
-
-            if (
-                get_annotator_class(source_name) is None
-                and source_name not in cfg.license_overrides
-            ):
-                console.print(f"[yellow]Warning: unknown source {source_name!r}[/yellow]")
             cfg.license_overrides.pop(source_name, None)
     elif key == "options.cadd_full":
         cfg.cadd_full = bool_val

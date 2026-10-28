@@ -109,6 +109,15 @@ outranked submissions stay out, as before.
   a capped row's repute is neutral.
 - Console, HTML and JSON each give the number of P/LP rows scored down,
   since those rows leave the default report.
+- **Amended 2026-10-25 (2.5.2): the scored-down variants are named.** Each
+  one is listed with its gene, rsID, submitter split and ClinVar's own
+  classification ("GALT rs75391579: 40 of 41 submitters Pathogenic;
+  ClinVar's classification of the variant: Conflicting classifications of
+  pathogenicity"). The list is on the console, in the HTML ClinVar notice
+  and in JSON `clinvar.scored_down_variants` (schema 11). It is taken from
+  the unfiltered findings, so it is the same at the default floor, where
+  the rows themselves are hidden, and at `--min-magnitude 0`. This is
+  reporting only: the cap and the magnitudes are unchanged.
 
 ### Vocabulary
 

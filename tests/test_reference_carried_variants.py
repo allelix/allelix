@@ -231,7 +231,7 @@ def test_factor_v_leiden_reference_call_is_stamped_in_vcf_out(
         record = next(stream)
         assert (record.ref, record.alts) == ("T", ("C",))
         assert record.samples["SAMPLE"]["GT"] == (0, 0)
-        (value,) = record.info["ALLELIX_CLINVAR"]
+        value = record.info["ALLELIX_CLINVAR_REF"]
         assert value.split("|")[1] == F5
 
 

@@ -21,7 +21,8 @@ from allelix.annotators.clinvar import clinvar_db_filename, clinvar_record_name
 from allelix.cli import main
 from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.manager import is_pathogenic_aggregate
-from allelix.databases.schema import CLINVAR_SCHEMA
+from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME, write_identity_db
+from allelix.databases.schema import CLINVAR_SCHEMA, GNOMAD_SCHEMA
 from allelix.parsers.ftdna import FTDNAParser
 from allelix.parsers.ftdna_famfinder import FTDNAFamFinderParser
 from allelix.parsers.ftdna_illumina import FTDNAIlluminaParser
@@ -129,6 +130,35 @@ def _clinvar(data: Path, rows: list[tuple[str, str, int, str, str, str]]) -> Non
                 (clinvar_record_name(build), len(rows), f"iv:{CLINVAR_INTERPRETER_VERSION}"),
             )
             conn.commit()
+
+
+def _rare_in_gnomad(data: Path, rows: tuple[tuple[str, str, int, str, str, str], ...]) -> None:
+    """A ready gnomAD giving each row's ALT a rare frequency, reached on GRCh37.
+
+    The identity table places each row at the same position on both builds,
+    same strand, so the GRCh37 key translates to the gnomAD key.
+    """
+    write_identity_db(
+        [(rsid, chrom, pos, ref, alt, pos, ref, alt, 0) for rsid, chrom, pos, ref, alt, _ in rows],
+        data / RSID_IDENTITY_DB_FILENAME,
+        version="dbSNP test",
+        source_url="test://identity",
+        downloaded_at="2001-01-01T00:00:00Z",
+    )
+    with contextlib.closing(sqlite3.connect(data / "gnomad.sqlite")) as conn:
+        conn.executescript(GNOMAD_SCHEMA)
+        conn.executemany(
+            "INSERT INTO gnomad_frequencies (chrom, pos, ref, alt, rsid, af) "
+            "VALUES (?, ?, ?, ?, ?, 0.000001)",
+            [(chrom, pos, ref, alt, rsid) for rsid, chrom, pos, ref, alt, _ in rows],
+        )
+        conn.execute(
+            "INSERT INTO database_versions (name, source_url, version, downloaded_at, "
+            "record_count, local_version_tag) VALUES ('gnomad', 'test://', '1', '2001-01-01', ?, "
+            "'sv:1')",
+            (len(rows),),
+        )
+        conn.commit()
 
 
 def _array(path: Path, calls: list[tuple[str, str, int, str]]) -> Path:
@@ -241,6 +271,7 @@ _HOM_ROWS = (
 class TestMultipleHomozygousWarning:
     def test_three_rare_homozygous_plp_calls_warn(self, tmp_path: Path, data: Path) -> None:
         _clinvar(data, _HOM_ROWS)
+        _rare_in_gnomad(data, _HOM_ROWS)
         calls = [(rsid, chrom, pos, "AA") for rsid, chrom, pos, *_ in _HOM_ROWS]
         payload = _report(tmp_path, data, _array(tmp_path / "a.txt", calls))
         warnings = [
@@ -252,6 +283,7 @@ class TestMultipleHomozygousWarning:
 
     def test_the_console_prints_it(self, tmp_path: Path, data: Path) -> None:
         _clinvar(data, _HOM_ROWS)
+        _rare_in_gnomad(data, _HOM_ROWS)
         calls = [(rsid, chrom, pos, "AA") for rsid, chrom, pos, *_ in _HOM_ROWS]
         array = _array(tmp_path / "a.txt", calls)
         result = CliRunner(env={"COLUMNS": "300"}).invoke(
@@ -275,12 +307,20 @@ class TestMultipleHomozygousWarning:
 
     def test_the_display_filter_cannot_hide_it(self, tmp_path: Path, data: Path) -> None:
         _clinvar(data, _HOM_ROWS)
+        _rare_in_gnomad(data, _HOM_ROWS)
         calls = [(rsid, chrom, pos, "AA") for rsid, chrom, pos, *_ in _HOM_ROWS]
         payload = _report(
             tmp_path, data, _array(tmp_path / "a.txt", calls), "--min-magnitude", "10"
         )
         assert payload["annotations"] == []
         assert [w["count"] for w in payload["report_warnings"]] == [3]
+
+    def test_missing_frequencies_do_not_warn(self, tmp_path: Path, data: Path) -> None:
+        """Without gnomAD no call was assessed, so none counts as rare (2.5.2)."""
+        _clinvar(data, _HOM_ROWS)
+        calls = [(rsid, chrom, pos, "AA") for rsid, chrom, pos, *_ in _HOM_ROWS]
+        payload = _report(tmp_path, data, _array(tmp_path / "a.txt", calls))
+        assert payload["report_warnings"] == []
 
     def test_two_do_not_warn(self, tmp_path: Path, data: Path) -> None:
         _clinvar(data, _HOM_ROWS)

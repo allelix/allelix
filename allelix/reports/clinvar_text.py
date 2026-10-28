@@ -108,6 +108,56 @@ def scored_down_count(annotations: list[Annotation]) -> int:
     )
 
 
+def scored_down_variants(annotations: list[Annotation]) -> list[Annotation]:
+    """One scored-down P/LP ClinVar row per variant and classification, in report order.
+
+    The rows ``scored_down_count`` counts, taken from the unfiltered
+    findings so a row below the display floor is still named.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    out: list[Annotation] = []
+    for a in annotations:
+        if not (
+            a.source == "clinvar"
+            and a.aggregate_capped
+            and a.significance in PATHOGENIC_SIGNIFICANCES
+        ):
+            continue
+        key = (a.rsid, a.alt, a.significance)
+        if key not in seen:
+            seen.add(key)
+            out.append(a)
+    return out
+
+
+def scored_down_variant_text(ann: Annotation) -> str:
+    """``GALT rs75391579: 40 of 41 submitters Pathogenic; ClinVar: Conflicting ...``."""
+    name = f"{ann.gene} {ann.rsid}" if ann.gene else ann.rsid
+    if ann.submitters_total is not None and ann.submitters_same is not None:
+        split = (
+            f"{ann.submitters_same} of {ann.submitters_total} submitters "
+            f"{classification_label(ann)}"
+        )
+    else:
+        split = classification_label(ann)
+    aggregate = ann.clinvar_aggregate or "not given"
+    return f"{name}: {split}; ClinVar's classification of the variant: {aggregate}"
+
+
+def scored_down_variant_dict(ann: Annotation) -> dict:
+    """A scored-down variant for the JSON report's ``clinvar.scored_down_variants``."""
+    return {
+        "rsid": ann.rsid,
+        "gene": ann.gene,
+        "alt": ann.alt,
+        "classification": classification_label(ann),
+        "submitters_same": ann.submitters_same,
+        "submitters_total": ann.submitters_total,
+        "clinvar_aggregate": ann.clinvar_aggregate,
+        "magnitude": ann.magnitude,
+    }
+
+
 def scored_down_line(count: int) -> str:
     """The disclosure sentence for ``count`` scored-down rows, or ""."""
     if count == 0:

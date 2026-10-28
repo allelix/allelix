@@ -81,3 +81,13 @@ ADR-0049 (`report_warnings`).
   declared sex: a separate decision (ADR-0041), and not in 2.5.
 - `stats` het/hom counts and the PLINK export are unchanged for haploid
   calls.
+
+## Amendment 2026-10-25 (2.5.2): only assessed calls count as rare
+
+`multiple_homozygous_plp` counts a homozygous P/LP call when gnomAD assessed
+it as rare: either a frequency below the threshold, or an allele looked up in
+gnomAD and absent (`no_frequency`). Before, any missing frequency counted.
+A call gnomAD was not asked about no longer counts: gnomAD not run, no
+identity table, or a GRCh37 translation that abstained (ADR-0040's 2.5.2
+amendment). On GRCh37 input such calls are common, and nothing says they are
+rare. The plausibility reasons are unchanged.

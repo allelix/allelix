@@ -6,6 +6,8 @@
 #   gene:     gene symbol
 #   cluster:  optional grouping (e.g., "APOE" for the two-SNP APOE haplotype)
 #   note:     human-readable warning text for no-call reports
+#   name:     optional common name of the variant (e.g., "F508del"), used when
+#             a call at the site could not be checked
 #
 # To add a SNP: append an entry following this format. Entries with the
 # same cluster are grouped in warnings (e.g., "APOE genotype cannot be
@@ -28,6 +30,7 @@
 - rsid: rs80357906
   gene: BRCA1
   note: Hereditary breast/ovarian cancer marker
+  name: 5382insC
 
 - rsid: rs1801133
   gene: MTHFR
@@ -88,6 +91,7 @@
 - rsid: rs113993960
   gene: CFTR
   note: F508del — most common CF allele; carrier status for reproductive planning
+  name: F508del
 
 - rsid: rs334
   gene: HBB
@@ -96,6 +100,7 @@
 - rsid: rs80359550
   gene: BRCA2
   note: BRCA2 6174delT — most common Ashkenazi founder mutation (BRCA1 covered by rs80357906)
+  name: 6174delT
 
 - rsid: rs9923231
   gene: VKORC1
@@ -116,6 +121,7 @@
 - rsid: rs776746
   gene: CYP3A5
   note: CYP3A5*3 — tacrolimus dosing (CPIC Level A)
+  name: CYP3A5*3
 
 - rsid: rs1142345
   gene: TPMT

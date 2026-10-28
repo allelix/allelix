@@ -101,6 +101,10 @@ class Variant:
     # Complete literal input ALT field, independent of GT and quality masking.
     # Internal comparison identity; existing model equality remains unchanged.
     input_alt: str | None = field(default=None, compare=False)
+    # The VCF data record this call was read from, numbered from 0 in file
+    # order (``parsers.vcf.is_data_line``). The annotated-VCF writer stamps
+    # only the records a call was read from (2.5.2). None for other inputs.
+    record_index: int | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Normalize allele case at construction (ADR-0035).

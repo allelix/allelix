@@ -11,7 +11,7 @@ git clone https://github.com/allelix/allelix.git
 cd allelix
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,vcf-index]"
 ```
 
 Verify Python 3.11+:
@@ -21,7 +21,9 @@ python --version
 ```
 
 After any version change (pull, checkout, version bump) reinstall with
-`pip install -e ".[dev]"`. `allelix --version` must report the version in
+`pip install -e ".[dev,vcf-index]"`. The `vcf-index` extra installs pysam,
+which the indexed-VCF tests need; without it they skip, and §2 allows no
+skips. `allelix --version` must report the version in
 this checkout's `pyproject.toml`.
 
 ## 2. Unit test suite (synthetic + auto-fetched real data)
@@ -98,6 +100,7 @@ Test-count floor by release:
 - v2.4.1: 2,371 collected
 - v2.5.0: at least 3,896 collected
 - v2.5.1: at least 5,255 collected
+- v2.5.2: at least 6,946 collected
 
 Check lint:
 
@@ -139,8 +142,9 @@ Verify status:
 allelix db status
 ```
 
-**Expected:** All annotators show "yes" in the Ready column with
-version strings and record counts. SNPedia should show ~104K records.
+**Expected:** Every source this step installed shows "yes" in the Ready
+column with version strings and record counts. CADD is listed too and
+shows "no" until step 7 installs it. SNPedia should show ~104K records.
 
 The real `db update` above is the fresh-cache release gate for both GWAS
 Catalog and SNPedia. Also run their isolated loader/parser regression
@@ -302,6 +306,11 @@ All transcoded from `real/23andme/user1190_v5.txt` using the project's transcode
 ## 5. Analyze real genotype files
 
 Run analysis on each format against the live-downloaded databases.
+Allelix does not create the output directory, so create it first:
+
+```bash
+mkdir -p /tmp/allelix-review
+```
 
 ### 5a. 23andMe
 
@@ -314,8 +323,9 @@ array contains ClinVar, ClinPGx, GWAS, and SNPedia findings. gnomAD and
 AlphaMissense are GRCh38 datasets; on this GRCh37 input they are reached
 through the rsID identity table, which translates each allele to its
 GRCh38 coordinates, so they contribute values and provenance wherever
-the table can translate (palindromic sites and alleles that became the
-GRCh38 reference abstain). CADD is not enabled until step 7. Check that
+the table can translate (rows the table flags palindromic whose reference
+differs between the builds, and alleles that became the GRCh38 reference,
+abstain). CADD is not enabled until step 7. Check that
 the annotation count is in the hundreds (varies by database version).
 
 ### 5b. MHG / Tempus
@@ -786,7 +796,8 @@ annotation's alt or, for an alt-less row (a GWAS row with no reported
 risk allele), the single non-reference allele the user carries. GRCh37
 keys are translated through the identity table by locus and alleles
 (at strand-inverted sites the GRCh38 allele is the complement, an
-explicit translation; palindromic sites never translate). An allele
+explicit translation; a row the table flags palindromic translates only
+where its GRCh37 and GRCh38 reference bases are equal). An allele
 equal to the build's reference base is checked the same way only where
 that reference carries a ClinVar variant allele (a single-base REF == ALT
 row in a current ClinVar cache, as Factor V Leiden on GRCh37); anywhere
@@ -898,42 +909,48 @@ placeholder set}", point it at the same caches this gate scans;
 this §7b gate then graduates from "denylist confirmation" to a
 spot-check of what the drift test enforces structurally.
 
-### 7d. Strand-aware carrier matching (ADR-0035)
+### 7d. ClinVar matching on the forward strand (ADR-0035)
 
-v2.1.0 introduces strand-aware carrier matching: complement-strand
-reads of the same biology now produce identical annotation sets to
-forward-strand reads, while preserving the v2.0.1 wrong-allele
-multi-allelic safety invariant via the `Variant.ref` orientation
-guard.
+ClinVar matches a call only when the call's REF equals the row's REF at
+the same forward-strand position, and the user carries the row's ALT
+(ADR-0035, amended in 2.5). A complemented reading of the same site
+(coding-strand C/T with REF C where ClinVar has G>A) does not match: a VCF
+is forward strand by specification, and an array call's REF comes from the
+rsID identity table at ClinVar's own locus, so a complemented REF means the
+input is mis-coordinated. A VCF record whose one-base REF is none of
+ClinVar's one-base REFs at the position is counted in
+`input.vcf_quality.clinvar_ref_mismatches`.
 
-The reference test case for strand-aware matching (rs5742904 APOB forward C/C
-vs coding G/G) isn't in the bundled test fixtures. The unit-test
-suite pins the contract on rs1801133 (mock ClinVar: REF=G ALT=A
-Pathogenic MTHFR) as the protocol-level substitute — same shape,
-exercised against a known fixture. Re-run the dedicated test class
-as a fast in-protocol sanity check:
+This is separate from parser normalization: a reader that knows a row's
+strand (deCODEme's minus-strand rows) complements the alleles to the plus
+strand while reading the file, so those calls reach ClinVar on the forward
+strand already.
+
+The unit-test suite pins the contract on rs1801133 (mock ClinVar: REF=G
+ALT=A Pathogenic MTHFR). Re-run the test class as a fast in-protocol
+sanity check:
 
 ```bash
 .venv/bin/python -m pytest \
-  tests/annotators/test_clinvar.py::TestStrandAwareCarrierMatch -v
+  tests/annotators/test_clinvar.py::TestStrandAwareCarrierMatch -v --no-cov
 ```
 
 **Expected:** three tests pass:
 
-- `test_hom_ref_both_strands_no_annotation` — hom-ref forward G/G
-  and coding C/C both produce zero ClinVar annotations (the reference
-  test case's shape).
-- `test_het_carrier_both_strands_same_annotation_set` — het carrier
-  forward G/A and coding-strand C/T produce the **same single**
-  ClinVar annotation (significance / condition / gene match across
-  the two reads).
-- `test_variant_ref_disagreement_abstains` — when
-  `Variant.ref` disagrees with both the source ref and its
-  complement, strand-flip abstains and direct-match-only applies.
+- `test_hom_ref_both_strands_no_annotation`: hom-ref forward G/G and
+  coding C/C both produce zero ClinVar annotations (the user does not
+  carry the ALT).
+- `test_complemented_ref_does_not_match`: the het carrier forward G/A
+  (REF G) produces one ClinVar annotation; the coding-strand reading C/T
+  (REF C) produces none, and as a VCF record it adds one to
+  `ref_mismatches`.
+- `test_variant_ref_disagreement_abstains`: a `Variant.ref` that is
+  neither the row's REF nor its complement produces no annotation.
 
 For real-data validation against the Section 19 battery, see
-`tests/utils/test_allele.py::TestStrandAwareCarrierMatch` (helper-
-level, covers palindromic / orientation / multi-allelic branches)
+`tests/utils/test_allele.py::TestStrandAwareCarrierMatch` (the
+helper ClinPGx still uses; covers palindromic / orientation /
+multi-allelic branches)
 and the wrong-allele safety invariant check at the end of
 Section 19 — v2.1.0 produces a larger denominator than v2.0.2
 because per-Annotation alt threading (ADR-0035) made more rows
@@ -1012,7 +1029,7 @@ print(f\"ClinPGx attribution URL: {[x.get('source_url') for x in clinpgx]}\")
 "
 ```
 
-**Expected:** Schema version 10 for 2.5.1, which is also the
+**Expected:** Schema version 11 for 2.5.2, which is also the
 `SCHEMA_VERSION` constant in `allelix/reports/json_report.py` (ADR-0033
 governs schema bump policy). This is the
 GRCh38 `enrichment_check.json` produced in §7: multiple sources are
@@ -1169,7 +1186,8 @@ allelix config set options.cadd_full true
 allelix analyze test_data/real/23andme/user1190_v5.txt --no-update 2>&1 | grep -i "cadd\|grch38"
 # Expected: CADD scores on this GRCh37 input, looked up in the full file at the
 # GRCh38 coordinates the rsID identity table translates each allele to. No build
-# warning; untranslatable alleles (palindromic sites) simply get no score.
+# warning; untranslatable alleles (a row flagged palindromic whose REF differs
+# between the builds, or an allele that is the GRCh38 reference) get no score.
 allelix config set options.cadd_full "$prev_cadd_full"
 echo "options.cadd_full restored to $(allelix config get options.cadd_full)"
 ```
@@ -1217,6 +1235,12 @@ rm -rf "$SCRATCH_DB"
 ```
 
 **Expected:** All annotators re-download and show green checkmarks.
+One exception: ClinVar never refreshes from a download it cannot verify,
+even with `--force` (ADR-0053). If NCBI's checksum for `variant_summary`
+or `submission_summary` cannot be fetched, ClinVar reports "not refreshed"
+or "refresh aborted", keeps its existing caches, and the command exits 1
+listing `clinvar` as failed. That is a network failure, not a pass: rerun
+when NCBI answers.
 Note: `--force` semantics differ by tier. Server-driven sources
 override a "signal matches" skip; code-driven sources have no
 signal-match path to override — `--force` is the only way to
@@ -1230,7 +1254,7 @@ first run as of v2.0.2 — no manual download step) and verify that
 the magnitude scoring formula produces bounded output.
 
 ```bash
-python -m pytest tests/test_end_to_end.py -k "TestRealDataGwasSanity" -v
+python -m pytest tests/test_end_to_end.py -k "TestRealDataGwasSanity" -v --no-cov
 ```
 
 **Expected:** 2 tests **pass** (not skip). Default floor (9.0) keeps
@@ -1713,10 +1737,15 @@ See §7 for the post-update real-cache ship-gate (per-SCV row shape
 ## 20. Annotated VCF output (v2.3.0+; ADR-0036)
 
 Verifies that `allelix analyze --vcf-out` produces a spec-conformant
-annotated VCF: preserves every existing input header line verbatim,
+annotated VCF: preserves every existing input header line verbatim
+except Allelix's own (an input Allelix already annotated has its
+`##ALLELIX_...` lines and `##INFO=<ID=ALLELIX_...` declarations replaced
+by the current run's, ADR-0059),
 synthesizes declarations for emitted contigs that the input omitted,
 injects the provenance / attribution / `##INFO` block immediately before `#CHROM`,
-stamps INFO fields with per-allele `Number=A` semantics, and stamps
+stamps the per-source INFO fields with per-allele `Number=A` semantics
+(the record-level `ALLELIX_CLINVAR_REF`, `ALLELIX_ORIGINAL_ID` and
+`ALLELIX_FILTER` are `Number=1`), and stamps
 recovered rsIDs into the ID column with the original value preserved
 under `ALLELIX_ORIGINAL_ID`.
 
@@ -1742,14 +1771,18 @@ Verify:
 - [ ] Terminal prints `Wrote annotated VCF with N stamped row(s) to $VCF_OUT/mock_annotated.vcf`
 - [ ] `head -30 $VCF_OUT/mock_annotated.vcf` shows:
   - [ ] `##fileformat=VCFv4.2` on line 1 (preserved from input)
-  - [ ] Every input `##` line preserved verbatim before `#CHROM`
+  - [ ] Every input `##` line preserved verbatim before `#CHROM`, except
+    `##ALLELIX_...` lines and `##INFO=<ID=ALLELIX_...` declarations, which
+    are replaced (the mock fixture has none)
   - [ ] Every CHROM value emitted by the fixture has a corresponding
     `##contig=<ID=...>` declaration; declarations missing from the input
     are synthesized without renaming bare or `chr`-prefixed contigs
   - [ ] Injected `##INFO=<ID=ALLELIX_*,Number=A,Type=...,Description="...">`
-    declarations for every source that produced annotations
+    declarations for every source that produced annotations; the
+    record-level `ALLELIX_CLINVAR_REF`, `ALLELIX_ORIGINAL_ID` and
+    `ALLELIX_FILTER`, when present, are `Number=1`
   - [ ] Provenance block: `##ALLELIX_Version=<current version>`,
-    `##ALLELIX_VCF_SchemaVersion=0.5.0`,
+    `##ALLELIX_VCF_SchemaVersion=0.6.0`,
     `##ALLELIX_SkippedSources=` (each skipped source and its reason, or `none`),
     `##ALLELIX_License=AGPL-3.0-or-later`,
     `##ALLELIX_RunDate=<ISO 8601 UTC>`,
@@ -1805,8 +1838,18 @@ PY
   on the row returns the comma-joined value verbatim (bcftools
   honors `Number=A` when the header declares it)
 
-Rows where NO source annotates either ALT will have no `ALLELIX_*`
-fields at all — that's expected passthrough, not a failure.
+Rows where no source annotates any ALT get no per-allele `ALLELIX_*`
+fields, which is expected passthrough, not a failure. Two cases still
+add fields to such a row:
+
+- A record whose call carries the reference allele (`0/1`, `0/.`, `0/0`,
+  haploid `0`, or a single-position record with ALT `.`) at a site where
+  the reference itself carries a ClinVar allele gets that finding in
+  `ALLELIX_CLINVAR_REF` (`Number=1`, VCF schema 0.6.0, ADR-0059), never in
+  an ALT slot. gVCF reference blocks (`END=`) are never stamped; their
+  findings stay in the JSON and HTML reports.
+- A row whose rsID was recovered gets the new ID in the ID column and
+  `ALLELIX_ORIGINAL_ID`, whatever its annotations (§20.4).
 
 ### 20.3: gVCF reference blocks and `<NON_REF>` pass through
 
@@ -1877,16 +1920,25 @@ Verify:
   the writer stamped verbatim, e.g.
   ``1  11796321  rs1801133  clinvar_drug_response|rs1801133|MTHFR``
 
-Skip if bcftools unavailable locally; CI runs it on every merge.
+Skip if bcftools is unavailable locally. Hosted CI runs it on pushes
+to the public `main`, on pull requests into it and on release tags, not
+on development merges; there, the local full suite with bcftools
+installed (§2) is the check.
 
-### 20.7: Reproducibility — headers alone should regenerate the run
+### 20.7: Provenance headers
+
+The `##ALLELIX_` lines record what produced the file: versions, build,
+date, skipped sources and attribution. They are not enough to repeat the
+run: they do not record the sample, filters, panel or quality options.
+To reproduce a run, keep the exact command line and configuration, the
+input file and the same database caches.
 
     grep '^##ALLELIX_' $VCF_OUT/mock_annotated.vcf
 
 Verify:
 
 - [ ] `##ALLELIX_Version` — Allelix version string
-- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version (0.5.0)
+- [ ] `##ALLELIX_VCF_SchemaVersion` — the output-contract version (0.6.0)
 - [ ] `##ALLELIX_SkippedSources` — each skipped source and its reason, or `none`
 - [ ] One `##ALLELIX_Database=<Name=X,Version=Y>` per annotator used
 - [ ] `##ALLELIX_Build=<ID=...,Source=...>`: `ID` matches `--build` and
@@ -1962,7 +2014,7 @@ All of the following must be true:
       started from the empty RC data directory, both isolated loader/parser
       suites pass, and SNPedia parser format 7 stores orientation
 - [ ] `db status` shows all annotators ready with version and record count; ClinPGx row labeled "ClinPGx" (not "PharmGKB")
-- [ ] All 9 parser formats produce successful analysis (23andMe, AncestryDNA, FTDNA CSV, FTDNA FamFinder, FTDNA Illumina raw, MyHeritage, MHG / Tempus, Living DNA, VCF/gVCF)
+- [ ] All 11 parser formats produce successful analysis (23andMe, Genes for Good, AncestryDNA, FTDNA CSV, FTDNA FamFinder, FTDNA Illumina raw, MyHeritage, MHG / Tempus, Living DNA, deCODEme, VCF/gVCF)
 - [ ] Cross-parser identity: every user1190 representation exits 0 and all six have the same `(source, rsid, significance)` rows, each the same number of times (6 array-based formats; VCF doesn't have a user1190 representation)
 - [ ] VCF flagship feature: rsID-less VCF produces non-zero annotations after build-scoped coordinate resolution (step 5j); multi-sample VCF requires `--sample` (step 5i)
 - [ ] Build decision (step 5k): a VCF with no evidence and the mixed-contig fixture stop and ask for `--build`; contig lengths decide whatever the contig names; full-size relabelled and unlabelled chips resolve from positions with the reference file's annotations; 4/5 is confident while 3/4 and 2/2 remain tentative
@@ -1970,8 +2022,8 @@ All of the following must be true:
 - [ ] **ClinVar significance-sentinel ship-gate (§7b)**: post-`db update` sentinel scan returns 0 rows on both clinvar.GRCh37.sqlite and clinvar.GRCh38.sqlite — `LOWER(clinical_significance) IN ('-', '', 'not specified', 'no classification provided', 'other', 'association', 'association not found')` (case-insensitive matches loader's `_normalize_clnsig`) — and rs137854557 carries a real classification. Set MUST match `_CLINVAR_PLACEHOLDER_CLNSIGS` in `databases/manager.py` — never broaden one without broadening the other (`not provided` is intentionally excluded; it maps to 2.0 in `_CLNSIG_MAGNITUDE`, safe below the floor). v2.2.1 added the three non-classification curatorial terms. Denylist form is reactive; durable allowlist form lives in the CLNSIG drift test (`test_clinvar_clnsig_drift.py`)
 - [ ] **Terminal report**: bare-min columns only (`rsID | Gene? | Source | Significance | Mag | GT | Condition?`); Review Status / Zygosity / Freq / AM / CADD intentionally absent (still present in HTML/JSON)
 - [ ] HTML report renders correctly in a browser; "Annotators:" subtitle uses display names (ClinPGx, not pharmgkb); enrichment columns (Review Status, Zygosity, Freq, AM, CADD) are present, and populated on GRCh37 input wherever the rsID identity table translates the allele
-- [ ] JSON report has schema version 10, with `input.build_source` and `input.build_evidence`; `sources` lists all eight registered sources with a state, and `report_warnings` is empty when ClinVar ran; the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used, as `{requested, counts, variants}` with the four counts (`annotated`, `typed_no_annotation`, `no_call`, `not_on_chip`) summing to `requested`; array reports have `input.array_quality` and, when ClinVar ran, `input.probe_classes` (both null for VCF input); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
-- [ ] **Strand-aware carrier matching (ADR-0035)**: forward and reverse-strand reads of the same biological het carrier produce identical ClinVar annotation sets; hom-ref on either strand produces zero annotations; multi-allelic safety (variant.ref disagreement) abstains rather than guesses (sanity check at step 7d below)
+- [ ] JSON report has schema version 11, with `input.build_source` and `input.build_evidence`; `sources` lists all eight registered sources with a state, and `report_warnings` has no `clinvar_skipped` entry when ClinVar ran (other entries, such as `input_trailing_bytes` or `forced_format`, are checked on their own merits, §5n); the GRCh38 `enrichment_check.json` and the paired GRCh37 consumer report both have non-zero gnomAD + AM + CADD enrichment with provenance (GRCh37 through the rsID identity table); structured GWAS fields are populated (`annotation.trait` non-empty on GWAS rows, `p_value` parses as float when published, `phecode` populated when the upstream trait carried one); `panel_coverage` appears when `--filter-file` is used, as `{requested, counts, variants}` with the four counts (`annotated`, `typed_no_annotation`, `no_call`, `not_on_chip`) summing to `requested`; array reports have `input.array_quality` and, when ClinVar ran, `input.probe_classes` (both null for VCF input); `license_attributions[].source` shows "ClinPGx" with `source_url` `https://www.clinpgx.org`
+- [ ] **ClinVar forward-strand matching (ADR-0035)**: a call matches only when its REF equals ClinVar's at the same forward position and it carries the ALT; a complemented reading of the same het carrier gets no ClinVar annotation (counted as a REF mismatch on VCF input); on the step 7d fixture, whose site's reference does not carry a ClinVar allele, hom-ref on either strand produces zero annotations (at a reference-carried site such as F5 rs6025 on GRCh37, a `0/0` call is assessed for the allele the reference carries, docs/formats.md); a `variant.ref` that fits neither strand abstains (sanity check at step 7d)
 - [ ] Config system gates SNPedia on `license.commercial`: the commercial-mode report has no SNPedia provenance or rows, §5a's personal-mode report has SNPedia, and `license.commercial` is back to its previous value
 - [ ] GWAS effect-type gate: only positively identified bare odds ratios
       receive a modifier; beta, unit-bearing, missing, ambiguous, and

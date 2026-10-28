@@ -13,6 +13,7 @@ from allelix.annotators.clinvar import CLINVAR_SUPPORTED_BUILDS, ClinVarAnnotato
 from allelix.annotators.gnomad import GnomadAnnotator
 from allelix.annotators.gwas import GWASCatalogAnnotator
 from allelix.annotators.pharmgkb import PharmGKBAnnotator
+from allelix.annotators.reference_fallback import ReferenceCarriedFallback
 from allelix.annotators.rsid_identity import RsidIdentityAnnotator
 from allelix.annotators.snpedia import SNPediaAnnotator
 
@@ -55,11 +56,17 @@ def get_annotators(
         include_benign=include_benign,
         other_build_refs=rsid_identity.normal_alleles_on_other_build,
     )
+    gnomad = GnomadAnnotator(data_dir)
+    # ClinVar's REF where its cache for the call's build is readable; at a
+    # reference-carried site without it, the other build's ClinVar or
+    # gnomAD's major allele, else nothing (2.5.2).
+    references = ReferenceCarriedFallback(clinvar, rsid_identity, gnomad)
     pharmgkb = PharmGKBAnnotator(
         data_dir,
-        clinvar_ref_provider=clinvar.reference_at,
+        clinvar_ref_provider=references.reference_at,
         palindromic_provider=rsid_identity.palindromic_rsids,
-        normal_allele_provider=clinvar.normal_allele_for,
+        normal_allele_provider=references.normal_allele_for,
+        reference_prefetch=references.prefetch,
     )
     gwas = GWASCatalogAnnotator(
         data_dir,
@@ -68,11 +75,11 @@ def get_annotators(
     )
     snpedia = SNPediaAnnotator(
         data_dir,
-        clinvar_ref_provider=clinvar.reference_at,
-        normal_allele_provider=clinvar.normal_allele_for,
+        clinvar_ref_provider=references.reference_at,
+        normal_allele_provider=references.normal_allele_for,
         forward_site_provider=rsid_identity.forward_sites,
+        reference_prefetch=references.prefetch,
     )
-    gnomad = GnomadAnnotator(data_dir)
     alphamissense = AlphaMissenseAnnotator(data_dir)
     cadd = CaddAnnotator(data_dir, full_mode=cadd_full)
     return [clinvar, pharmgkb, gwas, snpedia, gnomad, alphamissense, cadd, rsid_identity]

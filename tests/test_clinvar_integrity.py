@@ -96,10 +96,15 @@ def _old_caches(data: Path, counts: dict[str, int], *, legacy=False) -> dict[str
     return {build: (data / clinvar.clinvar_db_filename(build)).read_bytes() for build in counts}
 
 
+def _cache_entries(directory: Path) -> list[Path]:
+    """The data directory's entries other than the ClinVar build log (2.5.2)."""
+    return [p for p in directory.iterdir() if p.name != manager.CLINVAR_BUILD_LOG]
+
+
 def _assert_old(data: Path, snapshots: dict[str, bytes]) -> None:
     for build, payload in snapshots.items():
         assert (data / clinvar.clinvar_db_filename(build)).read_bytes() == payload
-    assert sorted(p.name for p in data.iterdir() if p.name != "config.toml") == sorted(
+    assert sorted(p.name for p in _cache_entries(data) if p.name != "config.toml") == sorted(
         clinvar.clinvar_db_filename(build) for build in snapshots
     )
 
@@ -112,7 +117,7 @@ def test_selected_builds_publish_complete_metadata_once(tmp_path, monkeypatch, b
         assert ann.is_ready()
         assert ann.cached_remote_signal() == f"md5:{_digest(payloads[SS])}"
     assert sorted(downloads) == sorted([VS, SS])
-    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+    assert sorted(p.name for p in _cache_entries(tmp_path)) == sorted(
         clinvar.clinvar_db_filename(build) for build in builds
     )
     for build in builds:
@@ -191,7 +196,7 @@ def test_required_sidecar_fails_before_download(tmp_path, monkeypatch, body, sou
     ):
         ann.setup()
     assert downloads == []
-    assert list(tmp_path.iterdir()) == []
+    assert _cache_entries(tmp_path) == []
 
 
 @pytest.mark.parametrize("source", [VS, SS])
@@ -243,7 +248,7 @@ def test_first_cache_fixed_floor_boundary(tmp_path, monkeypatch, build, count, a
         else:
             with pytest.raises(manager.ClinVarFormatError, match=rf"{build}.*4.*5"):
                 ann.setup()
-            assert list(tmp_path.iterdir()) == []
+            assert _cache_entries(tmp_path) == []
 
 
 @pytest.mark.parametrize("build", BUILDS)
@@ -255,7 +260,7 @@ def test_production_setup_enforces_default_five_million_floor(tmp_path, monkeypa
         pytest.raises(manager.ClinVarFormatError, match=rf"{build}.*1.*5,000,000"),
     ):
         ann.setup()
-    assert list(tmp_path.iterdir()) == []
+    assert _cache_entries(tmp_path) == []
 
 
 @pytest.mark.parametrize("build", BUILDS)
@@ -393,7 +398,7 @@ def test_publication_failure_reports_actual_partial_result(tmp_path, monkeypatch
         assert info is not None and info["record_count"] == 3
         assert info["remote_signal"] == f"md5:{_digest(payloads[SS])}"
         assert first.read_bytes() != snapshots["GRCh37"]
-        assert sorted(p.name for p in data.iterdir()) == sorted(
+        assert sorted(p.name for p in _cache_entries(data)) == sorted(
             clinvar.clinvar_db_filename(b) for b in BUILDS
         )
 

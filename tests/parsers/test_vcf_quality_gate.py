@@ -574,9 +574,12 @@ def _hv_data_dir(tmp_path: Path) -> Path:
 
     data = tmp_path / "hvdata"
     data.mkdir(exist_ok=True)
+    # Records count for an rsID only with its placement's REF (2.5.2); the
+    # explicit records' sites carry their real REF, the block sites none.
+    refs = {6000: "C", 7000: "G", 8000: "A", 9000: "C"}
     write_identity_db(
         [
-            (rsid, "22", pos - 50_000, "N", "N", pos, "N", "N", 0)
+            (rsid, "22", pos - 50_000, "N", "N", pos, refs.get(pos, "N"), "N", 0)
             for rsid, pos in _HV_SITES.items()
         ],
         data / RSID_IDENTITY_DB_FILENAME,

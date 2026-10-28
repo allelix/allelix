@@ -236,7 +236,7 @@ def test_analysis_failure_boundaries_close_handles(
         monkeypatch.setattr(parser, "parse", parse)
     elif phase == "placements":
         kwargs["high_value_rsids"] = {"rs1801133"}
-        _after(monkeypatch, by_name["rsid_identity"], "loci_of_rsids", error)
+        _after(monkeypatch, by_name["rsid_identity"], "placements", error)
     elif phase == "late_build":
         _after(monkeypatch, pipeline, "check_late_seeds", error)
     elif phase in {"plausibility", "scoring"}:
@@ -339,7 +339,7 @@ def test_resolved_stream_placement_query_failure_is_owned(
 ):
     from allelix.cli._helpers import _resolved_variants
 
-    _after(monkeypatch, RsidIdentityAnnotator, "loci_of_rsids", RuntimeError("placement failure"))
+    _after(monkeypatch, RsidIdentityAnnotator, "placements", RuntimeError("placement failure"))
     with (
         pytest.raises(RuntimeError, match="placement failure"),
         _resolved_variants(
@@ -360,14 +360,20 @@ def test_panel_placement_failure_clears_registered_watches(
     registry = get_annotators(enriched_data)
     identity = registry[-1]
     parser = VcfParser()
-    original = identity.forward_sites
+    original = identity.placements
+    calls = []
 
     def fail(*args):
+        # The high-value watch queries placements first; the panel's
+        # attribution query, after the watch is registered, fails.
+        calls.append(args)
+        result = original(*args)
+        if len(calls) == 1:
+            return result
         assert parser._watch_rsids == frozenset({"rs1801133"})
-        original(*args)
         raise RuntimeError("panel placement failed after registration")
 
-    monkeypatch.setattr(identity, "forward_sites", fail)
+    monkeypatch.setattr(identity, "placements", fail)
     with pytest.raises(RuntimeError, match="panel placement failed after registration"):
         _direct(
             _vcf(tmp_path),

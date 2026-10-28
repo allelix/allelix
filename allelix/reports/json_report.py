@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "10",
+      "schema_version": "11",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -59,6 +59,7 @@ from allelix import __version__
 from allelix.models import annotation_to_public_dict
 from allelix.reports import REGULATORY_NOTICE, atomic_write_text
 from allelix.reports._pipeline import rollup_gwas_duplicates
+from allelix.reports.clinvar_text import scored_down_variant_dict
 from allelix.utils.allele import STRAND_ABSTAIN_REASONS
 
 if TYPE_CHECKING:
@@ -70,7 +71,19 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "10"
+SCHEMA_VERSION = "11"
+# v10 -> v11 (2.5.2): each ``diff.changed`` entry adds ``below_display_floor``,
+# true when the finding is still there but scored below the display floor (so
+# it is changed, not removed, and not in ``annotations``). ``--diff`` pairs
+# findings by source, variant label, condition and allele.
+# Also in v11: ``clinvar.scored_down_variants`` names each variant the
+# Conflicting/Benign cap scored down (``{rsid, gene, alt, classification,
+# submitters_same, submitters_total, clinvar_aggregate, magnitude}``), from the
+# unfiltered findings. ``high_value_unchecked`` lists the high-value and
+# ClinVar P/LP sites that could not be checked (``{rsid, gene, name, reason,
+# call, message}``; ``reason`` is ``di_call`` or
+# ``reference_carried_not_in_file``), and ``report_warnings`` carries
+# ``di_calls_not_checked`` naming the D/I calls among them.
 # v9 -> v10 (2.5.1): ``input.vcf_quality`` adds the VCF genotype counts and the
 # reference-source/ploidy conflict counts; each panel variant adds nullable
 # ``reason`` for an explicit unusable VCF record (ADR-0055). Arrays emit null;
@@ -91,7 +104,10 @@ SCHEMA_VERSION = "10"
 # display string), ``plausibility`` is ``not_assessed`` where it was empty,
 # and ``plausibility_reason`` says why. ``report_warnings`` may also carry
 # ``multiple_homozygous_plp``, and ``forced_format`` when ``--format`` named a
-# reader that does not recognise the file.
+# reader that does not recognise the file, and ``input_stray_characters`` when
+# characters before the first ``#`` of the file's first line were ignored.
+# ``build_override_unmatched`` when --build forced a build that none of the
+# file's known-SNP positions match (2.5.2).
 # ``panel_coverage`` (ADR-0051) is ``{requested, counts, variants}``: ``counts``
 # has ``annotated``, ``typed_no_annotation``, ``no_call`` and
 # ``not_on_chip`` (summing to ``requested``), and each ``variants`` entry
@@ -228,6 +244,7 @@ def render_json(
     source_min_magnitudes: dict[str, float] | None = None,
     diff: DiffResult | None = None,
     high_value_no_calls: list[dict[str, str]] | None = None,
+    high_value_unchecked: list[dict[str, str]] | None = None,
 ) -> int:
     """Write a JSON report to `output_path`. Returns the number of annotations included."""
     filtered = result.filter(
@@ -276,6 +293,9 @@ def render_json(
             "pathogenic_rows_scored_down": result.clinvar_scored_down,
             "unrecognised_rows_hidden": result.clinvar_unrecognised,
             "common_allele_rows_scored_down": result.clinvar_common_allele,
+            "scored_down_variants": [
+                scored_down_variant_dict(a) for a in result.clinvar_scored_down_variants
+            ],
         },
         "strand_abstentions": {
             source: {reason: counts.get(reason, 0) for reason in STRAND_ABSTAIN_REASONS}
@@ -290,6 +310,8 @@ def render_json(
 
     if high_value_no_calls:
         payload["high_value_no_calls"] = high_value_no_calls
+    if high_value_unchecked:
+        payload["high_value_unchecked"] = high_value_unchecked
 
     # When --filter-file supplied a panel, every requested rsID is in one
     # of four states (ADR-0051), decided from the shown (post-filter)

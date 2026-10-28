@@ -45,3 +45,12 @@ A new `function_class TEXT` column is added to `pharmgkb_annotations` storing th
 - The safety-net regex serves a real role — it's the canary that warns us when the structured ingestion missed a field. It is not, and cannot be, a fallback when the structured field is empty.
 - The existing codebase had exactly two violations (`_NONFINDING_PATTERNS`, `_SOMATIC_PATTERN`), both in `pharmgkb_loader.py`. Both refactored in v0.6.0.
 - The principle is a top-level project policy. PRs that violate it are rejected.
+
+## Note 2026-10-25: the safety-net test
+
+The smoke check named above, `tests/test_pharmgkb_safety_net.py`, is not
+in the tree. The structured classification is tested in
+`tests/databases/test_pharmgkb_loader.py` (`TestStructuredFunctionClassifier`
+and the `TestIsNonfinding*` classes). Since ADR-0023, ClinVar's REF is the
+primary ClinPGx non-finding filter and CPIC's function table the second;
+no regex over ClinPGx annotation text remains, in the code or in the tests.

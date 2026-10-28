@@ -393,7 +393,10 @@ class TestDecideBuild:
         message = str(exc.value)
         assert "its known-SNP positions match none of the supported builds" in message
         assert "2 known-SNP position(s) found, none at any supported build's coordinate" in message
-        assert "--build grch37 or --build grch38" in message
+        # 2.5.2: forcing a build is not the fix for positions that match none.
+        assert "--build" not in message
+        assert not exc.value.suggest_override
+        assert "original file" in message
 
     def test_zero_vote_seeds_with_override(self) -> None:
         decision = _decide(file_label=BUILD_GRCH37, override=BUILD_GRCH37, seeds=ZERO_VOTES)

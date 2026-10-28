@@ -24,13 +24,21 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from allelix.annotators._resolution import resolve_batch
 from allelix.annotators.base import variant_locus
+from allelix.attribution import (
+    Placements,
+    attributed_rsids,
+    build_placements,
+    placement_index,
+)
 from allelix.databases.manager import is_pathogenic_aggregate
 from allelix.models import (
     DEFAULT_BUILD,
     DI_ALLELES,
     HALF_CALL_CODE,
     HOMOZYGOUS,
+    NO_CALL_MARKER,
     Variant,
+    diploid_label,
     half_call_genotype,
     report_rank_key,
 )
@@ -42,7 +50,9 @@ from allelix.reports.clinvar_text import (
     PATHOGENIC_SIGNIFICANCES,
     common_allele_count,
     scored_down_count,
+    scored_down_variants,
 )
+from allelix.utils.allele import trim_allele_pair
 from allelix.utils.build_detect import (
     BUILD_GRCH36,
     BUILD_GRCH37,
@@ -68,6 +78,7 @@ from allelix.utils.plausibility import (
     GNOMAD_NOT_RUN,
     MULTI_HOMOZYGOUS_PLP_THRESHOLD,
     NO_ALLELE,
+    NO_FREQUENCY,
     NOT_ASSESSED,
     PlausibilityThresholds,
     classify,
@@ -289,6 +300,10 @@ class AnalysisResult:
     annotations: list[Annotation] = field(default_factory=list)
     build_diagnostics: BuildDiagnostics | None = None
     hv_variants: list[Variant] = field(default_factory=list)
+    # Array D/I calls at rsIDs ClinVar classifies Pathogenic or Likely
+    # pathogenic: rsID -> (the call as written, ClinVar's gene). They are
+    # never matched; the report names them as not checked.
+    di_calls_at_plp: dict[str, tuple[str, str]] = field(default_factory=dict)
     # when --filter-file supplies a rsid panel, the pipeline
     # records which panel rsIDs the input file actually carries so
     # reporters can surface coverage (state 2: genotyped but no
@@ -345,6 +360,9 @@ class AnalysisResult:
     # scored down to ClinVar's own view of the variant, and ClinVar
     # rows not shown because their classification has no score.
     clinvar_scored_down: int = 0
+    # The variants behind ``clinvar_scored_down``, named with their
+    # submitter split (``scored_down_variants``); from the unfiltered rows.
+    clinvar_scored_down_variants: list[Annotation] = field(default_factory=list)
     clinvar_unrecognised: int = 0
     # ADR-0052 disclosure: zero-star ClinVar P/LP rows on a common allele,
     # scored below the default floor.
@@ -491,9 +509,33 @@ class AnalysisResult:
 # ``_PHECODE_DELIM`` shared-delimiter constant (the v2.0.1 suppress-half) are
 # gone; rollup keys directly off ``a.trait``, ``a.phecode`` and ``a.p_value``,
 # and ``_gwas_phecode_parent`` below takes the structured ``a.phecode``. The
-# MTAG suffix still lives in ``description`` for display and is detected with
-# ``"(MTAG)" in a.description``; promoting that to a structured flag is outside
-# the ADR-0035 cluster manifest.
+# MTAG suffix is part of the catalog's trait, so it is read from ``a.trait``
+# (``_gwas_mtag_base``) in any case and spacing.
+
+
+def _gwas_mtag_base(trait: str) -> str | None:
+    """The trait without a trailing ``(MTAG)``, or None when it has none.
+
+    Case and the spacing around and inside the parentheses do not matter
+    (``"X (mtag)"``, ``"X( MTAG )"``); ``(MTAG)`` inside the trait is not a
+    suffix.
+    """
+    text = trait.rstrip()
+    if not text.endswith(")"):
+        return None
+    start = text.rfind("(")
+    if start < 0 or text[start + 1 : -1].strip().lower() != "mtag":
+        return None
+    return text[:start].rstrip()
+
+
+def _gwas_twin_key(a: Annotation, trait: str) -> tuple[str, str, str]:
+    """An MTAG row and its plain twin share rsID, trait and risk allele.
+
+    The study and the paper are not part of it: the catalog gives an MTAG
+    analysis its own accession, and often its own publication.
+    """
+    return (a.rsid, " ".join(trait.lower().split()), a.alt)
 
 
 def _gwas_phecode_parent(phecode: str) -> str | None:
@@ -524,14 +566,13 @@ def rollup_gwas_duplicates(annotations: list[Annotation]) -> list[Annotation]:
     if not gwas_rows:
         return annotations
 
-    plain_keys = {(a.rsid, a.trait.lower()) for a in gwas_rows if "(MTAG)" not in a.description}
-    after_mtag = [
-        a
-        for a in gwas_rows
-        if a.is_must_include
-        or "(MTAG)" not in a.description
-        or (a.rsid, a.trait.lower()) not in plain_keys
-    ]
+    mtag_base = {id(a): _gwas_mtag_base(a.trait) for a in gwas_rows}
+    plain_keys = {_gwas_twin_key(a, a.trait) for a in gwas_rows if mtag_base[id(a)] is None}
+    after_mtag = []
+    for a in gwas_rows:
+        base = mtag_base[id(a)]
+        if a.is_must_include or base is None or _gwas_twin_key(a, base) not in plain_keys:
+            after_mtag.append(a)
 
     by_parent: dict[tuple[str, str], list[Annotation]] = {}
     no_phecode: list[Annotation] = []
@@ -553,6 +594,8 @@ def rollup_gwas_duplicates(annotations: list[Annotation]) -> list[Annotation]:
 _IDENTITY_BUILDS: frozenset[str] = frozenset({BUILD_GRCH37, BUILD_GRCH38})
 
 EnrichmentKey = tuple[str, int, str, str]
+# ``RsidIdentityAnnotator.placements``: each rsID's identity rows.
+IdentityRows = dict[str, list[tuple[str, int, str, str, int, str, str]]]
 
 
 def watch_high_value(
@@ -562,24 +605,30 @@ def watch_high_value(
     extra_loci: set[Locus] | None = None,
     *,
     rows: bool = False,
-) -> dict[str, dict[str, Locus]] | None:
+) -> IdentityRows | None:
     """Ask a VCF parser to record what the file says at high-value sites.
 
-    Positions come from the identity table on both builds (the effective
-    build is not known until streaming ends); rsIDs are watched directly
-    as well, and so are ``extra_loci`` (ClinVar's reference-carried
+    Every identity placement of each rsID is watched, on both builds (the
+    effective build is not known until streaming ends); rsIDs are watched
+    directly as well, and so are ``extra_loci`` (ClinVar's reference-carried
     sites). ``rows`` keeps the reference records for the annotated VCF
-    (``VcfParser.watch``). Returns the high-value placements, or None when there is no
+    (``VcfParser.watch``). Returns the high-value rsIDs' identity rows
+    (``RsidIdentityAnnotator.placements``), or None when there is no
     high-value list or the input is not a VCF.
     """
     from allelix.parsers.vcf import VcfParser
 
     if not isinstance(parser, VcfParser) or not (hv_set or extra_loci):
         return None
-    placements: dict[str, dict[str, Locus]] = {}
+    placements: IdentityRows = {}
     if hv_set and identity is not None and identity.is_ready():
-        placements = identity.loci_of_rsids(hv_set)
-    loci = {locus for p in placements.values() for locus in p.values()} | (extra_loci or set())
+        placements = identity.placements(hv_set)
+    loci = {
+        locus
+        for rsid_rows in placements.values()
+        for chrom, pos37, _r37, _a37, pos38, _r38, _a38 in rsid_rows
+        for locus in ((chrom, pos37), (chrom, pos38))
+    } | (extra_loci or set())
     parser.watch(loci, hv_set, rows=rows)
     return placements if hv_set else None
 
@@ -606,6 +655,7 @@ def reference_carried_calls(
         return []
     calls: list[Variant] = []
     unseen = 0
+    unseen_rsids: list[str] = []
     identity_rows = (
         identity.alleles_at_loci(build, set(sites))
         if identity is not None and identity.is_ready()
@@ -649,36 +699,50 @@ def reference_carried_calls(
                 )
         elif state is None and not stats.is_gvcf and not normal_allele:
             unseen += 1
+            unseen_rsids.append(rsid)
     stats.reference_carried_calls = len(calls)
     stats.reference_carried_not_in_file = unseen
+    stats.reference_carried_not_in_file_rsids = unseen_rsids
     return calls
 
 
 def high_value_states(
     stats: VcfQualityStats | None,
-    placements: dict[str, dict[str, Locus]] | None,
+    placements: IdentityRows | None,
     hv_set: set[str],
     build: str,
 ) -> dict[str, LocusState] | None:
     """Each high-value rsID's state on the effective build, from the watch results.
 
-    A record carrying the rsID and a record covering its position both
-    count; the stronger state wins. On a gVCF, a placed rsID that no
-    record covers is a no-call (``no_coverage``). On a plain VCF it is
-    unknown and left out.
+    Attribution follows ``allelix.attribution`` (2.5.2): for an rsID the
+    identity table places on ``build``, the explicit records starting at
+    one of its placements with that placement's REF count, whatever their
+    ID or ALT, and so do reference blocks covering a placement (a position
+    state, as before). A record carrying the rsID's ID elsewhere does not.
+    For an rsID with no placement, the records carrying its ID count. The
+    stronger state wins. On a gVCF, a placed rsID that no record covers is
+    a no-call (``no_coverage``). On a plain VCF it is unknown and left out.
     """
+    from allelix.attribution import build_placements
     from allelix.parsers.vcf import NO_CALL, REASON_NO_COVERAGE, strongest_state
 
     if stats is None or placements is None:
         return None
+    on_build = build_placements(placements, build)
     states: dict[str, LocusState] = {}
     for rsid in hv_set:
-        locus = placements.get(rsid, {}).get(build)
-        state = stats.rsid_states.get(rsid)
-        if locus is not None:
-            state = strongest_state(state, stats.locus_states.get(locus))
-        if state is None and locus is not None and stats.is_gvcf:
-            state = (NO_CALL, REASON_NO_COVERAGE)
+        places = on_build.get(rsid)
+        state: LocusState | None
+        if places:
+            state = None
+            for chrom, pos, ref in places:
+                locus = (chrom, pos)
+                state = strongest_state(state, stats.start_states.get(locus, {}).get(ref))
+                state = strongest_state(state, stats.block_states.get(locus))
+            if state is None and stats.is_gvcf:
+                state = (NO_CALL, REASON_NO_COVERAGE)
+        else:
+            state = stats.rsid_states.get(rsid)
         if state is not None:
             states[rsid] = state
     return states
@@ -740,6 +804,83 @@ def _mark_haploid(annotations: list[Annotation], variants: list[Variant]) -> Non
             first, second = gm.split("/", 1) if "/" in gm else (gm[:half], gm[half:])
             if first == second:
                 a.genotype_match = first
+
+
+# ClinVar trims a padded VCF allele itself (ADR-0047), against its own rows.
+_SELF_TRIMMING_SOURCES = frozenset({"clinvar"})
+
+
+def _trimmed_snv(v: Variant) -> Variant | None:
+    """A VCF call written with padding bases, as the single-base call it is (ADR-0047).
+
+    ``GC>AC`` and ``CG>CA`` (one base before) are ``G>A``. Every carried
+    non-reference allele must trim to one base at the same position and
+    reference base; otherwise (an indel, two shapes in one call, a
+    reference-only call) there is nothing to rewrite and None is returned.
+    Only a REF read from the input is trimmed.
+    """
+    if not v.ref_from_input or v.ref is None or len(v.ref) == 1:
+        return None
+    frames: set[tuple[int, str]] = set()
+    trimmed: dict[str, str] = {}
+    for allele in {v.allele1, v.allele2} - {NO_CALL_MARKER, v.ref}:
+        position, ref, alt = trim_allele_pair(v.position, v.ref, allele)
+        if len(ref) != 1 or len(alt) != 1:
+            return None
+        frames.add((position, ref))
+        trimmed[allele] = alt
+    if len(frames) != 1:
+        return None
+    ((position, ref),) = frames
+    trimmed[v.ref] = ref
+    return replace(
+        v,
+        position=position,
+        ref=ref,
+        allele1=trimmed.get(v.allele1, v.allele1),
+        allele2=trimmed.get(v.allele2, v.allele2),
+    )
+
+
+def _annotate_batch(annotator: Annotator, batch: list[Variant]) -> list[Annotation]:
+    """One annotator's findings for a batch, with padded VCF alleles trimmed first.
+
+    Sources that do not trim (ClinPGx, SNPedia, GWAS) see a padded call as
+    its single-base form, so ``GC>AC`` gets the findings ``G>A`` gets. Each
+    padded call is annotated on its own, so its findings keep that call's
+    genotype as written and are stamped on its own record (``record_key``),
+    even when several padded records trim to one site. Plain calls go in one
+    batch call per run of them; the findings keep the batch's call order.
+    """
+    if annotator.name in _SELF_TRIMMING_SOURCES:
+        return list(annotator.batch_annotate(batch))
+    found: list[Annotation] = []
+    plain: list[Variant] = []
+    for v in batch:
+        view = _trimmed_snv(v)
+        if view is None:
+            plain.append(v)
+            continue
+        if plain:
+            found.extend(annotator.batch_annotate(plain))
+            plain = []
+        found.extend(_as_written(a, v, view) for a in annotator.batch_annotate([view]))
+    if plain:
+        found.extend(annotator.batch_annotate(plain))
+    return found
+
+
+def _as_written(a: Annotation, original: Variant, view: Variant) -> Annotation:
+    """A finding on a trimmed call, given the record's genotype and record key."""
+    a.genotype_match = diploid_label(original)
+    written = {
+        trimmed: raw
+        for raw, trimmed in ((original.allele1, view.allele1), (original.allele2, view.allele2))
+        if raw != original.ref
+    }
+    if a.alt in written and original.ref is not None:
+        a.record_key = (original.chromosome, original.position, original.ref, written[a.alt])
+    return a
 
 
 def _flag_plausibility(
@@ -888,8 +1029,11 @@ def _multiple_homozygous_plp(
 
     Counts distinct autosomal variants, before any display filter, called
     homozygous for an allele whose ClinVar aggregate is Pathogenic or
-    Likely pathogenic, and whose gnomAD frequency is below
-    ``homozygous_max_af`` or missing.
+    Likely pathogenic, and that gnomAD found rare: a frequency below
+    ``homozygous_max_af``, or an allele looked up in gnomAD and absent
+    (``no_frequency``). A call gnomAD was not asked about (gnomAD not run,
+    no identity table, or a GRCh37 translation that abstained) does not
+    count: nothing says it is rare.
     """
     variants = {
         a.locus
@@ -899,15 +1043,19 @@ def _multiple_homozygous_plp(
         and a.locus[0] in _AUTOSOMES
         and a.zygosity_code == HOMOZYGOUS
         and is_pathogenic_aggregate(a.clinvar_aggregate)
-        and (a.allele_frequency is None or a.allele_frequency < thresholds.homozygous_max_af)
+        and (
+            a.plausibility_reason == NO_FREQUENCY
+            if a.allele_frequency is None
+            else a.allele_frequency < thresholds.homozygous_max_af
+        )
     }
     if len(variants) < MULTI_HOMOZYGOUS_PLP_THRESHOLD:
         return None
     return ReportWarning(
         "multiple_homozygous_plp",
         f"{len(variants)} variants are called homozygous for an allele ClinVar classifies "
-        "as Pathogenic or Likely pathogenic, and are rare in gnomAD or have no gnomAD "
-        "frequency. Several such calls in one file usually point to a genotyping or file "
+        "as Pathogenic or Likely pathogenic, and are rare in gnomAD or absent from it. "
+        "Several such calls in one file usually point to a genotyping or file "
         "problem rather than to findings; confirm any of them with an independent test.",
         len(variants),
     )
@@ -998,6 +1146,35 @@ def _probe_classes(
         "i_probes_at_plp_loci": clinvar_counts.get("i_probes_at_plp_loci", 0),
         "di_calls_at_plp_rsids": clinvar_counts.get("di_calls_at_plp_rsids", 0),
     }
+
+
+def _record_rows(
+    with_ref: list[Variant],
+    recovered: list[Variant],
+    annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]],
+    rows: dict[tuple[str, int, str, str], set[int]],
+    record_recovered: dict[int, str],
+) -> None:
+    """Note, for ``--vcf-out``, what each record's own call earns it.
+
+    A call carries the alleles its genotype names; a no-call carries none.
+    A record is kept for a key that has annotations when its call carries
+    that allele (the call was annotated there too). A record whose call
+    carries an allele and whose rsID this batch recovered keeps that rsID,
+    by record: an rsID-wide map would lend one record's alleles to another.
+    Other records at the same key, such as a low-quality or hom-ref
+    duplicate, get nothing.
+    """
+    for v in with_ref:
+        if v.record_index is None:
+            continue
+        for allele in {v.allele1, v.allele2} - {NO_CALL_MARKER}:
+            key = (v.chromosome, v.position, cast("str", v.ref), allele)
+            if key in annotations_by_key:
+                rows.setdefault(key, set()).add(v.record_index)
+    for v in recovered:
+        if v.record_index is not None and {v.allele1, v.allele2} - {NO_CALL_MARKER}:
+            record_recovered[v.record_index] = v.rsid
 
 
 def _record_for(
@@ -1158,14 +1335,38 @@ def run_analysis(
         # (gnomAD AF, AlphaMissense, CADD) that happen after streaming are
         # visible through these refs without a per-annotation copy.
         vcf_annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]] = {}
+        # For each key above, and each key whose rsID was recovered, the
+        # input records (``Variant.record_index``) whose call carries that
+        # allele: the writer stamps only those (2.5.2). A duplicate record
+        # at the same key that gave no such call borrows nothing.
+        vcf_record_rows: dict[tuple[str, int, str, str], set[int]] = {}
+        # The rsID recovered for a record's own call, by record (2.5.2).
+        vcf_record_recovered: dict[int, str] = {}
 
         clinvar_resolver = next((a for a in bound if a.name == "clinvar"), None)
+
+        # The shared attribution of VCF records to panel and high-value rsIDs
+        # (``allelix.attribution``): each rsID's placements on the effective
+        # build and the rsIDs placed at each locus. Filled before streaming.
+        attr_placements: Placements = {}
+        attr_index: dict[Locus, frozenset[str]] = {}
+
+        def _speaks_for(v: Variant, wanted: set[str] | frozenset[str]) -> set[str]:
+            """The requested rsIDs a streamed call stands for (VCF: placement and REF)."""
+            if not v.ref_from_input:
+                # Array and text-chip input (no REF): by ID, as annotation
+                # matches such files (supervisor ruling, 2.5.2).
+                return {v.rsid} if v.rsid in wanted else set()
+            return attributed_rsids(
+                wanted, v.chromosome, v.position, v.ref, v.rsid, attr_placements, attr_index
+            )
 
         batch_buf: list[Variant] = []
 
         def _flush() -> None:
             if not batch_buf:
                 return
+            ids_before = [v.rsid for v in batch_buf] if collect_vcf_write_inputs else []
             # REF population and rsID-less resolution are one shared
             # step (ClinVar, identity table, gnomAD), the same for every
             # command that needs rsIDs. See allelix.annotators._resolution.
@@ -1180,18 +1381,25 @@ def run_analysis(
             # entering as ID=. that resolves to a high-value rsID is still
             # caught.
             if hv_set:
-                hv_variants.extend(v for v in batch_buf if v.rsid in hv_set)
+                for v in batch_buf:
+                    for target in _speaks_for(v, hv_set):
+                        hv_variants.append(v if v.rsid == target else replace(v, rsid=target))
             if panel_rsids:
                 for v in batch_buf:
-                    if v.rsid in panel_rsids:
-                        genotyped_panel.add(v.rsid)
+                    for target in _speaks_for(v, panel_rsids):
+                        genotyped_panel.add(target)
                         # The first occurrence wins: "A/G", "C/C", "A/-"
                         # or "-/-" as the file wrote it, and a VCF half
-                        # call as the annotations show it ("T/.").
-                        if v.rsid not in panel_genotypes_map:
-                            panel_genotypes_map[v.rsid] = half_call_genotype(v) or v.genotype
+                        # call as the annotations show it ("T/."); a usable
+                        # call replaces an earlier no-call.
+                        if target not in panel_genotypes_map or (
+                            target in no_call_panel and not v.is_no_call
+                        ):
+                            panel_genotypes_map[target] = half_call_genotype(v) or v.genotype
                             if v.is_no_call:
-                                no_call_panel.add(v.rsid)
+                                no_call_panel.add(target)
+                            else:
+                                no_call_panel.discard(target)
             # Per-batch diagnostic counters. Tallied AFTER
             # the ref-population and resolver passes so the counts
             # reflect the final state annotators see — not the raw input.
@@ -1200,7 +1408,7 @@ def run_analysis(
             rsidless_total += sum(1 for v in batch_buf if not v.rsid.startswith("rs"))
             batch_new: list[Annotation] = []
             for annotator in bound:
-                batch_new.extend(annotator.batch_annotate(batch_buf))
+                batch_new.extend(_annotate_batch(annotator, batch_buf))
             _mark_haploid(batch_new, batch_buf)
             annotations.extend(batch_new)
             # collect writer inputs for this batch. Only touches
@@ -1229,6 +1437,17 @@ def run_analysis(
                         continue
                     key = (record.chromosome, record.position, record.ref, a.alt)
                     vcf_annotations_by_key.setdefault(key, []).append(a)
+                _record_rows(
+                    with_ref,
+                    [
+                        v
+                        for v, before in zip(batch_buf, ids_before, strict=True)
+                        if v.rsid != before
+                    ],
+                    vcf_annotations_by_key,
+                    vcf_record_rows,
+                    vcf_record_recovered,
+                )
             batch_buf.clear()
 
         def _accept(v: Variant) -> None:
@@ -1258,22 +1477,26 @@ def run_analysis(
                 parser, hv_set, identity, set(rc_sites), rows=collect_vcf_write_inputs
             )
             if isinstance(parser, VcfParser):
-                panel_loci: dict[Locus, set[str]] = {}
+                wanted_rsids = set(panel_rsids or ()) | hv_set
                 if (
-                    panel_rsids
+                    wanted_rsids
                     and identity is not None
                     and identity.is_ready()
                     and effective_build in _IDENTITY_BUILDS
                 ):
-                    # The existing per-build API abstains when identity rows disagree
-                    # on the locus; multiple alleles at one locus remain supported.
-                    for rsid, (chrom, pos, _alleles) in identity.forward_sites(
-                        set(panel_rsids), effective_build
-                    ).items():
-                        panel_loci.setdefault((chrom, pos), set()).add(rsid)
+                    # Every placement of each rsID on the build (two loci, or
+                    # several alleles at one locus, are all kept).
+                    attr_placements.update(
+                        build_placements(identity.placements(wanted_rsids), effective_build)
+                    )
+                    attr_index.update(placement_index(attr_placements))
                 parser.watch_panel(
                     panel_rsids or frozenset(),
-                    {locus: frozenset(rsids) for locus, rsids in panel_loci.items()},
+                    {
+                        rsid: places
+                        for rsid, places in attr_placements.items()
+                        if rsid in (panel_rsids or ())
+                    },
                     skip_mt=decision.skip_mt,
                 )
             for variant in parser.parse(file_path):
@@ -1316,8 +1539,9 @@ def run_analysis(
 
         # ADR-0040: one enrichment step for every build. Each annotation gets a
         # GRCh38 ``(chrom, pos, ref, alt)`` key from its own locus (GRCh38
-        # input) or through the identity table (GRCh37 input; palindromic and
-        # reference-swapped alleles abstain), and gnomAD / AlphaMissense / CADD
+        # input) or through the identity table (GRCh37 input; palindromic rows
+        # whose references differ between builds, and alleles that became the
+        # GRCh38 reference, abstain), and gnomAD / AlphaMissense / CADD
         # are all queried by that key. No rsID-keyed or MAX lookups:
         # an annotation without an allele-specific key gets no value.
         enrichment_keys = _enrichment_keys(annotations, effective_build, identity)
@@ -1374,6 +1598,8 @@ def run_analysis(
             vcf_write_inputs = _VcfWriteInputs(
                 annotations_by_key=vcf_annotations_by_key,
                 recovered_rsids=vcf_recovered_rsids,
+                record_rows=vcf_record_rows,
+                record_recovered=vcf_record_recovered,
                 reference_rows=vcf_stats.reference_rows if vcf_stats is not None else {},
             )
 
@@ -1406,6 +1632,9 @@ def run_analysis(
                 decision, late, mt_skipped, getattr(parser, "ucsc_mito_dropped", 0)
             ),
             hv_variants=hv_variants,
+            di_calls_at_plp=cast("ClinVarAnnotator", clinvar_resolver).di_calls_at_plp()
+            if clinvar_resolver is not None
+            else {},
             panel_rsids=result_panel,
             genotyped_panel_rsids=result_genotyped,
             panel_annotated_rsids=result_annotated,
@@ -1432,6 +1661,7 @@ def run_analysis(
                 getattr(parser, "quality_stats", None), hv_placements, hv_set, effective_build
             ),
             clinvar_scored_down=scored_down_count(annotations),
+            clinvar_scored_down_variants=scored_down_variants(annotations),
             clinvar_unrecognised=clinvar_counts.get("unrecognised_rows", 0),
             clinvar_common_allele=common_allele_count(annotations),
             strand_abstentions=strand_abstentions,

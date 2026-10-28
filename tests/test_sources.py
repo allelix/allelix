@@ -185,7 +185,7 @@ class TestSourcesBlock:
         assert code == 0, output
         header = [ln for ln in vcf_out.read_text().splitlines() if ln.startswith("##ALLELIX_")]
         assert "##ALLELIX_SkippedSources=alphamissense:wal,cadd:disabled" in header
-        assert "##ALLELIX_VCF_SchemaVersion=0.5.0" in header
+        assert "##ALLELIX_VCF_SchemaVersion=0.6.0" in header
 
     def test_threshold_note_names_only_sources_that_ran(self, data: Path, tmp_path: Path) -> None:
         html = tmp_path / "r.html"

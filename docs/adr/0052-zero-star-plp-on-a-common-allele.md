@@ -47,6 +47,13 @@ The frequency enrichment gives a call (ADR-0040) does not serve here.
 - **rs1063192 is such a site:** dbSNP lists G>A, G>C and G>T there. So
   HG002 GRCh37 and every GRCh37 array get no frequency for it.
 
+**Amended 2026-10-25 (2.5.2):** the enrichment translation no longer
+abstains at every palindromic-flagged site. It abstains only where the
+flagged row's REF differs between GRCh37 and GRCh38. A flagged row with the
+same REF on both builds is translated, so a GRCh37 call there can get a
+frequency. The point below stands either way: this rule uses the
+frequency of ClinVar's allele, not the call's.
+
 This rule describes ClinVar's variant, not the call, so it looks up
 ClinVar's allele directly:
 - **The locus:** the rsID's GRCh38 locus from the identity table.

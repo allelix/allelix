@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
-    from allelix.annotators.base import ForwardSiteProvider
+    from allelix.annotators.base import ForwardSiteProvider, NormalAlleleProvider
     from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
@@ -149,8 +149,9 @@ class SNPediaAnnotator(Annotator):
         self,
         data_dir: Path,
         clinvar_ref_provider: Callable[[str, str, tuple[str, int]], str | None] | None = None,
-        normal_allele_provider: Callable[[str, str], str | None] | None = None,
+        normal_allele_provider: NormalAlleleProvider | None = None,
         forward_site_provider: ForwardSiteProvider | None = None,
+        reference_prefetch: Callable[[list[Variant]], None] | None = None,
     ) -> None:
         """Initialize with path to the data directory.
 
@@ -168,6 +169,11 @@ class SNPediaAnnotator(Annotator):
         build (``RsidIdentityAnnotator.forward_sites``), the strand check
         for genotype rows. ``None`` keeps the page's orientation
         alone (tests, standalone use).
+
+        ``reference_prefetch`` is given each batch before the reference
+        providers are asked about it, so they can answer from one bulk
+        lookup (``ReferenceCarriedFallback.prefetch``). ``None`` asks them
+        per call.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / SNPEDIA_DB_FILENAME
@@ -175,6 +181,7 @@ class SNPediaAnnotator(Annotator):
         self._clinvar_ref_provider = clinvar_ref_provider
         self._normal_allele_provider = normal_allele_provider
         self._forward_site_provider = forward_site_provider
+        self._reference_prefetch = reference_prefetch
         self._strand_abstained = dict.fromkeys(STRAND_ABSTAIN_REASONS, 0)
 
     def _connection(self) -> sqlite3.Connection:
@@ -449,6 +456,9 @@ class SNPediaAnnotator(Annotator):
         per rsid, so the over-fetch is negligible vs. the saved
         per-variant round-trips.
         """
+        variants = list(variants)
+        if self._reference_prefetch is not None:
+            self._reference_prefetch(variants)
         candidates: list[tuple[Variant, str, str, tuple[str, str]]] = []
         for variant in variants:
             candidate = self._candidate(variant)

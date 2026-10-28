@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
+    from allelix.annotators.base import NormalAlleleProvider
     from allelix.models import Variant
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,8 @@ class PharmGKBAnnotator(Annotator):
         data_dir: Path,
         clinvar_ref_provider: Callable[[str, str, tuple[str, int]], str | None] | None = None,
         palindromic_provider: Callable[[set[str]], set[str]] | None = None,
-        normal_allele_provider: Callable[[str, str], str | None] | None = None,
+        normal_allele_provider: NormalAlleleProvider | None = None,
+        reference_prefetch: Callable[[list[Variant]], None] | None = None,
     ) -> None:
         """Resolve the ClinPGx SQLite cache path within `data_dir`.
 
@@ -135,6 +137,10 @@ class PharmGKBAnnotator(Annotator):
         (`base.carried_alt`). In production it's wired to
         `ClinVarAnnotator.normal_allele_for`. None derives `alt` against
         `Variant.ref` everywhere.
+
+        `reference_prefetch` is given each batch before the two providers
+        above are asked about it, so they can answer from one bulk lookup
+        (`ReferenceCarriedFallback.prefetch`). None asks them per call.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / PHARMGKB_DB_FILENAME
@@ -142,6 +148,7 @@ class PharmGKBAnnotator(Annotator):
         self._clinvar_ref_provider = clinvar_ref_provider
         self._palindromic_provider = palindromic_provider
         self._normal_allele_provider = normal_allele_provider
+        self._reference_prefetch = reference_prefetch
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -427,6 +434,9 @@ class PharmGKBAnnotator(Annotator):
         ``is_nonfinding=0`` rows for the rsid and filtering the
         genotype per variant.
         """
+        variants = list(variants)
+        if self._reference_prefetch is not None:
+            self._reference_prefetch(variants)
         # Pre-filter per-variant: only candidates whose genotype is normalizable
         # and that pass the ClinVar REF homref check.
         candidates: list[tuple[Variant, str]] = []

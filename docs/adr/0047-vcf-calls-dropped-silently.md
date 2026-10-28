@@ -97,6 +97,39 @@ were not counted at all.
   ALT, ADR-0039). The matched allele is the record's REF, and the stamp is
   per ALT allele. The report and JSON carry the row.
 
+### Amendment 2026-10-25: superseded in part by ADR-0059
+
+The last point above no longer holds. Since 2.5.1 (VCF schema 0.5.0),
+`--vcf-out` writes a reference-carried ClinVar finding on the explicit
+`0/0`, `0|0` or haploid `0` record it came from (ADR-0059). gVCF reference
+blocks and records with ALT `.` are still not stamped; their findings stay
+in the JSON and HTML reports.
+Since 2.5.2 (VCF schema 0.6.0) that finding is in `ALLELIX_CLINVAR_REF`, on
+every record whose call carries REF, single-position records with ALT `.`
+included. Only `END` blocks stay unstamped (ADR-0059's 2.5.2 amendment).
+
+### Amendment 2026-10-25 (2.5.2): trimming for every source
+
+- Trimming is no longer ClinVar's alone. ClinPGx, SNPedia and the GWAS
+  Catalog see a padded call as its single-base form when every carried
+  non-reference allele trims to one base at the same position and REF
+  (`GC>AC` and `CG>CA` one base before are `G>A`). They then give the
+  findings the plain record gets. Each padded call is annotated on its
+  own, so each finding keeps its own record's genotype as written, and
+  `--vcf-out` stamps it on that record by the allele it wrote, even when
+  several padded records trim to one site. An indel, a call mixing two shapes, and a REF that did
+  not come from the input are left as before. ClinVar keeps its own
+  per-row trimming.
+- A copy count counts only the trimmed allele itself. In a `1/2` call with
+  ALTs `AC,A` at REF `GC`, the second ALT `A` is a deletion, not a second
+  copy of `G>A`, so the call is heterozygous for `G>A` and its plausibility
+  uses one copy.
+- On a plain VCF, a reference-carried site with no record (ADR-0039,
+  ADR-0059) is named when it is a high-value rsID (CYP3A5*3 rs776746 on
+  GRCh37): in the console's high-value block, the HTML high-value section
+  and JSON `high_value_unchecked` (schema 11). The other such sites are
+  still counted only.
+
 ## Consequences
 
 - VCF users get ClinVar findings for these calls. Evidence for the HG002

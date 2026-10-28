@@ -53,7 +53,13 @@ from allelix.reports._pipeline import (
 from allelix.reports._sources import SKIPPED
 from allelix.reports.association_text import effect_words, strand_abstention_lines
 from allelix.reports.build_text import INCONCLUSIVE, MISMATCH, build_notices, short_source
-from allelix.reports.clinvar_text import common_allele_line, detail_fields, scored_down_line
+from allelix.reports.clinvar_text import (
+    common_allele_line,
+    detail_fields,
+    scored_down_line,
+    scored_down_variant_text,
+)
+from allelix.reports.high_value import DI_CALLS_NOT_CHECKED
 from allelix.utils.plausibility import (
     CHROMOSOME,
     GNOMAD_NOT_RUN,
@@ -697,10 +703,14 @@ def _vcf_quality_banner(lines: list[str]) -> str:
 
 
 def _report_warnings_banner(warnings: list[ReportWarning]) -> str:
-    """Report-level warnings (``report_warnings``), one ``notice-warn`` each."""
+    """Report-level warnings (``report_warnings``), one ``notice-warn`` each.
+
+    D/I calls at high-value sites are named in the high-value section instead.
+    """
     return "".join(
         f'<div class="notice-warn"><strong>Warning.</strong> {_escape(w.message)}</div>'
         for w in warnings
+        if w.code != DI_CALLS_NOT_CHECKED
     )
 
 
@@ -732,11 +742,21 @@ def _sources_off_line(sources: list[SourceRecord]) -> str:
     return f'<p class="sources-off">Not run by choice: {names}.</p>'
 
 
-def _clinvar_banner(scored_down: int, unrecognised: int, common_allele: int) -> str:
-    """ADR-0045, ADR-0052: ClinVar rows that left the default report, and why."""
+def _clinvar_banner(
+    scored_down: int,
+    unrecognised: int,
+    common_allele: int,
+    scored_down_variants: list[Annotation] | None = None,
+) -> str:
+    """ADR-0045, ADR-0052: ClinVar rows that left the default report, and why.
+
+    The scored-down variants are named, each with its submitter split.
+    """
     lines = [
         line for line in (scored_down_line(scored_down), common_allele_line(common_allele)) if line
     ]
+    if scored_down and scored_down_variants:
+        lines[1:1] = [scored_down_variant_text(a) for a in scored_down_variants]
     if unrecognised:
         lines.append(
             f"{unrecognised} ClinVar row(s) not shown: their classification is not one "
@@ -813,6 +833,18 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
         '<div class="notice-warn"><strong>High-value no-calls.</strong> '
         "The following clinically important SNPs returned no genotype call:"
         f"<ul>{items}</ul></div>"
+    )
+
+
+def _hv_unchecked_banner(sites: list[str] | None) -> str:
+    """High-value and Pathogenic sites the run could not check, each named."""
+    if not sites:
+        return ""
+    items = "".join(f"<li>{_escape(s)}</li>" for s in sites)
+    return (
+        '<div class="notice-warn"><strong>High-value sites not checked.</strong> '
+        "These clinically important sites could not be checked, so the report says "
+        f"nothing about them:<ul>{items}</ul></div>"
     )
 
 
@@ -1438,6 +1470,7 @@ def render_html(
     title: str = "Allelix Genotype Report",
     diff: DiffResult | None = None,
     high_value_no_calls: list[str] | None = None,
+    high_value_unchecked: list[str] | None = None,
 ) -> int:
     """Write a self-contained HTML report. Returns the number of annotations rendered."""
     filtered = result.filter(
@@ -1481,8 +1514,24 @@ def render_html(
     if diff is not None:
         from allelix.reports.diff import summarize_diff
 
+        changed_items = "".join(
+            "<li>"
+            f"{_escape(annotation_label(c.current))} ({_escape(c.current.attribution)}): "
+            f"{_escape(c.previous_significance)} "
+            + ("" if c.previous_magnitude is None else f"(magnitude {c.previous_magnitude:.1f}) ")
+            + f"&rarr; {_escape(c.current.significance)} (magnitude {c.current.magnitude:.1f})"
+            + (
+                "; below the display floor, so it is not in the table below"
+                if c.below_display_floor
+                else ""
+            )
+            + "</li>"
+            for c in diff.changed
+        )
         diff_banner = (
-            f'<div class="notice"><strong>Diff: </strong>{_escape(summarize_diff(diff))}</div>'
+            f'<div class="notice"><strong>Diff: </strong>{_escape(summarize_diff(diff))}'
+            + (f'<ul class="diff-changed">{changed_items}</ul>' if changed_items else "")
+            + "</div>"
         )
 
     floor_note = ""
@@ -1585,7 +1634,12 @@ def render_html(
     imputed = is_imputed(result.input_method)
     counts = [
         _vcf_quality_banner(input_quality),
-        _clinvar_banner(result.clinvar_scored_down, result.clinvar_unrecognised, common),
+        _clinvar_banner(
+            result.clinvar_scored_down,
+            result.clinvar_unrecognised,
+            common,
+            result.clinvar_scored_down_variants,
+        ),
         _strand_banner(result.strand_abstentions),
     ]
     summary_line = _details_summary(
@@ -1656,6 +1710,7 @@ def render_html(
         f"{_report_warnings_banner(result.report_warnings)}"
         f"{_sources_failed_banner(result.sources, result.report_warnings)}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
+        f"{_hv_unchecked_banner(high_value_unchecked)}"
         f"{_input_method_banner(result.input_method) if imputed else ''}"
         f"{details}"
         f"{_panel_coverage_section(result.panel_coverage(filtered), result.parser_name)}"

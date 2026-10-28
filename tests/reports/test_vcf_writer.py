@@ -272,11 +272,13 @@ class TestInfoDeclarations:
             run_date=_fixed_date(),
         )
         text = _read(out)
-        assert 'Type=String,Description="ClinVar significance | rsID | gene.' in text
         assert (
-            "On a homozygous-reference or haploid reference record, the finding "
-            "is for the allele the reference itself carries."
+            'Type=String,Description="ClinVar significance | rsID | gene, for each carried ALT '
+            'allele"'
         ) in text
+        # VCF schema 0.6.0: the reference finding is its own field, declared
+        # only when a ClinVar finding for a reference-carried allele exists.
+        assert "ALLELIX_CLINVAR_REF" not in text
         assert 'Type=Float,Description="gnomAD allele frequency"' in text
         assert 'Type=Float,Description="CADD PHRED score"' in text
 

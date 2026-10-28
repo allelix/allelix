@@ -181,7 +181,7 @@ def test_reference_only_cli_and_stats(data: Path, tmp_path: Path, container: str
         quality["hom_ref_calls"],
         quality["non_reference_calls"],
     ) == (1, 1, 0)
-    assert payload["schema_version"] == SCHEMA_VERSION == "10"
+    assert payload["schema_version"] == SCHEMA_VERSION == "11"
     html = tmp_path / "report.html"
     rendered = CliRunner().invoke(
         main, ["analyze", str(path), "--data-dir", str(data), "--no-update", "--output", str(html)]
@@ -405,7 +405,7 @@ def test_rendered_reference_report_is_a_supported_diff_baseline(
     baseline = tmp_path / "baseline.json"
     render_json(analysis, output_path=baseline)
     payload = json.loads(baseline.read_text())
-    assert payload["schema_version"] == SCHEMA_VERSION == "10"
+    assert payload["schema_version"] == SCHEMA_VERSION == "11"
     assert load_previous_report(baseline) == payload
 
 
@@ -420,13 +420,13 @@ def test_cli_current_report_round_trips_through_diff(data: Path, tmp_path: Path)
     second = runner.invoke(main, [*args, "--diff", str(baseline), "--output", str(output)])
     assert second.exit_code == 0, second.output
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == SCHEMA_VERSION == "10"
+    assert payload["schema_version"] == SCHEMA_VERSION == "11"
     assert payload["diff"]["new"] == []
     assert payload["diff"]["removed"] == []
     assert payload["diff"]["changed"] == []
 
 
-@pytest.mark.parametrize("version", [str(n) for n in range(1, 11)])
+@pytest.mark.parametrize("version", [str(n) for n in range(1, 12)])
 def test_all_previous_report_schemas_remain_supported(tmp_path: Path, version: str) -> None:
     baseline = tmp_path / "legacy.json"
     payload = {"schema_version": version, "annotations": []}
@@ -434,7 +434,7 @@ def test_all_previous_report_schemas_remain_supported(tmp_path: Path, version: s
     assert load_previous_report(baseline) == payload
 
 
-@pytest.mark.parametrize("version", ["11", "12", "99"])
+@pytest.mark.parametrize("version", ["12", "13", "99"])
 def test_future_report_schema_is_not_assumed_compatible(tmp_path: Path, version: str) -> None:
     baseline = tmp_path / "future.json"
     baseline.write_text(json.dumps({"schema_version": version, "annotations": []}))
@@ -482,7 +482,7 @@ def test_contradictory_reference_ploidy_abstains_independent_of_order(
     output = tmp_path / "ploidy.json"
     render_json(result, output_path=output)
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == SCHEMA_VERSION == "10"
+    assert payload["schema_version"] == SCHEMA_VERSION == "11"
     assert payload["input"]["vcf_quality"]["reference_ploidy_conflicts"] == 3 * repeats
 
 

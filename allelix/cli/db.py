@@ -20,6 +20,8 @@ from allelix.databases.cache_state import CacheState
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from allelix.annotators.base import Annotator
+
 
 @main.group()
 def db() -> None:
@@ -52,7 +54,10 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
     "--force",
     is_flag=True,
     default=False,
-    help="Re-download even if the local cache appears current.",
+    help=(
+        "Re-download even if the local cache appears current. ClinVar is still "
+        "refreshed only when NCBI's checksums can be fetched."
+    ),
 )
 @click.option(
     "--no-gnomad",
@@ -71,7 +76,10 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
     "include_cadd",
     is_flag=True,
     default=False,
-    help="Download CADD deleteriousness scores (non-commercial use only; disabled by default).",
+    help=(
+        "Download CADD deleteriousness scores (non-commercial use, or commercial use "
+        "with a CADD license asserted as license.cadd; disabled by default)."
+    ),
 )
 @click.option(
     "--build",
@@ -109,7 +117,8 @@ def db_update(
       - cache + remote signal differs (or legacy v0.4.1 cache with no
         stored signal) → download
       - cache + remote signal can't be fetched → skip with notice (use
-        --force to override)
+        --force to override), except ClinVar: it is never refreshed without
+        NCBI's checksums, even with --force
 
     `--build` selects which ClinVar build(s) to manage. Default 'both'
     downloads GRCh37 and GRCh38 caches.
@@ -176,6 +185,7 @@ def db_update(
 
             if not annotator.is_ready():
                 console.print(f"  [bold]{annotator.name}[/bold]: downloading…")
+                _check_setup_destinations(annotator, resolved)
                 if _helpers._run_setup(annotator, force=force):
                     console.print(
                         f"  [green]✓ {annotator.name} ready[/green] "
@@ -187,6 +197,7 @@ def db_update(
 
             if force:
                 console.print(f"  [bold]{annotator.name}[/bold]: --force; refreshing…")
+                _check_setup_destinations(annotator, resolved)
                 if _helpers._run_setup(annotator, force=force):
                     console.print(
                         f"  [green]✓ {annotator.name} refreshed[/green] "
@@ -243,6 +254,7 @@ def db_update(
                 console.print(
                     f"  [bold]{annotator.name}[/bold]: remote signal changed; refreshing…"
                 )
+            _check_setup_destinations(annotator, resolved)
             if _helpers._run_setup(annotator):
                 console.print(
                     f"  [green]✓ {annotator.name} refreshed[/green] "
@@ -295,6 +307,22 @@ _KNOWN_ARTIFACT_PREFIXES: frozenset[str] = frozenset(
         "snpedia",
     }
 )
+
+
+def _check_setup_destinations(annotator: Annotator, resolved: Path) -> None:
+    """Stop before a download whose results could not be written (2.5.2)."""
+    import os
+
+    from allelix.reports import UnwritableDestinationError, check_writable
+
+    try:
+        for path in annotator.setup_destinations():
+            check_writable(path)
+        if not os.access(resolved, os.W_OK | os.X_OK):
+            msg = f"Cannot write to the data directory {resolved}: it is not writable."
+            raise UnwritableDestinationError(msg)
+    except OSError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _is_cadd_cache(name: str) -> bool:
@@ -386,15 +414,19 @@ def db_clean(
 ) -> None:
     """Remove downloaded reference database caches to reclaim disk space.
 
-    The caches are disposable — every file removed here can be re-fetched
-    by `allelix db update`. Your config.toml (license assertions, source
-    toggles) is preserved; it lives outside the cache.
+    The caches are disposable — every cache removed here can be re-fetched
+    by `allelix db update`. The ClinVar build log (clinvar-build.log, the
+    sources and counts of past builds) is removed too and cannot be
+    re-fetched; copy it elsewhere first to keep it. Your config.toml
+    (license assertions, source toggles) lives in the data directory and
+    is never removed.
 
     Pass `--keep-cadd` to preserve the CADD cache (largest opt-in
     download, ~5.8 GB; expensive to re-download). Pass `--dry-run` to
     preview the deletion without acting. Pass `--yes` to skip the
     confirmation prompt for scripted use.
     """
+    import os
     import shutil
     import sys
 
@@ -454,13 +486,24 @@ def db_clean(
         console.print("[yellow]Aborted.[/yellow]")
         return
 
+    # Nothing is deleted from a directory that cannot be changed (2.5.2).
+    if not os.access(resolved, os.W_OK | os.X_OK):
+        raise click.ClickException(
+            f"Cannot delete from the data directory {resolved}: it is not writable."
+        )
     removed = 0
-    for entry in entries:
-        if entry.is_file() or entry.is_symlink():
-            entry.unlink()
-        else:
-            shutil.rmtree(entry)
-        removed += 1
+    try:
+        for entry in entries:
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+            removed += 1
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot delete {exc.filename or resolved}: {exc.strerror or exc}. "
+            f"{removed} item(s) were removed first."
+        ) from exc
     console.print(
         f"[green]✓ Removed {removed} item(s) ({_human_bytes(total)}).[/green] "
         "Re-populate with [bold]allelix db update[/bold]."

@@ -77,3 +77,36 @@ counts, compressed sizes, digests and observation date before cleanup.
 No additional archive download is needed for that observation. Synthetic
 multi-member tests demonstrate the defense without establishing the live
 archive structure or current upstream row counts.
+
+## Amendment 2026-10-25 (2.5.2): build diagnostics in the log
+
+Each ClinVar build writes two lines, whatever the outcome, to the
+persistent build log `clinvar-build.log` in the data directory. They are
+appended with a UTC timestamp, so `db update` and the automatic refresh
+keep them with no logging setup. The same lines also go to the `allelix`
+logger at INFO. The outcomes covered: a success, a fixed-floor or 90%-floor refusal, or a failure
+after insertion that rolls the candidate back.
+
+1. **Sources.** Each source's file name, the MD5 of its bytes on disk (for
+   a gzip file, the compressed bytes) and its size in bytes. These are
+   written before the build starts.
+2. **Counts.** These are written in a `finally`, so they exist after any
+   exception, connection close or cleanup of downloads and staging:
+   - variant_summary rows accepted for the build;
+   - submission_summary rows kept (not flagged, not a placeholder
+     classification);
+   - join hits and misses (the VariationID groups looked up in
+     variant_summary, found or not);
+   - records yielded;
+   - rows SQLite stored (measured from the connection's change count, so
+     a storage loss shows up as fewer rows inserted than yielded). It is
+     kept after every insert batch, and when a batch itself fails, so a
+     source or SQL failure partway through still logs the rows stored
+     before the rollback;
+   - the candidate's final row count.
+
+   A stage that was not reached reads "not reached".
+
+A refused build, such as a candidate far below the floor, can then be
+traced to the stage that lost the rows. Nothing about the floors, the stamp or the
+stored cache changes.

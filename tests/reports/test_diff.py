@@ -154,16 +154,16 @@ class TestComputeDiff:
         assert diff.changed[0].previous_magnitude is None
         assert diff.changed[0].previous_significance == "clinvar_pathogenic"
 
-    def test_description_change_surfaces_as_removed_plus_added(self) -> None:
-        """Description is part of the diff key — wording changes surface honestly."""
+    def test_description_change_is_one_changed_finding(self) -> None:
+        """Description is content, not identity (2.5.2): a reworded finding is changed."""
         current = [_ann()]
         prev = _ann_dict()
         prev["description"] = "clinvar: updated wording"
         diff = compute_diff(current, [prev], "2026-05-01T00:00:00")
         assert diff.has_changes
-        assert len(diff.new) == 1
-        assert len(diff.removed) == 1
-        assert len(diff.changed) == 0
+        assert len(diff.new) == 0
+        assert len(diff.removed) == 0
+        assert len(diff.changed) == 1
 
     def test_mixed_new_removed_changed(self) -> None:
         current = [

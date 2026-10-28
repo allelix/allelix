@@ -136,6 +136,29 @@ _BUILD_CHOICES = (
 )
 
 
+def forced_unmatched_text(diag: BuildDiagnostics) -> str | None:
+    """The warning when ``--build`` forced a build its known-SNP positions match none of.
+
+    The run goes ahead as forced, but the evidence is named: 0 of N
+    inspected positions match any supported build (2.5.2). None otherwise,
+    and for ``--build grch36``, which turns position lookups off.
+    """
+    if (
+        not diag.override
+        or diag.effective_build == BUILD_GRCH36
+        or diag.inspected_count == 0
+        or diag.detected_build is not None
+        or diag.tied_builds
+    ):
+        return None
+    return (
+        f"Build warning: --build {diag.effective_build.lower()} was given, but 0 of "
+        f"{diag.inspected_count} known-SNP positions in the file match any supported build. "
+        f"Using {diag.effective_build} as forced; the file's positions may be wrong on every "
+        "build, so check that it is the original file from your testing company."
+    )
+
+
 def build_notices(diag: BuildDiagnostics) -> list[Notice]:
     """The notices this decision carries, in the order they are shown."""
     notices: list[Notice] = []
@@ -181,7 +204,10 @@ def build_notices(diag: BuildDiagnostics) -> list[Notice]:
             )
         else:
             against = ""
-        if against:
+        unmatched = forced_unmatched_text(diag)
+        if unmatched is not None:
+            notices.append(Notice(MISMATCH, unmatched))
+        elif against:
             notices.append(
                 Notice(
                     MISMATCH,

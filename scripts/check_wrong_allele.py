@@ -11,9 +11,9 @@ The check follows the product's enrichment key, never the rsID: the GRCh38
 ``(chrom, pos, ref, allele)`` of the annotation, where the allele is the
 annotation's ``alt`` or, for an alt-less row, the single carried
 non-reference allele. A GRCh37 key is translated through the rsID identity
-table by locus and alleles, and only when exactly one non-palindromic
-GRCh38 key matches (``allelix/reports/_pipeline.py``,
-``allelix/annotators/rsid_identity.py``).
+table by locus and alleles, and only when exactly one GRCh38 key matches
+that is not a row flagged palindromic whose GRCh37 and GRCh38 references differ
+(``allelix/reports/_pipeline.py``, ``allelix/annotators/rsid_identity.py``).
 
 An allele equal to the build's reference base has no variant to look up,
 except where the build's reference carries a ClinVar variant allele (a
@@ -213,7 +213,7 @@ class Caches:
         hits = {
             (key[0], p38, r38, a38)
             for (p38, r38, a38, pal) in self.rows("rsid_identity", sql, key)
-            if not pal and a38 != r38
+            if a38 != r38 and not (pal and key[2] != r38)
         }
         return next(iter(hits)) if len(hits) == 1 else None
 

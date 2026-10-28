@@ -4,7 +4,8 @@
 
 The frequency is gnomAD's for ClinVar's own allele, looked up at the
 rsID's GRCh38 locus from the identity table, so it works on GRCh37 input
-at palindromic sites where the call's own frequency is missing. A row is
+even where the call's own frequency is missing (a row the identity table
+flags palindromic whose references differ between builds). A row is
 scored 4.0, marked and counted when its submission has zero stars and that
 frequency is at least 0.05. Every doubt about the allele leaves the row
 as it was. All rows, calls and frequencies are synthetic; the HFE and HBB
@@ -83,7 +84,8 @@ class Site(NamedTuple):
 
 
 _SITES: tuple[Site, ...] = (
-    # rs1063192-shaped: dbSNP lists G>A, G>C and G>T, so the site is palindromic.
+    # rs1063192-shaped: dbSNP lists G>A, G>C and G>T, so the site is flagged
+    # palindromic; its references are equal, so its pairs translate (2.5.2).
     Site(
         "rs900970001", "2", 1_000, 11_000, "Likely pathogenic", _NONE,
         "Likely pathogenic; protective", 0.05,
@@ -143,7 +145,7 @@ _SITES: tuple[Site, ...] = (
 )  # fmt: skip
 _HIDDEN = {"rs900970001", "rs900970003", "rs900970008"}
 _EXPECTED = {
-    # AF exactly 0.05 at a palindromic site: hidden.
+    # AF exactly 0.05 at a flagged site: hidden.
     "rs900970001": (4.0, True),
     # AF 0.0499: below BA1, unchanged.
     "rs900970002": (7.0, False),
@@ -309,12 +311,16 @@ class TestRule:
     def test_rows_scored(self, tmp_path: Path, data: Path, cm_stack, build: str) -> None:
         assert _scored(_run(tmp_path, data, cm_stack, build)) == _EXPECTED
 
-    def test_grch37_palindromic_site_has_no_call_frequency(
+    def test_grch37_flagged_equal_reference_site_is_capped(
         self, tmp_path: Path, data: Path, cm_stack
     ) -> None:
-        """The case the rule is for: enrichment abstains, the ClinVar allele lookup does not."""
+        """A flagged three-allele site with equal references (2.5.2, ADR-0040).
+
+        The call's own GRCh37 key now translates, so it gets gnomAD's
+        frequency too; the ClinVar allele lookup and the cap are unchanged.
+        """
         row = _clinvar_rows(_run(tmp_path, data, cm_stack))["rs900970001"]
-        assert row.allele_frequency is None
+        assert row.allele_frequency == 0.05
         assert row.clinvar_allele_af == 0.05
         assert row.common_allele_capped
 

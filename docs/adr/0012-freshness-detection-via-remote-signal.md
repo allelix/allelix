@@ -59,3 +59,11 @@ ClinVar's TSV freshness signal still comes from the submission-summary
 checksum. ADR-0053 replaces first-token parsing with bounded, filename-aware
 MD5 validation and requires variant-summary integrity before refresh
 publication. Current equal-signal caches retain the small-probe update path.
+
+## Amendment 2026-10-25: `--force` keeps ClinVar's integrity checks
+
+`--force` skips the freshness comparison, not verification. ClinVar never
+refreshes from a download it cannot verify (ADR-0053): if NCBI's checksum
+for `submission_summary` or `variant_summary` cannot be fetched, the
+refresh stops, the existing caches stay, and `db update` reports ClinVar
+as failed, with or without `--force`.

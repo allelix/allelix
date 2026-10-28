@@ -63,7 +63,7 @@ existing caches produce stale results: the data is correct but the
 interpretation is wrong for the current code.
 
 **Decision.** `CLINVAR_INTERPRETER_VERSION` (integer, in
-`allelix/annotators/_versions.py`) is stamped into each per-build cache's
+`allelix/databases/_versions.py`) is stamped into each per-build cache's
 `database_versions.remote_signal` as `|iv:N` during `load_clinvar_vcf()`.
 `ClinVarAnnotator.is_ready()` checks that every managed build's cached signal
 contains `|iv:{current}`. Mismatch returns False, causing `db update` to
@@ -114,3 +114,28 @@ places the rsID. ClinPGx and SNPedia now use
 call's own `(chromosome, position)`. An rsID placed elsewhere, or a call
 with no position, is not suppressed.
 
+## Amendment 2026-10-25 (2.5.2): reference-carried sites without the input build's ClinVar
+
+ClinVar's REF still decides wherever its cache for the call's build can be
+read. Without that cache, a site where the two builds' single-base REFs
+differ (the reference carries a variant allele on one of them, F5 rs6025
+on GRCh37) gets its normal allele from:
+
+1. the other build's ClinVar, when its row there names this build's REF as
+   the variant allele (or its own REF == ALT row names the other build's
+   REF as one);
+2. otherwise gnomAD: the major allele at the site is normal, and a
+   homozygote for it is a non-finding. The major allele is read from every
+   allele gnomAD lists there, the REF's frequency being what the ALTs
+   leave: one ALT's low frequency does not make the REF major. A site
+   gnomAD does not list, an ALT whose frequency gnomAD does not give (it
+   is not counted as zero), or a tie (within 1e-9, since the REF's share
+   carries rounding error) decides nothing;
+3. otherwise nothing: no suppression, and the row shows.
+
+GRCh38's REF is never taken as normal by itself. Hiding a real
+pharmacogenomic finding is worse than showing a normal genotype's row. The
+normal allele also sets ClinPGx's and SNPedia's `alt` there
+(`normal_allele_for`). Every other site is unchanged: without ClinVar,
+nothing is suppressed. Implementation: `ReferenceCarriedFallback`
+(`annotators/reference_fallback.py`), wired in `get_annotators`.

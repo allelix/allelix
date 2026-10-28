@@ -460,7 +460,17 @@ class BuildDecisionError(ValueError):
 
     The message says what is wrong, what evidence the file carries and
     what to supply. Nothing has been written when it is raised.
+    ``suggest_override`` is False when choosing a build is not the fix: the
+    file's known-SNP positions match no build at all (2.5.2).
     """
+
+    suggest_override = True
+
+
+class PositionsMatchNoBuildError(BuildDecisionError):
+    """The file's known-SNP positions match no supported build: forcing one is not the fix."""
+
+    suggest_override = False
 
 
 class BuildDecision(NamedTuple):
@@ -603,10 +613,11 @@ def _decide_build(
         # every build, not an absence of evidence; the label or the default
         # cannot be trusted either. (When contig lengths decided, they are
         # decisive and this point is not reached.)
-        raise _stop(
-            file_name,
-            "its known-SNP positions match none of the supported builds",
-            [_seed_text(seeds), label_text],
+        raise PositionsMatchNoBuildError(
+            f"Cannot use {file_name}: its known-SNP positions match none of the supported "
+            f"builds. Evidence: {'; '.join([_seed_text(seeds), label_text])}. Its positions "
+            "cannot be trusted on any build, so choosing one is not the fix. Check that this "
+            "is the original file from your testing company."
         )
     if seeds.is_confident:
         assert seeds.build is not None

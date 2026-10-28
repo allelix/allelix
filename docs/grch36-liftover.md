@@ -40,8 +40,27 @@ Convert a BED file of positions:
 ./liftOver input.bed hg18ToHg38.over.chain.gz output.bed unmapped.bed
 ```
 
-For genotype files, extract positions into BED format first, lift over, then
-update the positions in your genotype file. UCSC liftOver documentation:
+For a genotype file, updating the positions alone is not enough:
+
+1. Write one BED line per SNP. BED is zero-based and half-open, so a SNP
+   at position 1,000 is `chr1  999  1000  rs123  0  +` (BED6: name, score,
+   strand). Keep the rsID in the name column and write the strand as `+`,
+   so the output shows where the mapping is inverted.
+2. Lift over. Each output line gives the new chromosome, the new
+   coordinates and the strand: `-` where the region is inverted in the new
+   assembly. A line in `unmapped.bed` could not be lifted.
+3. Rewrite each row's chromosome and position from the output (the
+   position is the BED end, or start + 1). Drop the rows that did not map.
+4. Where the output strand is `-`, complement that row's genotype (A↔T,
+   C↔G). Allelix reads array calls on the forward strand of the build it
+   decides, so an uncomplemented call there reads as a different allele.
+   An A/T or C/G SNP looks the same either way, so check those rows most
+   carefully.
+5. Change the file's build line (or its `##reference` / `##contig` header
+   for a VCF) to the new build.
+
+For a VCF, CrossMap's `vcf` mode below does this allele-aware work itself
+(it needs the target reference sequence). UCSC liftOver documentation:
 https://genome.ucsc.edu/cgi-bin/hgLiftOver
 
 ## CrossMap (Python)

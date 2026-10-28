@@ -3,8 +3,9 @@
 Pre-generated sample reports demonstrating Allelix output. The committed
 reports are a historical v1.8.2 snapshot generated on 2026-06-12; they let
 you inspect a self-contained output without your own genotype file or
-downloaded databases, but current 2.4.x output differs as schemas, source
-names, database snapshots, and correctness rules have evolved.
+downloaded databases, but current output (2.5.2: JSON schema 11, VCF
+schema 0.6.0) differs, because schemas, source names, database snapshots
+and correctness rules have changed since.
 
 ## Quick Start
 

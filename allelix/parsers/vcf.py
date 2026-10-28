@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
+from allelix.attribution import Placements, attributed_rsids, placement_index
 from allelix.models import NO_CALL_MARKER, Variant
 from allelix.parsers._helpers import DamagedFileError, normalize_chromosome, open_genotype_text
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
@@ -271,6 +272,8 @@ class VcfQualityStats:
     reference_ploidy_conflicts: int = 0
     reference_carried_calls: int = 0
     reference_carried_not_in_file: int = 0
+    # The rsIDs of those sites, so the high-value ones can be named.
+    reference_carried_not_in_file_rsids: list[str] = field(default_factory=list)
     genotype_records: int = 0
     hom_ref_calls: int = 0
     non_reference_calls: int = 0
@@ -285,6 +288,103 @@ class VcfQualityStats:
     # watched position, by ``reference_row_key``, with the positions they
     # cover: the annotated VCF stamps exactly these records.
     reference_rows: dict[RowKey, set[Locus]] = field(default_factory=dict)
+    # For attribution to an rsID (``allelix.attribution``, 2.5.2): the state
+    # of explicit records starting exactly at a watched position, by their
+    # upper-case REF, and the state of reference blocks covering it.
+    start_states: dict[Locus, dict[str, LocusState]] = field(default_factory=dict)
+    block_states: dict[Locus, LocusState] = field(default_factory=dict)
+
+
+# ``extract`` (2.5.2): placements to watch, by normalized chromosome, as
+# ``(position, upper-case REF)``.
+ExtractLoci = dict[str, list[tuple[int, str]]]
+# One extract candidate: (rsID or "", the placement it stands for or None,
+# the call, its file-order key within the position).
+ExtractCandidate = tuple[str, Locus | None, Variant]
+
+
+def extract_reference_candidates(
+    cols: list[str],
+    state: LocusState,
+    index: int,
+    *,
+    rsids: frozenset[str],
+    loci: ExtractLoci,
+) -> list[ExtractCandidate]:
+    """``extract``'s calls from a record that gave no streamed call (2.5.2).
+
+    A confident reference record (``0/0``, ``0|0``, haploid ``0``, ALT ``.``)
+    is a REF/REF call; a rejected one (FILTER, GQ, DP 0, missing) a no-call.
+    It stands for a requested rsID when its ID is that rsID, and for a
+    placement when it starts at it (an explicit record) or covers it (a
+    gVCF reference block, END inclusive) and carries no other rsID. A block
+    reports the placement's own REF, never its anchor base. ``index`` is the
+    record's number, kept on each call as ``record_index``.
+    """
+    if len(cols) < 8:
+        return []
+    try:
+        pos = int(cols[1])
+    except ValueError:
+        return []
+    record_id = _canonical_rsid(cols[2])
+    chrom = normalize_chromosome(cols[0])
+    end = _info_end(cols) if _reference_block_alts(cols[4]) else None
+    other_rsid = record_id.startswith("rs") and record_id not in rsids
+
+    def call(rsid: str, at: int, base: str) -> Variant:
+        a1 = a2 = base if state[0] == REFERENCE else NO_CALL_MARKER
+        variant = Variant(
+            rsid=rsid,
+            chromosome=chrom,
+            position=at,
+            allele1=a1,
+            allele2=a2,
+            ref=base,
+            ref_from_input=True,
+            input_alt=cols[4],
+        )
+        variant.record_index = index
+        return variant
+
+    out: list[ExtractCandidate] = []
+    if record_id in rsids and end is None:
+        out.append((record_id, None, call(record_id, pos, cols[3].upper())))
+    if other_rsid:
+        return out
+    for at, ref in loci.get(chrom, ()):
+        if end is None and at == pos and record_id not in rsids:
+            out.append(("", (chrom, at), call("", at, cols[3].upper())))
+        elif end is not None and pos <= at <= end:
+            out.append(("", (chrom, at), call("", at, ref)))
+    return out
+
+
+def _extract_hit(cols: list[str], rsids: frozenset[str], loci: ExtractLoci) -> bool:
+    """Whether a record can give ``extract`` a call: its ID, or a placement it reaches."""
+    if len(cols) < 8:
+        return False
+    if _canonical_rsid(cols[2]) in rsids:
+        return True
+    places = loci.get(normalize_chromosome(cols[0]))
+    if not places:
+        return False
+    try:
+        pos = int(cols[1])
+    except ValueError:
+        return False
+    end = _info_end(cols) if _reference_block_alts(cols[4]) else None
+    stop = pos if end is None else end
+    return any(pos <= at <= stop for at, _ref in places)
+
+
+def is_data_line(stripped: str) -> bool:
+    """Whether a line (without its line ending) after ``#CHROM`` is a data record.
+
+    The parser and the annotated-VCF writer number records with this one
+    rule, so ``Variant.record_index`` names the same line in both passes.
+    """
+    return bool(stripped) and not stripped.startswith("#")
 
 
 def reference_row_key(cols: list[str]) -> RowKey:
@@ -292,9 +392,11 @@ def reference_row_key(cols: list[str]) -> RowKey:
 
     CHROM, POS, REF, ALT, FILTER, FORMAT and every sample column: what decides
     whether the record is a usable reference call. The annotated-VCF writer
-    rewrites ID and INFO, so they are left out.
+    rewrites ID and INFO, so they are left out, except INFO's ``END``: a
+    reference block and an explicit record otherwise alike are different
+    records (2.5.2).
     """
-    return (cols[0], cols[1], cols[3], cols[4], cols[6], *cols[8:])
+    return (cols[0], cols[1], cols[3], cols[4], cols[6], str(_info_end(cols)), *cols[8:])
 
 
 def strongest_state(current: LocusState | None, new: LocusState | None) -> LocusState | None:
@@ -395,9 +497,17 @@ class VcfParser(GenotypeParser):
         self._watch_rsids: frozenset[str] = frozenset()
         self._watch_rows = False
         self._panel_rsids: frozenset[str] = frozenset()
+        self._panel_placements: Placements = {}
         self._panel_loci: dict[Locus, frozenset[str]] = {}
         self._panel_skip_mt = False
         self.panel_observations: dict[str, PanelObservation] = {}
+        # ``extract`` only (2.5.2): requested rsIDs and placements whose
+        # reference and rejected records become calls, and the header's
+        # contig order.
+        self._extract_rsids: frozenset[str] = frozenset()
+        self._extract_loci: ExtractLoci = {}
+        self.extract_candidates: list[ExtractCandidate] = []
+        self.contig_order: list[str] = []
         # Set by the build decision (GRCh37): records named as UCSC hg19
         # names the mitochondrion (chrM, M) are left out and counted in
         # ``ucsc_mito_dropped``, unless that name is declared with the rCRS
@@ -428,20 +538,35 @@ class VcfParser(GenotypeParser):
     def watch_panel(
         self,
         rsids: frozenset[str],
-        loci: dict[Locus, frozenset[str]] | None = None,
+        placements: Placements | None = None,
         *,
         skip_mt: bool = False,
     ) -> None:
         """Observe explicit panel rows only; never infer genotypes inside a block.
 
-        Placements, when supplied, must be on the already-decided build.
-        First occurrence wins with state, genotype and reason kept together.
+        ``placements`` (``allelix.attribution``) must be on the already-decided
+        build. A record counts for an rsID by the shared attribution predicate:
+        at one of its placements with that placement's REF, or by ID when the
+        rsID has none. State, genotype and reason are kept together. The first
+        observation wins, except that a usable call or reference record
+        replaces an earlier no-call (filtered, low quality, missing).
         Results reset on every parse and contain at most the requested rsIDs.
         Empty rsIDs remove the observer without erasing the last parse's results.
         """
         self._panel_rsids = rsids
-        self._panel_loci = loci or {}
+        self._panel_placements = placements or {}
+        self._panel_loci = placement_index(self._panel_placements)
         self._panel_skip_mt = skip_mt
+
+    def watch_extract(self, rsids: frozenset[str], loci: ExtractLoci | None = None) -> None:
+        """For ``extract``: keep the calls of reference and rejected records too.
+
+        Only this command calls it; analysis and export streams are unchanged.
+        The calls go to ``extract_candidates`` (``extract_reference_candidates``),
+        reset on every parse.
+        """
+        self._extract_rsids = rsids
+        self._extract_loci = loci or {}
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -526,6 +651,9 @@ class VcfParser(GenotypeParser):
             header = _read_header(handle)
             stats.is_gvcf = header.has_non_ref_alt
             sample_idx = self._resolve_sample_index(header, file_path)
+            self.contig_order = list(header.contig_lengths)
+            self.extract_candidates = []
+            extract_rsids, extract_loci = self._extract_rsids, self._extract_loci
 
             def record(covering: list[tuple[list[str], list[Locus]]]) -> None:
                 for row, loci in covering:
@@ -537,9 +665,21 @@ class VcfParser(GenotypeParser):
                     )
                     if state[0] == REFERENCE and excluded_mito:
                         self.ucsc_mito_dropped += 1
+                    block = _is_reference_block(row, sample_idx)
+                    # The state above means POS parsed; compare it as a number
+                    # (``01000`` is position 1000).
+                    start = int(row[1])
                     for locus in loci:
                         merged = strongest_state(stats.locus_states.get(locus), state)
                         stats.locus_states[locus] = merged or state
+                        if block:
+                            stats.block_states[locus] = (
+                                strongest_state(stats.block_states.get(locus), state) or state
+                            )
+                        elif start == locus[1]:
+                            by_ref = stats.start_states.setdefault(locus, {})
+                            ref_key = row[3].upper()
+                            by_ref[ref_key] = strongest_state(by_ref.get(ref_key), state) or state
                         if state[0] == REFERENCE and not excluded_mito:
                             offset = locus[1] - int(row[1])
                             base = row[3][offset].upper() if offset < len(row[3]) else None
@@ -554,38 +694,68 @@ class VcfParser(GenotypeParser):
                                 key = reference_row_key(row)
                                 stats.reference_rows.setdefault(key, set()).add(locus)
 
+            index = -1
             for line in handle:
                 stripped = line.rstrip("\n").rstrip("\r")
-                if not stripped or stripped.startswith("#"):
+                if not is_data_line(stripped):
                     continue
+                index += 1
                 cols = stripped.split("\t")
                 if not stats.is_gvcf and _is_reference_block(cols, sample_idx):
                     stats.is_gvcf = True
                 rsid = ""
                 panel_ids = empty_panel_ids
                 if self._panel_rsids and len(cols) >= 8:
-                    direct_id = _canonical_rsid(cols[2])
-                    if direct_id in self._panel_rsids:
-                        panel_ids = frozenset({direct_id})
-                    if self._panel_loci:
-                        try:
-                            locus = (normalize_chromosome(cols[0]), int(cols[1]))
-                        except ValueError:
-                            pass
-                        else:
-                            panel_ids |= self._panel_loci.get(locus, empty_panel_ids)
+                    try:
+                        record_pos = int(cols[1])
+                    except ValueError:
+                        pass
+                    else:
+                        panel_ids = frozenset(
+                            attributed_rsids(
+                                self._panel_rsids,
+                                normalize_chromosome(cols[0]),
+                                record_pos,
+                                cols[3],
+                                _canonical_rsid(cols[2]),
+                                self._panel_placements,
+                                self._panel_loci,
+                            )
+                        )
                 if watch_rsids and len(cols) > 2 and cols[2] != ".":
                     rsid = _canonical_rsid(cols[2])
                     rsid = rsid if rsid in watch_rsids else ""
-                variant, state = _parse_record(
-                    cols, stripped, sample_idx, stats, want_state=bool(rsid or panel_ids)
+                extract_hit = bool(extract_rsids or extract_loci) and _extract_hit(
+                    cols, extract_rsids, extract_loci
                 )
+                variant, state = _parse_record(
+                    cols,
+                    stripped,
+                    sample_idx,
+                    stats,
+                    want_state=bool(rsid or panel_ids or extract_hit),
+                )
+                if (
+                    extract_hit
+                    and variant is None
+                    and state is not None
+                    # The main stream's mitochondrial exclusion applies too.
+                    and not (drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito)
+                ):
+                    self.extract_candidates.extend(
+                        extract_reference_candidates(
+                            cols, state, index, rsids=extract_rsids, loci=extract_loci
+                        )
+                    )
                 if panel_ids:
                     observation = self._panel_observation(cols, variant, state)
                     if observation is not None:
                         for panel_id in panel_ids:
-                            if panel_id in self._panel_rsids:
-                                self.panel_observations.setdefault(panel_id, observation)
+                            earlier = self.panel_observations.get(panel_id)
+                            if earlier is None or (
+                                earlier.state == NO_CALL and observation.state != NO_CALL
+                            ):
+                                self.panel_observations[panel_id] = observation
                 if rsid and state is not None:
                     merged = strongest_state(stats.rsid_states.get(rsid), state)
                     stats.rsid_states[rsid] = merged or state
@@ -598,6 +768,7 @@ class VcfParser(GenotypeParser):
                 if drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito:
                     self.ucsc_mito_dropped += 1
                     continue
+                variant.record_index = index
                 yield variant
             if watcher is not None:
                 record(watcher.finish())
@@ -999,7 +1170,7 @@ def _parse_record(
         stats.malformed_rows += 1
         return None, None
 
-    if not want_state and _cannot_yield_call(alt):
+    if not want_state and _cannot_yield_call(alt) and not _reference_half_call(alt, gt, cols):
         # Reference block, reference-only row or SV: no Variant, and no
         # one is asking what it says. A reference-only row (ALT '.')
         # whose GT names an ALT is counted (ADR-0047).
@@ -1044,9 +1215,12 @@ def _parse_record(
         # genotype that is not hom-ref. Nothing to annotate.
         if all(i == "." for i in gt):
             return None, (NO_CALL, REASON_CALLER_NO_CALL)
-        if not alts:
-            _count_alt_less_call(gt, stats)
-        return None, None
+        if not _reference_half_call(alt, gt, cols):
+            if not alts:
+                _count_alt_less_call(gt, stats)
+            return None, None
+        # A single-position reference-only record with one allele called
+        # (``0/.``): a half call of REF, as on a record with an ALT (2.5.2).
 
     a1, a2 = _resolve_genotype(fields, ref, alts)
     if a1 is None or a2 is None:
@@ -1086,6 +1260,16 @@ def _parse_record(
         input_alt=alt,
     )
     return variant, state
+
+
+def _reference_half_call(alt: str, gt: list[str] | None, cols: list[str]) -> bool:
+    """A reference-only record (ALT ``.``, no ``END``) whose GT is ``0/.`` or ``.|0``."""
+    return (
+        alt in (".", "")
+        and gt is not None
+        and sorted(gt) == [".", "0"]
+        and _info_end(cols) is None
+    )
 
 
 def _count_alt_less_call(gt: list[str] | None, stats: VcfQualityStats) -> None:

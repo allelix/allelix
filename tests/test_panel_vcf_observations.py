@@ -102,11 +102,12 @@ def test_quality_options_reuse_parser_policy(tmp_path: Path, options, expected) 
     "first,second,gt,state,reason",
     [
         (_row(1, "0/0"), _row(1, "0/1", gq=3), "A/A", "typed_no_annotation", None),
-        (_row(1, "0/1", filt="q10"), _row(1, "0/1"), None, "no_call", "filtered"),
-        (_row(1, "./1"), _row(1, "0/0"), "G/.", "no_call", "no_call"),
+        # 2.5.2: a usable record replaces an earlier filtered or no-call one.
+        (_row(1, "0/1", filt="q10"), _row(1, "0/1"), "A/G", "typed_no_annotation", None),
+        (_row(1, "./1"), _row(1, "0/0"), "A/A", "typed_no_annotation", None),
     ],
 )
-def test_duplicate_observation_is_one_consistent_first_record(
+def test_duplicate_observation_is_one_consistent_record(
     tmp_path: Path,
     first,
     second,
@@ -234,9 +235,12 @@ def test_panel_placement_ambiguity_is_order_and_build_independent(
     result = run_analysis(
         path, VcfParser(), [], build_override=build, identity=identity, panel_rsids=PANEL
     )
+    # Since 2.5.2 panel attribution uses every identity placement on the
+    # build (``allelix.attribution``), not ``forward_sites``, so a record at
+    # either placement with its REF counts, in any row order.
     site = _sites(result)["rs990001"]
-    assert site["state"] == ("typed_no_annotation" if usable else "not_on_chip")
-    assert site["genotype"] == ("A/A" if usable else None)
+    assert site["state"] == "typed_no_annotation"
+    assert site["genotype"] == "A/A"
     assert result.annotations == result.hv_variants == []
 
 
@@ -334,7 +338,7 @@ def test_schema10_actual_writer_snapshot_diff_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "report.json"
     render_json(result, output_path=path)
     payload = json.loads(path.read_text())
-    assert payload["schema_version"] == "10"
+    assert payload["schema_version"] == "11"
     previous = load_previous_report(path)
     assert previous["panel_coverage"]["variants"][0]["genotype"] == "A/A"
     assert not compute_diff(
@@ -355,7 +359,7 @@ def test_ucsc_mito_eligibility_matches_existing_parser_policy(
     assert site["state"] == ("no_call" if reason else "typed_no_annotation")
 
 
-@pytest.mark.parametrize("version", [str(i) for i in range(1, 11)])
+@pytest.mark.parametrize("version", [str(i) for i in range(1, 12)])
 def test_snapshot_legacy_and_current_compatibility(tmp_path: Path, version: str) -> None:
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps({"schema_version": version, "annotations": []}))
@@ -364,6 +368,6 @@ def test_snapshot_legacy_and_current_compatibility(tmp_path: Path, version: str)
 
 def test_future_schema_rejected(tmp_path: Path) -> None:
     path = tmp_path / "future.json"
-    path.write_text('{"schema_version":"11","annotations":[]}')
+    path.write_text('{"schema_version":"12","annotations":[]}')
     with pytest.raises(ValueError, match="schema version"):
         load_previous_report(path)

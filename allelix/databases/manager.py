@@ -446,40 +446,54 @@ def check_tsv_header(path: Path, required: dict[int, str]) -> None:
             raise ClinVarFormatError(msg)
 
 
-def _decode_reported_phenotype(field: str) -> str:
-    """Strip MedGen ID prefixes from a `ReportedPhenotypeInfo` cell.
+def _is_medgen_id(text: str) -> bool:
+    """A MedGen concept ID (``C0856761``, ``CN169374``) or ``na``; not a name."""
+    if text == "na":
+        return True
+    digits = text[2:] if text.startswith("CN") else text[1:] if text.startswith("C") else ""
+    return digits.isdigit()
 
-    submission_summary encodes conditions as ``MedGenID:Name`` tuples
-    separated by ``|``. Sometimes ``MedGenID`` is ``na`` when no MedGen
-    identifier exists. We want the human-readable name without the
-    prefix; multiple conditions stay ``;``-joined to match the VCF
-    loader's output convention so the downstream display path is
-    unchanged.
+
+def clinvar_condition_names(field: str) -> str:
+    """The condition names of a ClinVar cell, ``; ``-joined, without MedGen IDs.
+
+    submission_summary's ``ReportedPhenotypeInfo`` lists ``MedGenID:Name``
+    tuples. Most cells separate them with ``|``, some with ``;``, and some
+    mix the two, so both separate conditions. ``MedGenID`` is ``na`` when
+    there is none. Only the ID is removed: a prefix before the first colon
+    is dropped when it is an ID, and a token that is only an ID is dropped.
+    A name's own colon or ID-like word stays (``"C3 deficiency: severe"``,
+    ``"C1234567-like syndrome"``).
+
+    The output is a fixed point, so it also cleans a condition an older
+    loader wrote to a cache (which removed only the first ID) and a
+    condition in an older report.
 
     Examples:
         ``"C3150901:Hereditary spastic paraplegia 48"``
             → ``"Hereditary spastic paraplegia 48"``
-        ``"na:not provided"``
-            → ``"not provided"``
-        ``"C1|C2:Cond A|C3:Cond B"``
-            → ``"Cond A; Cond B"``  (lone token "C1" dropped — no Name)
+        ``"na:not provided"`` → ``"not provided"``
+        ``"C1|C2:Cond A;C3:Cond B"`` → ``"Cond A; Cond B"``
     """
     if not field or field == "-":
         return ""
     parts = []
-    for token in field.split("|"):
-        token = token.strip()
-        if not token or token == "-":
-            continue
-        if ":" not in token:
-            # Token without "ID:Name" structure — skip rather than emit
-            # a bare MedGen ID that looks like noise.
-            continue
-        _, _, name = token.partition(":")
-        name = name.strip()
-        if name and name != "-":
-            parts.append(name)
+    for group in field.split("|"):
+        for token in group.split(";"):
+            token = token.strip()
+            prefix, colon, rest = token.partition(":")
+            if colon and _is_medgen_id(prefix.strip()):
+                token = rest.strip()
+            elif _is_medgen_id(token):
+                continue
+            if token and token != "-":
+                parts.append(token)
     return "; ".join(parts)
+
+
+def _decode_reported_phenotype(field: str) -> str:
+    """Strip MedGen IDs from a ``ReportedPhenotypeInfo`` cell (``clinvar_condition_names``)."""
+    return clinvar_condition_names(field)
 
 
 @dataclass(frozen=True)
@@ -515,7 +529,74 @@ class _Submission(NamedTuple):
         return _SUBMISSION_TIERS.get(self.review_status.lower(), _UNRANKED_TIER)
 
 
-def _variation_groups(path: Path) -> Iterator[tuple[int, list[_Submission]]]:
+@dataclass
+class _IngestCounts:
+    """What each stage of one ClinVar build kept, for the build log (2.5.2).
+
+    ``variant_rows``: variant_summary rows accepted for the build;
+    ``submission_rows``: submission_summary rows kept (not flagged, not a
+    placeholder classification); ``join_hits`` / ``join_misses``: the
+    VariationID groups looked up in variant_summary, found or not;
+    ``yielded``: cache records produced; ``inserted``: rows SQLite stored;
+    ``final``: the candidate's row count. None is a stage not reached.
+    """
+
+    variant_rows: int = 0
+    submission_rows: int = 0
+    join_hits: int = 0
+    join_misses: int = 0
+    yielded: int = 0
+    inserted: int | None = None
+    final: int | None = None
+
+    def text(self) -> str:
+        """The counts as one log line's ``label: value`` pairs."""
+
+        def shown(value: int | None) -> str:
+            return "not reached" if value is None else f"{value:,}"
+
+        return (
+            f"variant rows accepted: {self.variant_rows:,}; "
+            f"submission rows accepted: {self.submission_rows:,}; "
+            f"join hits: {self.join_hits:,}; join misses: {self.join_misses:,}; "
+            f"records yielded: {self.yielded:,}; rows inserted: {shown(self.inserted)}; "
+            f"final count: {shown(self.final)}"
+        )
+
+
+# The ClinVar build log in the data directory: every build's source hashes
+# and stage counts, appended whatever the outcome (2.5.2). It needs no
+# logging setup, so ``db update`` and the automatic refresh both keep it.
+CLINVAR_BUILD_LOG = "clinvar-build.log"
+
+
+def _append_build_log(path: Path | None, line: str) -> None:
+    """Append one timestamped line to the build log; a log that cannot be written is skipped."""
+    if path is None:
+        return
+    from datetime import UTC, datetime
+
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now(UTC).isoformat(timespec='seconds')} {line}\n")
+    except OSError as exc:
+        logger.warning("could not write the ClinVar build log %s: %s", path, exc)
+
+
+def _source_evidence(path: Path) -> str:
+    """``name: md5 <hex>, N bytes`` of a source file as it is on disk (compressed bytes)."""
+    digest = hashlib.md5(usedforsecurity=False)
+    size = 0
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return f"{path.name}: md5 {digest.hexdigest()}, {size:,} bytes"
+
+
+def _variation_groups(
+    path: Path, counts: _IngestCounts | None = None
+) -> Iterator[tuple[int, list[_Submission]]]:
     """Yield each VariationID's kept submissions, one group at a time.
 
     submission_summary is sorted by VariationID, which lets the split and
@@ -553,6 +634,8 @@ def _variation_groups(path: Path) -> Iterator[tuple[int, list[_Submission]]]:
             continue
         if significance.lower() in _CLINVAR_PLACEHOLDER_CLNSIGS:
             continue
+        if counts is not None:
+            counts.submission_rows += 1
         group.append(
             _Submission(
                 significance,
@@ -653,6 +736,7 @@ def iter_clinvar_tsv_records(
     build: str,
     *,
     aggregate_only: bool = True,
+    counts: _IngestCounts | None = None,
 ) -> Iterator[dict[str, object]]:
     """Yield one cache record per (variant, SCV submission).
 
@@ -690,6 +774,8 @@ def iter_clinvar_tsv_records(
             submission (forensic use, not production ingest); outranked
             rows not kept by ADR-0045 then carry
             ``OUTSIDE_AGGREGATE_CONFLICTING`` and no split.
+        counts: When given, filled with each stage's count as the stream
+            goes, for the build log (``_IngestCounts``).
 
     Yields:
         Dicts shaped for the cache INSERT in ``load_clinvar_tsv``. The
@@ -777,6 +863,8 @@ def iter_clinvar_tsv_records(
                 aggregate = cols[_VS_AGGREGATE].strip()
                 if not is_disease_classification(aggregate):
                     non_disease.add(variation_id)
+                if counts is not None:
+                    counts.variant_rows += 1
                 batch.append(
                     (
                         variation_id,
@@ -807,7 +895,7 @@ def iter_clinvar_tsv_records(
             # Second pass: stream submission_summary one VariationID at a
             # time, look the variant up once, emit its kept submissions.
             cursor = tmp_conn.cursor()
-            for variation_id, group in _variation_groups(submission_summary_path):
+            for variation_id, group in _variation_groups(submission_summary_path, counts):
                 if (
                     aggregate_only
                     and not any(s.contributes for s in group)
@@ -819,15 +907,23 @@ def iter_clinvar_tsv_records(
                     "normal_allele, aggregate FROM vs WHERE variation_id = ?",
                     (variation_id,),
                 ).fetchone()
+                if counts is not None:
+                    if row is None:
+                        counts.join_misses += 1
+                    else:
+                        counts.join_hits += 1
                 if row is None:
                     continue
-                yield from _group_records(
+                for record in _group_records(
                     variation_id,
                     group,
                     row,
                     outranked=_decide_outranked(group) if variation_id in non_disease else None,
                     aggregate_only=aggregate_only,
-                )
+                ):
+                    if counts is not None:
+                        counts.yielded += 1
+                    yield record
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -844,6 +940,7 @@ def load_clinvar_tsv(
     min_rows: int = 0,
     previous_count: int | None = None,
     record_name: str = "clinvar",
+    build_log: Path | None = None,
 ) -> None:
     """Build a ClinVar SQLite cache from the per-SCV TSV sources.
 
@@ -857,6 +954,8 @@ def load_clinvar_tsv(
     and carries final metadata under ``record_name``. Production setup
     supplies the per-build policy and validates all selected candidates
     before publishing any. Direct synthetic builds can use smaller floors.
+    ``build_log``, when given, gets the build's sources and stage counts
+    appended (``CLINVAR_BUILD_LOG``), on every outcome.
     """
     partial = db_path.with_name(db_path.name + ".partial")
     partial.unlink(missing_ok=True)
@@ -872,6 +971,7 @@ def load_clinvar_tsv(
             min_rows=min_rows,
             previous_count=previous_count,
             record_name=record_name,
+            build_log=build_log,
         )
         os.replace(partial, db_path)
     finally:
@@ -899,16 +999,75 @@ def _build_clinvar_cache(
     min_rows: int,
     previous_count: int | None,
     record_name: str,
+    build_log: Path | None = None,
 ) -> None:
-    """Write a new ClinVar cache at ``db_path``; raise when it holds no records."""
+    """Write a new ClinVar cache at ``db_path``; raise when it holds no records.
+
+    The build log gets each source's MD5 and size and every stage's count
+    (``_IngestCounts``) on every exit: success, a floor refusal, or a
+    failure after insertion, before the candidate is rolled back.
+    """
+    counts = _IngestCounts()
+    sources = (
+        f"ClinVar {build} build sources: {_source_evidence(variant_summary_path)}; "
+        f"{_source_evidence(submission_summary_path)}"
+    )
+    logger.info("%s", sources)
+    _append_build_log(build_log, sources)
+    try:
+        _write_clinvar_cache(
+            variant_summary_path,
+            submission_summary_path,
+            db_path,
+            build,
+            counts,
+            source_url=source_url,
+            remote_signal=remote_signal,
+            aggregate_only=aggregate_only,
+            min_rows=min_rows,
+            previous_count=previous_count,
+            record_name=record_name,
+        )
+    finally:
+        line = f"ClinVar {build} build counts: {counts.text()}"
+        logger.info("%s", line)
+        _append_build_log(build_log, line)
+
+
+def _write_clinvar_cache(
+    variant_summary_path: Path,
+    submission_summary_path: Path,
+    db_path: Path,
+    build: str,
+    counts: _IngestCounts,
+    *,
+    source_url: str,
+    remote_signal: str | None,
+    aggregate_only: bool,
+    min_rows: int,
+    previous_count: int | None,
+    record_name: str,
+) -> None:
+    """``_build_clinvar_cache``'s work, filling ``counts`` as it goes."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(CLINVAR_SCHEMA)
+        changes_before = conn.total_changes
+
+        def insert(rows: list[tuple[object, ...]]) -> None:
+            # The rows stored so far are kept whatever happens next: a later
+            # source failure, or an SQL error inside this batch.
+            try:
+                conn.executemany(_CLINVAR_INSERT, rows)
+            finally:
+                counts.inserted = conn.total_changes - changes_before
+
         batch: list[tuple[object, ...]] = []
         for record in iter_clinvar_tsv_records(
             variant_summary_path,
             submission_summary_path,
             build,
             aggregate_only=aggregate_only,
+            counts=counts,
         ):
             batch.append(
                 (
@@ -930,17 +1089,13 @@ def _build_clinvar_cache(
                 )
             )
             if len(batch) >= INSERT_BATCH_SIZE:
-                conn.executemany(
-                    _CLINVAR_INSERT,
-                    batch,
-                )
+                insert(batch)
                 batch.clear()
         if batch:
-            conn.executemany(
-                _CLINVAR_INSERT,
-                batch,
-            )
+            insert(batch)
+        counts.inserted = conn.total_changes - changes_before
         record_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
+        counts.final = record_count
         relative_floor = (9 * previous_count + 9) // 10 if previous_count is not None else 0
         if record_count == 0 or record_count < min_rows or record_count < relative_floor:
             problem = (

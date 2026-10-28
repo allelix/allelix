@@ -31,9 +31,11 @@ from allelix.databases.cache_state import (
     connect_readonly,
 )
 from allelix.databases.manager import (
+    CLINVAR_BUILD_LOG,
     CONTRIBUTES_TO_AGGREGATE,
     OUTSIDE_AGGREGATE_CONFLICTING,
     aggregate_germline_term,
+    clinvar_condition_names,
     download,
     fetch_remote_text,
     get_database_info,
@@ -329,6 +331,8 @@ class ClinVarAnnotator(Annotator):
         # row: i-probes at its locus, and D/I calls at its rsID.
         self._i_probes_at_plp_loci = 0
         self._di_calls_at_plp_rsids = 0
+        # rsID -> (the call as the file wrote it, gene) for those D/I calls.
+        self._di_calls_at_plp: dict[str, tuple[str, str]] = {}
         for build in self._builds:
             if build not in CLINVAR_SUPPORTED_BUILDS:
                 raise ValueError(
@@ -350,6 +354,10 @@ class ClinVarAnnotator(Annotator):
         # Per build, whether its cache is ready for this version: rsID
         # resolution outside annotation uses only a ready cache.
         self._ready_builds: dict[str, bool] = {}
+
+    def setup_destinations(self) -> tuple[Path, ...]:
+        """Each managed build's cache, and the build log every build appends to."""
+        return (*self._db_paths.values(), self.data_dir / CLINVAR_BUILD_LOG)
 
     def serves_build(self, build: str) -> bool:
         """Only the builds this run manages (the ready caches, when any are)."""
@@ -495,6 +503,7 @@ class ClinVarAnnotator(Annotator):
             record_name=clinvar_record_name(build),
             min_rows=_manager_module.CLINVAR_MIN_ROWS[build],
             previous_count=previous_count,
+            build_log=self.data_dir / CLINVAR_BUILD_LOG,
         )
 
     def is_ready(self) -> bool:
@@ -627,6 +636,30 @@ class ClinVarAnnotator(Annotator):
                 out.setdefault(rsid, set()).add((chrom, pos, ref, alt))
         return out
 
+    def reads_build(self, build: str) -> bool:
+        """True when this run has a readable cache for ``build``."""
+        return self._connection(build) is not None
+
+    def snv_alleles_many(self, rsids: list[str], build: str) -> dict[str, set[tuple[str, str]]]:
+        """``build``'s one-base ``(REF, ALT)`` rows per rsID (REF == ALT included).
+
+        An rsID with no such row is absent.
+        """
+        conn = self._connection(build)
+        out: dict[str, set[tuple[str, str]]] = {}
+        if conn is None:
+            return out
+        for start in range(0, len(rsids), _BATCH_CHUNK):
+            chunk = rsids[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, ref, alt in conn.execute(
+                f"SELECT DISTINCT rsid, ref, alt FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders}) AND length(ref) = 1 AND length(alt) = 1",
+                chunk,
+            ):
+                out.setdefault(rsid, set()).add((ref, alt))
+        return out
+
     def reference_at(self, rsid: str, build: str, locus: tuple[str, int]) -> str | None:
         """``reference_for``, only where ClinVar places ``rsid`` at ``locus`` on ``build``.
 
@@ -732,13 +765,17 @@ class ClinVarAnnotator(Annotator):
             found.setdefault((chrom, pos), set()).add((ref, rsid, bool(normal_allele)))
         return {locus: next(iter(v)) for locus, v in found.items() if len(v) == 1}
 
-    def normal_allele_for(self, rsid: str, build: str) -> str | None:
+    def normal_allele_for(
+        self, rsid: str, build: str, locus: tuple[str, int] | None = None
+    ) -> str | None:
         """The normal allele at `rsid` where `build`'s reference carries a variant, or None.
 
         Set only where ``reference_for`` returns the other build's REF of
         the same ClinVar variant (C at F5 rs6025 on GRCh37). ClinPGx and
         SNPedia derive their ``alt`` against it there; everywhere else
         they keep ``Variant.ref``, even where ClinVar's REF differs from it.
+        ``locus`` is accepted for the provider's signature and not used, as
+        before 2.5.2.
         """
         self.reference_for(rsid, build)
         return self._normal_alleles.get(build, {}).get(rsid)
@@ -991,17 +1028,26 @@ class ClinVarAnnotator(Annotator):
         ]
         rsids = sorted({v.rsid for v in di_calls})
         plp: set[str] = set()
+        genes: dict[str, str] = {}
         for start in range(0, len(rsids), _BATCH_CHUNK):
             chunk = rsids[start : start + _BATCH_CHUNK]
             placeholders = ",".join("?" * len(chunk))
-            for rsid, aggregate in conn.execute(
-                f"SELECT DISTINCT rsid, aggregate FROM clinvar_variants "
-                f"WHERE rsid IN ({placeholders})",
+            for rsid, aggregate, gene in conn.execute(
+                f"SELECT DISTINCT rsid, aggregate, gene FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders}) ORDER BY id",
                 chunk,
             ):
                 if is_pathogenic_aggregate(aggregate or ""):
                     plp.add(rsid)
+                    genes.setdefault(rsid, gene or "")
         self._di_calls_at_plp_rsids += sum(1 for v in di_calls if v.rsid in plp)
+        for v in di_calls:
+            if v.rsid in plp:
+                self._di_calls_at_plp.setdefault(v.rsid, (v.genotype, genes[v.rsid]))
+
+    def di_calls_at_plp(self) -> dict[str, tuple[str, str]]:
+        """The D/I calls ``di_calls_at_plp_rsids`` counts: rsID -> (call, gene)."""
+        return dict(self._di_calls_at_plp)
 
     def _loci_of_rsids(
         self, conn: sqlite3.Connection, variants: Iterable[Variant]
@@ -1143,8 +1189,7 @@ class ClinVarAnnotator(Annotator):
                 ref_agrees = True
                 # ADR-0047: the row is a carried allele's trimmed form.
                 carried = tuple(
-                    alt if a == written else ref if a == variant.ref else a
-                    for a in (allele1, allele2)
+                    _in_trimmed_frame(a, variant, row_pos, ref) for a in (allele1, allele2)
                 )
                 locus = (record_locus[0], row_pos)
             else:
@@ -1199,7 +1244,11 @@ class ClinVarAnnotator(Annotator):
                     attribution=self.attribution,
                     genotype_match=user_diploid,
                     references=references,
-                    condition="" if not condition or condition == "." else condition,
+                    # A cache built before 2.5.2 kept every ID after the
+                    # first; the names are cleaned as they are read.
+                    condition=""
+                    if not condition or condition == "."
+                    else clinvar_condition_names(condition),
                     gene=gene or "",
                     review_status=review_status or "",
                     alt=alt,
@@ -1237,6 +1286,23 @@ _R_REF = 2
 _R_ALT = 3
 _R_RSID = 9
 _R_AGGREGATE = 10
+
+
+# An allele that has another shape at a trimmed row's position (the deletion
+# ``GC>A`` beside ``GC>AC``, whose trimmed form is ``G>A``): VCF's symbol for
+# an allele that overlaps the site differently. It is never a row's ALT, so it
+# is not counted as a copy of one.
+_OTHER_SHAPE = "*"
+
+
+def _in_trimmed_frame(allele: str, variant: Variant, position: int, ref: str) -> str:
+    """One of the call's alleles as written at a trimmed row's ``position`` and ``ref``."""
+    if allele == NO_CALL_MARKER:
+        return allele
+    if allele == variant.ref:
+        return ref
+    trimmed = trim_allele_pair(variant.position, variant.ref or "", allele)
+    return trimmed[2] if trimmed[:2] == (position, ref) else _OTHER_SHAPE
 
 
 def _trimmed_alleles(variant: Variant) -> dict[tuple[int, str, str], str]:

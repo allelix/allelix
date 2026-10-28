@@ -1,0 +1,6 @@
+##fileformat=VCFv4.2
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Quality">
+##contig=<ID=2,length=242193529>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1
+2	1000	rs900961001	G	A,T	99	PASS	.	GT:GQ	1/2:99

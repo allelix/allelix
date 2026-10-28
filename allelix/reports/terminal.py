@@ -216,7 +216,8 @@ def render_terminal_diff(
                     _compact_significance(c.previous_significance, c.current.source),
                     _compact_significance(c.current.significance, c.current.source),
                     prev_mag_str,
-                    f"{c.current.magnitude:.1f}",
+                    f"{c.current.magnitude:.1f}"
+                    + (" (below display floor)" if c.below_display_floor else ""),
                     genotype,
                 ]
             )

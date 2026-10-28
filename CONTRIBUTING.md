@@ -316,7 +316,7 @@ class TestParse:
 ### Step 5: Run tests
 
 ```bash
-pytest tests/parsers/test_vendorname.py -v
+pytest tests/parsers/test_vendorname.py -v --no-cov
 ruff check allelix/parsers/vendorname.py tests/parsers/test_vendorname.py
 ```
 
@@ -340,6 +340,7 @@ import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
+from allelix.databases.cache_state import CacheStatus, cache_state, connect_readonly
 from allelix.models import Annotation
 
 if TYPE_CHECKING:
@@ -363,6 +364,7 @@ class MyDBAnnotator(Annotator):
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__(data_dir)
+        self._db_path = data_dir / "mydb.sqlite"
         self._conn: sqlite3.Connection | None = None
 
     def setup(self) -> None:
@@ -406,8 +408,12 @@ class MyDBAnnotator(Annotator):
         return annotations
 
     def is_ready(self) -> bool:
-        db_path = self.data_dir / "mydb.sqlite"
-        return db_path.exists()
+        return self.cache_status().ready
+
+    def cache_status(self) -> CacheStatus:
+        # Read-only check: the file, its main table with a row, and a
+        # database_versions row named "mydb" (ADR-0048).
+        return cache_state(self._db_path, "mydb", tables=("mydb_variants",))
 
     def version(self) -> str | None: ...
 
@@ -427,7 +433,7 @@ class MyDBAnnotator(Annotator):
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self.data_dir / "mydb.sqlite")
+            self._conn = connect_readonly(self._db_path)
         return self._conn
 ```
 
@@ -438,6 +444,13 @@ Key rules:
 - **Check genotype, not just rsID.** The user must carry the flagged allele.
   A variant existing in the database means nothing if the user has the
   reference (normal) allele.
+- **Readiness comes from `cache_status()`, never from the file existing**
+  (ADR-0048). `is_ready()` returns `self.cache_status().ready`. A file
+  that exists can still be missing a table, empty, or built by older code.
+- **Analysis never writes a cache.** Open it with `connect_readonly()`.
+  `setup()` downloads and builds it during `db update`; work that brings an
+  older cache up to date from local data belongs in `prepare_cache()`,
+  which also runs only in the update step.
 - Implement `close()` to release SQLite connections.
 - No-calls return empty (no annotation possible without a genotype).
 
@@ -474,7 +487,7 @@ SQLite database in a `tmp_path`. Test:
 ### Step 4: Run tests
 
 ```bash
-pytest tests/annotators/test_mydb.py -v
+pytest tests/annotators/test_mydb.py -v --no-cov
 ruff check allelix/annotators/mydb.py tests/annotators/test_mydb.py
 ```
 

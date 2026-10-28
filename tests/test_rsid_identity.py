@@ -171,7 +171,9 @@ _ROWS: tuple[IdentityRow, ...] = (
     # Strand inverted between builds: GRCh37 C>A is GRCh38 G>T.
     ("rs900173002", "1", 1_000_200, "C", "A", 1_100_200, "G", "T", 0),
     # Palindromic: translation must abstain.
-    ("rs900173003", "1", 1_000_300, "A", "T", 1_100_300, "A", "T", 1),
+    # Palindromic with references that differ between builds: the strand is a
+    # guess, so it abstains (a flagged row with equal references translates).
+    ("rs900173003", "1", 1_000_300, "A", "T", 1_100_300, "T", "A", 1),
     # Reference swap: GRCh37 alt G is the GRCh38 reference.
     ("rs900173004", "1", 1_000_400, "A", "A", 1_100_400, "G", "A", 0),
     ("rs900173004", "1", 1_000_400, "A", "G", 1_100_400, "G", "G", 0),

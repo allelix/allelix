@@ -11,8 +11,9 @@ for three things, all keyed by locus on the input's own build:
    (``alleles_at_loci`` feeding ``resolve_rsid_at_locus``).
 3. Translating a GRCh37 ``(chrom, pos, ref, alt)`` to its GRCh38 key so the
    GRCh38-only enrichment sources (gnomAD, AlphaMissense, CADD) can be
-   queried for GRCh37 input (``translate_to_grch38``). Palindromic sites
-   and alleles that are the GRCh38 reference abstain.
+   queried for GRCh37 input (``translate_to_grch38``). A row flagged
+   palindromic whose GRCh37 and GRCh38 reference bases differ abstains, and
+   so does an allele that is the GRCh38 reference.
 
 dbSNP is a US government work in the public domain.
 """
@@ -198,6 +199,24 @@ class RsidIdentityAnnotator(Annotator):
                 out.add(rsid)
         return out
 
+    def reference_differing_sites(self) -> dict[str, tuple[str, int, str, int, str]]:
+        """The rsIDs whose GRCh37 and GRCh38 REFs are different single bases.
+
+        ``rsid -> (chrom, pos37, ref37, pos38, ref38)``. One build's reference
+        carries the other's variant there (F5 rs6025). An rsID whose rows
+        disagree on any of these is left out. Read once, for
+        ``ReferenceCarriedFallback``.
+        """
+        if not self.is_ready():
+            return {}
+        found: dict[str, set[tuple[str, int, str, int, str]]] = {}
+        for rsid, chrom, pos37, ref37, pos38, ref38 in self._connection().execute(
+            "SELECT DISTINCT rsid, chrom, pos37, ref37, pos38, ref38 FROM rsid_identity "
+            "WHERE length(ref37) = 1 AND length(ref38) = 1 AND ref37 <> ref38"
+        ):
+            found.setdefault(rsid, set()).add((chrom, pos37, ref37, pos38, ref38))
+        return {rsid: next(iter(sites)) for rsid, sites in found.items() if len(sites) == 1}
+
     def normal_alleles_on_other_build(self, carried: dict[str, str], build: str) -> dict[str, str]:
         """The other build's REF at rsIDs whose ``build`` reference carries a variant allele.
 
@@ -315,9 +334,13 @@ class RsidIdentityAnnotator(Annotator):
         """Map GRCh37 ``(chrom, pos, ref, alt)`` keys to their GRCh38 keys.
 
         A key translates only when exactly one GRCh38 key matches it, the
-        site is not palindromic (the strand relation between builds would
-        be a guess) and the allele is not the GRCh38 reference (there is no
-        GRCh38 variant to look up). Everything else abstains.
+        allele is not the GRCh38 reference (there is no GRCh38 variant to
+        look up), and the row's strand relation is not a guess. A row the
+        table flags palindromic is a guess only where its GRCh37 and GRCh38
+        reference bases differ; with equal references it translates as
+        written. The flag marks a whole site, and the cache sets it on many
+        three-allele sites whose pairs are not in doubt. Everything else
+        abstains.
         """
         loci = {(chrom, pos) for chrom, pos, _ref, _alt in keys37}
         candidates: dict[Key, set[Key]] = {}
@@ -325,7 +348,7 @@ class RsidIdentityAnnotator(Annotator):
             "GRCh37", loci, "ref37, alt37, pos38, ref38, alt38, palindromic"
         ):
             key37 = (chrom, pos37, ref37, alt37)
-            if key37 not in keys37 or palindromic or alt38 == ref38:
+            if key37 not in keys37 or alt38 == ref38 or (palindromic and ref37 != ref38):
                 continue
             candidates.setdefault(key37, set()).add((chrom, pos38, ref38, alt38))
         return {k: next(iter(v)) for k, v in candidates.items() if len(v) == 1}

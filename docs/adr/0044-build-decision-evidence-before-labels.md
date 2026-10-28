@@ -222,3 +222,26 @@ described as decided by known-SNP positions.
   confirm or rule out a build for files the seeds do not cover, such as
   chromosome-subset exports. This is a possible future change, not part of
   this decision.
+
+## Amendment 2026-10-25 (2.5.2): positions that match no build
+
+The zero-vote stop (table row "seeds found but none at any build's
+coordinate") told the user to pass `--build`, and a run forced with `--build`
+over such a file went ahead with no warning. The positions matching only in
+the JSON's `build_evidence`, as `seeds_matched` 0 of N, was the only sign.
+
+Forcing a build does not fix a file whose positions match none, so:
+
+- **The stop** names the evidence and asks for the original file from the
+  testing company. It does not suggest `--build`, and neither does
+  `compare` (`--build1` / `--build2`) for this stop
+  (`PositionsMatchNoBuildError`, `suggest_override = False`).
+- **A run forced with `--build`** over such a file still runs, as forced,
+  but warns. A **Build warning** notice names the evidence (0 of N
+  known-SNP positions match any supported build) on the console of every
+  command and in the HTML. The reports' `report_warnings` keep it as
+  `build_override_unmatched`. This holds whether the seeds came from the
+  pre-scan or from the annotation pass (contig lengths with `--build`), and
+  in the indexed extract path.
+- **Unchanged:** `--build grch36` stays exempt, and confident contrary
+  evidence still stops. Matching or uninspected seeds give no warning.

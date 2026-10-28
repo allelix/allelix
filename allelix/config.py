@@ -35,6 +35,14 @@ _DEFAULT_SOURCES: dict[str, bool] = {
 }
 
 
+# The source names a config may name, under [sources] and [license].
+KNOWN_SOURCES: frozenset[str] = frozenset(_DEFAULT_SOURCES)
+
+
+class ConfigFileError(ValueError):
+    """config.toml cannot be read or parsed; the message names the file (2.5.2)."""
+
+
 @dataclass
 class AllelixConfig:
     """Persistent user configuration loaded from ``config.toml``."""
@@ -164,10 +172,18 @@ def _serialize(config: AllelixConfig) -> str:
 
 
 def save_config(data_dir: Path, config: AllelixConfig) -> None:
-    """Write config to disk."""
+    """Write config to disk.
+
+    Through a staged temp, so an interrupted or failed write keeps the
+    previous file (2.5.2). A destination that cannot be written raises
+    ``UnwritableDestinationError`` (an ``OSError``) naming the path.
+    """
+    from allelix.reports import atomic_write_text, check_writable
+
     path = _config_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_serialize(config), encoding="utf-8")
+    check_writable(path)
+    atomic_write_text(path, _serialize(config))
 
 
 def load_config(data_dir: Path, *, create: bool = True) -> AllelixConfig:
@@ -189,13 +205,21 @@ def load_config(data_dir: Path, *, create: bool = True) -> AllelixConfig:
                 logger.info("Created default config at %s", path)
         return config
 
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        with open(path, "rb") as fh:
+            raw = tomllib.load(fh)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        msg = (
+            f"Cannot read the config file {path}: {exc}. Fix it, or delete it to "
+            "start again from the defaults."
+        )
+        raise ConfigFileError(msg) from exc
 
+    # Only known source names are read; any other key is ignored (2.5.2).
     sources = dict(_DEFAULT_SOURCES)
     if "sources" in raw and isinstance(raw["sources"], dict):
         for key, val in raw["sources"].items():
-            if isinstance(val, bool):
+            if key in KNOWN_SOURCES and isinstance(val, bool):
                 sources[key] = val
 
     commercial = False
@@ -203,7 +227,7 @@ def load_config(data_dir: Path, *, create: bool = True) -> AllelixConfig:
     if "license" in raw and isinstance(raw["license"], dict):
         commercial = bool(raw["license"].get("commercial", False))
         for key, val in raw["license"].items():
-            if key != "commercial" and isinstance(val, bool) and val:
+            if key in KNOWN_SOURCES and isinstance(val, bool) and val:
                 license_overrides[key] = True
 
     cadd_full = False

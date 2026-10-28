@@ -7,13 +7,21 @@ new, removed, and changed annotations. Primary use cases: regression
 detection after code changes, QA after database refreshes, and user
 version-to-version comparison.
 
-Diff key: ``(source, rsid, condition, description, alt)``. This groups
-annotations so that reclassifications (significance changes) appear as
-"changed" rather than "removed + added", while two alleles at one variant
-stay apart. Under one key, findings with the same ``genotype_match`` pair
-first; one left on each side is a finding whose genotype changed, shown as
-changed. Row order never matters. A previous entry without ``alt`` (an
-older report) is matched on the key without it, as before.
+A finding's identity is ``(source, variant label, condition, allele)``
+(2.5.2): the source, the rsID or, without one, the locus (ADR-0046), the
+condition, and the allele. Its classification and the prose generated from
+it (``significance``, ``description``, ``magnitude``) are content, so a
+reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
+finding, not a removal and a new one. Two alleles at one variant, or two
+conditions, stay apart. Under one identity, findings pair by identical
+content first, then by ``genotype_match``, then in a fixed order; one left
+on each side is changed. Row order never matters. A previous entry without
+``alt`` (an older report) is matched on the identity without it.
+
+A previous finding is removed only when the current run has no finding with
+its identity at all, before any display floor: a finding still there but
+now scored below ``--min-magnitude`` is changed, and marked
+``below_display_floor``. New findings are the ones the report shows.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from allelix.databases.manager import clinvar_condition_names
 from allelix.models import annotation_label, annotation_to_public_dict, public_dict_label
 
 if TYPE_CHECKING:
@@ -31,7 +40,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 11)}
+_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 12)}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -55,6 +64,9 @@ class ChangedAnnotation:
     previous_magnitude: float | None
     # The baseline's genotype; None when the baseline entry has none.
     previous_genotype_match: str | None = None
+    # The finding is still there but below the report's display floor, so it
+    # is not in the annotation list (2.5.2).
+    below_display_floor: bool = False
 
 
 @dataclass
@@ -74,15 +86,37 @@ class DiffResult:
 
 # The variant is named by its rsID, or by its locus when it has none
 # (ADR-0046), so findings without an rsID do not collide.
-def _diff_key_from_annotation(a: Annotation) -> tuple[str, str, str, str]:
-    return (a.source, annotation_label(a), a.condition, a.description)
+def _diff_key_from_annotation(a: Annotation) -> tuple[str, str, str]:
+    return (a.source, annotation_label(a), a.condition)
 
 
-def _diff_key_from_dict(d: dict) -> tuple[str, str, str, str]:
-    return (d["source"], public_dict_label(d), d.get("condition", ""), d.get("description", ""))
+def _diff_key_from_dict(d: dict) -> tuple[str, str, str]:
+    return (d["source"], public_dict_label(d), _baseline_condition(d))
 
 
-_DiffKey = tuple[str, str, str, str] | tuple[str, str, str, str, str]
+def _baseline_condition(d: dict) -> str:
+    """A baseline's condition as this version writes it.
+
+    A report from before 2.5.2 can carry ClinVar MedGen IDs in the
+    condition; they are removed the way the loader now removes them, so
+    the same finding keeps one identity.
+    """
+    condition = d.get("condition", "")
+    if d["source"] == "clinvar" and isinstance(condition, str):
+        return clinvar_condition_names(condition)
+    return condition
+
+
+_DiffKey = tuple[str, str, str] | tuple[str, str, str, str]
+
+
+def _content(d: dict) -> tuple[str, str, str]:
+    """What a finding says, compared between runs rather than used to pair them."""
+    return (
+        str(d.get("significance", "")),
+        str(d.get("description", "")),
+        str(d.get("genotype_match", "")),
+    )
 
 
 def _previous_order(d: dict) -> tuple[str, str]:
@@ -93,6 +127,14 @@ def _previous_order(d: dict) -> tuple[str, str]:
 def _current_order(a: Annotation) -> tuple[str, str]:
     """The same order for current findings, from their public form."""
     return _previous_order(annotation_to_public_dict(a))
+
+
+def _same_content(c: Annotation, p: dict) -> bool:
+    return _content(annotation_to_public_dict(c)) == _content(p)
+
+
+def _same_genotype(c: Annotation, p: dict) -> bool:
+    return p.get("genotype_match") == c.genotype_match
 
 
 def load_previous_report(path: Path) -> dict:
@@ -145,61 +187,74 @@ def compute_diff(
     current: list[Annotation],
     previous_annotations: list[dict],
     previous_generated_at: str,
+    *,
+    unfiltered: list[Annotation] | None = None,
+    below_floor: set[int] | None = None,
 ) -> DiffResult:
-    """Compare current annotations against a previous report's annotation list."""
-    # A previous entry with ``alt`` is keyed with it, and every finding under
-    # a key is kept (one report can hold the same allele with two genotypes).
-    # An entry without ``alt`` (older schema) is matched the old way.
+    """Compare current annotations against a previous report's annotation list.
+
+    ``current`` is what the report shows. ``unfiltered`` is every current
+    finding in the report's scope before the display floors; a previous
+    finding is removed only when it has no counterpart there. A pair whose
+    current finding is not shown is changed; it is ``below_display_floor``
+    when its ``id`` is in ``below_floor`` (the display floors exclude it),
+    or, without ``below_floor``, whenever it is not shown. A finding the GWAS
+    rollup hides is not shown but not below the floor. Without
+    ``unfiltered``, ``current`` is both.
+    """
+    shown = {id(a) for a in current}
+    pool = current if unfiltered is None else unfiltered
+    # A previous entry with ``alt`` is keyed with it; one without (an older
+    # schema) on the identity without the allele. Every finding under a key
+    # is kept: one report can hold the same identity with two genotypes, or
+    # (several GWAS studies) two texts.
     prev_groups: dict[_DiffKey, list[dict]] = defaultdict(list)
-    prev_legacy: dict[_DiffKey, dict] = {}
+    legacy_keys: set[_DiffKey] = set()
     for p in previous_annotations:
         old_key = _diff_key_from_dict(p)
         if "alt" in p:
             prev_groups[(*old_key, p["alt"])].append(p)
         else:
-            prev_legacy[old_key] = p
+            prev_groups[old_key].append(p)
+            legacy_keys.add(old_key)
 
     curr_groups: dict[_DiffKey, list[Annotation]] = defaultdict(list)
-    curr_legacy: dict[_DiffKey, Annotation] = {}
-    for c in current:
+    for c in pool:
         key: _DiffKey = (*_diff_key_from_annotation(c), c.alt)
-        if key not in prev_groups and key[:4] in prev_legacy:
-            curr_legacy[key[:4]] = c
-        else:
-            curr_groups[key].append(c)
+        if key not in prev_groups and key[:3] in legacy_keys:
+            key = key[:3]
+        curr_groups[key].append(c)
 
-    # Same genotype first; a finding left on each side is one finding whose
-    # genotype changed. Both sides are sorted first, so the pairing never
-    # depends on the order of either report.
+    # Identical content first, then the same genotype, then the rest in a
+    # fixed order; one left on each side is one changed finding. Both sides
+    # are sorted first, so the pairing never depends on either report's
+    # order. A shown finding pairs before one below the display floor.
     pairs: list[tuple[Annotation, dict]] = []
     new: list[Annotation] = []
     removed: list[dict] = []
     for key in [*curr_groups, *(k for k in prev_groups if k not in curr_groups)]:
         previous_left = sorted(prev_groups.get(key, []), key=_previous_order)
-        current_left: list[Annotation] = []
-        for c in sorted(curr_groups.get(key, []), key=_current_order):
-            match = next(
-                (
-                    i
-                    for i, p in enumerate(previous_left)
-                    if p.get("genotype_match") == c.genotype_match
-                ),
-                None,
-            )
-            if match is None:
-                current_left.append(c)
-            else:
-                pairs.append((c, previous_left.pop(match)))
+        current_left = sorted(
+            curr_groups.get(key, []), key=lambda c: (id(c) not in shown, _current_order(c))
+        )
+        for same in (_same_content, _same_genotype):
+            unmatched: list[Annotation] = []
+            for c in current_left:
+                match = next((i for i, p in enumerate(previous_left) if same(c, p)), None)
+                if match is None:
+                    unmatched.append(c)
+                else:
+                    pairs.append((c, previous_left.pop(match)))
+            current_left = unmatched
         pairs.extend(zip(current_left, previous_left, strict=False))
         new.extend(current_left[len(previous_left) :])
         removed.extend(previous_left[len(current_left) :])
-    pairs.extend((c, prev_legacy[key]) for key, c in curr_legacy.items())
-    removed.extend(p for key, p in prev_legacy.items() if key not in curr_legacy)
 
     changed: list[ChangedAnnotation] = []
     for c, p in pairs:
         prev_mag = p.get("magnitude")
         significance_changed = c.significance != p.get("significance")
+        description_changed = "description" in p and c.description != p["description"]
         # Only a report that also names the allele is compared on the
         # genotype; earlier reports wrote it in other forms.
         genotype_changed = (
@@ -211,15 +266,20 @@ def compute_diff(
         magnitude_changed = prev_mag is not None and not math.isclose(
             c.magnitude, prev_mag, abs_tol=_MAGNITUDE_TOLERANCE
         )
-        if significance_changed or magnitude_changed or genotype_changed:
+        if significance_changed or magnitude_changed or genotype_changed or description_changed:
             changed.append(
                 ChangedAnnotation(
                     current=c,
                     previous_significance=p.get("significance", ""),
                     previous_magnitude=prev_mag,
                     previous_genotype_match=p.get("genotype_match"),
+                    below_display_floor=(
+                        id(c) in below_floor if below_floor is not None else id(c) not in shown
+                    ),
                 )
             )
+    # A current finding without a baseline counterpart is new only when shown.
+    new = [c for c in new if id(c) in shown]
 
     new.sort(key=lambda a: (-a.magnitude, a.rsid))
     removed.sort(key=lambda d: (-d.get("magnitude", 0.0), d.get("rsid", "")))
@@ -268,4 +328,5 @@ def diff_annotation_to_dict(a: ChangedAnnotation) -> dict:
     d["previous_significance"] = a.previous_significance
     d["previous_magnitude"] = a.previous_magnitude
     d["previous_genotype_match"] = a.previous_genotype_match
+    d["below_display_floor"] = a.below_display_floor
     return d

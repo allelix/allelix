@@ -125,4 +125,5 @@ def analyze(
         keep_filtered=keep_filtered,
         min_gq=min_gq,
         vcf_out=vcf_out,
+        filter_path=filter_file,
     )
