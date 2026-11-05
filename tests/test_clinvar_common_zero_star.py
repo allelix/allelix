@@ -116,6 +116,8 @@ _SITES: tuple[Site, ...] = (
         table=((30_000, 40_000, "G", "A"), (30_500, 40_000, "G", "A")), more37=(30_500,),
     ),
     # The call is not at the table's locus; ClinVar also has the rsID there.
+    # The identity table contradicts the call, so no source reads it
+    # (ADR-0063); without the table its row is scored as before.
     Site(
         "rs900970014", "2", 31_000, 41_000, "Likely pathogenic", _NONE, "Likely pathogenic", 0.5,
         table=((31_500, 41_500, "G", "A"),), more37=(31_500,), more38=(41_500,),
@@ -168,7 +170,6 @@ _EXPECTED = {
     "rs900970011": (7.0, False),
     "rs900970012": (7.0, False),
     "rs900970013": (7.0, False),
-    "rs900970014": (7.0, False),
     "": (7.0, False),
     "rs1800562": (9.0, False),
     "rs334": (9.0, False),
@@ -288,18 +289,28 @@ def _run(
     )
 
 
-def _clinvar_rows(result) -> dict[str, Annotation]:
+# The site whose call contradicts the identity table (ADR-0063).
+_IDENTITY_CONFLICT = "rs900970014"
+
+
+def _clinvar_rows(result, *, identity: bool = True) -> dict[str, Annotation]:
     """ClinVar rows by rsID; the rsID-less row is keyed ""."""
     rows = {}
     for a in result.annotations:
         if a.source == "clinvar":
             rows[a.rsid if a.rsid.startswith("rs") else ""] = a
-    assert set(rows) == {s.rsid for s in _SITES}
+    expected = {s.rsid for s in _SITES}
+    if identity:
+        expected.discard(_IDENTITY_CONFLICT)
+    assert set(rows) == expected
     return rows
 
 
-def _scored(result) -> dict[str, tuple[float, bool]]:
-    return {k: (a.magnitude, a.common_allele_capped) for k, a in _clinvar_rows(result).items()}
+def _scored(result, *, identity: bool = True) -> dict[str, tuple[float, bool]]:
+    return {
+        k: (a.magnitude, a.common_allele_capped)
+        for k, a in _clinvar_rows(result, identity=identity).items()
+    }
 
 
 class TestRule:
@@ -341,7 +352,7 @@ class TestRule:
         self, tmp_path: Path, data: Path, cm_stack
     ) -> None:
         result = _run(tmp_path, data, cm_stack, identity=False)
-        assert not any(m for _mag, m in _scored(result).values())
+        assert not any(m for _mag, m in _scored(result, identity=False).values())
 
     def test_with_one_clinvar_build_nothing_changes(
         self, tmp_path: Path, data: Path, cm_stack

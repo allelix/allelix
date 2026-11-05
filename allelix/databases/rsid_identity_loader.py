@@ -17,12 +17,14 @@ dbSNP.
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 from typing import TYPE_CHECKING, TextIO
 
 from allelix.databases._versions import RSID_IDENTITY_SCHEMA_VERSION
 from allelix.databases.loader_utils import install_prebuilt_gz_cache
 from allelix.databases.schema import RSID_IDENTITY_SCHEMA
+from allelix.databases.staging import owned_staging
 from allelix.utils.allele import complement
 
 if TYPE_CHECKING:
@@ -34,7 +36,7 @@ RSID_IDENTITY_RECORD_NAME = "rsid_identity"
 
 RSID_IDENTITY_CACHE_URL = (
     "https://huggingface.co/datasets/allelix/allelix-rsid-identity"
-    "/resolve/main/rsid_identity.sqlite.gz"
+    "/resolve/bbf0b5ffe74f6b85fdb94d88153374c795cd1738/rsid_identity.sqlite.gz"
 )
 
 RSID_IDENTITY_EXPECTED_SHA256 = "2a00787cd0be4e7572efd21686013c49f3d0180137cd4403730524d50a5db285"
@@ -327,35 +329,41 @@ def write_identity_db(
     source_url: str,
     downloaded_at: str,
 ) -> int:
-    """Write identity rows into a fresh SQLite cache; return the row count."""
-    if db_path.exists():
-        db_path.unlink()
+    """Write identity rows into a fresh SQLite cache; return the row count.
+
+    The cache is written to a staging file of this build's own beside
+    ``db_path`` and moved onto it only when complete: a failed build keeps
+    the cache already there, and another build of the same file can neither
+    publish nor remove this one's bytes (``owned_staging``).
+    """
     count = 0
-    with contextlib.closing(sqlite3.connect(db_path)) as conn:
-        conn.executescript(RSID_IDENTITY_SCHEMA)
-        batch: list[IdentityRow] = []
-        for row in rows:
-            batch.append(row)
-            if len(batch) >= 50_000:
+    with owned_staging(db_path) as staging:
+        with contextlib.closing(sqlite3.connect(staging)) as conn:
+            conn.executescript(RSID_IDENTITY_SCHEMA)
+            batch: list[IdentityRow] = []
+            for row in rows:
+                batch.append(row)
+                if len(batch) >= 50_000:
+                    conn.executemany("INSERT INTO rsid_identity VALUES (?,?,?,?,?,?,?,?,?)", batch)
+                    count += len(batch)
+                    batch.clear()
+            if batch:
                 conn.executemany("INSERT INTO rsid_identity VALUES (?,?,?,?,?,?,?,?,?)", batch)
                 count += len(batch)
-                batch.clear()
-        if batch:
-            conn.executemany("INSERT INTO rsid_identity VALUES (?,?,?,?,?,?,?,?,?)", batch)
-            count += len(batch)
-        conn.execute(
-            "INSERT INTO database_versions (name, source_url, version, downloaded_at, "
-            "record_count, local_version_tag) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                RSID_IDENTITY_RECORD_NAME,
-                source_url,
-                version,
-                downloaded_at,
-                count,
-                f"sv:{RSID_IDENTITY_SCHEMA_VERSION}",
-            ),
-        )
-        conn.commit()
+            conn.execute(
+                "INSERT INTO database_versions (name, source_url, version, downloaded_at, "
+                "record_count, local_version_tag) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    RSID_IDENTITY_RECORD_NAME,
+                    source_url,
+                    version,
+                    downloaded_at,
+                    count,
+                    f"sv:{RSID_IDENTITY_SCHEMA_VERSION}",
+                ),
+            )
+            conn.commit()
+        os.replace(staging, db_path)
     return count
 
 

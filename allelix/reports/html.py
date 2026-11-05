@@ -37,6 +37,7 @@ from allelix.reports import (
     input_left_unchecked,
     input_method_label,
     is_imputed,
+    placement_lines,
     vcf_quality_lines,
 )
 from allelix.reports._pipeline import (
@@ -1626,8 +1627,10 @@ def render_html(
         "</div>"
     )
 
-    input_quality = vcf_quality_lines(result.vcf_quality) + array_quality_lines(
-        result.array_quality, result.probe_classes
+    input_quality = (
+        vcf_quality_lines(result.vcf_quality)
+        + array_quality_lines(result.array_quality, result.probe_classes)
+        + placement_lines(result.placement)
     )
     common = result.clinvar_common_allele
     # An imputed input's caution (confirm by direct genotyping) stays in view.

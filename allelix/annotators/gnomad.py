@@ -14,7 +14,6 @@ allele frequencies (no SpliceAI or other restrictively licensed fields).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
@@ -35,6 +34,7 @@ from allelix.databases.manager import (
     get_database_info,
     verify_file_hash,
 )
+from allelix.databases.staging import owned_directory
 
 if TYPE_CHECKING:
     import sqlite3
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation, Variant
 
-logger = logging.getLogger(__name__)
 
 _BULK_BATCH_SIZE = 900
 # Positions bound per position-lookup statement, plus one chromosome:
@@ -88,18 +87,17 @@ class GnomadAnnotator(Annotator):
 
     def setup(self) -> None:
         """Download the pre-built gnomAD exome frequency cache from HuggingFace."""
-        gz_path = self.data_dir / "gnomad.sqlite.gz"
-        download(GNOMAD_CACHE_URL, gz_path)
-        verify_file_hash(gz_path, "sha256", GNOMAD_EXPECTED_SHA256)
-        install_prebuilt_cache(
-            gz_path,
-            self._db_path,
-            source_url=GNOMAD_CACHE_URL,
-        )
-        try:
-            gz_path.unlink()
-        except OSError:
-            logger.warning("Could not remove staged file at %s", gz_path)
+        # This setup's own download directory: another setup of the same
+        # cache can neither replace nor remove the file it verifies.
+        with owned_directory(self.data_dir, "gnomad") as staging:
+            gz_path = staging / "gnomad.sqlite.gz"
+            download(GNOMAD_CACHE_URL, gz_path)
+            verify_file_hash(gz_path, "sha256", GNOMAD_EXPECTED_SHA256)
+            install_prebuilt_cache(
+                gz_path,
+                self._db_path,
+                source_url=GNOMAD_CACHE_URL,
+            )
 
     def is_ready(self) -> bool:
         """True when the gnomAD SQLite cache exists with current schema version.

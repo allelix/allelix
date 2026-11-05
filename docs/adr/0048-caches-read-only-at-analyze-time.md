@@ -114,3 +114,10 @@ or a read-only directory.
   `--no-update` they are skipped as outdated until the next run without it.
 - The published WAL files stay as they are; the installer converts them on
   install.
+
+## Amendment 2.6.0 (2026-11-01): switched-off sources
+
+In `analyze` and the focused reports, the automatic update step leaves the
+cache files of a source switched off for the run untouched: no WAL
+conversion, no `prepare_cache`, no refresh, and its cache never decides
+readiness. `db update` still converts and prepares every cache (ADR-0067).

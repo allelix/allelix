@@ -18,10 +18,13 @@ import contextlib
 import logging
 import re
 import threading
+from array import array
+from bisect import bisect_left
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from allelix.annotators._placement import PlacementStats, place_stream
 from allelix.annotators._resolution import resolve_batch
 from allelix.annotators.base import variant_locus
 from allelix.attribution import (
@@ -62,12 +65,15 @@ from allelix.utils.build_detect import (
     NO_SEEDS,
     RCRS_LENGTH,
     SOURCE_OVERRIDE,
+    SOURCE_RSID_PLACEMENT,
     BuildDecision,
     BuildDecisionError,
     BuildDetectionResult,
+    NoPositionsError,
     check_late_seeds,
     contig_length_verdict,
     decide_build,
+    decide_placement_build,
     detect_build,
     known_snp_seed,
     needs_late_seeds,
@@ -97,7 +103,13 @@ if TYPE_CHECKING:
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
     from allelix.models import Annotation
     from allelix.parsers.base import GenotypeMetadata, GenotypeParser
-    from allelix.parsers.vcf import Locus, LocusState, VcfParser, VcfQualityStats
+    from allelix.parsers.vcf import (
+        Locus,
+        LocusState,
+        ReferenceTargetCall,
+        VcfParser,
+        VcfQualityStats,
+    )
     from allelix.reports._sources import SourceRecord
     from allelix.reports.vcf import VcfWriteInputs
 
@@ -241,7 +253,7 @@ def panel_reason_label(reason: str | None) -> str:
     """Plain-language explanation of an unusable explicit VCF panel record."""
     return {
         "no_call": "Caller no-call",
-        "filtered": "Caller FILTER rejected",
+        "filtered": "Caller FILTER or sample FT rejected",
         "low_gq_call": "Low genotype quality or zero depth",
         "low_gq_block": "Low genotype quality or zero depth",
         "spanning_deletion": "Spanning deletion not assessed",
@@ -347,6 +359,9 @@ class AnalysisResult:
     # input; ``probe_classes`` is also None when ClinVar did not run.
     array_quality: ArrayInputStats | None = None
     probe_classes: dict[str, int] | None = None
+    # What placement did with a file that has no positions (its rsIDs
+    # placed from the identity table, ADR-0069). None for files with positions.
+    placement: PlacementStats | None = None
     # How the input's genotypes were produced, when the file declares it
     # (GenotypeMetadata ``method``, e.g. "low-pass-wgs-imputed" for
     # MyHeritage low-pass WGS). Empty when not declared.
@@ -633,6 +648,265 @@ def watch_high_value(
     return placements if hv_set else None
 
 
+# Sources that read a homozygous-reference genotype from a chip call, and so
+# from an explicit VCF reference call (ADR-0064).
+_REFERENCE_CALL_SOURCES = frozenset({"gwas", "pharmgkb", "snpedia"})
+
+
+# An rsID's placement on the build: the rsID, and its minimal REF/ALT pairs
+# (ADR-0047) at the watched position.
+_Target = tuple[str, frozenset[tuple[int, str, str]]]
+
+
+@dataclass
+class _TargetIndex:
+    """The sources' targets on the build, held compactly while the file streams (ADR-0064).
+
+    ``sites``: each chromosome's sorted watched positions (a target's
+    trimmed first base). ``rsids``: the sources' rsID numbers, sorted.
+    ``shifted``: a trimmed site whose identity row is written elsewhere
+    (a padded row), with the written positions. A target's alleles are
+    read from the identity table only where a reference record was kept.
+    """
+
+    sites: dict[str, array[int]] = field(default_factory=dict)
+    rsids: array[int] = field(default_factory=lambda: array("q"))
+    shifted: dict[Locus, set[int]] = field(default_factory=dict)
+
+
+def _rsid_number(rsid: str) -> int | None:
+    return int(rsid[2:]) if rsid.startswith("rs") and rsid[2:].isdigit() else None
+
+
+def _sorted_unique(values: array[int]) -> array[int]:
+    out: array[int] = array("q")
+    for value in sorted(values):
+        if not out or out[-1] != value:
+            out.append(value)
+    return out
+
+
+def _target_pairs(
+    pos: int, ref: str | None, alt: str | None
+) -> dict[int, set[tuple[int, str, str]]]:
+    """An identity row's trimmed REF/ALT pairs by site (no left-alignment); empty when unusable."""
+    ref = (ref or "").upper()
+    if not pos or not ref or not set(ref) <= _BASES:
+        return {}
+    alts = [a for a in (alt or "").upper().split(",") if a and set(a) <= _BASES]
+    if len(ref) == 1 and all(len(a) == 1 for a in alts):
+        # Single-base changes, the common row: each pair is already trimmed.
+        pairs = [(pos, ref, a) for a in alts if a != ref]
+    else:
+        pairs = [trim_allele_pair(pos, ref, a) for a in alts if a != ref]
+    if not pairs:
+        if len(ref) != 1:
+            return {}
+        pairs = [(pos, ref, "")]
+    by_site: dict[int, set[tuple[int, str, str]]] = {}
+    for pair in pairs:
+        by_site.setdefault(pair[0], set()).add(pair)
+    return by_site
+
+
+def _reference_targets(
+    sources: list[Annotator], identity: RsidIdentityAnnotator | None, build: str
+) -> _TargetIndex | None:
+    """The sources' rsIDs, and the sites of their placements on ``build`` (ADR-0064).
+
+    Each identity row's REF/ALT pairs are trimmed (no left-alignment) and
+    watched at their position: a single-base change at its base, any other
+    variant (an insertion, a deletion, an MNV) at its first base. The rsIDs
+    and rows are streamed into sorted integer arrays, so nothing is held per
+    rsID or row. No sites without the identity table or on a build it does
+    not cover; the rsIDs are still given, for records that name them. None
+    when no source names an rsID.
+    """
+    numbers: array[int] = array("q")
+    for source in sources:
+        for rsid in source.reference_call_rsids():
+            number = _rsid_number(rsid)
+            if number is not None:
+                numbers.append(number)
+    if not numbers:
+        return None
+    index = _TargetIndex(rsids=_sorted_unique(numbers))
+    del numbers
+    if identity is None or build not in _IDENTITY_BUILDS or not identity.is_ready():
+        return index
+    sites: dict[str, array[int]] = {}
+    names: dict[str, str] = {}
+    for _rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 in identity.iter_placements(
+        f"rs{number}" for number in index.rsids
+    ):
+        pos, ref, alt = (pos37, ref37, alt37) if build == BUILD_GRCH37 else (pos38, ref38, alt38)
+        by_site = _target_pairs(pos, ref, alt)
+        if not by_site:
+            continue
+        name = names.get(chrom)
+        if name is None:
+            name = names[chrom] = normalize_chromosome(chrom)
+        at = sites.get(name)
+        if at is None:
+            at = sites[name] = array("q")
+        for site in by_site:
+            at.append(site)
+            if site != pos:
+                index.shifted.setdefault((name, site), set()).add(pos)
+    index.sites = {chrom: _sorted_unique(at) for chrom, at in sites.items()}
+    return index
+
+
+def _has_number(numbers: array[int], number: int | None) -> bool:
+    if number is None:
+        return False
+    at = bisect_left(numbers, number)
+    return at < len(numbers) and numbers[at] == number
+
+
+def _targets_at(
+    index: _TargetIndex, identity: RsidIdentityAnnotator | None, build: str, loci: set[Locus]
+) -> dict[Locus, list[_Target]]:
+    """The targets at these watched loci, from the identity table: ``locus -> [(rsid, pairs)]``."""
+    if not loci or identity is None or not identity.is_ready():
+        return {}
+    query = set(loci)
+    for locus in loci:
+        query.update((locus[0], pos) for pos in index.shifted.get(locus, ()))
+    targets: dict[Locus, list[_Target]] = {}
+    for (chrom, pos), rows in identity.alleles_at_loci(build, query).items():
+        for ref, alt, rsid in rows:
+            if not _has_number(index.rsids, _rsid_number(rsid)):
+                continue
+            for site, found in _target_pairs(pos, ref, alt).items():
+                if (chrom, site) not in loci:
+                    continue
+                place = targets.setdefault((chrom, site), [])
+                target = (rsid, frozenset(found))
+                if target not in place:
+                    place.append(target)
+    return targets
+
+
+def _not_base_rsids(
+    identity: RsidIdentityAnnotator | None, rsids: set[str], build: str
+) -> set[str]:
+    """The rsIDs among these that the table places as any variant but a single-base change."""
+    if not rsids or identity is None or build not in _IDENTITY_BUILDS or not identity.is_ready():
+        return set()
+    out: set[str] = set()
+    for rsid, rows in identity.placements(rsids).items():
+        for _chrom, pos37, ref37, alt37, pos38, ref38, alt38 in rows:
+            pos, ref, alt = (
+                (pos37, ref37, alt37) if build == BUILD_GRCH37 else (pos38, ref38, alt38)
+            )
+            for found in _target_pairs(pos, ref, alt).values():
+                if not all(_is_base_change(pair) for pair in found):
+                    out.add(rsid)
+    return out
+
+
+def _is_base_change(pair: tuple[int, str, str]) -> bool:
+    return len(pair[1]) == 1 and len(pair[2]) <= 1
+
+
+def _describes(call: ReferenceTargetCall, target: _Target) -> tuple[int, str, str] | None:
+    """The target pair a reference call's record is evidence for, or None (ADR-0064).
+
+    A single-base change (``G>A``) is read from any record with that
+    reference base there. Any other target (an insertion, a deletion, an
+    MNV) only from a record with one ALT whose trimmed pair is the
+    target's (ADR-0047; no left-alignment): a record describing another
+    variant at the position says nothing about this one.
+    """
+    record_pos, record_ref, record_alts = call.record
+    exact: set[tuple[int, str, str]] = set()
+    for alt in record_alts:
+        if alt and alt != "." and set(alt) <= _BASES and set(record_ref) <= _BASES:
+            exact.add(trim_allele_pair(record_pos, record_ref, alt))
+    for pair in sorted(target[1]):
+        if _is_base_change(pair):
+            if pair[1] == call.base:
+                return pair
+        elif pair in exact:
+            return pair
+    return None
+
+
+def _reference_target_variants(
+    calls: list[ReferenceTargetCall],
+    targets: dict[Locus, list[_Target]],
+    rsids: array[int],
+    build: str,
+    *,
+    skip: set[tuple[str, Locus]],
+    blocked: set[Locus],
+    skip_mt: bool,
+    not_base: set[str],
+) -> list[Variant]:
+    """REF/REF calls for the sources' rsIDs where a confident reference record sits (ADR-0064).
+
+    A single-base record naming an rsID the table does not place there
+    stands for it at its own position, as a chip call does, unless the
+    table places it as any other variant than a single-base change; the
+    identity check then decides (ADR-0063). Otherwise a record stands for each rsID
+    placed at the position (only its own, when it names one) that it is
+    evidence for (``_describes``). A single-base change is called with
+    that base at its position; any other variant as its full trimmed REF
+    at its trimmed position, homozygous. Each rsID and position is called once, from
+    the first record; one ClinVar's reference-carried path already called
+    (``skip``) is not called again. No call is made where another record
+    changes the position, or, for any other variant, any position of its
+    trimmed REF (``blocked``).
+    """
+    out: list[Variant] = []
+    seen = set(skip)
+    for c in calls:
+        chrom, pos = c.locus
+        if skip_mt and chrom == "MT":
+            continue
+        placed = targets.get(c.locus, ())
+        here = [t for t in placed if not c.rsid or t[0] == c.rsid]
+        found: list[tuple[str, tuple[int, str, str] | None]] = []
+        if c.rsid and c.own_site and not here:
+            # Not placed here: the record's name decides and identity checks
+            # it, unless the rsID is another kind of variant (``not_base``).
+            if _has_number(rsids, _rsid_number(c.rsid)) and c.rsid not in not_base:
+                found.append((c.rsid, None))
+        else:
+            for target in here:
+                pair = _describes(c, target)
+                if pair is not None:
+                    found.append((target[0], pair))
+        for rsid, pair in found:
+            if (rsid, c.locus) in seen:
+                continue
+            if pair is None or _is_base_change(pair):
+                if c.locus in blocked:
+                    continue
+                at, ref = pos, c.base
+            else:
+                span = range(pair[0], pair[0] + len(pair[1]))
+                if any((chrom, site) in blocked for site in span):
+                    continue
+                at, ref = pair[0], pair[1]
+            seen.add((rsid, c.locus))
+            variant = Variant(
+                rsid,
+                chrom,
+                at,
+                ref,
+                ref,
+                build=build,
+                ref=ref,
+                ref_from_input=True,
+                haploid=c.haploid,
+            )
+            variant.record_index = c.record_index
+            out.append(variant)
+    return out
+
+
 def reference_carried_calls(
     stats: VcfQualityStats | None,
     sites: dict[Locus, tuple[str, str, bool]],
@@ -684,19 +958,25 @@ def reference_carried_calls(
                 stats.reference_ploidy_conflicts += matching_count
                 continue
             if matching:
-                calls.append(
-                    Variant(
-                        rsid,
-                        chrom,
-                        pos,
-                        allele,
-                        allele,
-                        build=build,
-                        ref=allele,
-                        ref_from_input=any(source.ref is not None for source in matching),
-                        haploid=matching[0].haploid,
-                    )
+                call = Variant(
+                    rsid,
+                    chrom,
+                    pos,
+                    allele,
+                    allele,
+                    build=build,
+                    ref=allele,
+                    ref_from_input=any(source.ref is not None for source in matching),
+                    haploid=matching[0].haploid,
                 )
+                # An explicit record's call keeps that record (ADR-0062).
+                numbers = [
+                    stats.reference_record_index[key]
+                    for key in (((chrom, pos), source) for source in matching)
+                    if key in stats.reference_record_index
+                ]
+                call.record_index = min(numbers) if numbers else None
+                calls.append(call)
         elif state is None and not stats.is_gvcf and not normal_allele:
             unseen += 1
             unseen_rsids.append(rsid)
@@ -776,34 +1056,159 @@ _AUTOSOMES = frozenset(str(n) for n in range(1, 23))
 
 
 def _mark_haploid(annotations: list[Annotation], variants: list[Variant]) -> None:
-    """Mark the annotations of calls the file declares haploid (ADR-0050).
+    """Give each annotation its own call's ploidy and record (ADR-0050, ADR-0062).
 
-    Matching used the called allele twice; the report shows it once, as a
-    hemizygous call. An annotation finds its call by the input record it
-    names (``record_key``: a VCF allele matched after trimming, whose locus
-    is the trimmed position, ADR-0047), else by locus, else by rsID when it
-    has no locus.
+    ``variants`` is one run of ``_record_runs``: no two calls in it share a
+    locus or an rsID, so an annotation finds its call without ambiguity, by
+    the input record it names (``record_key``: a VCF allele matched after
+    trimming, whose locus is the trimmed position, ADR-0047), else by locus,
+    else by rsID when it has no locus. A haploid call's annotations show the
+    called allele once, as a hemizygous call. Nothing is relabelled by
+    another record at the same locus.
     """
-    haploid = [v for v in variants if v.haploid]
-    if not haploid:
-        return
-    loci = {variant_locus(v) for v in haploid}
-    records = {(v.chromosome, v.position, v.ref) for v in haploid if v.ref is not None}
-    rsids = {v.rsid for v in haploid if v.rsid}
+    by_record = {(v.chromosome, v.position, v.ref): v for v in variants if v.ref is not None}
+    by_locus = {variant_locus(v): v for v in variants}
+    # A padded call's finding can carry its trimmed locus without a record
+    # key (a GWAS row without a risk allele); its run holds no other call there.
+    for v in variants:
+        view = _trimmed_snv(v)
+        if view is not None:
+            by_locus.setdefault(variant_locus(view), v)
+    by_rsid = {v.rsid: v for v in variants if v.rsid not in ("", ".")}
     for a in annotations:
         if a.record_key is not None:
-            matched = a.record_key[:3] in records
-        elif a.locus is not None:
-            matched = a.locus in loci
+            origin = by_record.get(a.record_key[:3])
+        # A finding without a position (an unplaced row, ADR-0069) finds its
+        # call by rsID.
+        elif a.locus is not None and a.locus[1] > 0:
+            origin = by_locus.get(a.locus)
         else:
-            matched = a.rsid in rsids
-        if matched:
+            origin = by_rsid.get(a.rsid)
+        if origin is None and len(variants) == 1:
+            origin = variants[0]
+        if origin is None:
+            continue
+        a.record_index = origin.record_index
+        if origin.haploid:
             a.haploid = True
             gm = a.genotype_match
             half = len(gm) // 2
             first, second = gm.split("/", 1) if "/" in gm else (gm[:half], gm[half:])
             if first == second:
                 a.genotype_match = first
+
+
+def _record_runs(variants: list[Variant]) -> list[list[Variant]]:
+    """Split a batch, in order, into runs in which no two calls share a locus or rsID.
+
+    Each run is annotated on its own, so every finding is traced to the one
+    call it came from (ADR-0062). A batch without such duplicates is one run.
+    """
+    runs: list[list[Variant]] = []
+    run: list[Variant] = []
+    seen: set[tuple[str, object]] = set()
+    for v in variants:
+        # An unknown position (ADR-0069) is no shared locus.
+        keys: set[tuple[str, object]] = {("locus", variant_locus(v))} if v.position > 0 else set()
+        if v.rsid not in ("", "."):
+            keys.add(("rsid", v.rsid))
+        view = _trimmed_snv(v)
+        if view is not None:
+            keys.add(("locus", variant_locus(view)))
+        if run and keys & seen:
+            runs.append(run)
+            run, seen = [], set()
+        run.append(v)
+        seen |= keys
+    if run:
+        runs.append(run)
+    return runs
+
+
+class _PloidyContradictions:
+    """Count calls at one position whose ploidy disagrees (ADR-0062).
+
+    Every call's position and ploidy is kept compactly (one integer per
+    call, by chromosome) and the positions are compared when the stream
+    ends, so neither file order nor batching changes the count. Every call
+    at a position that holds both a haploid and a diploid call is counted.
+    No-calls take no part.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._calls: dict[str, array[int] | list[int]] = {}
+
+    def add(self, v: Variant) -> None:
+        if v.is_no_call and not v.is_half_call:
+            return
+        if v.position <= 0:
+            # An unknown position (ADR-0069) is shared with no other call.
+            return
+        # A padded call is at its trimmed site, as for every other check (ADR-0061).
+        chrom, pos = variant_locus(_trimmed_snv(v) or v)
+        calls = self._calls.get(chrom)
+        if calls is None:
+            calls = self._calls[chrom] = array("q")
+        key = pos << 1 | v.haploid
+        try:
+            calls.append(key)
+        except OverflowError:
+            # A position past the compact range keeps the chromosome as plain ints.
+            calls = self._calls[chrom] = list(calls)
+            calls.append(key)
+
+    def add_reference(self, chrom: str, pos: int, haploid: bool) -> None:
+        """An explicit reference record at ``pos`` (ADR-0064): a call for ploidy."""
+        calls = self._calls.get(chrom)
+        if calls is None:
+            calls = self._calls[chrom] = array("q")
+        key = pos << 1 | haploid
+        try:
+            calls.append(key)
+        except OverflowError:
+            calls = self._calls[chrom] = list(calls)
+            calls.append(key)
+
+    def close(self) -> None:
+        count = 0
+        for calls in self._calls.values():
+            ordered = sorted(calls)
+            start = 0
+            while start < len(ordered):
+                end = start
+                while end < len(ordered) and ordered[end] >> 1 == ordered[start] >> 1:
+                    end += 1
+                if ordered[start] & 1 != ordered[end - 1] & 1:
+                    count += end - start
+                start = end
+        self.count = count
+        self._calls = {}
+
+
+def _skip_mt_reference(add: Callable[[str, int, bool], None]) -> Callable[[str, int, bool], None]:
+    """``add``, but not for a mitochondrial record the analysis skips."""
+
+    def add_unless_mt(chrom: str, pos: int, haploid: bool) -> None:
+        if chrom != "MT":
+            add(chrom, pos, haploid)
+
+    return add_unless_mt
+
+
+CONTRADICTORY_CALLS = "contradictory_calls"
+
+
+def _contradictory_calls_warning(count: int) -> ReportWarning | None:
+    if not count:
+        return None
+    return ReportWarning(
+        CONTRADICTORY_CALLS,
+        f"{count} call(s) share a position with a call of a different ploidy: one record "
+        "gives one copy, another gives two. Each finding keeps its own record's genotype "
+        "and zygosity; check how the file was made or merged.",
+        count,
+    )
 
 
 # ClinVar trims a padded VCF allele itself (ADR-0047), against its own rows.
@@ -1022,6 +1427,107 @@ def _score_down_common_zero_star(
             a.common_allele_capped = True
 
 
+IDENTITY_LOCUS_CONFLICT = "identity_locus_conflict"
+
+
+def _identity_conflicts(
+    variants: list[Variant], identity: RsidIdentityAnnotator | None, build: str
+) -> set[int]:
+    """The named base calls whose locus contradicts their rsID's identity placements (ADR-0063).
+
+    Only a single-base call is checked, and only against the rsID's
+    single-base placements on ``build``: it contradicts when there is at
+    least one such placement and the call stands at none of them, as
+    written or trimmed (a padded record, ADR-0047). An indel or a chip D/I
+    call, and an identity indel row, are identity unavailable: their
+    positions differ by representation and in repeats, and nothing here
+    left-aligns (ADR-0061). So is no cache, another build, an rsID the
+    table does not hold, or no placement on this build. Returns the
+    ``id()`` of each contradicting call. A no-call is not checked: no
+    source reads it.
+    """
+    if identity is None or build not in _IDENTITY_BUILDS or not identity.is_ready():
+        return set()
+    named = [
+        v
+        for v in variants
+        if v.rsid.startswith("rs")
+        and v.chromosome
+        and v.position > 0
+        and (not v.is_no_call or v.is_half_call)
+    ]
+    sites = {id(v): found for v in named if (found := _base_call_sites(v))}
+    if not sites:
+        return set()
+    rows = identity.placements({v.rsid for v in named if id(v) in sites})
+    out: set[int] = set()
+    for v in named:
+        site = sites.get(id(v))
+        if site is None:
+            continue
+        places = _base_placements(rows.get(v.rsid, ()), build)
+        if places and not places & site:
+            out.add(id(v))
+    return out
+
+
+_BASES = frozenset("ACGT")
+
+
+def _base_call_sites(v: Variant) -> set[tuple[str, int]]:
+    """A single-base call's locus as written and trimmed; empty for any other call.
+
+    A padded VCF call (``CG>CA``) is the single-base call ``_trimmed_snv``
+    makes of it, at its trimmed site, whatever its genotype (``0/1``,
+    ``1/1``). A padded call that names no ALT (a reference-only ``0/0``)
+    has no single-base form and stays unchecked, as do indels.
+    """
+    chrom, pos = variant_locus(v)
+    alleles = {a.upper() for a in (v.allele1, v.allele2) if a and a != NO_CALL_MARKER}
+    if not alleles:
+        return set()
+    if v.ref is None or not v.ref_from_input:
+        # A chip call: single bases only (never D/I).
+        return {(chrom, pos)} if alleles <= _BASES else set()
+    if len(v.ref) == 1:
+        return {(chrom, pos)} if alleles | {v.ref.upper()} <= _BASES else set()
+    trimmed = _trimmed_snv(v)
+    if trimmed is None or trimmed.ref is None:
+        return set()
+    bases = {a.upper() for a in (trimmed.allele1, trimmed.allele2) if a and a != NO_CALL_MARKER}
+    if not bases | {trimmed.ref.upper()} <= _BASES:
+        return set()
+    return {(chrom, pos), variant_locus(trimmed)}
+
+
+def _base_placements(
+    rows: Iterable[tuple[str, int, str, str, int, str, str]], build: str
+) -> set[tuple[str, int]]:
+    """An rsID's single-base identity placements on ``build``, as stored and trimmed."""
+    places: set[tuple[str, int]] = set()
+    for chrom, pos37, ref37, alt37, pos38, ref38, alt38 in rows:
+        pos, ref, alt = (pos37, ref37, alt37) if build == BUILD_GRCH37 else (pos38, ref38, alt38)
+        if not pos or not ref or not alt:
+            continue
+        at, r, a = trim_allele_pair(pos, ref.upper(), alt.upper())
+        if len(r) == 1 and len(a) == 1 and {r, a} <= _BASES:
+            chrom = normalize_chromosome(chrom)
+            places |= {(chrom, pos), (chrom, at)}
+    return places
+
+
+def _identity_conflict_warning(count: int, build: str) -> ReportWarning | None:
+    if not count:
+        return None
+    return ReportWarning(
+        IDENTITY_LOCUS_CONFLICT,
+        f"{count} call(s) carry an rsID that the rsID identity table places elsewhere on "
+        f"{build}, so no source annotated them. A stale rsID, or coordinates converted "
+        "from another build, usually causes this.",
+        count,
+    )
+
+
 def _multiple_homozygous_plp(
     annotations: list[Annotation], thresholds: PlausibilityThresholds
 ) -> ReportWarning | None:
@@ -1179,17 +1685,23 @@ def _record_rows(
 
 def _record_for(
     a: Annotation,
+    by_index: dict[int, Variant],
     by_locus: dict[tuple[str, int], list[Variant]],
     by_rsid: dict[str, Variant],
 ) -> Variant | None:
     """The input record an annotation belongs to, for ``--vcf-out``.
 
-    Found by the annotation's locus: among the records there, those that
-    carry the annotation's allele (all of them when none does, as a GWAS
-    effect allele need not be carried), then the one with the annotation's
-    rsID when several remain. An annotation without a locus falls back to
-    its rsID.
+    The record whose call produced it (``record_index``, ADR-0062), so the
+    writer files it under that record's own REF: two records at one
+    position can carry one ALT on different REFs (``G>A`` and ``GA>A``).
+    Without a record number, found by the annotation's locus: among the
+    records there, those that carry the annotation's allele (all of them
+    when none does, as a GWAS effect allele need not be carried), then the
+    one with the annotation's rsID when several remain. An annotation
+    without a locus falls back to its rsID.
     """
+    if a.record_index is not None and a.record_index in by_index:
+        return by_index[a.record_index]
     if a.locus is None:
         return by_rsid.get(a.rsid)
     at_locus = by_locus.get(a.locus, [])
@@ -1292,7 +1804,18 @@ def run_analysis(
     ) as owners:
         bound = [owners[id(a)] for a in annotators]
         metadata = parser.get_metadata(file_path)
-        decision = decide_file_build(parser, file_path, metadata, override=build_override)
+        decision = decide_file_build(
+            parser, file_path, metadata, override=build_override, place_rows=True
+        )
+        placement: PlacementStats | None = None
+        if decision.source == SOURCE_RSID_PLACEMENT:
+            if identity is None or not identity.is_ready():
+                raise NoPositionsError(
+                    f"Cannot use {file_path.name}: the file has no positions, so Allelix "
+                    "places its rsIDs from the rsID identity table, which is not installed. "
+                    "Install it (allelix db update) and run it again."
+                )
+            placement = PlacementStats(build=decision.build)
         is_array = not isinstance(parser, VcfParser)
         di_calls = 0
 
@@ -1362,6 +1885,13 @@ def run_analysis(
             )
 
         batch_buf: list[Variant] = []
+        ploidy_contradictions = _PloidyContradictions()
+        # Reference calls rebuilt at ClinVar's reference-carried sites. They
+        # keep their record's number for the findings (ADR-0062), but the
+        # annotated VCF stamps reference records by ``reference_rows`` only
+        # (ADR-0059), never as a record's own call.
+        rebuilt_calls: set[int] = set()
+        identity_conflict_total = 0
 
         def _flush() -> None:
             if not batch_buf:
@@ -1406,10 +1936,21 @@ def run_analysis(
             nonlocal no_ref_total, rsidless_total
             no_ref_total += sum(1 for v in batch_buf if v.ref is None)
             rsidless_total += sum(1 for v in batch_buf if not v.rsid.startswith("rs"))
+            # ADR-0063: a named call at a position the identity table does not
+            # give for its rsID on this build reaches no source.
+            conflicts = _identity_conflicts(batch_buf, identity, effective_build)
+            nonlocal identity_conflict_total
+            identity_conflict_total += len(conflicts)
+            to_annotate = (
+                [v for v in batch_buf if id(v) not in conflicts] if conflicts else batch_buf
+            )
             batch_new: list[Annotation] = []
-            for annotator in bound:
-                batch_new.extend(_annotate_batch(annotator, batch_buf))
-            _mark_haploid(batch_new, batch_buf)
+            for run in _record_runs(to_annotate):
+                run_new: list[Annotation] = []
+                for annotator in bound:
+                    run_new.extend(_annotate_batch(annotator, run))
+                _mark_haploid(run_new, run)
+                batch_new.extend(run_new)
             annotations.extend(batch_new)
             # collect writer inputs for this batch. Only touches
             # variants whose ``ref`` is populated (VCF inputs; array
@@ -1424,6 +1965,7 @@ def run_analysis(
                 for v in with_ref:
                     by_locus.setdefault(variant_locus(v), []).append(v)
                 by_rsid = {v.rsid: v for v in with_ref if v.rsid}
+                by_index = {v.record_index: v for v in with_ref if v.record_index is not None}
                 for a in batch_new:
                     if not a.alt:
                         continue
@@ -1432,13 +1974,15 @@ def run_analysis(
                         # allele as the record wrote it.
                         vcf_annotations_by_key.setdefault(a.record_key, []).append(a)
                         continue
-                    record = _record_for(a, by_locus, by_rsid)
+                    record = _record_for(a, by_index, by_locus, by_rsid)
                     if record is None or record.ref is None:
                         continue
                     key = (record.chromosome, record.position, record.ref, a.alt)
                     vcf_annotations_by_key.setdefault(key, []).append(a)
                 _record_rows(
-                    with_ref,
+                    # A call the identity check rejected (ADR-0063) produced
+                    # no finding and is eligible for none.
+                    [v for v in with_ref if id(v) not in rebuilt_calls and id(v) not in conflicts],
                     [
                         v
                         for v, before in zip(batch_buf, ids_before, strict=True)
@@ -1451,6 +1995,10 @@ def run_analysis(
             batch_buf.clear()
 
         def _accept(v: Variant) -> None:
+            # A reference call rebuilt from an explicit record is counted with
+            # that record (``on_reference_record``); one from a block is not.
+            if id(v) not in rebuilt_calls or v.record_index is None:
+                ploidy_contradictions.add(v)
             batch_buf.append(v)
             if len(batch_buf) >= _BATCH_SIZE:
                 _flush()
@@ -1466,6 +2014,10 @@ def run_analysis(
             else {}
         )
         hv_placements = None
+        # ADR-0064: explicit reference calls at the sites of the sources that
+        # read a homozygous-reference genotype, as a chip call reaches them.
+        ref_sources = [a for a in bound if a.name in _REFERENCE_CALL_SOURCES]
+        ref_index: _TargetIndex | None = None
         with _cleanup_on_exit() as cleanup:
             if isinstance(parser, VcfParser):
                 # Register cleanup BEFORE invoking fallible watch methods:
@@ -1490,6 +2042,21 @@ def run_analysis(
                         build_placements(identity.placements(wanted_rsids), effective_build)
                     )
                     attr_index.update(placement_index(attr_placements))
+                ref_index = _reference_targets(ref_sources, identity, effective_build)
+                cleanup.callback(parser.watch_reference_targets, {})
+                parser.watch_reference_targets(
+                    ref_index.sites if ref_index is not None else {},
+                    ref_index.rsids if ref_index is not None else array("q"),
+                    ploidy_loci=frozenset(rc_sites),
+                )
+                # Explicit reference records at target sites count for ploidy
+                # (ADR-0062 amendment, ADR-0064).
+                cleanup.callback(setattr, parser, "on_reference_record", None)
+                parser.on_reference_record = (
+                    ploidy_contradictions.add_reference
+                    if not decision.skip_mt
+                    else _skip_mt_reference(ploidy_contradictions.add_reference)
+                )
                 parser.watch_panel(
                     panel_rsids or frozenset(),
                     {
@@ -1499,7 +2066,11 @@ def run_analysis(
                     },
                     skip_mt=decision.skip_mt,
                 )
-            for variant in parser.parse(file_path):
+            records: Iterable[Variant] = parser.parse(file_path)
+            if placement is not None:
+                assert identity is not None
+                records = place_stream(records, identity, decision.build, placement)
+            for variant in records:
                 total += 1
                 if is_array and not {variant.allele1, variant.allele2}.isdisjoint(DI_ALLELES):
                     di_calls += 1
@@ -1509,6 +2080,7 @@ def run_analysis(
                 if track_seeds and known_snp_seed(variant) is not None:
                     late_seeds.append(variant)
                 _accept(replace(variant, build=effective_build))
+        rc_keys: set[tuple[str, Locus]] = set()
         for call in reference_carried_calls(
             getattr(parser, "quality_stats", None), rc_sites, effective_build, identity
         ):
@@ -1516,8 +2088,46 @@ def run_analysis(
                 mt_skipped += 1
                 cast("VcfParser", parser).quality_stats.reference_carried_calls -= 1
                 continue
+            rebuilt_calls.add(id(call))
+            rc_keys.add((call.rsid, variant_locus(call)))
             _accept(call)
         _flush()
+        if ref_index is not None:
+            target_calls = cast("VcfParser", parser).reference_target_calls
+            ref_targets = _targets_at(
+                ref_index, identity, effective_build, {c.locus for c in target_calls}
+            )
+            named_elsewhere = {
+                c.rsid
+                for c in target_calls
+                if c.rsid
+                and c.own_site
+                and not any(t[0] == c.rsid for t in ref_targets.get(c.locus, ()))
+            }
+            ref_calls = _reference_target_variants(
+                target_calls,
+                ref_targets,
+                ref_index.rsids,
+                effective_build,
+                skip=rc_keys,
+                blocked=cast("VcfParser", parser).reference_target_blocked,
+                skip_mt=decision.skip_mt,
+                not_base=_not_base_rsids(identity, named_elsewhere, effective_build),
+            )
+            for start in range(0, len(ref_calls), _BATCH_SIZE):
+                chunk = ref_calls[start : start + _BATCH_SIZE]
+                # The identity check (ADR-0063) runs as for every call: a named
+                # single-base record placed elsewhere is a counted conflict.
+                conflicts = _identity_conflicts(chunk, identity, effective_build)
+                identity_conflict_total += len(conflicts)
+                # One rsID can stand at two placements in a chunk: annotate in
+                # runs so each finding keeps its own call (ADR-0062).
+                for run in _record_runs([v for v in chunk if id(v) not in conflicts]):
+                    found: list[Annotation] = []
+                    for annotator in ref_sources:
+                        found.extend(_annotate_batch(annotator, run))
+                    _mark_haploid(found, run)
+                    annotations.extend(found)
         if isinstance(parser, VcfParser) and panel_rsids:
             # Explicit observations include rows the annotation stream intentionally
             # omits. Replace the complete first-record tuple, never just its state.
@@ -1558,7 +2168,16 @@ def run_analysis(
             identity,
             gnomad,
         )
-        warnings = [w for w in [_multiple_homozygous_plp(annotations, plausibility)] if w]
+        ploidy_contradictions.close()
+        warnings = [
+            w
+            for w in [
+                _multiple_homozygous_plp(annotations, plausibility),
+                _contradictory_calls_warning(ploidy_contradictions.count),
+                _identity_conflict_warning(identity_conflict_total, effective_build),
+            ]
+            if w
+        ]
 
         annotators_used = [
             (a.name, a.version()) for a in annotators if a.serves_build(effective_build)
@@ -1654,6 +2273,7 @@ def run_analysis(
                 getattr(parser, "quality_stats", None), clinvar_counts
             ),
             array_quality=array_quality,
+            placement=placement,
             probe_classes=_probe_classes(clinvar_resolver, clinvar_counts, effective_build)
             if is_array
             else None,
@@ -1738,6 +2358,7 @@ def decide_file_build(
     *,
     override: str | None,
     variants: list[Variant] | None = None,
+    place_rows: bool = False,
 ) -> BuildDecision:
     """Decide ``file_path``'s build (ADR-0044); the one entry point for every command.
 
@@ -1754,7 +2375,19 @@ def decide_file_build(
     When the header alone stops the decision (contig lengths that are
     mixed, unsupported or against ``assembly=``), the records are read up
     to the first usable one before the stop is raised.
+
+    A file with no positions (an rsID and genotype list) is placed on
+    GRCh38 from the rsID identity table (ADR-0069) when ``place_rows`` is
+    set, as ``run_analysis`` does; every other command stops on it.
     """
+    if not getattr(parser, "has_positions", True):
+        if not place_rows:
+            raise NoPositionsError(
+                f"Cannot use {file_path.name} here: the file has no positions (an rsID "
+                "and genotype list). Only analyze, methylation and pharmacogenomics read "
+                "it, placing its rsIDs on GRCh38 from the rsID identity table."
+            )
+        return decide_placement_build(file_name=file_path.name, override=override)
     kind = KIND_VCF if parser.name == "vcf" else KIND_ARRAY
     if hasattr(parser, "drop_ucsc_mito"):
         parser.drop_ucsc_mito = False  # set again below, after any pre-scan

@@ -14,7 +14,6 @@ reports.
 from __future__ import annotations
 
 import contextlib
-import logging
 import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
@@ -42,17 +41,18 @@ from allelix.databases.snpedia_loader import (
     SNPEDIA_EXPECTED_SHA256,
     install_prebuilt_cache,
 )
-from allelix.models import Annotation
+from allelix.databases.staging import owned_directory
+from allelix.models import Annotation, diploid_label
 from allelix.utils.allele import (
     STRAND_ABSTAIN_REASONS,
     STRAND_COMPLEMENT,
     STRAND_DIRECT,
     STRAND_NO_FIT,
     STRAND_NOT_IN_IDENTITY,
-    STRAND_PALINDROMIC,
     complement,
     forward_strand_reading,
     is_single_base,
+    stated_orientation_fits,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +63,6 @@ if TYPE_CHECKING:
     from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
-logger = logging.getLogger(__name__)
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
@@ -197,19 +196,25 @@ class SNPediaAnnotator(Annotator):
         client-side parse into structured genotype rows and stamps
         ``database_versions`` with proper version metadata.
         """
-        gz_path = self.data_dir / "snpedia.sqlite.gz"
-        download(SNPEDIA_CACHE_URL, gz_path)
-        verify_file_hash(gz_path, "sha256", SNPEDIA_EXPECTED_SHA256)
-        install_prebuilt_cache(
-            gz_path,
-            self._db_path,
-            source_url=SNPEDIA_CACHE_URL,
-        )
-        try:
-            gz_path.unlink()
-        except OSError:
-            logger.warning("Could not remove staged file at %s", gz_path)
+        # This setup's own download directory: another setup of the same
+        # cache can neither replace nor remove the file it verifies.
+        with owned_directory(self.data_dir, "snpedia") as staging:
+            gz_path = staging / "snpedia.sqlite.gz"
+            download(SNPEDIA_CACHE_URL, gz_path)
+            verify_file_hash(gz_path, "sha256", SNPEDIA_EXPECTED_SHA256)
+            install_prebuilt_cache(
+                gz_path,
+                self._db_path,
+                source_url=SNPEDIA_CACHE_URL,
+            )
         self.prepare_cache()
+
+    def reference_call_rsids(self) -> Iterable[str]:
+        """Every rsID with a row here, streamed (ADR-0064); none when the cache is not ready."""
+        if not self.is_ready():
+            return ()
+        rows = self._connection().execute("SELECT DISTINCT rsid FROM snpedia_genotypes")
+        return (rsid for (rsid,) in rows if rsid)
 
     def is_ready(self) -> bool:
         """Return True when the parsed SNPedia genotype table exists and has data."""
@@ -344,11 +349,13 @@ class SNPediaAnnotator(Annotator):
         """Each row's orientation for matching (``plus``/``minus``), or None to skip it.
 
         Rows of single bases at an rsID are read against the identity
-        table's forward alleles: a stated orientation must put the
-        genotype among them; an unknown one takes the direct reading
-        of the site's alleles, else the complemented one. A/T and C/G
-        sites, rsIDs the table does not place at the call, and genotypes
-        that fit neither reading abstain, counted once per site and reason.
+        table's forward alleles, each page on its own (ADR-0066): a stated
+        orientation must put the genotype among them; an unknown one is
+        read as written when only that fits, complemented when only its
+        complement fits, and abstains when both fit (``palindromic`` or
+        ``both_fit``) or neither does. Another page at the rsID never
+        decides a page's reading. rsIDs the table does not place at the
+        call abstain too; abstentions are counted once per site and reason.
         Other rows (indels, i-IDs), and every row when no identity table is
         wired, keep the page's orientation with the palindrome guard.
         """
@@ -360,15 +367,6 @@ class SNPediaAnnotator(Annotator):
         if not any(snv):
             return out
         forward = forward_alleles_at_call(variant, sites)
-        unknown = {
-            allele
-            for row, is_snv in zip(rows, snv, strict=True)
-            if is_snv and _known_orientation(row[6]) is None
-            for allele in row[:2]
-        }
-        unknown_reading = (
-            forward_strand_reading(unknown, forward) if unknown and forward is not None else None
-        )
         reasons: set[str] = set()
         for i, (row, is_snv) in enumerate(zip(rows, snv, strict=True)):
             if not is_snv:
@@ -379,19 +377,20 @@ class SNPediaAnnotator(Annotator):
                 continue
             known = _known_orientation(row[6])
             if known is not None:
-                reading = forward_strand_reading(_forward_genotype(row[0], row[1], known), forward)
-                if reading == STRAND_DIRECT:
+                # A stated orientation is independently known (ADR-0066).
+                if stated_orientation_fits(_forward_genotype(row[0], row[1], known), forward):
                     out[i] = known
                 else:
-                    reasons.add(
-                        STRAND_PALINDROMIC if reading == STRAND_PALINDROMIC else STRAND_NO_FIT
-                    )
-            elif unknown_reading == STRAND_DIRECT:
-                out[i] = "plus"
-            elif unknown_reading == STRAND_COMPLEMENT:
-                out[i] = "minus"
-            elif unknown_reading is not None:
-                reasons.add(unknown_reading)
+                    reasons.add(STRAND_NO_FIT)
+            else:
+                # An unknown orientation: this page's own reading (ADR-0066).
+                reading = forward_strand_reading(row[:2], forward)
+                if reading == STRAND_DIRECT:
+                    out[i] = "plus"
+                elif reading == STRAND_COMPLEMENT:
+                    out[i] = "minus"
+                else:
+                    reasons.add(reading)
         for reason in reasons:
             self._strand_abstained[reason] += 1
         return out
@@ -421,7 +420,8 @@ class SNPediaAnnotator(Annotator):
 
     def _candidate(self, variant: Variant) -> tuple[str, str, tuple[str, str]] | None:
         """``(snp_id, page path, sorted alleles)`` for a call SNPedia can match, else None."""
-        if variant.is_no_call:
+        if variant.is_no_call or variant.is_di_call:
+            # A D/I call is not interpreted (ADR-0070).
             return None
         snp_id = variant.rsid.lower()
         if snp_id.startswith("rs"):
@@ -532,7 +532,10 @@ class SNPediaAnnotator(Annotator):
             alt, reference_carries_alt = carried_alt(
                 variant, forward_allele1, forward_allele2, self._normal_allele_provider
             )
-            genotype_match = f"{forward_allele1}{forward_allele2}"
+            # The matched genotype is the call's own, labelled as every source
+            # labels it (``diploid_label``): a slash keeps the boundary of a
+            # sequence allele, so ``GAC/GAC`` stays homozygous.
+            genotype_match = diploid_label(variant)
             yield Annotation(
                 source=self.name,
                 rsid=variant.rsid,

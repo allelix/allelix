@@ -33,3 +33,11 @@ read-only, and only database update performs journal conversion. Tests preserve
 POSIX permission assertions and use verified real ACL denial on Windows,
 restoring the original descriptor in finally. Native call-contract controls
 also run offline; they do not establish actual Windows integration success.
+
+## Amendment 2.6.0 (2026-11-03): the update step converts journals
+
+Journal conversion is done by the update step: `db update`, or `analyze`
+without `--no-update` (`_prepare_caches` in `allelix/cli/_helpers.py`,
+ADR-0048). `analyze --no-update` writes nothing to the data directory; a
+cache it cannot read without writing is skipped with its reason.
+Readiness checks never write.

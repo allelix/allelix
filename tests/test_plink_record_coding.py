@@ -20,6 +20,8 @@ from allelix.annotators.gnomad import GnomadAnnotator
 from allelix.cli import main
 from allelix.databases._versions import GNOMAD_SCHEMA_VERSION
 from allelix.databases.schema import GNOMAD_SCHEMA
+from allelix.exporters.plink import resolve_ref_alt_via_gnomad_records
+from allelix.models import Variant
 
 ROWS = [
     ("2", 1000, "G", "A", "rs900961001", 0.001),
@@ -257,3 +259,20 @@ def test_two_alt_call_at_named_grch38_locus(tmp_path, with_gnomad):
     )
     assert result.exit_code == 0, result.output
     assert _decode_one_sample_bed(prefix) == Counter({("A", "T"): 1})
+
+
+@pytest.mark.parametrize("cache_locus", [("2", 4000), ("3", 3000)])
+def test_wrong_placement_never_supplies_a_pair(tmp_path, cache_locus):
+    """A gnomAD row at another position or chromosome gives a record no pair."""
+    chrom, pos = cache_locus
+    data = tmp_path / "data"
+    create_cache(data)
+    with contextlib.closing(sqlite3.connect(data / "gnomad.sqlite")) as conn:
+        conn.execute("DELETE FROM gnomad_frequencies")
+        conn.execute(
+            "INSERT INTO gnomad_frequencies (chrom,pos,ref,alt,rsid,af) VALUES (?,?,?,?,?,?)",
+            (chrom, pos, "G", "T", "rs900999002", 0.01),
+        )
+        conn.commit()
+    call = Variant("rs900999002", "2", 3000, "G", "G", build="GRCh38")
+    assert resolve_ref_alt_via_gnomad_records([call], data) == {}

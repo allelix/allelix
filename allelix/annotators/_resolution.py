@@ -23,6 +23,11 @@ the effective build:
 5. ``Variant.ref`` from gnomAD's rsID coordinates (GRCh38), accepted only
    when the coordinate is the variant's own locus.
 
+An rsID-less call written with padding bases (``GC>AC``) that these steps
+leave unnamed goes through them again in its trimmed form (``G>A``, no
+left-alignment) and takes only the rsID; the call keeps its spelling
+(ADR-0061). A cache row stored in the padded spelling still matches first.
+
 Every resolver applies ``resolve_rsid_at_locus``: exactly one rsID whose
 rows explain the user's alleles, abstain otherwise. A resolved variant
 keeps its pre-resolution ID in ``Variant.original_rsid`` (debug only).
@@ -34,10 +39,12 @@ votes on rsID-less records by position instead (``utils.build_detect``).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from allelix.annotators.base import variant_locus
-from allelix.utils.allele import resolve_rsid_at_locus
+from allelix.models import NO_CALL_MARKER
+from allelix.utils.allele import resolve_rsid_at_locus, trim_allele_pair
 from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 
 if TYPE_CHECKING:
@@ -74,6 +81,41 @@ def resolve_batch(
     """
     if not variants:
         return
+    _resolve_as_written(
+        variants,
+        clinvar=clinvar,
+        gnomad=gnomad,
+        identity=identity,
+        resolved_coords=resolved_coords,
+    )
+    # A padded record still without an rsID (``GC>AC``, ``CG>CA``) is looked
+    # up again in its trimmed form (ADR-0061); the record itself keeps its
+    # spelling and takes only the recovered rsID.
+    views = {i: view for i, v in enumerate(variants) if (view := _trimmed_view(v)) is not None}
+    if not views:
+        return
+    _resolve_as_written(
+        list(views.values()),
+        clinvar=clinvar,
+        gnomad=gnomad,
+        identity=identity,
+        resolved_coords=resolved_coords,
+    )
+    for i, view in views.items():
+        if view.rsid != variants[i].rsid:
+            variants[i].original_rsid = variants[i].rsid
+            variants[i].rsid = view.rsid
+
+
+def _resolve_as_written(
+    variants: list[Variant],
+    *,
+    clinvar: ClinVarAnnotator | None,
+    gnomad: GnomadAnnotator | None,
+    identity: RsidIdentityAnnotator | None,
+    resolved_coords: ResolvedCoords | None,
+) -> None:
+    """``resolve_batch``'s steps 1-5 on the calls as given."""
     coords: ResolvedCoords = resolved_coords if resolved_coords is not None else {}
     identity_ready = identity is not None and identity.is_ready()
     gnomad_ready = gnomad is not None and gnomad.is_ready()
@@ -127,6 +169,40 @@ def resolve_rsidless(
         batch, clinvar=clinvar, gnomad=gnomad, identity=identity, resolved_coords=resolved_coords
     )
     yield from batch
+
+
+def _trimmed_view(v: Variant) -> Variant | None:
+    """An rsID-less VCF call without its padding bases, for lookup only (ADR-0061).
+
+    Each carried non-reference allele is trimmed against REF
+    (``trim_allele_pair``: shared suffix, then prefix, keeping an indel's
+    anchor; no left-alignment). The view exists when they all land on one
+    position and REF that differs from the record's, so ``GC>AC``,
+    ``CG>CA`` and ``CGC>CAC`` are looked up as ``G>A``. A named call, a
+    call whose REF did not come from the input, a reference-only call and
+    a call mixing two frames give None.
+    """
+    if v.rsid.startswith("rs") or not v.ref_from_input or v.ref is None or len(v.ref) == 1:
+        return None
+    frames: set[tuple[int, str]] = set()
+    trimmed: dict[str, str] = {}
+    for allele in {v.allele1, v.allele2} - {NO_CALL_MARKER, v.ref}:
+        position, ref, alt = trim_allele_pair(v.position, v.ref, allele)
+        frames.add((position, ref))
+        trimmed[allele] = alt
+    if len(frames) != 1:
+        return None
+    ((position, ref),) = frames
+    if (position, ref) == (v.position, v.ref):
+        return None
+    trimmed[v.ref] = ref
+    return replace(
+        v,
+        position=position,
+        ref=ref,
+        allele1=trimmed.get(v.allele1, v.allele1),
+        allele2=trimmed.get(v.allele2, v.allele2),
+    )
 
 
 def _populate_ref_from_identity(identity: RsidIdentityAnnotator, variants: list[Variant]) -> None:

@@ -7,7 +7,13 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, NamedTuple
 
-from allelix.utils.allele import is_strand_ambiguous
+from allelix.utils.allele import (
+    STRAND_COMPLEMENT,
+    STRAND_DIRECT,
+    complement,
+    forward_strand_reading,
+    is_strand_ambiguous,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -22,8 +28,10 @@ _BED_MAGIC = bytes([0x6C, 0x1B, 0x01])
 class PlinkCounts(NamedTuple):
     """What ``export_plink`` wrote and skipped.
 
-    ``allele_mismatches`` counts calls written as missing because their
-    alleles fit neither gnomAD's REF nor ALT at the site.
+    ``allele_mismatches`` counts calls written as missing because neither
+    strand reading of their alleles fits the site's pair (ADR-0066).
+    ``complemented`` counts calls coded against a non-palindromic pair
+    through their complement, the only reading that fits it.
     """
 
     written: int
@@ -31,6 +39,7 @@ class PlinkCounts(NamedTuple):
     indels: int
     monomorphic: int
     allele_mismatches: int
+    complemented: int = 0
 
 
 class EmptyPlinkSetError(ValueError):
@@ -67,8 +76,9 @@ _INPUT_ENDINGS = (".vcf.gz", ".vcf.bgz", ".txt", ".csv", ".tsv", ".vcf", ".zip",
 def _fits_site(allele1: str, allele2: str, ref: str, alt: str) -> bool:
     """True when both single-base alleles are the site's REF or ALT as written.
 
-    The input formats state their strand, so a call is never read on the
-    other strand: one that fits neither allele is a mismatch.
+    At a non-palindromic pair the writer also reads a call by its complement
+    when only that fits (``_pair_reading``, ADR-0066); at an A/T or C/G pair
+    the strand cannot be told, so only the written alleles count.
     """
     if len(allele1) != 1 or len(allele2) != 1:
         return False
@@ -112,8 +122,10 @@ def default_plink_prefix(input_path: Path) -> Path:
 def coded_against(v: Variant, pair: tuple[str, str]) -> bool:
     """True when the writer codes ``v`` against ``pair``, False when it uses the fallback.
 
-    A call that does not fit the pair as written is written missing against
-    it; a call that fits a palindromic pair (A/T, C/G) gets the fallback.
+    At a non-palindromic pair a call is always coded against it: by the one
+    strand reading that fits, or written missing when none does. At a
+    palindromic pair (A/T, C/G) a call that fits as written gets the
+    fallback, and one that does not is written missing against it.
     """
     return not _fits_site(v.allele1, v.allele2, *pair) or not is_strand_ambiguous(*pair)
 
@@ -121,6 +133,21 @@ def coded_against(v: Variant, pair: tuple[str, str]) -> bool:
 def plink_writable(v: Variant) -> bool:
     """True for a call the PLINK set holds: not a no-call, both alleles one of ACGT."""
     return not v.is_no_call and v.allele1 in _NUCLEOTIDES and v.allele2 in _NUCLEOTIDES
+
+
+def _pair_reading(v: Variant, ref: str, alt: str) -> tuple[str, str] | None:
+    """The call's alleles on the strand of a non-palindromic pair, or None.
+
+    The one strand reading that fits the pair (ADR-0066's helper): as
+    written, or complemented. None when neither fits; both cannot, since a
+    non-palindromic pair shares no base with its complement.
+    """
+    reading = forward_strand_reading((v.allele1, v.allele2), frozenset((ref, alt)))
+    if reading == STRAND_DIRECT:
+        return v.allele1, v.allele2
+    if reading == STRAND_COMPLEMENT:
+        return complement(v.allele1), complement(v.allele2)
+    return None
 
 
 RecordKey = tuple[str, str, int, str, str]
@@ -164,7 +191,11 @@ def export_plink(
             generated ID never takes one of them.
             When provided, uses ref/alt to assign A1/A2 for proper allele coding.
             When None or rsid missing, falls back to ``A2="0"`` for homozygotes.
-            A call whose alleles fit neither REF nor ALT is written as missing.
+            At a pair that is not A/T or C/G a call is coded by the one strand
+            reading that fits (as written, or complemented and counted in
+            ``complemented``); one that fits neither is written as missing.
+            At an A/T or C/G pair a call that fits as written gets the
+            fallback, and any other is written as missing.
 
     Returns:
         A ``PlinkCounts``.
@@ -226,6 +257,7 @@ def _write_plink(
     indels = 0
     monomorphic = 0
     mismatches = 0
+    complemented = 0
     # IDs a generated one must not take: the supplied ones, plus every ID
     # with a colon written so far (generated IDs always have one).
     emitted: set[str] = set(supplied_ids)
@@ -252,23 +284,26 @@ def _write_plink(
             pair = ref_alt_map.get(v.rsid) if ref_alt_map else None
         if pair is not None:
             ref, alt = pair
-            if not _fits_site(v.allele1, v.allele2, ref, alt):
-                a1, a2, bed_code = ref, alt, _BED_MISSING
-                mismatches += 1
-            elif not is_strand_ambiguous(ref, alt):
+            called = None if is_strand_ambiguous(ref, alt) else _pair_reading(v, ref, alt)
+            if called is not None:
+                if called != (v.allele1, v.allele2):
+                    complemented += 1
                 a1 = ref
                 a2 = alt
-                a2_count = sum(1 for a in (v.allele1, v.allele2) if a == alt)
+                a2_count = sum(1 for a in called if a == alt)
                 if a2_count == 0:
                     bed_code = 0b00
                 elif a2_count == 1:
                     bed_code = 0b10
                 else:
                     bed_code = 0b11
-            else:
+            elif is_strand_ambiguous(ref, alt) and _fits_site(v.allele1, v.allele2, ref, alt):
                 a1, a2, bed_code, is_mono = _fallback_coding(v)
                 if is_mono:
                     monomorphic += 1
+            else:
+                a1, a2, bed_code = ref, alt, _BED_MISSING
+                mismatches += 1
         else:
             a1, a2, bed_code, is_mono = _fallback_coding(v)
             if is_mono:
@@ -281,7 +316,7 @@ def _write_plink(
         bed_f.write(bytes([bed_code]))
         written += 1
 
-    return PlinkCounts(written, skipped, indels, monomorphic, mismatches)
+    return PlinkCounts(written, skipped, indels, monomorphic, mismatches, complemented)
 
 
 def resolve_ref_alt_via_gnomad(
@@ -294,15 +329,18 @@ def resolve_ref_alt_via_gnomad(
     used directly. When gnomAD returns multiple records (multi-allelic
     positions), the first record the user's alleles fit as written wins,
     preferring one that is not palindromic. When none fits, the first
-    record is used, and the exporter writes the call as missing.
+    record is used; the exporter then codes the call by its complement if
+    only that fits a non-palindromic pair, and otherwise writes it as
+    missing. Selection itself never complements a call.
 
     Returns an empty dict if gnomAD isn't ready. Raises on any underlying
     lookup error — the CLI catches and prints the "failed" warning, then
     proceeds with empty (monomorphic) coding.
     """
+    from allelix.annotators import configured_source
     from allelix.annotators.gnomad import GnomadAnnotator
 
-    gnomad = GnomadAnnotator(data_dir)
+    gnomad = configured_source("gnomad", GnomadAnnotator, data_dir)
     try:
         if not gnomad.is_ready():
             return {}
@@ -341,15 +379,20 @@ def resolve_ref_alt_via_gnomad_records(
     - none fits, but every called allele is one of the site's alleles (a
       ``1/2`` call at a site gnomAD lists as two pairs): no pair, so the
       exporter's fallback keeps the observed alleles;
-    - none fits and an allele is foreign to the site: the first pair, which
-      the exporter writes as missing and counts.
+    - none fits and an allele is foreign to the site: the first pair. The
+      exporter codes the call by its complement when only that fits a
+      non-palindromic pair (counted), and otherwise writes it as missing
+      and counts it.
+
+    Selection reads the call as written; only the writer complements.
 
     A call gnomAD does not place at its position gets no pair (fallback).
     """
+    from allelix.annotators import configured_source
     from allelix.annotators.gnomad import GnomadAnnotator
 
     named = [v for v in variants if v.rsid and plink_writable(v)]
-    gnomad = GnomadAnnotator(data_dir)
+    gnomad = configured_source("gnomad", GnomadAnnotator, data_dir)
     with gnomad:
         if not gnomad.is_ready():
             return None
@@ -385,12 +428,15 @@ def resolve_ref_alt_via_identity(
     Only the table's rows for the call's own rsID at the call's chromosome and
     position count. One single-base pair is used as written; with several,
     the one the call fits as written, if exactly one does. Anything else is
-    left out, so the exporter uses its fallback coding there. No strand is
-    complemented: GRCh37 alleles are on the GRCh37 forward strand.
+    left out, so the exporter uses its fallback coding there: a call on the
+    other strand at a site with several pairs fits none as written and gets
+    no pair. Selection never complements a call. Against the one pair, the
+    writer codes the call by the one strand reading that fits (ADR-0066).
     """
+    from allelix.annotators import configured_source
     from allelix.annotators.rsid_identity import RsidIdentityAnnotator
 
-    identity = RsidIdentityAnnotator(data_dir)
+    identity = configured_source("rsid_identity", RsidIdentityAnnotator, data_dir)
     with identity:
         if not identity.is_ready():
             return None
@@ -425,6 +471,7 @@ def resolve_ref_alt_via_gnomad_grch37(
     cannot be told apart that way and is not trusted. Calls in ``have`` are
     left alone. Empty when gnomAD is not ready.
     """
+    from allelix.annotators import configured_source
     from allelix.annotators.gnomad import GnomadAnnotator
 
     wanted = [
@@ -432,7 +479,7 @@ def resolve_ref_alt_via_gnomad_grch37(
     ]
     if not wanted:
         return {}
-    gnomad = GnomadAnnotator(data_dir)
+    gnomad = configured_source("gnomad", GnomadAnnotator, data_dir)
     with gnomad:
         if not gnomad.is_ready():
             return {}

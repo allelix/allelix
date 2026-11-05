@@ -38,3 +38,15 @@ The first user with a GRCh38 input file or a GRCh38-only database is the forcing
 - ADR-0021 subsequently added dual-build support (GRCh37 + GRCh38) with auto-detection. Liftover remains deferred.
 - A future ADR will document the liftover decision (data dir, chain-file source, UI surface) once a real case forces it.
 - The v0.4.0 utility tests (`tests/utils/test_allele.py`) lock in the small contract: complement is reversible, ambiguity detection covers exactly A/T and C/G, indels are reverse-complemented base-by-base.
+
+## Amendment 2.6.0 (2026-11-03): the helpers are in use
+
+The strand helpers in `allelix.utils.allele` are now used throughout:
+`complement` by the GWAS Catalog, SNPedia, the rsID identity table, the
+rsID-list placement and `export plink`, `is_strand_ambiguous` by
+`export plink` and `compare`, and `strand_aware_genotype_match` by
+ClinPGx. Strand handling is ADR-0066 (both strand readings evaluated
+together) and ADR-0023 (amendment 2026-11-02: a normal allele from the
+other build is written on the input build's strand). Liftover is still
+not done; GRCh37 input reaches GRCh38 data through the rsID identity table
+(ADR-0040).

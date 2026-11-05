@@ -42,7 +42,16 @@ def data(
     tmp_path: Path, build_synthetic_clinvar_cache, mock_pharmgkb_dir: Path, mock_gwas_tsv: Path
 ) -> Path:
     """Every cache type; AlphaMissense in WAL mode, CADD off by default config."""
-    return _data_dir(tmp_path, build_synthetic_clinvar_cache, mock_pharmgkb_dir, mock_gwas_tsv)
+    data = _data_dir(tmp_path, build_synthetic_clinvar_cache, mock_pharmgkb_dir, mock_gwas_tsv)
+    # A healthy ClinPGx cache holds CPIC data; without it the report warns
+    # cpic_unavailable (ADR-0065). The row is synthetic and changes no finding.
+    with contextlib.closing(sqlite3.connect(data / "pharmgkb.sqlite")) as conn:
+        conn.execute(
+            "INSERT INTO pharmgkb_allele_function (rsid, allele, function_class) "
+            "VALUES ('rs900260299', 'A', 'normal')"
+        )
+        conn.commit()
+    return data
 
 
 def _run(
@@ -185,7 +194,7 @@ class TestSourcesBlock:
         assert code == 0, output
         header = [ln for ln in vcf_out.read_text().splitlines() if ln.startswith("##ALLELIX_")]
         assert "##ALLELIX_SkippedSources=alphamissense:wal,cadd:disabled" in header
-        assert "##ALLELIX_VCF_SchemaVersion=0.6.0" in header
+        assert "##ALLELIX_VCF_SchemaVersion=0.7.0" in header
 
     def test_threshold_note_names_only_sources_that_ran(self, data: Path, tmp_path: Path) -> None:
         html = tmp_path / "r.html"

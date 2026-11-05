@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
-import logging
+import hashlib
 import os
 import re
 import sqlite3
@@ -18,12 +18,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from allelix.databases.schema import GWAS_SCHEMA
+from allelix.databases.staging import owned_staging
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-logger = logging.getLogger(__name__)
 
 GWAS_CATALOG_URL = (
     "https://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/"
@@ -488,31 +488,69 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
 GWAS_MIN_ROWS = 100_000
 
 
+def gwas_source_hash(tsv_path: Path) -> str:
+    """SHA-256 of a GWAS Catalog table's bytes, as stored in ``content_hash``."""
+    digest = hashlib.sha256()
+    with tsv_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def retained_source_stamp(db_path: Path) -> tuple[str | None, str | None]:
+    """The cache's freshness signal and the hash of the table it was built from (read-only).
+
+    Both come from one read, so they describe the same build. Caches built
+    before 2.6.0 have no ``content_hash`` column; it reads as None and the
+    cache stays valid.
+    """
+    from allelix.databases.cache_state import connect_readonly
+
+    try:
+        with contextlib.closing(connect_readonly(db_path)) as conn:
+            try:
+                row = conn.execute(
+                    "SELECT remote_signal, content_hash FROM database_versions WHERE name = 'gwas'"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = conn.execute(
+                    "SELECT remote_signal, NULL FROM database_versions WHERE name = 'gwas'"
+                ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if row is None:
+        return None, None
+    return row[0] or None, row[1] or None
+
+
 def load_gwas_tsv(
     tsv_path: Path,
     db_path: Path,
     source_url: str = "",
     remote_signal: str | None = None,
     min_rows: int = 0,
+    content_hash: str | None = None,
 ) -> int:
     """Parse a GWAS Catalog TSV into a fresh SQLite cache atomically.
 
-    Writes to a `.tmp` sibling and `os.replace`s onto `db_path` only after a
-    successful commit. Returns the number of records loaded.
+    Writes to a staging file of its own beside `db_path` (`owned_staging`)
+    and `os.replace`s it onto `db_path` only after a successful commit; the
+    staging file is removed on any failure or interruption. Returns the number of records loaded.
 
     ``min_rows`` is a sanity floor checked before the final ``os.replace``.
     Set by production callers (see ``GwasAnnotator.setup``) to
     ``GWAS_MIN_ROWS``; defaults to 0 so test fixtures of any size load.
-    """
-    tmp_path = db_path.parent / f"{db_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
 
+    ``content_hash`` (``gwas_source_hash`` of ``tsv_path``) is stored so a
+    later re-ingest reads only the table this cache was built from.
+    """
     version = datetime.now(UTC).strftime("%Y-%m-%d")
 
-    try:
+    with owned_staging(db_path) as tmp_path:
         with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
             conn.executescript(GWAS_SCHEMA)
+            # Optional since 2.6.0; caches without it stay valid.
+            conn.execute("ALTER TABLE database_versions ADD COLUMN content_hash TEXT")
             insert_sql = (
                 "INSERT INTO gwas_associations "
                 "(rsid, risk_allele, trait, p_value, or_beta, ci_text, "
@@ -550,8 +588,8 @@ def load_gwas_tsv(
             conn.execute(
                 "INSERT INTO database_versions "
                 "(name, source_url, version, downloaded_at, record_count, "
-                "remote_signal, local_version_tag) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "remote_signal, local_version_tag, content_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "gwas",
                     source_url,
@@ -560,6 +598,7 @@ def load_gwas_tsv(
                     count,
                     remote_signal or "",
                     f"cv:{_CATEGORIZER_VERSION}",
+                    content_hash,
                 ),
             )
             conn.commit()
@@ -574,10 +613,3 @@ def load_gwas_tsv(
             raise OSError(msg)
         os.replace(tmp_path, db_path)
         return count
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                logger.warning("Could not remove failed temp DB %s", tmp_path)
-        raise

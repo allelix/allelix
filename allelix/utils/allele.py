@@ -327,15 +327,17 @@ def is_strand_ambiguous(ref: str, alt: str) -> bool:
 
 
 # Strand readings of a source's alleles against a site's forward alleles
-# (ADR-0024): the two readings, then the three reasons to abstain.
+# (ADR-0024, ADR-0066): the two readings, then the reasons to abstain.
 STRAND_DIRECT = "direct"
 STRAND_COMPLEMENT = "complement"
 STRAND_NOT_IN_IDENTITY = "not_in_identity_table"
 STRAND_PALINDROMIC = "palindromic"
+STRAND_BOTH_FIT = "both_fit"
 STRAND_NO_FIT = "no_fit"
 STRAND_ABSTAIN_REASONS: tuple[str, ...] = (
     STRAND_NOT_IN_IDENTITY,
     STRAND_PALINDROMIC,
+    STRAND_BOTH_FIT,
     STRAND_NO_FIT,
 )
 _BASES = frozenset("ACGT")
@@ -350,20 +352,35 @@ def forward_strand_reading(alleles: Iterable[str], forward: frozenset[str]) -> s
     """How a source's single-base ``alleles`` read on the forward strand.
 
     ``forward`` is the site's REF plus ALTs on the input's build (the rsID
-    identity table). The abstain-first rule (ADR-0024):
+    identity table). Both readings are evaluated together (ADR-0066):
 
-    1. Not an A/T or C/G site, and every allele is forward: ``direct``,
-       even where the complements are forward too.
-    2. Otherwise, every complement is forward: ``complement``.
-    3. An A/T or C/G site is ``palindromic``; anything else is ``no_fit``.
+    - Only the alleles as written are forward: ``direct``.
+    - Only their complements are forward: ``complement``.
+    - Both are: the strand is unknown, ``palindromic`` at an A/T or C/G
+      site and ``both_fit`` at a site with more alleles (``{A, G, T}``
+      holds both A and T).
+    - Neither is: ``no_fit``.
     """
-    if forward in _AMBIGUOUS_PAIRS:
-        return STRAND_PALINDROMIC
     wanted = set(alleles)
     if not wanted or not wanted <= _BASES:
         return STRAND_NO_FIT
-    if wanted <= forward:
+    direct = wanted <= forward
+    reverse = {complement(a) for a in wanted} <= forward
+    if direct and reverse:
+        return STRAND_PALINDROMIC if forward in _AMBIGUOUS_PAIRS else STRAND_BOTH_FIT
+    if direct:
         return STRAND_DIRECT
-    if {complement(a) for a in wanted} <= forward:
+    if reverse:
         return STRAND_COMPLEMENT
     return STRAND_NO_FIT
+
+
+def stated_orientation_fits(alleles: Iterable[str], forward: frozenset[str]) -> bool:
+    """True when single-base ``alleles``, already on the forward strand, are all forward.
+
+    A source that states its orientation (SNPedia's oriented rows) needs no
+    reading: its genotype either is among the site's forward alleles or does
+    not fit. A/T, C/G and both-fit sites are no obstacle (ADR-0066).
+    """
+    wanted = set(alleles)
+    return bool(wanted) and wanted <= _BASES and wanted <= forward

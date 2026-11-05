@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from allelix.databases._versions import CADD_SCHEMA_VERSION
 from allelix.databases.schema import CADD_SCHEMA
+from allelix.databases.staging import owned_staging
 
 logger = logging.getLogger(__name__)
 
@@ -248,61 +249,60 @@ def build_cache(
         print("Error: no positions loaded from databases.", file=sys.stderr)
         sys.exit(1)
 
-    tmp_path = output_path.parent / f"{output_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    # A staging file of this build's own: another build of the same output can
+    # neither publish nor remove it, and a failed build leaves none behind.
+    with owned_staging(output_path) as tmp_path:
+        with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            for stmt in CADD_SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.commit()
 
-    with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        for stmt in CADD_SCHEMA.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                conn.execute(stmt)
-        conn.commit()
-
-        print(f"SNV pass: streaming {snv_path}...")
-        snv_scanned, snv_inserted, snv_skipped = _stream_cadd_file(
-            snv_path, conn, snv_keys, indel_keys, is_indel_pass=False
-        )
-        print(
-            f"  SNV pass: {snv_scanned:,} scanned, {snv_inserted:,} matched, "
-            f"{snv_skipped:,} skipped (unmapped)"
-        )
-
-        indel_scanned = 0
-        indel_inserted = 0
-        indel_skipped = 0
-        if indel_path is not None:
-            print(f"Indel pass: streaming {indel_path}...")
-            indel_scanned, indel_inserted, indel_skipped = _stream_cadd_file(
-                indel_path, conn, snv_keys, indel_keys, is_indel_pass=True
+            print(f"SNV pass: streaming {snv_path}...")
+            snv_scanned, snv_inserted, snv_skipped = _stream_cadd_file(
+                snv_path, conn, snv_keys, indel_keys, is_indel_pass=False
             )
             print(
-                f"  Indel pass: {indel_scanned:,} scanned, "
-                f"{indel_inserted:,} matched, {indel_skipped:,} skipped"
+                f"  SNV pass: {snv_scanned:,} scanned, {snv_inserted:,} matched, "
+                f"{snv_skipped:,} skipped (unmapped)"
             )
 
-        total_inserted = snv_inserted + indel_inserted
-        conn.execute(
-            "INSERT OR REPLACE INTO database_versions "
-            "(name, source_url, version, downloaded_at, record_count, "
-            "local_version_tag) "
-            "VALUES (?, ?, ?, datetime('now'), ?, ?)",
-            (
-                "cadd",
-                "https://cadd.gs.washington.edu",
-                "v1.7",
-                total_inserted,
-                f"sv:{CADD_SCHEMA_VERSION}",
-            ),
-        )
-        conn.commit()
+            indel_scanned = 0
+            indel_inserted = 0
+            indel_skipped = 0
+            if indel_path is not None:
+                print(f"Indel pass: streaming {indel_path}...")
+                indel_scanned, indel_inserted, indel_skipped = _stream_cadd_file(
+                    indel_path, conn, snv_keys, indel_keys, is_indel_pass=True
+                )
+                print(
+                    f"  Indel pass: {indel_scanned:,} scanned, "
+                    f"{indel_inserted:,} matched, {indel_skipped:,} skipped"
+                )
 
-        print("Compacting database...")
-        conn.execute("VACUUM")
+            total_inserted = snv_inserted + indel_inserted
+            conn.execute(
+                "INSERT OR REPLACE INTO database_versions "
+                "(name, source_url, version, downloaded_at, record_count, "
+                "local_version_tag) "
+                "VALUES (?, ?, ?, datetime('now'), ?, ?)",
+                (
+                    "cadd",
+                    "https://cadd.gs.washington.edu",
+                    "v1.7",
+                    total_inserted,
+                    f"sv:{CADD_SCHEMA_VERSION}",
+                ),
+            )
+            conn.commit()
 
-    os.replace(tmp_path, output_path)
+            print("Compacting database...")
+            conn.execute("VACUUM")
+
+        os.replace(tmp_path, output_path)
 
     elapsed_total = time.monotonic() - t0
     total_scanned = snv_scanned + indel_scanned

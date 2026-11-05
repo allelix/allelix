@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from allelix.databases.manager import (
     get_database_info,
     stamp_existing_clinvar_cache,
+    update_remote_signal,
 )
 
 if TYPE_CHECKING:
@@ -409,3 +410,36 @@ class TestStampExistingClinvarCache:
             conn.commit()
 
         assert stamp_existing_clinvar_cache(db) is False
+
+
+class TestUpdateRemoteSignal:
+    """2.6.0: a signal kept for unchanged content lands only on that content."""
+
+    def _cache(self, path: Path) -> Path:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                "CREATE TABLE database_versions (name TEXT PRIMARY KEY, "
+                "remote_signal TEXT, content_hash TEXT)"
+            )
+            conn.execute("INSERT INTO database_versions VALUES ('pharmgkb', 'old', 'sha256:a')")
+            conn.commit()
+        return path
+
+    def _signal(self, path: Path) -> str:
+        with contextlib.closing(sqlite3.connect(path)) as conn:
+            return conn.execute("SELECT remote_signal FROM database_versions").fetchone()[0]
+
+    def test_stored_while_the_cache_holds_the_checked_content(self, tmp_path: Path):
+        db = self._cache(tmp_path / "c.sqlite")
+        assert update_remote_signal(db, "pharmgkb", "new", content_hash="sha256:a") is True
+        assert self._signal(db) == "new"
+
+    def test_not_stored_on_other_content(self, tmp_path: Path):
+        db = self._cache(tmp_path / "c.sqlite")
+        assert update_remote_signal(db, "pharmgkb", "new", content_hash="sha256:b") is False
+        assert self._signal(db) == "old"
+
+    def test_unconditional_without_a_hash(self, tmp_path: Path):
+        db = self._cache(tmp_path / "c.sqlite")
+        assert update_remote_signal(db, "pharmgkb", "new") is True
+        assert self._signal(db) == "new"

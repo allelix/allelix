@@ -8,9 +8,15 @@ import struct
 import pysam
 import pytest
 
+from allelix.config import load_config, save_config
+
 
 def test_bad_chunk_offset_warns_and_falls_back_to_sequential(rc_case):
     case = rc_case
+    # Indexed extraction needs an enabled source that places the requested rsID.
+    config = load_config(case.data, create=False)
+    config.sources["gnomad"] = True
+    save_config(case.data, config)
     case.source.write_text(case.source.read_text().replace("249250621", "248956422"))
     source = case.root / "bad-chunk.vcf.gz"
     pysam.tabix_compress(str(case.source), str(source))

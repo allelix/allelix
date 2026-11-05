@@ -122,21 +122,20 @@ class TestInstallPrebuiltCache:
         assert row[0] is None or row[0] == ""
         assert row[1] == f"sv:{CADD_SCHEMA_VERSION}"
 
-    def test_atomic_replace_uses_tmp_path(self, tmp_path: Path) -> None:
-        """If a .tmp file is left over from a prior aborted run, it's cleared."""
+    def test_atomic_replace_uses_its_own_staging(self, tmp_path: Path) -> None:
+        """A file at the old fixed staging name may be another writer's: it is left alone."""
         gz_path = _make_synthetic_gz_cache(tmp_path)
         dest_db = tmp_path / "dest" / CADD_DB_FILENAME
         dest_db.parent.mkdir()
 
-        # Plant a stale tmp file matching the loader_utils naming convention.
-        stale_tmp = dest_db.parent / f"{dest_db.name}.tmp"
-        stale_tmp.write_bytes(b"garbage from previous aborted run")
-        assert stale_tmp.exists()
+        other = dest_db.parent / f"{dest_db.name}.tmp"
+        other.write_bytes(b"another writer's staging")
 
         install_prebuilt_cache(gz_path, dest_db, remote_signal="etag:atomic")
 
-        # The stale tmp is gone (replaced and then renamed to dest)
-        assert not stale_tmp.exists()
+        # Untouched, and this install left no staging file of its own.
+        assert other.read_bytes() == b"another writer's staging"
+        assert sorted(p.name for p in dest_db.parent.iterdir()) == [dest_db.name, other.name]
         # The real dest is the freshly decompressed cache
         assert dest_db.exists()
         with contextlib.closing(sqlite3.connect(dest_db)) as conn:

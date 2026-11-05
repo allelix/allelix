@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
+import shutil
 import sqlite3
 import zipfile
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import (
@@ -24,15 +27,19 @@ from allelix.databases.gwas_loader import (
     GWAS_CATALOG_URL,
     GWAS_DB_FILENAME,
     GWAS_MIN_ROWS,
+    gwas_source_hash,
     load_gwas_tsv,
+    retained_source_stamp,
 )
 from allelix.databases.manager import (
     _ensure_local_version_tag_column,
     download,
     get_database_info,
     head_request_headers,
+    http_signal,
     parse_baked_version,
 )
+from allelix.databases.staging import owned_directory
 from allelix.models import Annotation, diploid_label
 from allelix.utils.allele import (
     STRAND_ABSTAIN_REASONS,
@@ -63,13 +70,15 @@ _MUST_INCLUDE_RSIDS = frozenset(
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
-    from pathlib import Path
 
     from allelix.annotators.base import ForwardSiteProvider
     from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
 logger = logging.getLogger(__name__)
+
+# The GWAS Catalog table a refresh loaded, kept in the data directory.
+GWAS_TSV_FILENAME = "gwas_catalog_associations.tsv"
 
 _BATCH_CHUNK = 500  # SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999
 
@@ -253,42 +262,50 @@ class GWASCatalogAnnotator(Annotator):
         signal = self.fetch_remote_signal()
         if signal is None and not force:
             msg = (
-                "gwas: cannot verify remote freshness signal. "
+                "cannot verify remote freshness signal. "
                 "Refresh aborted to avoid persisting an incomplete cache stamp. "
                 "Retry, or pass --force if you accept that next `db update` "
                 "will re-download to re-establish the signal."
             )
             raise RuntimeError(msg)
-        zip_path = self.data_dir / "gwas_catalog_associations.zip"
-        tsv_path = self.data_dir / "gwas_catalog_associations.tsv"
-        # No content-hash verification: EBI publishes no checksum for this
-        # file and the content is mutable, so there is nothing to pin or
-        # fetch. TLS + Content-Length truncation guard only. See ADR-0029.
-        download(url, zip_path)
-        try:
+        # This refresh's own download directory: the archive and the table
+        # extracted from it are the bytes this refresh fetched, until its
+        # load finishes; another refresh can neither replace nor remove them.
+        with owned_directory(self.data_dir, "gwas") as staging:
+            zip_path = staging / "gwas_catalog_associations.zip"
+            tsv_path = staging / GWAS_TSV_FILENAME
+            # No content-hash verification: EBI publishes no checksum for this
+            # file and the content is mutable, so there is nothing to pin or
+            # fetch. TLS + Content-Length truncation guard only. See ADR-0029.
+            download(url, zip_path)
             with zipfile.ZipFile(zip_path) as zf:
                 tsv_names = [n for n in zf.namelist() if n.endswith(".tsv")]
                 if not tsv_names:
-                    msg = f"No .tsv file found in {zip_path}"
+                    msg = f"No .tsv file found in {zip_path.name}"
                     raise RuntimeError(msg)
-                zf.extract(tsv_names[0], self.data_dir)
-                extracted = self.data_dir / tsv_names[0]
-                if extracted != tsv_path:
-                    extracted.rename(tsv_path)
+                extracted = Path(zf.extract(tsv_names[0], staging / "extracted"))
+                extracted.rename(tsv_path)
             load_gwas_tsv(
                 tsv_path,
                 self._db_path,
                 source_url=url,
                 remote_signal=signal,
                 min_rows=GWAS_MIN_ROWS,
+                content_hash=gwas_source_hash(tsv_path),
             )
-        finally:
-            try:
-                zip_path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                logger.warning("Could not remove staged file at %s", zip_path)
+            # The table this load read is kept for a re-ingest when the
+            # categorizer changes (``prepare_cache``). The cache records its
+            # hash, so a table another refresh published here is never read
+            # as this cache's source. The table is published after the
+            # cache, never before: ``prepare_cache`` relies on that order.
+            os.replace(tsv_path, self.data_dir / GWAS_TSV_FILENAME)
+
+    def reference_call_rsids(self) -> Iterable[str]:
+        """Every rsID with a row here, streamed (ADR-0064); none when the cache is not ready."""
+        if not self.is_ready():
+            return ()
+        rows = self._connection().execute("SELECT DISTINCT rsid FROM gwas_associations")
+        return (rsid for (rsid,) in rows if rsid)
 
     def is_ready(self) -> bool:
         """Return True when the local GWAS cache exists and has current schema."""
@@ -310,7 +327,13 @@ class GWASCatalogAnnotator(Annotator):
         1. No tag (legacy cache or ``|cv:`` still in ``remote_signal``):
            one-shot migration via ``_stamp_existing_gwas_cache``.
         2. Stale tag (categorizer bumped): re-ingest from the cached TSV
-           if it is still on disk.
+           if it is still on disk and is the table this cache was built
+           from (its ``content_hash``). The rebuilt cache keeps the signal
+           and hash read with it, so its rows and stamp describe one
+           source. A table from another refresh is not read; ``db update``
+           then downloads again. The stamp is read after the table is
+           copied, so a cache built before 2.6.0, which records no hash,
+           re-ingests its own table with its own signal.
         """
         if self.cache_status().state is not CacheState.OUTDATED:
             return False
@@ -322,21 +345,44 @@ class GWASCatalogAnnotator(Annotator):
             and self.cache_status().ready
         ):
             return True
-        tsv_path = self.data_dir / "gwas_catalog_associations.tsv"
+        tsv_path = self.data_dir / GWAS_TSV_FILENAME
         if not tsv_path.exists():
             return False
-        print(
-            "GWAS categorizer changed — re-ingesting from cached TSV...",
-            flush=True,
-        )
         try:
-            load_gwas_tsv(
-                tsv_path,
-                self._db_path,
-                source_url=GWAS_CATALOG_URL,
-                remote_signal=self.cached_remote_signal(),
-                min_rows=GWAS_MIN_ROWS,
-            )
+            with owned_directory(self.data_dir, "gwas") as staging:
+                # This re-ingest's own copy of the table: a refresh that
+                # publishes another one meanwhile changes neither what is
+                # checked nor what is loaded.
+                source = staging / GWAS_TSV_FILENAME
+                try:
+                    os.link(tsv_path, source)
+                except OSError:
+                    shutil.copyfile(tsv_path, source)
+                # Read after the copy is taken. A refresh publishes its cache
+                # before its table, so a cache that still records no hash
+                # here was not replaced by one before the copy: the copy is
+                # that cache's own table, also on the compatibility path.
+                signal, built_from = retained_source_stamp(self._db_path)
+                source_hash = gwas_source_hash(source)
+                if built_from is not None and source_hash != built_from:
+                    print(
+                        "GWAS categorizer changed, but the cached TSV is not the table "
+                        "this cache was built from; `allelix db update` rebuilds it.",
+                        flush=True,
+                    )
+                    return False
+                print(
+                    "GWAS categorizer changed — re-ingesting from cached TSV...",
+                    flush=True,
+                )
+                load_gwas_tsv(
+                    source,
+                    self._db_path,
+                    source_url=GWAS_CATALOG_URL,
+                    remote_signal=signal,
+                    min_rows=GWAS_MIN_ROWS,
+                    content_hash=source_hash,
+                )
         except Exception:
             logger.warning("Auto-reingest from cached TSV failed", exc_info=True)
             return False
@@ -359,17 +405,11 @@ class GWASCatalogAnnotator(Annotator):
             self._conn = None
 
     def fetch_remote_signal(self) -> str | None:
-        """Probe the GWAS Catalog URL for ETag or Last-Modified."""
+        """Probe the GWAS Catalog URL for its ETag and Last-Modified (ADR-0012)."""
         headers = head_request_headers(GWAS_CATALOG_URL)
         if headers is None:
             return None
-        etag = headers.get("ETag") or headers.get("Etag")
-        last_modified = headers.get("Last-Modified") or headers.get("Last-modified")
-        if etag:
-            return f"etag:{etag.strip()}"
-        if last_modified:
-            return f"lm:{last_modified.strip()}"
-        return None
+        return http_signal(headers)
 
     def cached_remote_signal(self) -> str | None:
         """Return the remote signal stored during the last successful ingest."""
@@ -409,7 +449,8 @@ class GWASCatalogAnnotator(Annotator):
         on rsid match alone with a magnitude penalty. A VCF half call
         (``./1``) is assessed on its called allele (ADR-0047).
         """
-        if variant.is_no_call and not variant.is_half_call:
+        if (variant.is_no_call and not variant.is_half_call) or variant.is_di_call:
+            # A D/I call is not interpreted (ADR-0070).
             return []
 
         sql = (
@@ -435,7 +476,10 @@ class GWASCatalogAnnotator(Annotator):
         magnitude cap) are applied after the SQL — same logic as
         ``annotate``, same outputs, same order.
         """
-        variants_list = [v for v in variants if not v.is_no_call or v.is_half_call]
+        # A D/I call is not interpreted (ADR-0070).
+        variants_list = [
+            v for v in variants if (not v.is_no_call or v.is_half_call) and not v.is_di_call
+        ]
         if not variants_list:
             return
         rsids = list({v.rsid for v in variants_list})

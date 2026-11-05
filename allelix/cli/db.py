@@ -11,11 +11,14 @@ from rich.markup import escape
 from rich.table import Table
 
 from allelix.annotators import get_annotators
+from allelix.annotators.clinvar import ClinVarAnnotator
+from allelix.annotators.pharmgkb import PharmGKBAnnotator, signal_lacks_cpic
 from allelix.cli import _helpers, main
 from allelix.cli._helpers import console
 from allelix.cli._options import _DATA_DIR_OPT
 from allelix.databases import resolve_data_dir
 from allelix.databases.cache_state import CacheState
+from allelix.databases.manager import compare_signals
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,6 +29,18 @@ if TYPE_CHECKING:
 @main.group()
 def db() -> None:
     """Manage local reference database cache."""
+
+
+def _print_refreshed(annotator: Annotator) -> None:
+    """The line after a successful refresh; a download with unchanged content says so."""
+    version = annotator.version() or "(unknown)"
+    if getattr(annotator, "content_unchanged", False):
+        console.print(
+            f"  [green]✓ {annotator.name}: content unchanged; cache kept[/green] "
+            f"(version {version})"
+        )
+    else:
+        console.print(f"  [green]✓ {annotator.name} refreshed[/green] (version {version})")
 
 
 def _confirm_cadd_license(*, license_held: bool = False) -> bool:
@@ -88,7 +103,7 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
     help=(
         "Which ClinVar genome build(s) to download. 'both' (default) keeps "
         "GRCh37 and GRCh38 caches in sync so `analyze` can dispatch by "
-        "detected build (ADR-0021). 'grch37' / 'grch38' restrict to one to "
+        "the build it decides (ADR-0044). 'grch37' / 'grch38' restrict to one to "
         "save bandwidth."
     ),
 )
@@ -99,6 +114,16 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
     default=None,
     help="Update only the named database (currently supported: clinvar).",
 )
+@click.option(
+    "--allow-clinvar-shrink",
+    is_flag=True,
+    default=False,
+    help=(
+        "For this run only, accept a ClinVar release with fewer rows than 90% of the "
+        "cache it replaces. The fixed row floor and the zero-row check still apply; "
+        "old and new counts are printed and logged."
+    ),
+)
 def db_update(
     data_dir: Path | None,
     force: bool,
@@ -107,22 +132,28 @@ def db_update(
     include_cadd: bool,
     build: str,
     only_source: str | None,
+    allow_clinvar_shrink: bool,
 ) -> None:
     """Download or refresh reference databases.
 
+    \b
     For each annotator:
       - no cache → download
       - --force → download
       - cache + remote signal matches cache → skip
       - cache + remote signal differs (or legacy v0.4.1 cache with no
         stored signal) → download
+      - cache + remote sends a different freshness header than the one
+        stored (ETag or Last-Modified) → keep with notice (use --force)
       - cache + remote signal can't be fetched → skip with notice (use
         --force to override), except ClinVar: it is never refreshed without
         NCBI's checksums, even with --force
+      - ClinPGx: a download whose content matches the last build keeps
+        the cache ("content unchanged")
 
     `--build` selects which ClinVar build(s) to manage. Default 'both'
     downloads GRCh37 and GRCh38 caches.
-    """
+    """  # noqa: D301 - plain string: click's \b marker is the backspace character
     resolved = resolve_data_dir(data_dir)
     console.print(f"Data directory: [cyan]{resolved}[/cyan]")
 
@@ -139,6 +170,8 @@ def db_update(
         [a for a in annotators if only_source is None or a.name == only_source], resolved
     )
     for annotator in annotators:
+        if isinstance(annotator, ClinVarAnnotator):
+            annotator.allow_shrink = allow_clinvar_shrink
         with annotator:
             if only_source is not None and annotator.name != only_source:
                 continue
@@ -199,10 +232,7 @@ def db_update(
                 console.print(f"  [bold]{annotator.name}[/bold]: --force; refreshing…")
                 _check_setup_destinations(annotator, resolved)
                 if _helpers._run_setup(annotator, force=force):
-                    console.print(
-                        f"  [green]✓ {annotator.name} refreshed[/green] "
-                        f"(version {annotator.version() or '(unknown)'})"
-                    )
+                    _print_refreshed(annotator)
                 else:
                     failed.append(annotator.name)
                 continue
@@ -232,10 +262,18 @@ def db_update(
                 continue
 
             cached = annotator.cached_remote_signal()
-            if cached == remote:
+            verdict = compare_signals(cached, remote) if cached is not None else "changed"
+            if verdict == "same":
                 console.print(
                     f"  [dim]{annotator.name}: already current "
                     f"(version {annotator.version() or '(unknown)'})[/dim]"
+                )
+                continue
+            if verdict == "unknown":
+                console.print(
+                    f"  [yellow]{annotator.name}: cache kept; the remote sends different "
+                    "freshness fields than the cache recorded, so a change cannot be "
+                    "verified. Pass --force to refresh anyway.[/yellow]"
                 )
                 continue
 
@@ -256,10 +294,7 @@ def db_update(
                 )
             _check_setup_destinations(annotator, resolved)
             if _helpers._run_setup(annotator):
-                console.print(
-                    f"  [green]✓ {annotator.name} refreshed[/green] "
-                    f"(version {annotator.version() or '(unknown)'})"
-                )
+                _print_refreshed(annotator)
             else:
                 failed.append(annotator.name)
 
@@ -548,7 +583,7 @@ def db_path(data_dir: Path | None, check: bool) -> None:
 @db.command("status")
 @_DATA_DIR_OPT
 def db_status(data_dir: Path | None) -> None:
-    """Show installed reference database versions and freshness."""
+    """Show installed reference databases: readiness, version and record count."""
     from allelix.config import load_config
 
     resolved = resolve_data_dir(data_dir)
@@ -574,7 +609,7 @@ def db_status(data_dir: Path | None) -> None:
             ready_marker = "[green]yes[/green]" if ready else "[red]no[/red]"
             version = annotator.version() or "—"
             sig = getattr(annotator, "cached_remote_signal", lambda: None)()
-            if sig and "cpic:unavailable" in sig:
+            if isinstance(annotator, PharmGKBAnnotator) and signal_lacks_cpic(sig):
                 version += " (no CPIC)"
             records = "—"
             count_fn = getattr(annotator, "record_count", None)

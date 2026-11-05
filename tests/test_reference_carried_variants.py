@@ -723,8 +723,8 @@ def test_identity_normal_alleles_abstain_unless_unambiguous(
     tmp_path: Path, cm_stack: contextlib.ExitStack
 ) -> None:
     rows = [
-        # rs6025 as dbSNP lists it: every base, flagged palindromic. The
-        # flag concerns translating alleles, not reading a REF.
+        # rs6025 as dbSNP lists it: every base, flagged palindromic. No
+        # strand relation can be told, so no REF is carried across.
         (F5, "1", POS[GRCH37], "T", "C", POS[GRCH38], "C", "C", 1),
         (F5, "1", POS[GRCH37], "T", "A", POS[GRCH38], "C", "A", 1),
         # Same REF on both builds: no normal allele.
@@ -746,10 +746,8 @@ def test_identity_normal_alleles_abstain_unless_unambiguous(
         "rs900953004": "T",
         "rs900953099": "T",
     }
-    assert identity.normal_alleles_on_other_build(carried, GRCH37) == {F5: "C"}
-    # From GRCh38 the other way round: GRCh38's reference carries C at rs6025
-    # only in this made-up case, and the normal allele is GRCh37's T.
-    assert identity.normal_alleles_on_other_build({F5: "C"}, GRCH38) == {F5: "T"}
+    assert identity.normal_alleles_on_other_build(carried, GRCH37) == {}
+    assert identity.normal_alleles_on_other_build({F5: "C"}, GRCH38) == {}
     assert identity.normal_alleles_on_other_build({}, GRCH37) == {}
 
 

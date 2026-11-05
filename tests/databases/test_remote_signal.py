@@ -116,14 +116,15 @@ class TestHeadRequestHeaders:
         _HeadHandler.etag = None
         headers = head_request_headers(head_server)
         assert headers is not None
-        assert headers.get("Last-Modified") == "Mon, 01 Jan 2026 00:00:00 GMT"
+        # Names are lowercased: HTTP header names are case-insensitive (ADR-0012).
+        assert headers.get("last-modified") == "Mon, 01 Jan 2026 00:00:00 GMT"
 
     def test_returns_etag_when_present(self, head_server: str):
         _HeadHandler.last_modified = ""
         _HeadHandler.etag = '"abc123"'
         headers = head_request_headers(head_server)
         assert headers is not None
-        assert headers.get("ETag") == '"abc123"'
+        assert headers.get("etag") == '"abc123"'
 
     def test_returns_none_on_connection_refused(self):
         assert head_request_headers(f"http://127.0.0.1:{_free_port()}/x") is None

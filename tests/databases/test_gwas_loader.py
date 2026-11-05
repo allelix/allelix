@@ -213,7 +213,8 @@ class TestMinRowsFloor:
             load_gwas_tsv(mock_gwas_tsv, db, source_url="test://truncated", min_rows=999_999)
         # tmp_path cleaned, real db not created
         assert not db.exists()
-        assert not (tmp_path / "gwas.sqlite.tmp").exists()
+        # No staging file of this load is left (``owned_staging``).
+        assert not list(tmp_path.glob(".gwas.sqlite.*"))
 
     def test_default_min_rows_zero_loads_small_fixtures(self, mock_gwas_tsv, tmp_path) -> None:
         """Default ``min_rows=0`` lets test fixtures load regardless of size."""

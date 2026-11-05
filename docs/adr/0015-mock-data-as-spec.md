@@ -44,3 +44,11 @@ The MHG mock generator (`tests/generate_mock_data.py`) existed from v0.1.0 as th
 - Future annotator additions (SNPedia, GWAS Catalog) must extend the relevant generator with real-shape data — including the edge cases (anchor-base indels, non-finding language, etc.) that the existing generators have learned to model.
 
 - The end-to-end snapshot test (`test_annotation_count_snapshot`) is the gate that would have caught v0.4.2 and v0.5.0's regressions. Going forward, every annotator or parser change must pass it. A new false positive shows up as a count increase; a regression that drops a real carrier shows up as a count decrease. Neither can be "the test was wrong; let me update it" — both demand investigation.
+
+## Amendment 2.6.0 (2026-11-03): two generators
+
+Rule 1 does not describe the tree. Two generators exist,
+`tests/generate_mock_data.py` and `tests/generate_pharmgkb_fixture.py`.
+The other formats and sources are tested with static files under
+`tests/fixtures/` and fixtures the tests write themselves. Rules 2 to 4
+apply to the generators that exist.

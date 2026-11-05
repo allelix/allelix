@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 12)}
+_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 13)}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5

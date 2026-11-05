@@ -24,3 +24,10 @@ Parsers normalize to a single internal `Variant(rsid, chromosome, position, alle
 - Tests live alongside the plugin (`tests/parsers/test_<name>.py`) — adding a parser without tests is visible at PR time.
 - Auto-detection is order-sensitive: parsers with stricter signatures should come earlier in `PARSERS` so they match before more permissive ones.
 - No premature plugin discovery framework. If/when the parser count exceeds ~10 or third parties want to ship out-of-tree parsers, revisit with a new ADR.
+
+## Amendment 2.6.0 (2026-11-03): where the rsID-list reader is tested
+
+Not every parser has a `tests/parsers/test_<name>.py`. The rsID and
+genotype list reader (`allelix/parsers/rsidlist.py`, ADR-0069) is tested
+by `tests/test_iyg_detection_contract.py` and
+`tests/test_iyg_placement_contract.py`.

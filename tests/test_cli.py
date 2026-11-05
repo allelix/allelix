@@ -713,9 +713,9 @@ class TestDbCommands:
 
         monkeypatch.setattr(CaddAnnotator, "setup", lambda self: None)
 
-        # The download() helper writes to data_dir/clinvar.vcf.gz and
-        # data_dir/clinicalAnnotations.zip. Use a separate cache subdir so the
-        # source ZIP fixture above doesn't collide.
+        # Downloads stage in a directory of their own inside the cache dir.
+        # Use a separate cache subdir so the source ZIP fixture above doesn't
+        # collide.
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         runner = CliRunner()
@@ -730,13 +730,16 @@ class TestDbCommands:
         assert clinvar_sqlite_grch38.exists()
         assert pharmgkb_sqlite.exists()
         assert gwas_sqlite.exists()
-        # Staged downloads cleaned up after ingest; raw artifacts retained for
-        # auto-reingest on interpreter version bumps (ZIP for ClinPGx, TSV for GWAS)
+        # Staged downloads cleaned up after ingest; GWAS's table is kept for a
+        # re-ingest when its categorizer changes. Nothing reads ClinPGx's
+        # archive after the build, so it is not kept (2.6.0), and no staging
+        # file or directory is left.
         assert not (cache_dir / "clinvar.vcf").exists()
         assert not (cache_dir / "clinvar.vcf.gz").exists()
         assert not (cache_dir / "gwas_catalog_associations.zip").exists()
-        assert (cache_dir / "clinicalAnnotations.zip").exists()
+        assert not (cache_dir / "clinicalAnnotations.zip").exists()
         assert (cache_dir / "gwas_catalog_associations.tsv").exists()
+        assert not [p.name for p in cache_dir.iterdir() if p.name.startswith(".")]
 
         for build, db_path in (
             ("GRCh37", clinvar_sqlite_grch37),
@@ -2867,13 +2870,17 @@ class TestExportPlinkCommand:
         assert bed[3] == 0x03
 
     def test_multi_allelic_with_no_fitting_record_is_missing(self, tmp_path, monkeypatch):
-        """C/C at a site gnomAD lists as G>A and G>T fits neither: missing, counted, said."""
+        """C/A at a site gnomAD lists as G>A and G>T fits neither reading: missing, counted, said.
+
+        Its complement G/T fits only the second pair, which the call does not
+        fit as written; the first pair is used, and neither reading fits it.
+        """
         fixture = tmp_path / "donor.txt"
         fixture.write_text(
             "# MyHappyGenes [TEMPUS]\n"
             "# Sample ID\tTEST001\n"
             "SNP Name\tChr\tPosition\tAllele1 - Forward\tAllele2 - Forward\n"
-            "rs1\t1\t100\tC\tC\n"
+            "rs1\t1\t100\tC\tA\n"
             "rs2\t1\t200\tG\tT\n"
         )
 

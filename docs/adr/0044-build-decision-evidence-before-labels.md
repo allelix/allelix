@@ -245,3 +245,35 @@ Forcing a build does not fix a file whose positions match none, so:
   in the indexed extract path.
 - **Unchanged:** `--build grch36` stays exempt, and confident contrary
   evidence still stops. Matching or uninspected seeds give no warning.
+
+## Amendment 2.6.0 (2026-11-01): files without positions; the labelled stop
+
+- A list of rsIDs and genotypes has no positions and is not decided here.
+  It is placed on GRCh38 from the rsID identity table (ADR-0069), with
+  `build_source` `rsid_placement`; a `--build` other than `grch38` stops,
+  and the commands that need positions stop.
+- A file whose label is its only evidence (no contig lengths decide) and
+  that carries no known-SNP position still stops, and the message names
+  only the labelled build: "If the file is GRCh37, run it again with
+  --build grch37." A chip labelled GRCh36 stays exempt, as before.
+
+## Amendment 2.6.0 (2026-11-02): compare reads its records through the decision
+
+`compare` read both files in full and only then decided each build. The
+decision's parser settings (the UCSC-named mitochondrion on GRCh37) came
+too late to apply, MT records under an hg19-length chrM were never left
+out, and the chrM note had no counts. So excluded mitochondrial calls
+entered the overlap, concordance and chromosome breakdown, including calls
+on two different mitochondrial references. Found by the outside review of
+RC3.
+
+`compare` now decides each file's build first, as `stats`, `extract` and
+`export plink` do, and reads the records through `with_effective_build`:
+the exclusions above apply before any comparison key or count is made, and
+the notices carry the counts of what was left out. A file whose build needs
+its known-SNP positions is read twice (the pre-scan, then the pass), as on
+the other commands. A file without usable records still gets its own error.
+The records the decision left out count as read, those the stream drops
+(MT under an hg19-length chrM) and those the VCF parser drops by their UCSC
+name, so a file whose calls were all left out gets the notice and zero
+eligible calls, not the empty-file error.

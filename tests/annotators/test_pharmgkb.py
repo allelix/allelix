@@ -450,7 +450,7 @@ class TestSchemaMigration:
 class TestRemoteSignal:
     """Composite freshness signal: ClinPGx (ETag/Last-Modified) + CPIC."""
 
-    def test_etag_preferred_when_present(self, annotator: PharmGKBAnnotator, monkeypatch):
+    def test_etag_and_last_modified_both_kept(self, annotator: PharmGKBAnnotator, monkeypatch):
         from allelix.annotators import pharmgkb as pharmgkb_module
 
         monkeypatch.setattr(
@@ -461,7 +461,11 @@ class TestRemoteSignal:
         monkeypatch.setattr(
             pharmgkb_module, "fetch_cpic_remote_signal", lambda: "lastchange:2026-05-11"
         )
-        assert annotator.fetch_remote_signal() == 'pgkb:etag:"abc123"|cpic:lastchange:2026-05-11'
+        # Both HTTP fields are kept; the ETag decides first (ADR-0012).
+        assert (
+            annotator.fetch_remote_signal()
+            == 'pgkb:etag:"abc123"|lm:old|cpic:lastchange:2026-05-11'
+        )
 
     def test_falls_back_to_last_modified(self, annotator: PharmGKBAnnotator, monkeypatch):
         from allelix.annotators import pharmgkb as pharmgkb_module

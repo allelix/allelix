@@ -127,3 +127,57 @@ Now:
   placed at its position, on both paths. A call carrying an ALT counts only
   when the recovery names it as the rsID: left unnamed, it is another
   variant. The order above then chooses among the candidates.
+
+## Amendment 2026-10-29 (2.6.0): padded calls at a placement
+
+A padded record stands at its POS and at the site each ALT trims to
+(ADR-0061). In the choice above, a call at a placement ranks by that
+placement's position, not its record's POS. So a padded call and the same
+call written trimmed tie, and the one earlier in the file wins. The early
+stop uses the same rule. The call shown keeps its record's own columns.
+
+## Amendment 2026-10-30 (2.6.0): comparison records keep their alleles; chip calls take an explaining record
+
+Supervisor ruling, 2026-10-30.
+
+**Named records.** A named record with a literal REF and ALT is keyed by:
+- its rsID;
+- its trimmed REF;
+- its trimmed ALTs, in their literal order.
+
+Trimming drops the bases REF and every ALT share at the end, then at the
+start, while each keeps one base (as in ADR-0047 and ADR-0061; no
+left-alignment). The position is not part of the named key, so a named
+record still matches across builds. As a result:
+- the records of a split multi-allelic site each have their own partner,
+  whatever the order of the records in either file;
+- a record without a partner counts as file-only;
+- a split record and a merged record (`A` and `T` against `A,T`) are
+  different records.
+
+**Unnamed records** are keyed by their trimmed position, REF and ALTs, so a
+padded and a trimmed spelling of the same record match. Calls are compared
+in the trimmed form of their record's alleles.
+
+**Chip calls.** A chip call has no REF or ALT, so it is keyed by its rsID.
+- **Against another chip,** it matches the other file's chip call with
+  that rsID, as before.
+- **Against a VCF,** it is matched with the one record under its rsID
+  whose declared alleles (trimmed REF and ALTs) hold the call, directly or
+  complemented. The partner is chosen by declared alleles, never by whether
+  the genotypes agree.
+- **When the VCF has records under its rsID but none or more than one of
+  them does,** the call is not compared, is not counted as file-only, and
+  `compare` prints the count and the reason. A chip call whose rsID the VCF
+  does not hold at all is counted as file-only.
+
+This replaces, for distinct records, the rule in Comparison that keeps the
+last observation per rsID. Duplicates of the exact same key still keep the
+last observation.
+
+## Amendment 2.6.0 (2026-11-02): excluded calls are not compared
+
+A call that the file's build decision leaves out (ADR-0044: MT under an
+hg19-length chrM; a UCSC-named mitochondrion in a GRCh37 VCF) is in no
+comparison key, coverage count, concordance or chromosome breakdown. A
+declared rCRS mitochondrion, and MT on GRCh38, are compared as before.

@@ -36,6 +36,7 @@ from allelix.databases.manager import (
     get_database_info,
     verify_file_hash,
 )
+from allelix.databases.staging import owned_directory
 
 if TYPE_CHECKING:
     import sqlite3
@@ -120,18 +121,17 @@ class AlphaMissenseAnnotator(Annotator):
 
     def setup(self) -> None:
         """Download the pre-built AlphaMissense cache from HuggingFace."""
-        gz_path = self.data_dir / "alphamissense.sqlite.gz"
-        download(ALPHAMISSENSE_CACHE_URL, gz_path)
-        verify_file_hash(gz_path, "sha256", ALPHAMISSENSE_EXPECTED_SHA256)
-        install_prebuilt_cache(
-            gz_path,
-            self._db_path,
-            source_url=ALPHAMISSENSE_CACHE_URL,
-        )
-        try:
-            gz_path.unlink()
-        except OSError:
-            logger.warning("Could not remove staged file at %s", gz_path)
+        # This setup's own download directory: another setup of the same
+        # cache can neither replace nor remove the file it verifies.
+        with owned_directory(self.data_dir, "alphamissense") as staging:
+            gz_path = staging / "alphamissense.sqlite.gz"
+            download(ALPHAMISSENSE_CACHE_URL, gz_path)
+            verify_file_hash(gz_path, "sha256", ALPHAMISSENSE_EXPECTED_SHA256)
+            install_prebuilt_cache(
+                gz_path,
+                self._db_path,
+                source_url=ALPHAMISSENSE_CACHE_URL,
+            )
 
     def is_ready(self) -> bool:
         """True when the AlphaMissense SQLite cache exists with current schema version.

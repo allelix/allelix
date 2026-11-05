@@ -139,3 +139,82 @@ normal allele also sets ClinPGx's and SNPedia's `alt` there
 (`normal_allele_for`). Every other site is unchanged: without ClinVar,
 nothing is suppressed. Implementation: `ReferenceCarriedFallback`
 (`annotators/reference_fallback.py`), wired in `get_annotators`.
+
+### Amendment 2026-10-29 (2.6.0): identity contradictions
+
+A named call whose locus contradicts its rsID's identity-table placement
+on the analysis build reaches no source, this one included (ADR-0063).
+
+## Amendment 2.6.0 (2026-11-01): switched-off providers
+
+A ClinVar cache, gnomAD or rsID identity table the user switched off is
+never consulted for the normal allele, even when its cache can be read: the
+filter reads it as not installed, and the report carries
+`source_dependency_unavailable` (ADR-0067).
+
+## Amendment 2.6.0 (2026-11-02): a normal allele from the other build is written on this build's strand
+
+The outside review of RC3 found that the 2.5.2 fallback above, and the
+other-build steps of ADR-0039, read "the two builds' REFs differ" as "the
+reference allele changed". REFs also differ where dbSNP's reference strand
+was inverted between the assemblies: the two letters can then be one allele
+written on opposite strands. An allele from the other build (its REF, its
+ClinVar row, gnomAD's GRCh38 major allele) was compared with the call
+without translation. In the reviewer's case a GRCh37 TT call matched
+GRCh38's major T, the letter of GRCh37's minor A, and its SNPedia finding
+was suppressed. In the identity cache, 3,436 of the 5,875 rsIDs whose
+single-base REFs differ are such inversions; 1,339 are flagged palindromic.
+
+Every allele carried across builds is now written on the input build's
+strand first:
+- **Identity table** (the one-ClinVar-build path and the fallback): the
+  strand relation comes from the rsID's allele sets on both builds, as the
+  table's loader pairs them (same strand, or inverted). A row flagged
+  palindromic, or allele sets that fit both readings or neither, give no
+  relation, and nothing is carried across: the site abstains.
+- **The other build's ClinVar** (both builds installed): the same
+  VariationID's ALT gives the relation. It must be the carried allele (same
+  strand) or its complement (inverted); any other ALT abstains.
+- **gnomAD** is GRCh38's own reading: its major allele is translated for
+  GRCh37 input, and needs no translation for GRCh38 input.
+- Where the two REFs are one allele on opposite strands, the reference did
+  not change: the other build's ClinVar decides nothing there, and only
+  gnomAD can.
+
+**F5 rs6025 on a one-ClinVar-build install (supervisor ruling, option a).**
+The identity table flags rs6025 palindromic (dbSNP lists every base), so
+its strand relation between the builds cannot be told. With only one
+ClinVar build installed (`db update --build grch37` or `--build grch38`),
+the result depends on the input's build and the cache installed:
+- **GRCh37 call, only GRCh37's ClinVar** (the identity-table path): the
+  normal allele is no longer taken from the identity table. The 2.5.0 fix
+  that gave C there is undone for this setup. A T/T call keeps ClinVar's F5
+  finding and its SNPedia and ClinPGx T/T rows. A C/C call has no ClinVar
+  finding, as before, but is no longer suppressed: its SNPedia and ClinPGx
+  C/C rows show (the ClinPGx hormonal-contraceptive row, level 2B, among
+  them).
+- **GRCh37 call, only GRCh38's ClinVar** (the reference fallback, with no
+  ClinVar for the input's build): neither GRCh38's ClinVar nor gnomAD's
+  major allele can be written on GRCh37's strand, so nothing is decided and
+  the C/C rows show. A T/T call has its SNPedia and ClinPGx rows but no
+  ClinVar finding, as before: ClinVar is matched on the input's own build.
+- **GRCh38 call:** with GRCh38's ClinVar, its own REF (C) suppresses C/C and
+  T/T has the ClinVar finding, as before. With only GRCh37's ClinVar, a
+  decisive gnomAD major allele, GRCh38's own reading, still suppresses C/C
+  without any translation; without such gnomAD evidence the call abstains
+  and its C/C rows show.
+
+Abstaining here hides no finding; taking the letter as written could.
+
+With both ClinVar builds installed (the default), ClinVar's own rows decide
+rs6025 (C on both builds, same strand) and nothing changes.
+
+## Amendment 2.6.0 (2026-11-03): the interpreter stamp is `local_version_tag`
+
+The interpreter version is no longer stamped into `remote_signal`. Since
+ADR-0028 it is written as `iv:N` to `database_versions.local_version_tag`
+when `load_clinvar_tsv()` builds a cache (the VCF loader is gone; ClinVar
+is loaded from NCBI's TSVs, ADR-0053), and readiness checks that tag.
+`stamp_existing_clinvar_cache()` moves a legacy `|iv:N` marker out of
+`remote_signal` into the tag, only when N is the current
+`CLINVAR_INTERPRETER_VERSION`; it runs in the update step (ADR-0048).

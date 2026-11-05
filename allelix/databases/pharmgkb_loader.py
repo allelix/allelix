@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import contextlib
 import csv
-import logging
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -32,11 +33,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from allelix.databases.schema import PHARMGKB_SCHEMA
+from allelix.databases.staging import owned_staging
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-logger = logging.getLogger(__name__)
 
 # PharmGKB rebranded to ClinPGx in 2026 (https://www.clinpgx.org).
 # `api.pharmgkb.org` still answers via 301 → `api.clinpgx.org` and both
@@ -243,10 +244,54 @@ def _open_directory(zip_or_dir: Path) -> tuple[Path, tempfile.TemporaryDirectory
         return zip_or_dir, None
     tmp = tempfile.TemporaryDirectory(prefix="allelix-pharmgkb-")
     # Python 3.11+ zipfile.extractall sanitizes "../" and absolute paths in
-    # member names. The project pins requires-python >= 3.11 (pyproject.toml).
+    # member names. The project pins requires-python >= 3.12 (pyproject.toml).
     with zipfile.ZipFile(zip_or_dir) as zf:
         zf.extractall(tmp.name)
     return Path(tmp.name), tmp
+
+
+def pharmgkb_content_hash(
+    zip_or_dir: Path, allele_function_lookup: dict[tuple[str, str], str] | None
+) -> str | None:
+    """SHA-256 of what a build reads: the two TSVs and the CPIC lookup (ADR-0068).
+
+    The archive's packaging (timestamps, compression, member order, other
+    files) and the lookup's order do not count. None when a TSV is missing;
+    the load then reports it.
+    """
+    digest = hashlib.sha256()
+    for name in (CLINICAL_ANN_FILENAME, CLINICAL_ANN_ALLELES_FILENAME):
+        try:
+            if zip_or_dir.is_dir():
+                data = (zip_or_dir / name).read_bytes()
+            else:
+                with zipfile.ZipFile(zip_or_dir) as zf:
+                    data = zf.read(name)
+        except (KeyError, OSError):
+            return None
+        digest.update(f"{name}\0{len(data)}\0".encode())
+        digest.update(data)
+    lookup = sorted((allele_function_lookup or {}).items())
+    digest.update(json.dumps(lookup).encode())
+    return f"sha256:{digest.hexdigest()}"
+
+
+def stored_content_hash(db_path: Path) -> str | None:
+    """The content hash of the cache's last build, or None (read-only).
+
+    Caches built before 2.6.0 have no ``content_hash`` column; they read as
+    None and stay valid (ADR-0068).
+    """
+    from allelix.databases.cache_state import connect_readonly
+
+    try:
+        with contextlib.closing(connect_readonly(db_path)) as conn:
+            row = conn.execute(
+                "SELECT content_hash FROM database_versions WHERE name = 'pharmgkb'"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and row[0] else None
 
 
 def iter_pharmgkb_records(
@@ -352,11 +397,14 @@ def load_pharmgkb_tsv(
     remote_signal: str | None = None,
     allele_function_lookup: dict[tuple[str, str], str] | None = None,
     min_rows: int = 0,
+    content_hash: str | None = None,
 ) -> int:
     """Load a ClinPGx clinical-annotations dump into a fresh SQLite cache atomically.
 
-    Writes to a `.tmp` SQLite then `os.replace`s onto `db_path`. A failed
-    mid-parse leaves the previous cache (if any) intact.
+    Writes to a staging SQLite of its own beside `db_path` (`owned_staging`)
+    then `os.replace`s it onto `db_path`. A failed or interrupted load
+    leaves the previous cache (if any) intact and removes only its own
+    staging file.
 
     `allele_function_lookup` is the structured `(rsid, base) → function_class`
     table that drives the non-finding filter (ADR-0020). Production fetches
@@ -365,18 +413,17 @@ def load_pharmgkb_tsv(
 
     `remote_signal` is the value `fetch_remote_signal` returned at the time
     of this download; stored so the next `db update` can detect remote
-    changes without re-downloading.
+    changes without re-downloading. `content_hash` (`pharmgkb_content_hash`)
+    is stored so a later download of the same content skips the rebuild.
     """
-    tmp_path = db_path.parent / f"{db_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
-
     resolved_version = version or datetime.now(UTC).strftime("%Y-%m-%d")
     lookup = allele_function_lookup or {}
 
-    try:
+    with owned_staging(db_path) as tmp_path:
         with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
             conn.executescript(PHARMGKB_SCHEMA)
+            # Optional since 2.6.0; caches without it stay valid (ADR-0068).
+            conn.execute("ALTER TABLE database_versions ADD COLUMN content_hash TEXT")
 
             # Populate the per-allele function table (ADR-0020) first.
             # The lookup arrives pre-built from cpic_loader.fetch_cpic_allele_functions
@@ -428,8 +475,8 @@ def load_pharmgkb_tsv(
             conn.execute(
                 "INSERT INTO database_versions "
                 "(name, source_url, version, downloaded_at, record_count, "
-                "remote_signal, local_version_tag) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "remote_signal, local_version_tag, content_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "pharmgkb",
                     source_url,
@@ -438,6 +485,7 @@ def load_pharmgkb_tsv(
                     count,
                     remote_signal or "",
                     f"iv:{PHARMGKB_INTERPRETER_VERSION}",
+                    content_hash,
                 ),
             )
             conn.commit()
@@ -452,10 +500,3 @@ def load_pharmgkb_tsv(
             raise OSError(msg)
         os.replace(tmp_path, db_path)
         return count
-    except Exception:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                logger.warning("Could not remove failed temp DB %s", tmp_path)
-        raise

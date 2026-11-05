@@ -12,23 +12,40 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,vcf-index]"
 git config core.hooksPath .githooks
-pre-commit install --hook-type pre-commit
 ```
+
+The `core.hooksPath` line turns on the pre-push tag guard in `.githooks/`.
+With it set, `pre-commit install` refuses to install, so the ruff hooks in
+`.pre-commit-config.yaml` do not run on commit. Run them yourself before
+each commit:
+
+```bash
+pre-commit run --all-files
+```
+
+(or `ruff check .` and `ruff format --check .`).
+
+On Python 3.14, pip builds mwparserfromhell from source and needs a C
+compiler; without one, prefix the install with `WITH_EXTENSION=0`.
 
 The `vcf-index` extra installs pysam, which the indexed-VCF tests need; it
 is the same install as CI's, so a local run is the CI run.
 
 System tools outside pip: ``bcftools`` (fast suite; its tests skip
-locally when it is missing, and CI installs it) and ``plink2`` (one
-integration test in the slow suite; skips when missing):
+locally when it is missing, and CI installs it) and ``plink2`` (three
+integration tests in the slow suite; two skip when it is missing, one
+fails):
 
 - ``bcftools`` — annotated-VCF round-trip validation for ``--vcf-out``
   (ADR-0036). ``apt install bcftools`` on Debian /
   Ubuntu, ``brew install bcftools`` on macOS. Tests skip gracefully
   when absent locally; CI installs it unconditionally.
-- ``plink2`` — PLINK1 binary export round-trip integration test
-  (marked ``@pytest.mark.integration``, excluded from fast CI, runs
-  in the manually dispatched slow suite).
+- ``plink2`` — PLINK1 binary export round-trip integration tests
+  (marked ``@pytest.mark.integration``, excluded from fast CI, run
+  in the slow suite). ``tests/exporters/test_plink_export.py`` and
+  ``tests/exporters/test_plink_cli.py`` skip without it;
+  ``tests/test_plink_record_coding.py`` fails without it (set
+  ``PLINK2_BIN`` or put ``plink2`` on ``PATH``).
 
 Run the test suite:
 
@@ -86,8 +103,9 @@ if missing. Hosted CI runs the fast tier
 (`-m "not slow and not integration"`) on pull requests targeting `main`,
 manual dispatch and publication refs. Development pushes and pull requests
 targeting `dev` do not start hosted CI. The
-slow and integration workflow is manually dispatched for release validation;
-it has no scheduled run.
+slow and integration workflow runs weekly (Mondays 06:00 UTC) on the public
+repository only, and is dispatched by hand in either repository for release
+validation.
 
 ### Development checks and release gates
 
@@ -102,11 +120,13 @@ dispatch, and record the resolved commit SHA. All matrix jobs, warning checks an
 coverage requirements must pass. Run the full release-validation
 battery, including slow and integration tests and their required tools,
 on that same candidate. Inspect and resolve failures and missing
-prerequisites before publishing.
+prerequisites before publishing. Before tagging, run `python scripts/adr_lock.py`
+to lock the release's ADR lines (it refuses when a released line changed),
+then `python scripts/adr_lock.py --covers` (ADR-0001).
 
 A changed candidate needs validation of the new commit. Batch related
-development work before dispatching another hosted matrix. Each hosted
-workflow cancels a superseded run of the same workflow and ref; a
+development work before dispatching another hosted matrix. CI and the
+slow workflow each cancel a superseded run of the same workflow and ref; a
 canceled run never supplies release evidence. Publication and version
 checks remain enabled.
 
@@ -119,7 +139,7 @@ ruff format .
 
 ## Coding Standards
 
-- Python 3.11+. Use `from __future__ import annotations`.
+- Python 3.12+. Use `from __future__ import annotations`.
 - Type hints on all signatures. No bare `Any`.
 - Google-style docstrings on public classes and functions.
 - Ruff enforces linting and formatting. Zero warnings before commit.
@@ -146,8 +166,8 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import Variant
-from allelix.parsers._helpers import no_call_allele, open_genotype_text
-from allelix.parsers.base import GenotypeMetadata, GenotypeParser
+from allelix.parsers._helpers import DamagedFileError, no_call_allele, open_genotype_text
+from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -164,12 +184,15 @@ class VendorNameParser(GenotypeParser):
 
     def can_parse(self, file_path: Path) -> bool:
         """Check for the vendor's signature in the first few lines."""
-        with open_genotype_text(file_path) as fh:
-            for line in fh:
-                if line.startswith("# VendorName"):
-                    return True
-                if not line.startswith("#"):
-                    break
+        try:
+            with open_genotype_text(file_path) as fh:
+                for line in fh:
+                    if line.startswith("# VendorName"):
+                        return True
+                    if not line.startswith("#"):
+                        break
+        except (OSError, UnicodeDecodeError, DamagedFileError):
+            return False
         return False
 
     def parse(self, file_path: Path) -> Iterator[Variant]:
@@ -205,13 +228,17 @@ class VendorNameParser(GenotypeParser):
         return GenotypeMetadata(
             format=self.name,
             sample_id=sample_id,
-            build="GRCh37",
+            build=read_header_build(file_path),
         )
 ```
 
 Key rules:
 
-- `can_parse()` must be fast. Only look at header/comment lines.
+- `can_parse()` must be fast. Only look at header/comment lines. It
+  returns False, not an error, for a file it cannot read: detection calls
+  every parser in turn.
+- `get_metadata()` gives the build the file states, or None. Never fill in
+  a default build; the build decision applies it (ADR-0044).
 - `parse()` yields `Variant` objects one at a time (streaming).
 - Malformed lines log a warning and skip. Never crash the whole parse.
 - Open files with `open_genotype_text`. Test CRLF, LF and CR-only endings,
@@ -230,12 +257,14 @@ from allelix.parsers.vendorname import VendorNameParser
 PARSERS: list[GenotypeParser] = [
     # ... existing parsers ...
     VendorNameParser(),
+    RsidGenotypeListParser(),
 ]
 ```
 
 Order matters: auto-detection tries each parser's `can_parse()` in order.
 Put a more specific parser before a broader one that would also accept its
-files (for example Genes for Good before 23andMe).
+files (for example Genes for Good before 23andMe). `RsidGenotypeListParser`,
+the plainest shape (an rsID and a call), stays last.
 
 ### Step 3: Add a test fixture
 
@@ -270,8 +299,9 @@ waiting for one. The pattern when a public file later surfaces:
 
 Annotators follow the same rule — synthetic mock loader fixtures cover
 the parse / interpreter contract; real-data validation runs against
-the pinned databases via `test_data/databases/` and the `@slow`
-integration set documented above.
+freshly downloaded databases in a new `$ALLELIX_DATA_DIR`
+(`test_data/FULL_TEST_PROTOCOL.md` §3) and the `@slow` integration set
+documented above.
 
 All `tests/fixtures/` files are synthetic (produced by mock data
 generators or hand-written). Real-data integration tests use CC0
@@ -472,6 +502,10 @@ Catalog, SNPedia, gnomAD, AlphaMissense, CADD and the rsID identity table.
 Also add your class to `_ANNOTATOR_CLASS_LIST` in the same file, which
 builds the `_ANNOTATOR_CLASSES` name registry.
 
+Add the source's name to `_DEFAULT_SOURCES` in `allelix/config.py`, with
+its default (on or off). That dict gives `KNOWN_SOURCES`; without the entry,
+`allelix config set sources.<name>` rejects the name.
+
 ### Step 3: Write tests
 
 Create `tests/annotators/test_mydb.py` with a fixture that builds a small
@@ -506,10 +540,10 @@ ruff check allelix/annotators/mydb.py tests/annotators/test_mydb.py
 
 ## Hooks and CI
 
-Two hooks run locally:
+One hook runs locally, and one check is run by hand:
 
-- **pre-commit** (managed by pre-commit framework): `ruff check` + `ruff format --check`
-- **pre-push** (raw hook in `.githooks/`): blocks tag pushes where the tag doesn't match `pyproject.toml`
+- **pre-push** (raw hook in `.githooks/`, enabled by `git config core.hooksPath .githooks`): blocks tag pushes where the tag doesn't match `pyproject.toml`
+- **ruff** (`.pre-commit-config.yaml`): `ruff check` + `ruff format --check`. Run `pre-commit run --all-files` before each commit; it is not installed as a hook, because pre-commit refuses to install while `core.hooksPath` is set
 
 CI (`.github/workflows/ci.yml`) fires on:
 
@@ -522,13 +556,14 @@ Routine development pushes and pull requests targeting `dev` use local
 checks and review. They do not trigger a hosted matrix.
 
 CI runs ruff (lint + format), mypy, and the fast pytest suite (synthetic
-fixtures only) on a Python 3.11 / 3.12 / 3.13 matrix. A skipped test fails
+fixtures only, in parallel with `pytest -n auto`) on a Python 3.12 / 3.14
+matrix. A skipped test fails
 the run, so every fast test runs on every Python. `@slow` and
 `@integration`-marked tests are deselected in CI
 (`-m "not slow and not integration"`) because the runner doesn't
 have the ~1.5 GB real-genotype fixture set or the ~19 GB default annotator
 database cache — fetching either would push CI runtime past 45 minutes
-per development update and consume GitHub Actions minutes already covered
+per CI run and consume GitHub Actions minutes already covered
 by deliberate local release validation.
 
 ### Where the slow / real-data battery actually runs
@@ -538,7 +573,7 @@ commit, following `test_data/FULL_TEST_PROTOCOL.md`. It includes the
 full pytest suite, fresh caches, both genome builds, all parser formats,
 and the GIAB / 1000 Genomes corpus. A release does not ship without it.
 
-`.github/workflows/slow.yml` runs only by manual `workflow_dispatch`. It downloads a current ClinVar cache, executes the
+`.github/workflows/slow.yml` runs weekly on the public repository (Mondays 06:00 UTC) and by manual `workflow_dispatch` in either repository. It downloads a current ClinVar cache, executes the
 CLNSIG drift sentinel by exact node ID, emits JUnit XML, and fails unless
 that named test is present and passed; it then runs the slow + integration
 marker set. Every RC requires a manual dispatch against the same commit
@@ -609,7 +644,7 @@ freely:
   the rsID identity table.
 - **Harness invariants**: vocabulary union holds, floor counts
   cleared, spot-checks on published HG002 carriers (rs1801133 /
-  rs7412 / rs2010963 / rs6025) pass.
+  rs7412 / rs6025) pass.
 
 This applies to `CHANGELOG.md`, commit messages and release notes
 alike: check release-content drafts for
@@ -652,20 +687,22 @@ bumps it.
 ### Coverage gate: CI is the source of truth
 
 Local `pytest` and the CI matrix can report different `--cov-branch`
-totals (~0.1-0.2pp drift) because newer Python versions execute a
-handful of lines that 3.11 / 3.12 don't (CPython internals, `__future__`
+totals (~0.1-0.2pp drift) because Python versions outside the CI matrix
+(a local 3.13, for one) execute a handful of lines that the matrix
+versions don't (CPython internals, `__future__`
 import paths, error-message construction). The coverage gate
 (`--cov-fail-under` in `pyproject.toml`) is calibrated against the **CI
 matrix**, not against local measurement.
 
 When raising the floor:
 
-1. Confirm CI is green on `dev` at the candidate threshold.
+1. Dispatch `ci.yml` on the candidate and confirm it is green at the
+   candidate threshold.
 2. Pull the CI run's reported coverage:
    `gh run view <run_id> --log-failed | grep TOTAL`
    (or `--log` on a passing run; `TOTAL` line is the project number).
 3. Set the new floor slightly below the lowest CI number across the
-   3.11 / 3.12 / 3.13 matrix. Local numbers are not the source of truth.
+   3.12 / 3.14 matrix. Local numbers are not the source of truth.
 
 The floor-history comment in `pyproject.toml` records the CI-measured
 baseline at each ratchet so the next bump calibrates correctly.
@@ -677,4 +714,6 @@ baseline at each ratchet so the next bump calibrates correctly.
 - [ ] Format clean: `ruff format --check .`
 - [ ] License header on new files
 - [ ] No private or identifying genetic data in fixtures
+- [ ] Released ADRs are append-only: a dated `## Amendment` at the end, or a
+      new ADR (ADR-0001); `tests/test_adr_released_lock.py` enforces it
 - [ ] Source attribution on all annotations

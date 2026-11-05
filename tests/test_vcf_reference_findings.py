@@ -224,7 +224,7 @@ def test_factor_v_leiden_reference_finding_matches_json(data, tmp_path, gt):
 def test_vcf_schema_declares_reference_field_and_alt_only_semantics(data, tmp_path):
     src = _input(tmp_path, [_row(6000, "rs900252006", "T", "C,G,<NON_REF>", "0/1")])
     _report, _body, _info, header, out = _run(data, src, tmp_path, "GRCh37")
-    assert "##ALLELIX_VCF_SchemaVersion=0.6.0\n" in out.read_text()
+    assert "##ALLELIX_VCF_SchemaVersion=0.7.0\n" in out.read_text()
     assert REF_FIELD in header.info
     declaration = header.info[REF_FIELD]
     assert declaration.number == 1 and declaration.type == "String"

@@ -3,8 +3,8 @@
 Pre-generated sample reports demonstrating Allelix output. The committed
 reports are a historical v1.8.2 snapshot generated on 2026-06-12; they let
 you inspect a self-contained output without your own genotype file or
-downloaded databases, but current output (2.5.2: JSON schema 11, VCF
-schema 0.6.0) differs, because schemas, source names, database snapshots
+downloaded databases, but current output (2.6: JSON schema 12, VCF
+schema 0.7.0) differs, because schemas, source names, database snapshots
 and correctness rules have changed since.
 
 ## Quick Start
@@ -79,8 +79,9 @@ per-chromosome counts.
 
 ## Licensing
 
-Every file in this directory is committed to the public repository and is
-redistributable under AGPL-3.0-or-later. Constituent data sources:
+Every file in this directory is committed to the public repository. The
+code and scripts are AGPL-3.0-or-later; the data keep their sources'
+licenses, listed below:
 
 | Source | License | Notes |
 |---|---|---|

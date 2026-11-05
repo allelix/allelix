@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.5.2"
+version = "2.6.0"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 authors = [{ name = "Allelix" }]
 maintainers = [{ name = "dial481", email = "dial481@users.noreply.github.com" }]
@@ -17,9 +17,8 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
@@ -41,6 +40,7 @@ dev = [
     "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-cov>=7,<8",
+    "pytest-xdist>=3.6",
     "ruff>=0.6",
     "types-PyYAML>=6.0",
 ]
@@ -62,7 +62,7 @@ exclude = ["tests*"]
 allelix = ["py.typed", "data/*.yaml"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 99
 extend-exclude = ["test_data"]
 
@@ -119,9 +119,9 @@ filterwarnings = [
 #     of relying on the 0.07pp margin under it.
 #
 # *** CI is the floor's source of truth, NOT local. ***
-# Local readings overstate coverage on this codebase because the CI
-# matrix (3.11, 3.12 and 3.13) misses a few lines that newer Python
-# versions happen to execute. Calibrate the next ratchet from the CI matrix
+# Readings differ by Python version: a few lines run only on some
+# versions, so a local run on one version is not the CI matrix
+# (3.12 and 3.14). Calibrate the next ratchet from the CI matrix
 # output (gh run view <run_id> --log-failed | grep TOTAL), never from
 # a local pytest run.
 #
@@ -140,7 +140,7 @@ fail_under = 92.50
 # negotiating dozens of remediation PRs. Ratchet later by tightening the
 # global flags one at a time and chasing the new errors.
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 check_untyped_defs = true
 warn_unused_ignores = true
 warn_redundant_casts = true

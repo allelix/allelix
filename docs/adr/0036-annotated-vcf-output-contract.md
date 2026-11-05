@@ -209,3 +209,49 @@ FILTER of a row kept with `--keep-filtered`) and, new here,
 reference itself carries, on a record whose call carries REF. Reference
 findings no longer occupy ALT slots. Every field is written only on the record
 the analysis read a carrying call from. `VCF_SCHEMA_VERSION` goes to 0.6.0.
+
+## Amendment 2.6.0 (2026-11-01): `##ALLELIX_InputMethod`
+
+An imputed input (`array-imputed`, `low-pass-wgs-imputed`, `vcf-imputed`)
+adds `##ALLELIX_InputMethod=<ID=...,Description="...">` to the provenance
+block, as the JSON report's `input.method` says; a measured input has no
+such line. `VCF_SCHEMA_VERSION` goes to 0.7.0.
+
+## Amendment 2.6.0 (2026-11-02): a record takes only its own call's findings
+
+The lookup stays keyed by `(chrom, pos, ref, alt)`, but a key is not a
+record. Pass 1 files each annotation under the key of the record that
+produced it, with that record's REF: two records at one position can carry
+one ALT on different REFs (`G>A` and `GA>A`), and each keeps its own
+finding. Pass 2 stamps a record only with the annotations its own call
+produced, matched by `Annotation.record_index` (ADR-0062) against the
+writer's count of data records, which numbers them as the parser does.
+This applies to every field: the four primary sources, the gnomAD,
+AlphaMissense and CADD values taken from those annotations, and
+`ALLELIX_CLINVAR_REF` on a call that carries REF. Before, every record whose
+call carried the allele took every annotation at the key: a `1/1` duplicate
+of a `0/1` record showed the `0/1` genotype's finding. A record rejected for
+an identity conflict (ADR-0063) produced none and gets none. Findings at an
+explicit reference record keep their own rule (ADR-0059). The field grammar
+and `VCF_SCHEMA_VERSION` (0.7.0) do not change.
+
+## Amendment 2.6.0 (2026-11-03): the header, rsID recovery and pass 2 as built
+
+- **`##ALLELIX_Build`.** Since schema 0.3.0 the line is
+  `##ALLELIX_Build=<ID=<build>,Source=<build_source>>`: the build decision's
+  source (ADR-0044, ADR-0069), or `unknown`.
+- **Undeclared contigs.** Before `#CHROM` the writer also adds
+  `##contig=<ID=...>` for each contig the data lines use that the header
+  does not declare, spelled as in the CHROM column, in order of first use
+  (`_missing_contig_ids`).
+- **rsID recovery.** A recovered rsID comes from the shared resolver chain
+  (ADR-0043): ClinVar's positions, then the rsID identity table's, then
+  gnomAD's.
+- **Governance.** The `CONTRIBUTING.md` section is "Output-contract schema
+  bumps", not "Release-content discipline".
+- **Pass 2's inputs.** The parser and `AnalysisResult` are no longer
+  untouched. The writer takes its inputs from
+  `AnalysisResult.vcf_write_inputs`, and it numbers data records with the
+  parser's `is_data_line`, the number `Variant.record_index` and
+  `Annotation.record_index` carry (ADR-0062, and the amendment of
+  2026-11-02 above). DTC report semantics are unchanged.

@@ -598,3 +598,58 @@ class TestBuildCacheLocal:
         assert len(rows) == 2
         assert rows[0] == ("rs111", pytest.approx(0.11))
         assert rows[1] == ("rs222", pytest.approx(0.22))
+
+
+# ── Owned staging (2.6.0) ─────────────────────────────────────────────
+
+
+def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
+    """A build stages under its own name: a file at the old fixed name is not
+    touched, a failed publication keeps the previous output, and no staging
+    file is left either way."""
+    other = output.parent / f"{output.name}.tmp"
+    other.write_bytes(b"another build's staging")
+    build()
+    assert output.exists()
+    before = output.read_bytes()
+
+    def fail(src, dst):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(module.os, "replace", fail)
+    with pytest.raises(OSError, match="synthetic"):
+        build()
+    assert output.read_bytes() == before
+    assert other.read_bytes() == b"another build's staging"
+    assert not list(output.parent.glob(f".{output.name}.*"))
+
+
+def test_build_owns_its_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.request
+
+    import build_gnomad_cache
+
+    gz_data = _make_gzipped_vcf(
+        [
+            "##fileformat=VCFv4.2\n",
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+            "chr1\t100\trs100\tA\tG\t.\tPASS\tAF=0.05\n",
+        ]
+    )
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda _req, **_kw: FakeResponse(gz_data))
+    output = tmp_path / "gnomad.sqlite"
+    _owned_staging_contract(
+        tmp_path,
+        monkeypatch,
+        build_gnomad_cache,
+        output,
+        lambda: build_cache(output, full=True, chromosomes=["1"]),
+    )

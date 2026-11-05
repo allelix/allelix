@@ -43,3 +43,8 @@ Skipped rows are silently dropped at parse time — the annotator never sees the
 - PharmGKB never fires for indels in v0.3.0 — the same rule. A future ADR will lift this restriction when haplotype support lands.
 - Star alleles being skipped means CYP2D6, CYP2C19, and similar genes that PharmGKB primarily annotates by haplotype are underserved in v0.3.0. Documented in the README's Supported Databases note.
 - The synthetic fixture (`tests/fixtures/mock_pharmgkb/`) deliberately includes a star-allele row (PA-005) and a multi-rsid row (PA-006) so tests pin both skip behaviors.
+
+### Amendment 2026-10-29 (2.6.0): identity contradictions
+
+A named call whose locus contradicts its rsID's identity-table placement
+on the analysis build reaches no source, this one included (ADR-0063).

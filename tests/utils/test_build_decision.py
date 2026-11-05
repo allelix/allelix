@@ -26,6 +26,7 @@ from allelix.utils.build_detect import (
     SOURCE_DEFAULT,
     SOURCE_FILE_LABEL,
     SOURCE_OVERRIDE,
+    SOURCE_RSID_PLACEMENT,
     SOURCE_SEEDS,
     BuildDecisionError,
     BuildDetectionResult,
@@ -133,6 +134,7 @@ class TestDecideBuild:
             SOURCE_ASSEMBLY_HEADER,
             SOURCE_FILE_LABEL,
             SOURCE_DEFAULT,
+            SOURCE_RSID_PLACEMENT,
         )
         assert set(BUILD_SOURCE_LABELS) == set(BUILD_SOURCES)
 
@@ -331,7 +333,9 @@ class TestDecideBuild:
             _decide(kind=kind, file_label=BUILD_GRCH38, lengths=lengths)
         message = str(exc.value)
         assert "the file says GRCh38 but carries no known-SNP position to check it" in message
-        assert "--build grch37 or --build grch38" in message
+        # The stop names the label's own override, not every build.
+        assert "run it again with --build grch38" in message
+        assert "--build grch37" not in message
 
     @pytest.mark.parametrize("kind", [KIND_ARRAY, KIND_VCF])
     def test_label_with_one_agreeing_seed_decides(self, kind: str) -> None:

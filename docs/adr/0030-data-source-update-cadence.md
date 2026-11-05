@@ -49,3 +49,10 @@ are unnecessary — the URL is immutable.
   requests) — their `local_version_tag` + pinned SHA256 are sufficient.
 - Server-driven sources without upstream checksums (GWAS, PharmGKB) are
   documented gaps in ADR-0029, not bugs to fix.
+
+## Amendment 2.6.0 (2026-11-03): ClinVar's signal and checksums
+
+ClinVar's freshness signal and integrity check are NCBI's MD5 checksums
+for the two TSVs it now downloads, not a VCF sidecar: the
+submission_summary checksum is the signal, and both files are verified
+before ingest (ADR-0053).

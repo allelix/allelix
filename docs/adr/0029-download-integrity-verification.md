@@ -91,3 +91,12 @@ digests, and on mismatch deletes the file before raising `OSError`.
   making them auditable in git history.
 - The MD5 sidecar that ClinVar publishes is now actually used for its
   intended purpose, not just as a freshness signal.
+
+## Amendment 2.6.0 (2026-11-03): ClinVar is verified as two TSVs
+
+ClinVar no longer downloads a VCF, and there is no `clinvar.vcf.gz.md5`.
+A refresh downloads `variant_summary.txt.gz` and
+`submission_summary.txt.gz` from NCBI and verifies each against its
+published MD5 before ingest (ADR-0053). The submission_summary checksum is
+also the freshness signal; when it cannot be fetched, the refresh stops
+and the existing caches are kept.

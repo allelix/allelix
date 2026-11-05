@@ -20,7 +20,6 @@ dbSNP is a US government work in the public domain.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import Annotator, LicenseDescriptor
@@ -38,14 +37,16 @@ from allelix.databases.rsid_identity_loader import (
     RSID_IDENTITY_RECORD_NAME,
     install_prebuilt_cache,
 )
+from allelix.databases.staging import owned_directory
+from allelix.utils.allele import complement
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Iterable, Iterator
     from pathlib import Path
 
     from allelix.models import Annotation, Variant
 
-logger = logging.getLogger(__name__)
 
 _CHUNK = 450  # two parameters per locus; stays under SQLite's 999 limit
 
@@ -58,6 +59,32 @@ _COLUMNS: dict[str, tuple[str, str, str]] = {
 Locus = tuple[str, int]
 Key = tuple[str, int, str, str]
 ForwardSite = tuple[str, int, frozenset[str]]
+# rsid -> (chrom, pos37, ref37, pos38, ref38, same_strand); same_strand is
+# None where the strand relation between the builds cannot be told.
+ReferenceSite = tuple[str, int, str, int, str, bool | None]
+
+
+def strand_relation(alleles37: set[str], alleles38: set[str], palindromic: bool) -> bool | None:
+    """True for the same strand on both builds, False for inverted, None when it cannot be told.
+
+    ``alleles37`` and ``alleles38`` are an rsID's REF and ALTs on each
+    build, as ``pair_alleles`` pairs them. A site flagged palindromic, or
+    whose allele sets fit both readings or neither, decides nothing.
+    """
+    if palindromic:
+        return None
+    same = alleles37 == alleles38
+    inverted = all(len(a) == 1 for a in alleles37 | alleles38) and alleles37 == {
+        complement(a) for a in alleles38
+    }
+    if same == inverted:
+        return None
+    return same
+
+
+def on_other_strand(allele: str, same_strand: bool) -> str:
+    """``allele`` as the other build writes it, given the strand relation."""
+    return allele if same_strand else complement(allele)
 
 
 class RsidIdentityAnnotator(Annotator):
@@ -95,17 +122,14 @@ class RsidIdentityAnnotator(Annotator):
     def setup(self) -> None:
         """Download the pre-built identity cache and verify its SHA-256."""
         if not RSID_IDENTITY_EXPECTED_SHA256:
-            raise RuntimeError(
-                "rsid_identity: no published cache is pinned in this build of allelix"
-            )
-        gz_path = self.data_dir / f"{RSID_IDENTITY_DB_FILENAME}.gz"
-        download(RSID_IDENTITY_CACHE_URL, gz_path)
-        verify_file_hash(gz_path, "sha256", RSID_IDENTITY_EXPECTED_SHA256)
-        install_prebuilt_cache(gz_path, self._db_path, source_url=RSID_IDENTITY_CACHE_URL)
-        try:
-            gz_path.unlink()
-        except OSError:
-            logger.warning("Could not remove staged file at %s", gz_path)
+            raise RuntimeError("no published cache is pinned in this build of allelix")
+        # This setup's own download directory: another setup of the same
+        # cache can neither replace nor remove the file it verifies.
+        with owned_directory(self.data_dir, "rsid_identity") as staging:
+            gz_path = staging / f"{RSID_IDENTITY_DB_FILENAME}.gz"
+            download(RSID_IDENTITY_CACHE_URL, gz_path)
+            verify_file_hash(gz_path, "sha256", RSID_IDENTITY_EXPECTED_SHA256)
+            install_prebuilt_cache(gz_path, self._db_path, source_url=RSID_IDENTITY_CACHE_URL)
 
     def is_ready(self) -> bool:
         """True when the cache exists with the current schema version."""
@@ -199,59 +223,97 @@ class RsidIdentityAnnotator(Annotator):
                 out.add(rsid)
         return out
 
-    def reference_differing_sites(self) -> dict[str, tuple[str, int, str, int, str]]:
+    def reference_differing_sites(self) -> dict[str, ReferenceSite]:
         """The rsIDs whose GRCh37 and GRCh38 REFs are different single bases.
 
-        ``rsid -> (chrom, pos37, ref37, pos38, ref38)``. One build's reference
-        carries the other's variant there (F5 rs6025). An rsID whose rows
-        disagree on any of these is left out. Read once, for
+        ``rsid -> (chrom, pos37, ref37, pos38, ref38, same_strand)``. Either
+        one build's reference carries the other's variant there (F5 rs6025),
+        or the reference strand was inverted between the assemblies and the
+        two REFs are one allele written on opposite strands. ``same_strand``
+        (``strand_relation`` over all the rsID's rows) tells which spelling
+        an allele from one build has on the other; None where it cannot be
+        told, and nothing may then be carried across. An rsID whose rows
+        disagree on the placement or the REFs is left out. Read once, for
         ``ReferenceCarriedFallback``.
         """
         if not self.is_ready():
             return {}
         found: dict[str, set[tuple[str, int, str, int, str]]] = {}
-        for rsid, chrom, pos37, ref37, pos38, ref38 in self._connection().execute(
-            "SELECT DISTINCT rsid, chrom, pos37, ref37, pos38, ref38 FROM rsid_identity "
-            "WHERE length(ref37) = 1 AND length(ref38) = 1 AND ref37 <> ref38"
-        ):
+        alleles: dict[str, tuple[set[str], set[str]]] = {}
+        palindromic: set[str] = set()
+        rows = self._connection().execute(
+            "SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic "
+            "FROM rsid_identity WHERE rsid IN (SELECT rsid FROM rsid_identity "
+            "WHERE length(ref37) = 1 AND length(ref38) = 1 AND ref37 <> ref38)"
+        )
+        for rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, flag in rows:
             found.setdefault(rsid, set()).add((chrom, pos37, ref37, pos38, ref38))
-        return {rsid: next(iter(sites)) for rsid, sites in found.items() if len(sites) == 1}
+            sets = alleles.setdefault(rsid, (set(), set()))
+            sets[0].update((ref37, alt37))
+            sets[1].update((ref38, alt38))
+            if flag:
+                palindromic.add(rsid)
+        out: dict[str, ReferenceSite] = {}
+        for rsid, sites in found.items():
+            if len(sites) != 1:
+                continue
+            chrom, pos37, ref37, pos38, ref38 = next(iter(sites))
+            if len(ref37) != 1 or len(ref38) != 1 or ref37 == ref38:
+                continue
+            same = strand_relation(*alleles[rsid], rsid in palindromic)
+            out[rsid] = (chrom, pos37, ref37, pos38, ref38, same)
+        return out
 
     def normal_alleles_on_other_build(self, carried: dict[str, str], build: str) -> dict[str, str]:
-        """The other build's REF at rsIDs whose ``build`` reference carries a variant allele.
+        """The normal allele at rsIDs whose ``build`` reference carries a variant allele.
 
         ``carried`` maps each rsID to the allele ``build``'s reference
-        carries (ClinVar's REF == ALT row; T at F5 rs6025 on GRCh37). An
-        rsID gets the other build's REF when every identity row for it
-        agrees: ``build``'s REF is the carried allele, and the other build's
-        REF is one base that differs from it (C at rs6025). Everything else
-        abstains. Used by ClinVar when only one ClinVar build is installed.
-        As with ClinVar's other-build cache, the other build's REF
-        is taken as written: the ``palindromic`` flag (dbSNP lists every
-        base at rs6025) concerns translating alleles, not reading a REF.
+        carries (ClinVar's REF == ALT row; T at F5 rs6025 on GRCh37). The
+        normal allele is the other build's REF, written on ``build``'s
+        strand: every identity row of the rsID must agree on both REFs,
+        ``build``'s REF must be the carried allele, the other REF one base,
+        and the strand relation between the builds decided
+        (``strand_relation``). A row flagged palindromic decides no strand,
+        so such an rsID abstains, rs6025 included (dbSNP lists every base
+        there). So does an rsID whose other REF, on ``build``'s strand, is
+        the carried allele itself: the reference did not change. Used by
+        ClinVar when only one ClinVar build is installed.
         """
         if not carried or build not in _COLUMNS or not self.is_ready():
             return {}
-        other = "GRCh38" if build == "GRCh37" else "GRCh37"
-        ref_col, other_col = _COLUMNS[build][1], _COLUMNS[other][1]
         conn = self._connection()
         wanted = sorted(carried)
-        candidates: dict[str, set[str | None]] = {}
+        refs: dict[str, set[tuple[str, str]]] = {}
+        alleles: dict[str, tuple[set[str], set[str]]] = {}
+        palindromic: set[str] = set()
         for start in range(0, len(wanted), _CHUNK):
             chunk = wanted[start : start + _CHUNK]
             marks = ",".join("?" * len(chunk))
-            for rsid, ref, other_ref in conn.execute(
-                f"SELECT DISTINCT rsid, {ref_col}, {other_col} "
+            for rsid, ref37, alt37, ref38, alt38, flag in conn.execute(
+                f"SELECT rsid, ref37, alt37, ref38, alt38, palindromic "
                 f"FROM rsid_identity WHERE rsid IN ({marks})",
                 chunk,
             ):
-                usable = ref == carried[rsid] and len(other_ref) == 1 and other_ref != ref
-                candidates.setdefault(rsid, set()).add(other_ref if usable else None)
+                refs.setdefault(rsid, set()).add((ref37, ref38))
+                sets = alleles.setdefault(rsid, (set(), set()))
+                sets[0].update((ref37, alt37))
+                sets[1].update((ref38, alt38))
+                if flag:
+                    palindromic.add(rsid)
         out: dict[str, str] = {}
-        for rsid, refs in candidates.items():
-            (only,) = refs if len(refs) == 1 else (None,)
-            if only is not None:
-                out[rsid] = only
+        for rsid, pairs in refs.items():
+            if len(pairs) != 1:
+                continue
+            ref37, ref38 = next(iter(pairs))
+            ref, other_ref = (ref37, ref38) if build == "GRCh37" else (ref38, ref37)
+            if ref != carried[rsid] or len(other_ref) != 1:
+                continue
+            same = strand_relation(*alleles[rsid], rsid in palindromic)
+            if same is None:
+                continue
+            normal = on_other_strand(other_ref, same)
+            if normal != ref:
+                out[rsid] = normal
         return out
 
     def forward_sites(self, rsids: set[str], build: str) -> dict[str, ForwardSite]:
@@ -329,6 +391,37 @@ class RsidIdentityAnnotator(Annotator):
             ):
                 out.setdefault(rsid, []).append(tuple(row))
         return out
+
+    def iter_placements(
+        self, rsids: Iterable[str]
+    ) -> Iterator[tuple[str, str, int, str, str, int, str, str]]:
+        """``placements`` as a stream: ``(rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38)``.
+
+        The rsIDs are read and queried in chunks, so neither they nor the
+        rows are held at once. Nothing when the cache is not ready.
+        """
+        if not self.is_ready():
+            return
+        conn = self._connection()
+        chunk: list[str] = []
+        for rsid in rsids:
+            chunk.append(rsid)
+            if len(chunk) == _CHUNK:
+                yield from self._placement_rows(conn, chunk)
+                chunk = []
+        if chunk:
+            yield from self._placement_rows(conn, chunk)
+
+    @staticmethod
+    def _placement_rows(
+        conn: sqlite3.Connection, chunk: list[str]
+    ) -> Iterator[tuple[str, str, int, str, str, int, str, str]]:
+        marks = ",".join("?" * len(chunk))
+        yield from conn.execute(
+            f"SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 "
+            f"FROM rsid_identity WHERE rsid IN ({marks})",
+            chunk,
+        )
 
     def translate_to_grch38(self, keys37: set[Key]) -> dict[Key, Key]:
         """Map GRCh37 ``(chrom, pos, ref, alt)`` keys to their GRCh38 keys.

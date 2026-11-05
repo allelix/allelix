@@ -13,10 +13,11 @@ import click
 from rich.markup import escape
 from rich.table import Table
 
+from allelix.annotators import configured_source
 from allelix.cli import _helpers, main
 from allelix.cli._helpers import console
 from allelix.cli._options import (
-    _BUILD_OPT,
+    _BUILD_OPT_POSITIONS,
     _DATA_DIR_OPT,
     _FILE_ARG,
     _FORMAT_OPT,
@@ -32,13 +33,11 @@ from allelix.utils.build_detect import (
     SOURCE_CONTIG_LENGTHS,
     SOURCE_OVERRIDE,
     BuildDecisionError,
-    check_late_seeds,
     detect_build,
-    needs_late_seeds,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from allelix.exporters.plink import RecordKey
     from allelix.models import Variant
@@ -51,20 +50,22 @@ if TYPE_CHECKING:
 @_FORMAT_OPT
 @_SAMPLE_OPT
 @_DATA_DIR_OPT
-@_BUILD_OPT
+@_BUILD_OPT_POSITIONS
 def stats(
     file_path: Path, fmt: str | None, sample: str | None, data_dir: Path | None, build: str
 ) -> None:
     """Show summary statistics for a genotype file.
 
     High-value no-call warnings cover rsID-less VCF records too: calls are
-    resolved to rsIDs with the installed databases first.
+    resolved to rsIDs with the installed databases first; a source switched
+    off in the config is not used (ADR-0067).
 
     VCF genotype counts include reference-only records, before filtering.
     """
     from allelix.reports.high_value import format_warnings, load_high_value_snps, scan_no_calls
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
+    _helpers.note_imputed_input(parser, file_path)
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
 
     high_value = load_high_value_snps()
@@ -164,7 +165,7 @@ def stats(
 )
 @_DATA_DIR_OPT
 @_SAMPLE_OPT
-@_BUILD_OPT
+@_BUILD_OPT_POSITIONS
 def extract(
     file_path: Path,
     fmt: str | None,
@@ -181,13 +182,16 @@ def extract(
     questions the carrier rule (ADR-0007) actually checks.
 
     For VCF input, an indexed fast-path is used automatically when the
-    file is gzipped, a ``.tbi`` index is present alongside, ``pysam`` is
-    installed (``pip install allelix[vcf-index]``), and gnomAD is set up
-    to resolve rsIDs to coordinates. Requests still unfound after indexed
+    file name ends in ``.vcf.gz``, a ``.tbi`` index is present alongside,
+    ``pysam`` is installed (``pip install allelix[vcf-index]``), the VCF is
+    GRCh38 by its contig lengths or ``--build grch38`` and its chrM does not
+    have the hg19 length, and gnomAD is installed and switched on to resolve
+    rsIDs to coordinates. Requests still unfound after indexed
     lookup share one sequential pass, including mapped coordinate misses.
     Unavailable indexes fall back to the normal sequential scan.
     """
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
+    _helpers.note_imputed_input(parser, file_path)
     wanted = {s.strip() for s in snps.split(",") if s.strip()}
     if not wanted:
         raise click.ClickException("--snps cannot be empty.")
@@ -265,8 +269,16 @@ def _sequential_extract(
                 else:
                     # A call recovery could not name (a no-call, a half call
                     # carrying only REF) is still the call at a placement.
-                    locus = (normalize_chromosome(variant.chromosome), variant.position)
-                    targets = placed_at.get(locus, []) if _unnamed(variant) else []
+                    chrom = normalize_chromosome(variant.chromosome)
+                    targets = (
+                        [
+                            rsid
+                            for at in _stands_at(variant)
+                            for rsid in placed_at.get((chrom, at), [])
+                        ]
+                        if _unnamed(variant)
+                        else []
+                    )
                     if not targets:
                         continue
                     for rsid in targets:
@@ -314,7 +326,7 @@ def _extract_placements(wanted: set[str], data_dir: Path | None, build: str) -> 
     resolved_dir = resolve_data_dir(data_dir)
     out: _Placed = {}
     if build == BUILD_GRCH38:
-        gnomad = GnomadAnnotator(resolved_dir)
+        gnomad = configured_source("gnomad", GnomadAnnotator, resolved_dir)
         with gnomad:
             if gnomad.is_ready():
                 for rsid, rows in gnomad.bulk_resolve_coordinates(wanted).items():
@@ -325,7 +337,7 @@ def _extract_placements(wanted: set[str], data_dir: Path | None, build: str) -> 
     unplaced = wanted - out.keys()
     if not unplaced:
         return out
-    identity = RsidIdentityAnnotator(resolved_dir)
+    identity = configured_source("rsid_identity", RsidIdentityAnnotator, resolved_dir)
     with identity:
         if not identity.is_ready():
             return out
@@ -382,7 +394,11 @@ def _settled(
     if not rank:
         return False
     best = min(places, key=lambda locus: (rank.get(locus[0], len(rank)), locus[1]))
-    return any((v.chromosome, v.position) == best and not v.is_no_call for v in candidates)
+    # A later call standing at ``best`` ties on position and loses on line.
+    return any(
+        best[1] in _stands_at(v) and v.chromosome == best[0] and not v.is_no_call
+        for v in candidates
+    )
 
 
 def _contig_rank(contig_order: list[str]) -> dict[str, int]:
@@ -399,25 +415,31 @@ def _extract_choice(
     """The one call ``extract`` shows for an rsID (supervisor ruling, ADR-0054).
 
     1. A call at one of its placements beats one elsewhere; a no-call at a
-       placement still beats a usable call elsewhere.
+       placement still beats a usable call elsewhere. A padded record is at
+       a placement when it trims to it (ADR-0061).
     2. Among calls at a placement, a usable call beats a no-call or a
        rejected record.
     3. Then file order: the header's contig order, then POS, then line.
+       A call at a placement takes that placement's position, so a padded
+       call ties with the same call written trimmed (ADR-0061).
        Without a header contig list (array files), line order alone.
     """
 
     def key(v: Variant) -> tuple[bool, bool, int, int, int]:
-        mapped = (v.chromosome, v.position) in places
+        # A call stands at its POS and, padded, at its trimmed site (ADR-0061);
+        # at a placement it ranks by that placement, so a padded call and the
+        # same call written trimmed tie and the earlier record wins.
+        standing = [(v.chromosome, at) for at in _stands_at(v) if (v.chromosome, at) in places]
+        mapped = bool(standing)
+        chrom, pos = (
+            min(standing, key=lambda locus: (rank.get(locus[0], len(rank)), locus[1]))
+            if mapped
+            else (v.chromosome, v.position)
+        )
         line = v.record_index if v.record_index is not None else 0
         if not rank:
             return (not mapped, mapped and v.is_no_call, 0, 0, line)
-        return (
-            not mapped,
-            mapped and v.is_no_call,
-            rank.get(v.chromosome, len(rank)),
-            v.position,
-            line,
-        )
+        return (not mapped, mapped and v.is_no_call, rank.get(chrom, len(rank)), pos, line)
 
     return min(candidates, key=key)
 
@@ -559,9 +581,9 @@ def _execute_tabix_extract(
         sample_idx = 0
 
     resolved_data_dir = resolve_data_dir(data_dir)
-    clinvar = ClinVarAnnotator(resolved_data_dir)
-    gnomad = GnomadAnnotator(resolved_data_dir)
-    identity = RsidIdentityAnnotator(resolved_data_dir)
+    clinvar = configured_source("clinvar", ClinVarAnnotator, resolved_data_dir)
+    gnomad = configured_source("gnomad", GnomadAnnotator, resolved_data_dir)
+    identity = configured_source("rsid_identity", RsidIdentityAnnotator, resolved_data_dir)
     found: dict[str, Variant] = {}
     try:
         if not gnomad.is_ready():
@@ -705,7 +727,7 @@ def _indexed_candidates(
         cols = line.split("\t")
         variant, state = _parse_record(cols, line, sample_idx, stats, want_state=True)
         if variant is not None:
-            if variant.position == pos:
+            if pos in _stands_at(variant):
                 variant = replace(variant, build=BUILD_GRCH38)
                 variant.record_index = order
                 streamed.append(variant)
@@ -720,6 +742,15 @@ def _indexed_candidates(
     # A call recovery could not name is the call at this placement too.
     out.extend(replace(v, rsid=rsid) for v in streamed if _unnamed(v))
     return out
+
+
+def _stands_at(variant: Variant) -> set[int]:
+    """The positions a VCF call's record stands at (``record_positions``, ADR-0061)."""
+    from allelix.parsers.vcf import record_positions
+
+    if variant.ref is None or not variant.ref_from_input:
+        return {variant.position}
+    return set(record_positions(variant.position, variant.ref, variant.input_alt))
 
 
 def _unnamed(variant: Variant) -> bool:
@@ -846,10 +877,10 @@ def _render_extract_table(file_path: Path, wanted: set[str], found: dict[str, Va
     table = Table(title=f"Genotypes from {file_path.name}")
     table.add_column("rsID", style="cyan", no_wrap=True)
     table.add_column("Chr", no_wrap=True)
-    table.add_column("Position", justify="right")
-    table.add_column("Genotype", style="yellow", no_wrap=True)
-    table.add_column("Het?", justify="center")
-    table.add_column("No-call?", justify="center")
+    table.add_column("Position", justify="right", no_wrap=True)
+    table.add_column("Genotype", style="yellow", overflow="fold")
+    table.add_column("Het?", justify="center", no_wrap=True)
+    table.add_column("No-call?", justify="center", no_wrap=True)
     for rsid in sorted(wanted):
         variant = found.get(rsid)
         if variant is None:
@@ -907,51 +938,82 @@ def compare(
 ) -> None:
     """Compare two genotype files — coverage overlap and concordance.
 
-    Reports shared named identifiers and same-build unnamed records with
-    literal input REF/ALT identity, file-specific records, genotype agreement,
-    strand-flip matches (complementary alleles on opposite strands),
-    discordant calls, and strand-ambiguous positions. Coverage separates
+    Reports shared records and their genotype agreement. A VCF record is
+    matched by its rsID and trimmed REF/ALT or, unnamed, by its trimmed
+    position and alleles in two files of the same known build. A chip call
+    is matched by rsID; against a VCF, with the one record under that rsID
+    whose alleles explain it, and calls that none or several explain are
+    counted as not compared. Also shows file-specific records, strand-flip
+    matches (complementary alleles on opposite strands), discordant calls
+    and strand-ambiguous positions. Coverage separates
     parsed named/unnamed counts, eligible unique keys and omitted records.
+
+    Each file's build is decided before its records are read, and the
+    records are read through that decision: mitochondrial calls it leaves
+    out (an hg19-length chrM, or a UCSC-named mitochondrion on GRCh37) are
+    compared nowhere and counted in the file's notice (ADR-0044).
     """
-    from allelix.compare import compare_variants
-    from allelix.reports._pipeline import decide_file_build
+    from allelix.compare import (
+        NO_EXPLAINING_RECORD,
+        SEVERAL_EXPLAINING_RECORDS,
+        compare_variants,
+    )
+    from allelix.reports._pipeline import StreamBuild, decide_file_build, with_effective_build
 
     parser1 = _helpers._resolve_parser(file1, fmt1, sample=sample1)
     parser2 = _helpers._resolve_parser(file2, fmt2, sample=sample2)
-    variants1 = list(parser1.parse(file1))
-    variants2 = list(parser2.parse(file2))
+    _helpers.note_imputed_input(parser1, file1, which=f"File 1 ({file1.name})")
+    _helpers.note_imputed_input(parser2, file2, which=f"File 2 ({file2.name})")
 
-    # The same decision as every other command (ADR-0044); a file that
-    # must stop stops here rather than taking a tentative winner.
+    # The same decision as every other command (ADR-0044), made before the
+    # records are read: it sets the parser's mitochondrial handling, and
+    # the records are read through it, so a call the decision leaves out
+    # (MT under an hg19 chrM, a UCSC-named mitochondrion on GRCh37) is in
+    # no key, count or concordance. A file that must stop stops here rather
+    # than taking a tentative winner.
     decided: list[str] = []
-    for number, flag, parser, path, variants, choice in (
-        (1, "--build1", parser1, file1, variants1, build1),
-        (2, "--build2", parser2, file2, variants2, build2),
+    calls: list[list[Variant]] = []
+    for number, flag, parser, path, choice in (
+        (1, "--build1", parser1, file1, build1),
+        (2, "--build2", parser2, file2, build2),
     ):
-        # A structural-only VCF or a file with no genotype records gets its own
-        # error whatever decides the build.
-        _helpers._reject_unusable(parser, path, len(variants))
+        read = [0]
+
+        def _counted(records: Iterator[Variant], read: list[int] = read) -> Iterator[Variant]:
+            for variant in records:
+                read[0] += 1
+                yield variant
+
         try:
             decision = decide_file_build(
                 parser,
                 path,
                 parser.get_metadata(path),
                 override=_helpers._normalize_cli_build(choice),
-                variants=variants,
             )
-            late = detect_build(variants)
-            check_late_seeds(decision, late, path.name)
+            record = StreamBuild(decision, parser=parser)
+            variants = list(
+                with_effective_build(
+                    _counted(parser.parse(path)),
+                    decision=decision,
+                    file_name=path.name,
+                    record=record,
+                )
+            )
         except UnusableInputError as exc:
             raise click.ClickException(str(exc)) from exc
         except BuildDecisionError as exc:
             hint = f" For compare, give the build of this file with {flag}."
             raise click.ClickException(f"{exc}{hint if exc.suggest_override else ''}") from exc
-        late_record = late if needs_late_seeds(decision) else None
-        _helpers._emit_build_notices(
-            BuildDiagnostics.from_decision(decision, late_record),
-            heading=f"File {number} ({path.name})",
-        )
+        # A structural-only VCF or a file with no genotype records gets its own
+        # error whatever decided the build; the records the decision left out
+        # still count as read, including the UCSC-named mitochondrion the
+        # parser itself drops on GRCh37 (as in ``_stop_as_click``).
+        _helpers._reject_unusable(parser, path, read[0] + record.ucsc_mito_dropped)
+        _helpers._emit_build_notices(record.diagnostics(), heading=f"File {number} ({path.name})")
         decided.append(decision.build)
+        calls.append(variants)
+    variants1, variants2 = calls
 
     result = compare_variants(variants1, variants2, build1=decided[0], build2=decided[1])
 
@@ -989,6 +1051,18 @@ def compare(
     table.add_row("File 1 only", f"{result.file1_only:,}")
     table.add_row("File 2 only", f"{result.file2_only:,}")
     console.print(table)
+    # A chip call is compared with the one record under its rsID whose
+    # alleles explain it (ADR-0054); the others are counted here.
+    for reason, text in (
+        (NO_EXPLAINING_RECORD, "no explaining record under the same rsID in the other file"),
+        (
+            SEVERAL_EXPLAINING_RECORDS,
+            "more than one record under the same rsID in the other file explains the genotype",
+        ),
+    ):
+        count = result.chip_not_compared.get(reason, 0)
+        if count:
+            console.print(f"[yellow]{count:,} chip call(s) not compared: {text}.[/yellow]")
 
     conc_table = Table(title="Genotype Concordance")
     conc_table.add_column("Category", style="bold")
@@ -1044,7 +1118,7 @@ def export() -> None:
     ),
 )
 @_FORMAT_OPT
-@_BUILD_OPT
+@_BUILD_OPT_POSITIONS
 @_DATA_DIR_OPT
 @_SAMPLE_OPT
 def export_plink_cmd(
@@ -1060,13 +1134,18 @@ def export_plink_cmd(
     Produces a single-sample, SNP-major .bed file suitable for downstream
     tools (plink2 PCA, ADMIXTURE, PRSice). REF/ALT for allele coding come
     from the export's own build, chosen for each record at its own position:
-    the rsID identity table on GRCh37, gnomAD on GRCh38. On GRCh37, a site
+    the rsID identity table on GRCh37, gnomAD on GRCh38; a source switched
+    off in the config is not used (ADR-0067). On GRCh37, a site
     the identity table has no pair for uses gnomAD's pair when it is not
     A/T or C/G and the call fits it as written. A site without a known pair
     falls back to monomorphic (A2=0) for homozygous calls; a
     two-ALT call whose alleles are both the site's keeps its observed pair.
-    A call with an allele that is not the site's is exported as missing and
-    counted. A variant without an rsID gets the ID chr:pos:ref:alt.
+    At a pair that is not A/T or C/G, a call is coded by the one strand
+    reading that fits it, as written or by its complement (counted); a call
+    that fits neither is exported as missing and counted. At an A/T or C/G
+    pair a call that fits as written keeps the fallback coding and any other
+    is exported as missing. A variant without an rsID gets the ID
+    chr:pos:ref:alt.
     """
     from allelix.exporters.plink import (
         EmptyPlinkSetError,
@@ -1083,6 +1162,10 @@ def export_plink_cmd(
     )
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
+    # PLINK files carry no provenance, so an imputed input is said here.
+    _helpers.note_imputed_input(
+        parser, file_path, extra="The PLINK files hold these imputed genotypes as calls."
+    )
     prefix = output_prefix if output_prefix else default_plink_prefix(file_path)
     from allelix.reports import check_writable, validate_output_path
 
@@ -1194,6 +1277,11 @@ def export_plink_cmd(
         console.print(
             f"[yellow]{counts.allele_mismatches:,} call(s) fit neither {source} allele at "
             "their site and were written as missing.[/yellow]"
+        )
+    if counts.complemented:
+        console.print(
+            f"{counts.complemented:,} call(s) coded by their complement: only the other "
+            f"strand fits the {source} pair at their site."
         )
     unnamed = sum(1 for v in variants if not v.rsid and plink_writable(v))
     if unnamed:

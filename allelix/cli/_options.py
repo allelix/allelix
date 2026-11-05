@@ -112,7 +112,8 @@ _GWAS_MIN_MAG_OPT = click.option(
     show_default=True,
     help=(
         "Magnitude floor for GWAS Catalog annotations; GWAS rows must meet the"
-        " larger of this and --min-magnitude."
+        " larger of this and --min-magnitude, except must-include rsIDs, which"
+        " need only --min-magnitude."
     ),
 )
 _SNPEDIA_MIN_MAG_OPT = click.option(
@@ -132,7 +133,10 @@ _EXCLUDE_SNPEDIA_OPT = click.option(
     "--exclude-snpedia",
     is_flag=True,
     default=False,
-    help="Exclude SNPedia annotations. Required for commercial use (CC BY-NC-SA 3.0).",
+    help=(
+        "Exclude SNPedia annotations (CC BY-NC-SA 3.0, non-commercial). With "
+        "license.commercial true they are excluded already."
+    ),
 )
 _GWAS_ALL_OPT = click.option(
     "--gwas-all",
@@ -167,40 +171,77 @@ _NO_UPDATE_OPT = click.option(
     "--no-update",
     is_flag=True,
     default=False,
-    help="Skip the pre-analysis database freshness check.",
+    help=(
+        "Skip the pre-analysis update step: no cache conversion, local rebuild "
+        "or freshness check, and no config.toml is created."
+    ),
 )
 _NO_GNOMAD_OPT = click.option(
     "--no-gnomad",
     is_flag=True,
     default=False,
-    help="Skip gnomAD population frequency enrichment.",
+    help=(
+        "Switch gnomAD off for this run: no population frequencies or "
+        "plausibility check, and the sources that use gnomAD (the normal allele "
+        "for ClinPGx and SNPedia, rsID resolution) run without it. Its cache is "
+        "not prepared or refreshed, and the report says so (ADR-0067)."
+    ),
 )
 _NO_ALPHAMISSENSE_OPT = click.option(
     "--no-alphamissense",
     is_flag=True,
     default=False,
-    help="Skip AlphaMissense variant pathogenicity enrichment.",
+    help=(
+        "Switch AlphaMissense pathogenicity enrichment off for this run; its "
+        "cache is not prepared or refreshed (ADR-0067)."
+    ),
 )
 _NO_CADD_OPT = click.option(
     "--no-cadd",
     is_flag=True,
     default=False,
-    help="Skip CADD deleteriousness score enrichment.",
+    help=(
+        "Switch CADD deleteriousness score enrichment off for this run; its "
+        "cache is not prepared or refreshed (ADR-0067)."
+    ),
 )
+_BUILD_HELP = (
+    "Genome build of the input file. 'auto' decides from the evidence "
+    "the file carries (VCF contig lengths, known-SNP positions). Confident "
+    "known-SNP positions replace a file label they contradict, and the build "
+    "notice says so; the run stops when the contig lengths contradict the "
+    "label, when positions too few to be confident disagree with it, or when "
+    "the evidence is missing. Two GRCh36 exceptions: positions that point to "
+    "GRCh36 without confidence, or a tie that includes GRCh36, take GRCh36 "
+    "even against a modern label (the fail-safe; position lookups are off), "
+    "and an array file labelled GRCh36 runs on its label without positions "
+    "to check it (a VCF does not). "
+    "'grch37' / 'grch38' force a specific build; the run still stops when "
+    "the file's contig lengths or confident known-SNP positions say "
+    "another build. Where the file's known-SNP positions match no build (0 of "
+    "N), a forced build still runs, with a Build warning on the console and "
+    "in every report. 'grch36' forces an old GRCh36 / hg18 file, with "
+    "position-keyed lookups off and never checked (see docs/grch36-liftover.md). "
+)
+_BUILD_CHOICE = click.Choice(["grch37", "grch38", "grch36", "auto"], case_sensitive=False)
+# analyze, methylation and pharmacogenomics place an rsID and genotype list.
 _BUILD_OPT = click.option(
     "--build",
-    type=click.Choice(["grch37", "grch38", "grch36", "auto"], case_sensitive=False),
+    type=_BUILD_CHOICE,
     default="auto",
     help=(
-        "Genome build of the input file. 'auto' decides from the evidence "
-        "the file carries (VCF contig lengths, known-SNP positions) and stops "
-        "when that evidence contradicts the file's label or is missing. "
-        "'grch37' / 'grch38' force a specific build; the run still stops when "
-        "the file's contig lengths or confident known-SNP positions say "
-        "another build. Where the file's known-SNP positions match no build (0 of "
-        "N), a forced build still runs, with a Build warning on the console and "
-        "in every report. 'grch36' forces an old GRCh36 / hg18 file, with "
-        "position-keyed lookups off and never checked (see docs/grch36-liftover.md)."
+        _BUILD_HELP + "A list of rsIDs and genotypes has no positions: it is placed on GRCh38, "
+        "and any other build stops."
+    ),
+)
+# stats, extract and export plink refuse an rsID and genotype list (ADR-0069).
+_BUILD_OPT_POSITIONS = click.option(
+    "--build",
+    type=_BUILD_CHOICE,
+    default="auto",
+    help=(
+        _BUILD_HELP + "A list of rsIDs and genotypes has no positions and is refused here; "
+        "analyze, methylation and pharmacogenomics read it."
     ),
 )
 _SAMPLE_OPT = click.option(
@@ -210,8 +251,9 @@ _SAMPLE_OPT = click.option(
     help=(
         "VCF only: which sample column to read from a multi-sample VCF. "
         "Required when the VCF has more than one sample; ignored on "
-        "single-sample VCFs and on array formats. Use `allelix stats <file>` "
-        "or any plain VCF tool to list available samples."
+        "single-sample VCFs and on array formats. Without it, a multi-sample "
+        "VCF stops with an error naming the first ten samples; any plain VCF "
+        "tool lists them all."
     ),
 )
 # VCF quality gate. Rows the variant caller filtered are skipped
@@ -221,9 +263,10 @@ _KEEP_FILTERED_OPT = click.option(
     is_flag=True,
     default=False,
     help=(
-        "VCF only: keep rows whose FILTER is not PASS (for example LowQual or a "
-        "VQSR tranche). By default the variant caller's filters are honoured "
-        "and those rows are skipped and counted."
+        "VCF only: keep rows whose FILTER, or whose selected sample's FT, is "
+        "not PASS (for example LowQual, a VQSR tranche or LowAD). By default "
+        "the variant caller's filters are honoured and those rows are "
+        "skipped and counted."
     ),
 )
 _MIN_GQ_OPT = click.option(

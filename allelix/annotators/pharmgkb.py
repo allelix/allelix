@@ -28,6 +28,8 @@ from allelix.databases.manager import (
     download,
     get_database_info,
     head_request_headers,
+    http_signal,
+    update_remote_signal,
 )
 from allelix.databases.pharmgkb_loader import (
     _REQUIRED_PHARMGKB_COLUMNS,
@@ -37,8 +39,11 @@ from allelix.databases.pharmgkb_loader import (
     PHARMGKB_MIN_ROWS,
     _normalize_genotype,
     load_pharmgkb_tsv,
+    pharmgkb_content_hash,
     schema_is_current,
+    stored_content_hash,
 )
+from allelix.databases.staging import owned_directory
 from allelix.models import Annotation, diploid_label
 from allelix.utils.allele import strand_aware_genotype_match
 
@@ -70,8 +75,25 @@ def _magnitude(level_of_evidence: str) -> float:
 
 
 def _without_cpic(signal: str) -> str:
-    """The composite signal with its CPIC part marked unavailable; the ClinPGx part kept."""
-    return f"{signal.split('|cpic:', 1)[0]}|cpic:unavailable"
+    """The composite signal with its CPIC part marked unavailable; the ClinPGx part kept.
+
+    The CPIC part is the last one: a quoted ETag before it may itself hold
+    ``|cpic:`` (ADR-0012).
+    """
+    head, sep, _ = signal.rpartition("|cpic:")
+    return f"{head if sep else signal}|cpic:unavailable"
+
+
+def signal_lacks_cpic(signal: str | None) -> bool:
+    """True when a ClinPGx signal's CPIC part says CPIC was unavailable.
+
+    The CPIC part is the last ``|cpic:`` field, or the whole signal when it
+    is only the mark; a quoted ETag before it may hold the same text.
+    """
+    if not signal:
+        return False
+    _, sep, cpic = signal.rpartition("|cpic:")
+    return cpic == "unavailable" if sep else signal == "cpic:unavailable"
 
 
 def _has_cpic_rows(db_path: Path) -> bool:
@@ -149,6 +171,9 @@ class PharmGKBAnnotator(Annotator):
         self._palindromic_provider = palindromic_provider
         self._normal_allele_provider = normal_allele_provider
         self._reference_prefetch = reference_prefetch
+        # Set by setup(): the download held the content of the last build,
+        # so the cache was kept and only its signal stored (ADR-0068).
+        self.content_unchanged = False
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -173,45 +198,82 @@ class PharmGKBAnnotator(Annotator):
         is unavailable. ClinPGx publishes no checksum, so the checks are the
         same either way; no signal is stored, so the next ordinary update
         refreshes again.
+
+        When the download and CPIC's data hash the same as the last build's
+        and the cache is current, the cache is kept: only the new signal is
+        stored, and ``content_unchanged`` is set (ADR-0068). The signal is
+        stored only on the cache holding the content it checked: a cache
+        another refresh installed meanwhile keeps its own signal.
         """
         url = PHARMGKB_CLINICAL_URL
         signal = self.fetch_remote_signal()
         if signal is None and not force:
             msg = (
-                "pharmgkb: cannot verify remote freshness signal. "
+                "cannot verify remote freshness signal. "
                 "Refresh aborted to avoid persisting an incomplete cache stamp. "
                 "Retry, or pass --force if you accept that next `db update` "
                 "will re-download to re-establish the signal."
             )
             raise RuntimeError(msg)
-        zip_path = self.data_dir / "clinicalAnnotations.zip"
-        # No content-hash verification: ClinPGx publishes no checksum and
-        # the content is mutable, so there is nothing to pin or fetch.
-        # TLS + Content-Length truncation guard only. See ADR-0029.
-        download(url, zip_path)
-        try:
-            cpic_lookup = fetch_cpic_allele_functions()
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "CPIC API unavailable (%s) -- proceeding without "
-                "allele function data. Non-finding filter degraded.",
-                exc,
+        # This refresh's own download directory: the archive it hashes and
+        # loads is the one it fetched; another refresh can neither replace
+        # nor remove it. It is removed when the refresh ends.
+        with owned_directory(self.data_dir, "pharmgkb") as staging:
+            zip_path = staging / "clinicalAnnotations.zip"
+            # No content-hash verification: ClinPGx publishes no checksum and
+            # the content is mutable, so there is nothing to pin or fetch.
+            # TLS + Content-Length truncation guard only. See ADR-0029.
+            download(url, zip_path)
+            try:
+                cpic_lookup = fetch_cpic_allele_functions()
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "CPIC API unavailable (%s) -- proceeding without "
+                    "allele function data. Non-finding filter degraded.",
+                    exc,
+                )
+                cpic_lookup = {}
+            if not cpic_lookup:
+                # The stamp says what was built: without CPIC rows the cache is
+                # marked "cpic:unavailable", so status says so and the next
+                # update retries even when CPIC's probe answered this time. A
+                # forced build without a ClinPGx signal keeps only that mark.
+                signal = _without_cpic(signal) if signal is not None else "cpic:unavailable"
+            content_hash = pharmgkb_content_hash(zip_path, cpic_lookup)
+            self.content_unchanged = False
+            if (
+                content_hash is not None
+                and self.cache_status().ready
+                and stored_content_hash(self._db_path) == content_hash
+            ):
+                if update_remote_signal(
+                    self._db_path, "pharmgkb", signal, content_hash=content_hash
+                ):
+                    self.content_unchanged = True
+                else:
+                    # Another refresh installed different content after the
+                    # check; that cache and its own signal stay as they are.
+                    logger.warning(
+                        "ClinPGx: another update installed a different cache during this "
+                        "one; that cache is kept with its own freshness signal."
+                    )
+                return
+            load_pharmgkb_tsv(
+                zip_path,
+                self._db_path,
+                source_url=url,
+                remote_signal=signal,
+                allele_function_lookup=cpic_lookup,
+                min_rows=PHARMGKB_MIN_ROWS,
+                content_hash=content_hash,
             )
-            cpic_lookup = {}
-        if not cpic_lookup:
-            # The stamp says what was built: without CPIC rows the cache is
-            # marked "cpic:unavailable", so status says so and the next
-            # update retries even when CPIC's probe answered this time. A
-            # forced build without a ClinPGx signal keeps only that mark.
-            signal = _without_cpic(signal) if signal is not None else "cpic:unavailable"
-        load_pharmgkb_tsv(
-            zip_path,
-            self._db_path,
-            source_url=url,
-            remote_signal=signal,
-            allele_function_lookup=cpic_lookup,
-            min_rows=PHARMGKB_MIN_ROWS,
-        )
+
+    def reference_call_rsids(self) -> Iterable[str]:
+        """Every rsID with a row here, streamed (ADR-0064); none when the cache is not ready."""
+        if not self.is_ready():
+            return ()
+        rows = self._connection().execute("SELECT DISTINCT rsid FROM pharmgkb_annotations")
+        return (rsid for (rsid,) in rows if rsid)
 
     def is_ready(self) -> bool:
         """True iff a ClinPGx SQLite cache exists with current schema and interpreter stamp.
@@ -273,8 +335,8 @@ class PharmGKBAnnotator(Annotator):
 
         The signal format is `pgkb:<pgkb-signal>|cpic:<cpic-signal>`.
 
-          - ClinPGx portion: ETag if available, else Last-Modified
-            (per ADR-0012).
+          - ClinPGx portion: its ETag and Last-Modified, each when present
+            (ADR-0012).
           - CPIC portion: latest `change_log` date from CPIC's API,
             or ``unavailable`` if the CPIC probe fails.
 
@@ -286,13 +348,8 @@ class PharmGKBAnnotator(Annotator):
         headers = head_request_headers(PHARMGKB_CLINICAL_URL)
         if headers is None:
             return None
-        etag = headers.get("ETag") or headers.get("Etag")
-        last_modified = headers.get("Last-Modified") or headers.get("Last-modified")
-        if etag:
-            pgkb_signal = f"etag:{etag.strip()}"
-        elif last_modified:
-            pgkb_signal = f"lm:{last_modified.strip()}"
-        else:
+        pgkb_signal = http_signal(headers)
+        if pgkb_signal is None:
             return None
 
         cpic_signal = fetch_cpic_remote_signal()
@@ -312,10 +369,22 @@ class PharmGKBAnnotator(Annotator):
         if not info or not info["remote_signal"]:
             return None
         signal = info["remote_signal"]
-        claims_cpic = "|cpic:" in signal and not signal.endswith("|cpic:unavailable")
+        _, sep, cpic = signal.rpartition("|cpic:")
+        claims_cpic = bool(sep) and cpic != "unavailable"
         if claims_cpic and not _has_cpic_rows(self._db_path):
             return _without_cpic(signal)
         return signal
+
+    def cpic_unavailable(self) -> bool:
+        """True when the cache holds no CPIC allele-function data (ADR-0065).
+
+        The stamp says CPIC was unavailable, or the CPIC table is empty
+        (a 2.5.0 stamp claiming CPIC, or no stamp at all). Read-only.
+        """
+        signal = self.cached_remote_signal()
+        if signal is not None and signal.endswith("cpic:unavailable"):
+            return True
+        return not _has_cpic_rows(self._db_path)
 
     def annotate(self, variant: Variant) -> list[Annotation]:
         """Return ClinPGx annotations for variants the user actually carries.

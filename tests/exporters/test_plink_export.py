@@ -135,14 +135,15 @@ class TestHetFallbackNoRefAlt:
 
 class TestHetMinusStrand:
     def test_het_minus_strand(self, tmp_path):
-        """C/T against gnomAD's forward (A, G) is not read as its complement: missing."""
+        """C/T against gnomAD's forward (A, G) fits only as its complement, G/A: a het."""
         prefix = tmp_path / "out"
         ref_alt_map = {"rs1": ("A", "G")}
         counts = export_plink(iter([_v("rs1", a1="C", a2="T")]), prefix, "GRCh37", ref_alt_map)
-        assert counts.allele_mismatches == 1
+        assert counts.allele_mismatches == 0
+        assert counts.complemented == 1
         parts = (tmp_path / "out.bim").read_text().strip().split("\t")
         assert parts[4:6] == ["A", "G"]
-        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x02
 
 
 class TestCrossSubstitutionCollision:
@@ -162,7 +163,7 @@ class TestNoCallsSkipped:
     def test_no_calls_skipped(self, tmp_path):
         prefix = tmp_path / "out"
         variants = [_v("rs1", a1="A", a2="A"), _v("rs2", a1="-", a2="A")]
-        written, skipped, _, _, _ = export_plink(iter(variants), prefix, "GRCh37")
+        written, skipped, *_ = export_plink(iter(variants), prefix, "GRCh37")
         assert written == 1
         assert skipped == 1
         bim_lines = (tmp_path / "out.bim").read_text().strip().split("\n")
@@ -195,7 +196,7 @@ class TestMonomorphicCount:
             _v("rs2", a1="C", a2="C"),
             _v("rs3", a1="T", a2="T"),
         ]
-        written, _, _, mono, _ = export_plink(iter(variants), prefix, "GRCh37", ref_alt_map)
+        written, _, _, mono, *_ = export_plink(iter(variants), prefix, "GRCh37", ref_alt_map)
         assert written == 3
         assert mono == 2
 
@@ -248,7 +249,7 @@ class TestPalindromicRefAltFallsBack:
         """Hom variant with palindromic ref/alt in map should use fallback coding."""
         prefix = tmp_path / "out"
         ref_alt_map = {"rs1": ("A", "T")}
-        written, _, _, mono, _ = export_plink(
+        written, _, _, mono, *_ = export_plink(
             iter([_v("rs1", a1="A", a2="A")]), prefix, "GRCh37", ref_alt_map
         )
         assert written == 1
@@ -290,10 +291,10 @@ class TestMultiAllelicStrandCollision:
         assert bed[3] == 0x03
 
     def test_a_call_that_fits_neither_allele_is_missing(self, tmp_path):
-        """T/T at a G>A site is not read as its complement (A/A): it is missing, counted."""
+        """G/T at a G>A site fits neither reading (nor its complement C/A): missing, counted."""
         prefix = tmp_path / "out"
         wrong_map = {"rs1": ("G", "A")}
-        counts = export_plink(iter([_v("rs1", a1="T", a2="T")]), prefix, "GRCh37", wrong_map)
+        counts = export_plink(iter([_v("rs1", a1="G", a2="T")]), prefix, "GRCh37", wrong_map)
         assert counts.written == 1
         assert counts.allele_mismatches == 1
         parts = (tmp_path / "out.bim").read_text().strip().split("\t")
@@ -302,23 +303,38 @@ class TestMultiAllelicStrandCollision:
         assert bed[3] == 0x01
 
 
-class TestNoComplementOnExport:
-    def test_hom_call_at_a_site_it_does_not_fit_is_missing(self, tmp_path):
-        """The issue's example: A/A at a C>T site was written as T/T."""
+class TestComplementOnExport:
+    def test_hom_call_that_fits_only_as_its_complement_is_coded_by_it(self, tmp_path):
+        """A/A at a C>T site fits only as its complement, T/T: coded homozygous ALT, counted.
+
+        The only reading that fits a non-palindromic pair is used (ADR-0066).
+        """
         prefix = tmp_path / "out"
         counts = export_plink(
             iter([_v("rs1", a1="A", a2="A")]), prefix, "GRCh37", {"rs1": ("C", "T")}
         )
-        assert counts.allele_mismatches == 1
+        assert counts.allele_mismatches == 0
+        assert counts.complemented == 1
         assert counts.monomorphic == 0
-        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x03
 
-    def test_het_call_at_a_site_it_does_not_fit_is_missing(self, tmp_path):
+    def test_het_call_that_fits_only_as_its_complement_is_coded_by_it(self, tmp_path):
         prefix = tmp_path / "out"
         counts = export_plink(
             iter([_v("rs1", a1="G", a2="A")]), prefix, "GRCh37", {"rs1": ("C", "T")}
         )
+        assert counts.allele_mismatches == 0
+        assert counts.complemented == 1
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x02
+
+    def test_call_that_fits_neither_reading_is_missing(self, tmp_path):
+        """A/C at a C>T site fits neither reading (A/C, nor its complement T/G)."""
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="A", a2="C")]), prefix, "GRCh37", {"rs1": ("C", "T")}
+        )
         assert counts.allele_mismatches == 1
+        assert counts.complemented == 0
         assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
 
     def test_palindromic_site_with_a_call_that_does_not_fit_is_missing(self, tmp_path):
@@ -351,7 +367,7 @@ class TestIndelsSkipped:
             _v("rs2", a1="A", a2="AT"),
             _v("rs3", a1="GAC", a2="G"),
         ]
-        written, skipped, indel_skip, _, _ = export_plink(iter(variants), prefix, "GRCh37")
+        written, skipped, indel_skip, *_ = export_plink(iter(variants), prefix, "GRCh37")
         assert written == 1
         assert skipped == 0
         assert indel_skip == 2

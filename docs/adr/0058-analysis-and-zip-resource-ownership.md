@@ -84,3 +84,12 @@ handles exercise CADD's backend ownership without downloading source data.
 No output schema, cache version, source freshness or gzip diagnostic changes
 follow from this lifetime repair. Targeted checks do not establish whole-genome,
 live-source, complete platform or final release readiness.
+
+## Amendment 2.6.0 (2026-10-30): a switched-off source is not used through callbacks
+
+ADR-0067 (owner decision D3) reverses the context note above. A ClinVar, gnomAD or identity-table provider the user switched off is no longer used through another source's reference-filter or placement callback. The callbacks read a stand-in that reads as an absent cache. Ownership is unchanged: the registry still lists every source, and each still closes once per run.
+
+## Amendment 2.6.0 (2026-11-01): Python versions
+
+Python 3.11 support is dropped (`requires-python >=3.12`). CI and the
+package classifiers cover Python 3.12 and 3.14.

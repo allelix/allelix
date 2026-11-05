@@ -395,7 +395,9 @@ class TestInstallPrebuiltCache:
         ):
             install_prebuilt_cache(gz_path, dest_db)
 
-    def test_replaces_existing_tmp(self, tmp_path: Path) -> None:
+    def test_a_file_at_the_old_staging_name_is_not_touched(self, tmp_path: Path) -> None:
+        # 2.6.0: each install stages under a name of its own; a file at the old
+        # fixed name may belong to another writer, so it is left alone.
         import contextlib
         import gzip
 
@@ -425,7 +427,10 @@ class TestInstallPrebuiltCache:
 
         install_prebuilt_cache(gz_path, dest_db)
         assert dest_db.exists()
-        assert not stale_tmp.exists()
+        assert stale_tmp.read_text() == "stale"
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [src_db.name, gz_path.name, dest_db.name, stale_tmp.name]
+        )
 
     def test_stamps_signal_when_versions_table_missing(self, tmp_path: Path) -> None:
         """Pre-built cache without database_versions must not crash."""

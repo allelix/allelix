@@ -34,6 +34,8 @@ from allelix.reports.association_text import (
     strand_abstention_lines,
 )
 from allelix.utils.allele import (
+    STRAND_ABSTAIN_REASONS,
+    STRAND_BOTH_FIT,
     STRAND_COMPLEMENT,
     STRAND_DIRECT,
     STRAND_NO_FIT,
@@ -101,7 +103,7 @@ _SNPEDIA_ROWS = (
     ("rs900159004", "G", "G", 3.0, "one row read complemented", None),
     # One homozygous row, orientation unknown, at an A/T site: abstain.
     ("rs900159002", "A", "A", 3.0, "one row at an A/T site", None),
-    # Stated orientation at a C/G site: abstain.
+    # Stated orientation at a C/G site: kept, the orientation is known (ADR-0066).
     ("rs900159005", "C", "C", 3.0, "plus page at a C/G site", "plus"),
     # Minus page at the four-base site: (A;A) is forward TT.
     ("rs900159003", "A", "A", 7.0, "minus page at a four-base site", "minus"),
@@ -176,8 +178,8 @@ def _gwas(data_dir: Path, identity: RsidIdentityAnnotator | None) -> GWASCatalog
         ({"C"}, {"G", "A"}, STRAND_COMPLEMENT),
         ({"A"}, {"A", "T"}, STRAND_PALINDROMIC),
         ({"G"}, {"C", "G"}, STRAND_PALINDROMIC),
-        # Rule 1 comes first where the complement is forward too.
-        ({"T"}, {"T", "A", "C", "G"}, STRAND_DIRECT),
+        # Both readings fit where the complement is forward too (ADR-0066).
+        ({"T"}, {"T", "A", "C", "G"}, STRAND_BOTH_FIT),
         ({"G", "A"}, {"C", "T"}, STRAND_COMPLEMENT),
         ({"G", "C"}, {"C", "T"}, STRAND_NO_FIT),
         ({"D"}, {"C", "T"}, STRAND_NO_FIT),
@@ -210,12 +212,11 @@ def test_gwas_reads_risk_alleles_on_the_forward_strand(
         "Trait read complemented",
         "Trait with C read as G",
         "Trait without a risk allele",
-        "Trait at a four-base site",
     }
     assert by_trait["Trait read complemented"].alt == "A"
     assert by_trait["Trait with C read as G"].alt == "G"
-    assert by_trait["Trait at a four-base site"].alt == "T"
-    assert counts == {"not_in_identity_table": 1, "palindromic": 1, "no_fit": 0}
+    # T and its complement A are both forward at the four-base site.
+    assert counts == {"not_in_identity_table": 1, "palindromic": 1, "both_fit": 1, "no_fit": 0}
 
 
 def test_gwas_single_and_batch_paths_agree(
@@ -326,8 +327,8 @@ def test_effect_direction_in_json_and_empty_elsewhere(tmp_path: Path) -> None:
     assert directions == {"gwas": "decreases", "snpedia": ""}
     assert "effect_measure" not in payload["annotations"][0]
     assert payload["strand_abstentions"] == {
-        "gwas": {"not_in_identity_table": 0, "palindromic": 2, "no_fit": 0},
-        "snpedia": {"not_in_identity_table": 0, "palindromic": 0, "no_fit": 0},
+        "gwas": {"not_in_identity_table": 0, "palindromic": 2, "both_fit": 0, "no_fit": 0},
+        "snpedia": {"not_in_identity_table": 0, "palindromic": 0, "both_fit": 0, "no_fit": 0},
     }
 
 
@@ -342,6 +343,18 @@ def test_strand_abstention_lines() -> None:
         "be settled (rsID not placed at the call by the rsID identity table: 1).",
     ]
     assert strand_abstention_lines({"gwas": {}}) == []
+
+
+def test_strand_abstention_lines_name_every_reason() -> None:
+    # Each counted reason has words, both_fit included (ADR-0066).
+    counts = {reason: 1 for reason in STRAND_ABSTAIN_REASONS}
+    (line,) = strand_abstention_lines({"gwas": counts})
+    assert line.startswith(f"GWAS Catalog: {len(counts)} association rows not assessed")
+    assert "alleles fit both strands at the site: 1" in line
+    assert strand_abstention_lines({"snpedia": {STRAND_BOTH_FIT: 2}}) == [
+        "SNPedia: 2 sites not assessed because the strand of the source's alleles could not "
+        "be settled (alleles fit both strands at the site: 2)."
+    ]
 
 
 # ── SNPedia ─────────────────────────────────────────────────────
@@ -371,10 +384,11 @@ def test_snpedia_reads_genotypes_on_the_forward_strand(
         counts = snpedia.run_counts()
     assert {(a.rsid, a.genotype_match) for a in rows} == {
         ("rs900159004", "CC"),
+        ("rs900159005", "CC"),
         ("rs900159003", "TT"),
         ("i900159006", "AA"),
     }
-    assert counts == {"not_in_identity_table": 0, "palindromic": 2, "no_fit": 1}
+    assert counts == {"not_in_identity_table": 0, "palindromic": 1, "both_fit": 0, "no_fit": 1}
 
 
 def test_snpedia_single_and_batch_paths_agree(

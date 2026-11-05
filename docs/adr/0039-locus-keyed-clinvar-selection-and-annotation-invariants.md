@@ -167,3 +167,24 @@ and were handled correctly. From 2.4.2 (ClinVar cache `iv:5`):
   P/LP classifications are dropped at load, as on the other build. The
   site watch above includes them; the plain-VCF count does not, since
   missing a normal genotype there is not a missed variant.
+
+## Amendment 2.6.0 (2026-11-02): the other build's REF is written on this build's strand
+
+`reference_for` took the other build's REF of the same ClinVar variant as
+written. It now takes it on this build's strand: that row's ALT, the same
+variant allele, must be the carried allele (same strand) or its complement
+(inverted, the REF is complemented); any other ALT, or a result equal to
+the carried allele, gives nothing. With one build installed, the identity
+table's other-build REF is translated the same way and abstains where the
+strand relation cannot be told (ADR-0023, amendment of this date, which
+also states the one-build rs6025 change).
+
+## Amendment 2.6.0 (2026-11-03): the REF oracle is checked at the call's locus
+
+ClinPGx and SNPedia no longer read the rsID-keyed `reference_for`
+directly. Their non-finding filter reads
+`ClinVarAnnotator.reference_at(rsid, build, locus)`, which gives
+`reference_for`'s answer only where ClinVar places the rsID at the call's
+own position on that build. An rsID ClinVar places elsewhere, or a call
+with no position, suppresses nothing. The cross-build rsID identity table
+(ADR-0040) is in place.

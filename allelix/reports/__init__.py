@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from typing import BinaryIO, TextIO
 
+    from allelix.annotators._placement import PlacementStats
     from allelix.parsers.base import ArrayInputStats
     from allelix.parsers.vcf import VcfQualityStats
 
@@ -366,6 +367,47 @@ def array_quality_lines(
                 if at_plp
                 else "."
             )
+        )
+    return lines
+
+
+# Why a row of a position-less file stayed unplaced, in report words (ADR-0069).
+_UNPLACED_WORDS = {
+    "not_an_rsid": "no rsID",
+    "not_in_table": "rsID not placed once on GRCh38 in the identity table",
+    "palindromic": "A/T or C/G site (strand cannot be told)",
+    "both_fit": "call fits both strands at the site",
+    "no_fit": "call fits neither strand at the site",
+    "di_call": "D/I call",
+}
+
+
+def placement_lines(placement: PlacementStats | None) -> list[str]:
+    """Plain-language lines on how a position-less file's rows were placed (ADR-0069).
+
+    Shared by the terminal and HTML output. Empty for files with positions.
+    """
+    if placement is None:
+        return []
+    lines = [
+        f"The file has no positions: {placement.placed:,} of {placement.rows:,} rows "
+        f"were placed on {placement.build} from the rsID identity table"
+        + (
+            f", {placement.complemented:,} of them complemented to the forward strand."
+            if placement.complemented
+            else "."
+        )
+    ]
+    if placement.unplaced_total:
+        reasons = "; ".join(
+            f"{count:,} {_UNPLACED_WORDS[reason]}"
+            for reason, count in placement.unplaced.items()
+            if count
+        )
+        lines.append(
+            f"{placement.unplaced_total:,} row(s) could not be placed ({reasons}). "
+            "Position-keyed sources skip them; SNPedia, ClinPGx and the GWAS Catalog still "
+            "look them up by rsID, under their own strand checks."
         )
     return lines
 

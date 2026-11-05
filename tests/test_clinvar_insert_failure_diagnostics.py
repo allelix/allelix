@@ -38,6 +38,6 @@ def test_sql_batch_failure_keeps_partial_insert_count(tmp_path, monkeypatch, bui
 
     _log_build(log, call)
     assert cache.read_bytes() == before
-    assert not cache.with_name(cache.name + ".partial").exists()
+    assert not list(cache.parent.glob(f".{cache.name}.*"))
     _metric(log.read_text(), ("records yielded",), 2)
     _metric(log.read_text(), ("rows inserted",), 1)

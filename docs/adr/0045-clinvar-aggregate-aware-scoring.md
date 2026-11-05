@@ -142,3 +142,41 @@ cap does not know.
 - The cache gains columns, so the ClinVar interpreter version is bumped
   (6 to 7). A cache built before cannot be read with this rule and is
   rebuilt by the next `db update`.
+
+## Amendment 2.6.0 (2026-10-30): outranked P/LP under "Likely risk allele" or "other"
+
+Supervisor ruling, 2026-10-30.
+
+**The gap.** An outranked P/LP submission, from a lower review tier whose own submissions all agree, was stored as agreed and scored in full (9.0 Pathogenic, 7.0 Likely pathogenic) when ClinVar's aggregate was "Likely risk allele" or "other". Neither term is in the cap table. The top tier did not call the variant P/LP, so a lower tier's P/LP is a conflict with ClinVar's view, as under Conflicting.
+
+**The rule.** Under those two aggregate terms, compound forms included (for example "Likely risk allele; drug response"), an outranked P/LP submission takes the Conflicting cap (4.0).
+- The row stays, with its significance, aggregate, outside-aggregate marker and split.
+- Like other scored-down rows, it is named in `clinvar.scored_down_variants`.
+- Contributing submissions, non-disease submissions and every other aggregate are unchanged.
+
+**No rebuild.** The rule is applied when the cache is read. The stored cache does not change, so the interpreter version and existing caches stay as they are.
+
+**Not decided here.** A display tier for lopsided Conflicting splits was left to the owner; the next amendment records the decision (no tier).
+
+## Amendment 2.6.0 (2026-10-30): no tier by submitter count
+
+Owner decision.
+
+**The question.** Some Conflicting variants have a lopsided split, where nearly every submitter says Pathogenic or Likely pathogenic. The question was whether Allelix should score those above the Conflicting cap, or show them in a tier of their own, by counting the submitters.
+
+**Decision.** No. ClinVar's aggregate classification stays the rule. A variant ClinVar calls Conflicting is capped at 4.0 whatever its split, and the split is shown beside it.
+
+**Why.**
+- There is no accepted standard for weighing submitter votes. Neither ClinVar nor ClinGen publishes one, so any threshold would be Allelix's own.
+- The dissent can be the newer expert view. One recent submission with stronger evidence can be right against many older ones.
+- A vote count ignores who submitted and when. Review status, the evidence each submitter used and the submission date all count for more than the number of votes.
+- Allelix reports what ClinVar says; it does not classify variants (Regulatory Posture in the README). Overriding ClinVar's aggregate with a vote count would be a classification of Allelix's own.
+
+**The facts.** In the GRCh38 ClinVar data used for 2.6:
+- 2,161 Conflicting variants have at least 5 submitters with 80% or more of them P/LP.
+- 258 have at least 10 submitters with 90% or more.
+- Examples: GALT rs75391579 (40 of 41 submitters Pathogenic) and BTD rs13078881 (51 of 52).
+
+These are capped like every other Conflicting variant. The report names each one with its split (`clinvar.scored_down_variants`, 2.5.2 amendment above), so a reader can see how lopsided it is and look it up in ClinVar.
+
+**Revisit when** ClinVar or ClinGen publishes a weighting standard for submissions, or an expert panel resolves a given variant. A resolved variant needs no change in Allelix: ClinVar's aggregate then follows the panel, and the next `db update` picks it up.

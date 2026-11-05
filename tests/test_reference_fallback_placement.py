@@ -61,10 +61,19 @@ def test_cli_keeps_the_carried_alt_outside_the_reference_differing_placement(tmp
     rsid = "rs900252902"
     data = tmp_path / "data"
     data.mkdir()
-    _identity(data, [(rsid, "1", 100, "T", "C", 300, "C", "T", 0)])
+    # The call stands at the rsID's second identity placement: a locus the
+    # identity table does not give at all reaches no source (ADR-0063).
+    _identity(
+        data,
+        [
+            (rsid, "1", 100, "T", "C", 300, "C", "T", 0),
+            (rsid, "1", 200, "C", "T", 400, "C", "T", 0),
+        ],
+    )
     _gnomad_site(data, rsid, "1", 300, "C", "T", 0.9)
     _pharm(data, rsid, "SYN", ["TT"])
-    source = _vcf(tmp_path / "calls.vcf", [(rsid, "1", 200, "C", "T", "1/1", ".")])
+    position = 200 if build == "GRCh37" else 400
+    source = _vcf(tmp_path / "calls.vcf", [(rsid, "1", position, "C", "T", "1/1", ".")])
     report, _ = _run(tmp_path, data, source, build, "json")
     rows = [row for row in report["annotations"] if row["source"] == "pharmgkb"]
     assert len(rows) == 1

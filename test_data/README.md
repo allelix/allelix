@@ -22,8 +22,9 @@ verification.
   apply.
 - **`edge_cases/`** — Files that exercise specific parser quirks (23andMe
   canonical-header check, GRCh36 position detection, MHG/Tempus
-  build-mismatch warning, unsupported formats). Documented in
-  `edge_cases/README.md`.
+  build-mismatch warning, unsupported formats, byte order marks, blank
+  first lines, CR-only line endings, VCF half calls and haploid calls).
+  Documented in `edge_cases/README.md`.
 - **`databases/`** — Pinned annotator databases. **Gitignored** (~19 GB
   without the optional CADD cache; ~25 GB with it).
   Restore via `allelix db update --data-dir test_data/databases`.
@@ -59,7 +60,7 @@ formats.
 
 | Source | License | Notes |
 |---|---|---|
-| openSNP genotype files (real/, transcoded/, edge_cases/, plus the synthetic source for baselines) | [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) | Public domain. |
+| openSNP genotype files (real/, transcoded/, and the openSNP files in edge_cases/; the baselines are made from the user1190 files in real/ and transcoded/) | [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) | Public domain. The other edge_cases/ files are synthetic files made for the tests (see `edge_cases/README.md`). |
 | VCFs in real/vcf/ (GIAB HG002, 1000 Genomes) | Public domain (NIST / 1000 Genomes Project) | The VCF mocks there are synthetic. |
 | ClinVar (in databases/) | NCBI public domain | Restore via `allelix db update`. |
 | dbSNP rsID identity table (`rsid_identity.sqlite`, in databases/) | NCBI public domain | Same. |
@@ -132,6 +133,17 @@ six must give identical annotation sets. The count moves with the databases
   reads); rejected. The historically named exome file (a
   synthetic GATK HaplotypeCaller-shaped VCF) is now recognized as VCF; its filename predates VCF support and is retained
   for fixture continuity.
+- `edge_cases/synthetic_23andme_plain.txt`, `synthetic_23andme_bom.txt` and
+  `synthetic_23andme_blank_first_line.txt` — one synthetic 23andMe file in
+  three copies; the copy that starts with a byte order mark and the copy
+  that starts with a blank line are read like the plain one.
+- `edge_cases/synthetic_ancestrydna_lf.txt` and
+  `synthetic_ancestrydna_cr_only.txt` — one synthetic AncestryDNA file with
+  LF and with CR-only line endings; both are read the same.
+- `edge_cases/synthetic_half_calls.vcf` — synthetic GRCh38 VCF with three
+  half calls (`./1`, `1/.`, `.|1`); they are read and labelled as half calls.
+- `edge_cases/synthetic_haploid_calls.vcf` — synthetic GRCh38 VCF with
+  one-number calls on chrX, chrY and chrM; they are shown as Hemizygous.
 
 ## Adding new files
 

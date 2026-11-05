@@ -20,6 +20,7 @@ from allelix.annotators.gwas import (
 )
 from allelix.utils.allele import (
     STRAND_ABSTAIN_REASONS,
+    STRAND_BOTH_FIT,
     STRAND_NO_FIT,
     STRAND_NOT_IN_IDENTITY,
     STRAND_PALINDROMIC,
@@ -37,6 +38,7 @@ STRAND_CHECKED_SOURCES: dict[str, tuple[str, str]] = {
 
 _REASON_WORDS: dict[str, str] = {
     STRAND_PALINDROMIC: "A/T or C/G site",
+    STRAND_BOTH_FIT: "alleles fit both strands at the site",
     STRAND_NOT_IN_IDENTITY: "rsID not placed at the call by the rsID identity table",
     STRAND_NO_FIT: "alleles fit neither strand",
 }

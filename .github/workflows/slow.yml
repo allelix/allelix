@@ -1,10 +1,14 @@
 name: Slow suite
 
 # Real-data / network / binary-dependent tests. Outside fast CI (they run
-# locally before release per CONTRIBUTING.md). Dispatch this workflow for
-# release validation when hosted execution is needed, including upstream
-# drift checks such as ClinVar CLNSIG vocabulary changes.
+# locally before release per CONTRIBUTING.md). Runs weekly on the public
+# repository only (free on standard runners), to show the slow suite and
+# the ClinVar CLNSIG drift check keep passing; the private repository never
+# runs it on a schedule. Dispatch it by hand in either repository to
+# validate a release candidate.
 on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -13,6 +17,7 @@ concurrency:
 
 jobs:
   slow:
+    if: github.event_name != 'schedule' || github.repository == 'allelix/allelix'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

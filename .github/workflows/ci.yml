@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -55,10 +55,10 @@ jobs:
         run: mypy allelix/
 
       - name: Pytest
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           set -o pipefail
-          pytest -v -rs --tb=short -m "not slow and not integration" | tee pytest.log
+          pytest -n auto -v -rs --tb=short -m "not slow and not integration" | tee pytest.log
           # A skipped test fails the gate, so CI runs every test.
           summary="$(tail -n 1 pytest.log)"
           case "$summary" in *skipped*) echo "::error::skipped tests: $summary"; exit 1 ;; esac

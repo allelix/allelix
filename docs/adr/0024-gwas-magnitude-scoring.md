@@ -486,3 +486,50 @@ Called by all three renderers (terminal, JSON, HTML) immediately after
 solo MTAG keep, PheCode parent/child collapse (strongest p wins), distinct
 parents kept, must-include exemption, non-GWAS passthrough, and the
 rs10455872 8→5 real-data case.
+
+**Amended 2026-10-31 (2.6): both readings together (ADR-0066).** Rules 1
+to 3 are replaced. The risk allele, and SNPedia's genotypes without a stated
+orientation, are read as written when only that reading fits, complemented
+when only the complement fits, and abstain when both fit (`palindromic` at
+an A/T or C/G site, `both_fit` elsewhere) or neither does. A SNPedia page
+that states its orientation is kept wherever its genotype is forward, A/T
+and C/G sites included.
+
+## Amendment 2.6.0 (2026-11-03): a re-ingest reads only the table its cache was built from
+
+A refresh moved its database and the table it kept for re-ingest into place
+one after the other. When two refreshes ran at once, the data directory
+could end up with one refresh's database beside the other's table, and the
+re-ingest after a categorizer bump then built that table's rows under the
+database's freshness signal.
+
+A GWAS cache now records the SHA-256 of the table it was built from, in an
+optional `content_hash` field of `database_versions` (the same field
+ClinPGx uses, ADR-0068). `prepare_cache` first takes its own link (or
+copy) of the kept table, then reads the cache's signal and hash together.
+It re-ingests only when that table matches the recorded hash, and the
+rebuilt cache keeps the signal and hash read with it. When the table does
+not match, nothing is rebuilt; the cache stays out of date and `db update`
+downloads again.
+
+The order is what keeps a cache without a hash safe. A refresh publishes its
+database before its table, so a refresh that published anything before the
+copy was taken shows its hash in the read that follows, and the copy is
+checked against it. A read that still finds no hash (a cache built before
+2.6.0: no column, or an empty one) therefore belongs to the cache whose
+table was copied, and that cache re-ingests its own table under its own
+signal, recording the table's hash. Such a cache stays current and is not
+rebuilt for lacking the hash. A re-ingest that publishes after another
+refresh replaces that refresh's cache with a complete one of its own, rows
+and signal from one source; which is installed last is not ordered
+(ADR-0056). ADR-0056 (amendment 2026-11-02) covers the staging of both
+files.
+
+## Amendment 2.6.0 (2026-11-03): the categorizer stamp is `local_version_tag`
+
+`load_gwas_tsv()` no longer appends `|cv:N` to `remote_signal`. Since
+ADR-0028 it writes `cv:N` to `database_versions.local_version_tag`, and
+`schema_is_current()` checks that tag. `_stamp_existing_gwas_cache()` moves
+a legacy `|cv:N` marker out of `remote_signal` into the tag, only when N
+is the current `_CATEGORIZER_VERSION`; it runs in the update step
+(ADR-0048).

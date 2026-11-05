@@ -38,7 +38,8 @@ class _Identity:
         return True
 
     def reference_differing_sites(self):
-        return {f"rs{i}": ("1", 1000 + i, "T", 2000 + i, "C") for i in range(SITES)}
+        # Same strand on both builds: a changed reference allele.
+        return {f"rs{i}": ("1", 1000 + i, "T", 2000 + i, "C", True) for i in range(SITES)}
 
 
 class _Gnomad:

@@ -47,6 +47,7 @@ from allelix.databases.manager import (
 )
 from allelix.models import DI_ALLELES, NO_CALL_MARKER, Annotation, diploid_label
 from allelix.utils.allele import (
+    complement,
     resolve_rsid_at_locus,
     trim_allele_pair,
 )
@@ -143,6 +144,10 @@ _AGGREGATE_CAP: dict[str, float] = {
 # ADR-0045: an outranked P/LP submission whose review tier holds other
 # disease classifications is scored as Conflicting.
 _OUTSIDE_CONFLICT_CAP = 4.0
+# ADR-0045 amendment (2.6.0): under these aggregates the top tier did not
+# call the variant P/LP, so an outranked P/LP submission is scored as
+# Conflicting too, even when its own tier agrees.
+_OUTRANKED_CAPPED_TERMS = frozenset({"likely risk allele", "other"})
 
 
 def _scored_magnitude(own: float, clnsig: str, aggregate: str, outside_aggregate: int) -> float:
@@ -154,8 +159,11 @@ def _scored_magnitude(own: float, clnsig: str, aggregate: str, outside_aggregate
     """
     if not is_disease_classification(clnsig):
         return own
-    cap = _AGGREGATE_CAP.get(aggregate_germline_term(aggregate))
-    if outside_aggregate == OUTSIDE_AGGREGATE_CONFLICTING:
+    term = aggregate_germline_term(aggregate)
+    cap = _AGGREGATE_CAP.get(term)
+    if outside_aggregate == OUTSIDE_AGGREGATE_CONFLICTING or (
+        outside_aggregate != CONTRIBUTES_TO_AGGREGATE and term in _OUTRANKED_CAPPED_TERMS
+    ):
         cap = _OUTSIDE_CONFLICT_CAP if cap is None else min(cap, _OUTSIDE_CONFLICT_CAP)
     return own if cap is None else min(own, cap)
 
@@ -318,6 +326,10 @@ class ClinVarAnnotator(Annotator):
         build's ClinVar cache cannot (it is not installed, or not current).
         """
         super().__init__(data_dir)
+        # Set by `db update --allow-clinvar-shrink` for one run; the notes
+        # record each build whose smaller release it accepted.
+        self.allow_shrink = False
+        self.shrink_notes: list[str] = []
         self._other_build_refs = other_build_refs
         self._builds = tuple(builds)
         self._include_benign = include_benign
@@ -417,7 +429,7 @@ class ClinVarAnnotator(Annotator):
         signal = self._fetch_remote_signal_for_tsv() or self._fetch_remote_signal_for_tsv()
         if signal is None:
             raise RuntimeError(
-                "clinvar: ClinVar not refreshed: NCBI's checksum for submission_summary "
+                "ClinVar not refreshed: NCBI's checksum for submission_summary "
                 "is unavailable, so the download cannot be verified. Existing caches "
                 "kept; try again later."
             )
@@ -428,8 +440,7 @@ class ClinVarAnnotator(Annotator):
         variant_md5 = _fetch_checksum(vs_url)
         if variant_md5 is None:
             raise RuntimeError(
-                "clinvar: cannot verify variant_summary checksum; refresh aborted, "
-                "existing caches kept"
+                "cannot verify variant_summary checksum; refresh aborted, existing caches kept"
             )
         self.data_dir.mkdir(parents=True, exist_ok=True)
         # All owned downloads and candidates live on the cache filesystem.
@@ -493,7 +504,7 @@ class ClinVarAnnotator(Annotator):
         previous_count: int | None,
     ) -> None:
         """Finish and validate a candidate against the downloaded source pair."""
-        load_clinvar_tsv(
+        note = load_clinvar_tsv(
             vs_path,
             ss_path,
             candidate,
@@ -504,7 +515,10 @@ class ClinVarAnnotator(Annotator):
             min_rows=_manager_module.CLINVAR_MIN_ROWS[build],
             previous_count=previous_count,
             build_log=self.data_dir / CLINVAR_BUILD_LOG,
+            allow_shrink=self.allow_shrink,
         )
+        if note is not None:
+            self.shrink_notes.append(note)
 
     def is_ready(self) -> bool:
         """True iff EVERY managed build has a populated cache with the current tag."""
@@ -789,8 +803,13 @@ class ClinVarAnnotator(Annotator):
         """The normal allele at each reference-carried rsID, from the other build.
 
         For each rsID, the single-base REF of the same VariationIDs on the
-        other build where that row's REF differs from its ALT. An rsID with
-        no such row, or more than one candidate REF, is left out.
+        other build where that row's REF differs from its ALT, written on
+        this build's strand. ClinVar writes each build on its own forward
+        strand, so the row's ALT, the same variant allele, gives the strand
+        relation: the carried allele itself (same strand) or its complement
+        (inverted). A row whose ALT is neither tells nothing. An rsID with
+        no usable row, more than one candidate, or a candidate that is the
+        carried allele itself, is left out.
 
         Without a current ClinVar cache for the other build (one build
         installed), the rsID identity table's REF on the other build is used
@@ -813,9 +832,18 @@ class ClinVarAnnotator(Annotator):
                 f"WHERE rsid IN ({placeholders})",
                 chunk,
             ):
-                if variation_id in reference_carried[rsid] and len(ref) == 1 and ref != alt:
+                if variation_id not in reference_carried[rsid] or len(ref) != 1 or ref == alt:
+                    continue
+                carried = carried_ref[rsid]
+                if alt == carried:
                     candidates.setdefault(rsid, set()).add(ref)
-        return {rsid: refs.pop() for rsid, refs in candidates.items() if len(refs) == 1}
+                elif len(alt) == 1 and alt == complement(carried):
+                    candidates.setdefault(rsid, set()).add(complement(ref))
+        return {
+            rsid: next(iter(refs))
+            for rsid, refs in candidates.items()
+            if len(refs) == 1 and next(iter(refs)) != carried_ref[rsid]
+        }
 
     def fetch_remote_signal(self) -> str | None:
         r"""Freshness signal derived from the per-SCV submission_summary md5.
@@ -1131,7 +1159,10 @@ class ClinVarAnnotator(Annotator):
         then the row's, then the input's own ID (``""`` for a VCF ID of
         "."). Identical per-SCV rows collapse.
         """
-        if variant.is_no_call and not variant.is_half_call:
+        if (variant.is_no_call and not variant.is_half_call) or variant.is_di_call:
+            # A D/I call, mixed (``AD``) or not, is not interpreted (ADR-0070).
+            # ``annotate`` and ``batch_annotate`` have already counted it at a
+            # P/LP rsID.
             return []
         if variant.ref is None and not rsid_loci:
             if variant.rsid.startswith("i") and any(

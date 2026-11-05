@@ -121,3 +121,18 @@ watched position.
   before. Parsing without watching is slightly faster than before, because
   reference blocks that nobody watches are skipped before their sample
   column is read.
+
+## Amendment 2.6.0 (2026-11-01): the sample's genotype filter
+
+The selected sample's FORMAT `FT` is part of the FILTER gate: a call whose
+FT is not `PASS` or `.` is treated as filtered, counted once in the filtered
+rows under each FILTER label and FT code, and kept only with
+`--keep-filtered` (ADR-0060). `ALLELIX_FILTER` still repeats the site's
+FILTER only.
+
+## Amendment 2.6.0 (2026-11-03): spanning deletions on either haplotype
+
+Since ADR-0047, a call with `*` on one or both haplotypes is counted
+(`spanning_deletion_calls`), listed by site (`spanning_deletion_sites`)
+and reported as not assessed. Before, only a `*` on exactly one haplotype
+was counted.

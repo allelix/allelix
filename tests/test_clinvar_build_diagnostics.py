@@ -168,7 +168,7 @@ def test_build_evidence_survives_every_exit(tmp_path, monkeypatch, build, compre
             manager.load_clinvar_tsv(vs, ss, cache, build)
 
     _log_build(log, build_cache)
-    assert not cache.with_name(cache.name + ".partial").exists()
+    assert not list(cache.parent.glob(f".{cache.name}.*"))
     if outcome == "success":
         with contextlib.closing(sqlite3.connect(f"file:{cache}?mode=ro", uri=True)) as conn:
             assert conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0] == 2
@@ -302,5 +302,5 @@ def test_yielded_and_inserted_counts_are_measured_independently(tmp_path, monkey
 
     _log_build(log, build_cache)
     assert cache.read_bytes() == before
-    assert not cache.with_name(cache.name + ".partial").exists()
+    assert not list(cache.parent.glob(f".{cache.name}.*"))
     _assert_evidence(log, (vs, ss), build, yielded=2, inserted=1)

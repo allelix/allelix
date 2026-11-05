@@ -464,7 +464,10 @@ class TestNoUpdateWritesNothing:
         """Without --no-update, a WAL cache is converted even when nothing downloads."""
         data = _data_dir(tmp_path, build_synthetic_clinvar_cache, mock_pharmgkb_dir, mock_gwas_tsv)
         refreshed: list[Path] = []
-        monkeypatch.setattr("allelix.cli._helpers._maybe_refresh_databases", refreshed.append)
+        monkeypatch.setattr(
+            "allelix.cli._helpers._maybe_refresh_databases",
+            lambda path, **_: refreshed.append(path),
+        )
         result = CliRunner().invoke(
             main,
             [

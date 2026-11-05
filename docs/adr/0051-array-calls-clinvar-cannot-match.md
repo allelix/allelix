@@ -95,3 +95,12 @@ non-carriers get the same entry, because nothing is interpreted. That is
   was not assessed.
 - Matching i-probes or D/I calls would need a vendor probe map, which
   Allelix does not have; that is a separate decision.
+
+## Amendment 2.6.0 (2026-11-03): D/I calls and ClinVar's run counts
+
+- **D/I calls.** What this ADR left to 2.6 is settled by ADR-0070: a chip
+  D/I call is interpreted by no source. It is still counted, and named as
+  not checked at a high-value or P/LP rsID, as above.
+- **Run counts.** ClinVar's `run_counts()` also returns `ref_mismatches`:
+  one-base VCF REFs that are none of ClinVar's one-base REFs at the
+  position (ADR-0035, `input.vcf_quality.clinvar_ref_mismatches`).

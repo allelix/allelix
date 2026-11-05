@@ -72,14 +72,14 @@ class TestDownload:
     def test_no_part_file_left_after_success(self, http_server: str, tmp_path: Path):
         dest = tmp_path / "out.bin"
         download(http_server, dest)
-        assert not (tmp_path / "out.bin.part").exists()
+        assert not list(tmp_path.glob(".out.bin.*"))
 
     def test_part_file_cleaned_up_on_failure(self, tmp_path: Path):
         dest = tmp_path / "out.bin"
         # Bad URL — connection refused. Should clean up the .part file.
         with pytest.raises(OSError):
             download(f"http://127.0.0.1:{_free_port()}/", dest)
-        assert not (tmp_path / "out.bin.part").exists()
+        assert not list(tmp_path.glob(".out.bin.*"))
         assert not dest.exists()
 
 
@@ -231,4 +231,4 @@ class TestDownloadTimeout:
             server.server_close()
             thread.join(timeout=2)
         # The cleanup invariant still holds under timeout.
-        assert not (tmp_path / "out.bin.part").exists()
+        assert not list(tmp_path.glob(".out.bin.*"))

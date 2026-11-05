@@ -45,3 +45,9 @@ local file modes for reproducibility.
 - CADD scores (coordinate-keyed) — planned for v1.5.0
 - gnomAD whole-genome frequencies (non-coding regions) — distant future, no
   timeline
+
+## Amendment 2.6.0 (2026-11-03): the dataset name
+
+The cache is distributed from the HuggingFace dataset
+`allelix/allelix-gnomad` (`GNOMAD_CACHE_URL` in
+`allelix/databases/gnomad_loader.py`), not the dataset named above.

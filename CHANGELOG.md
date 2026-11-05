@@ -2,6 +2,338 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-11-05
+
+No database needs rebuilding after upgrading: caches built by 2.5.2 stay
+current. A ClinPGx cache records its content hash at its next real
+refresh (ADR-0068).
+
+Python 3.12 or newer is required: Python 3.11 is no longer supported, and
+pip on 3.11 will not install this release. Allelix is tested on Python 3.12
+and 3.14. On 3.14, pip builds the SNPedia parser dependency
+(mwparserfromhell) from source, which needs a C compiler until that package
+publishes 3.14 wheels; without one, `WITH_EXTENSION=0 pip install allelix`
+uses its pure-Python parser.
+
+### Known issues
+- In CADD full mode, `allelix db clean`, even with `--keep-cadd`, deletes
+  the CADD files you placed in the data directory: the whole-genome SNV
+  table (`whole_genome_SNVs.tsv.gz`), the indel table
+  (`gnomad.genomes.r4.0.indel.tsv.gz`) and their `.tbi` indexes.
+  `db update` cannot fetch them again. If you use CADD full mode, do not run
+  `db clean` until 2.6.1, or move those files out of the data directory
+  first.
+
+### Added
+- rsID and genotype lists, two tab-separated columns with no positions (IYG
+  files, for one), can be analyzed. Each row is placed on GRCh38 from the
+  rsID identity table when exactly one strand reading of its call fits the
+  site; the others are counted by reason, shown without a chromosome or
+  position, and still looked up by ClinPGx, SNPedia and the GWAS Catalog,
+  except a D/I row, which no source reads (ADR-0070).
+  The identity table is required; `stats`, `extract`, `export` and `compare`
+  stop on such a file (ADR-0069). In JSON, `input.placement` gives the
+  placement counts (null for files with positions), `input.build_source` is
+  `rsid_placement`, and an unplaced row's findings have a null `chromosome`
+  and `position`.
+
+### Changed
+- JSON reports use schema 12 (2.5.2 wrote 11). The report adds
+  `input.placement`, the `input.build_source` value `rsid_placement`, the
+  `strand_abstentions` reason `both_fit`, and the `report_warnings` codes
+  `contradictory_calls`, `identity_locus_conflict`, `cpic_unavailable` and
+  `source_dependency_unavailable`. A call with a failing FORMAT `FT` is
+  counted in the filtered rows. `--diff` reads schemas 1 to 12.
+- Whole-genome gVCF input can take up to about a fifth longer, because
+  every call is checked for conflicts with reference calls at target sites
+  (ADR-0064).
+- GWAS Catalog associations whose risk allele fits both strands at the site
+  are now skipped and counted in the report instead of read as written
+  (ADR-0066). This can leave out many GWAS rows, most visibly at a low
+  `--gwas-min-magnitude`.
+- The slow test suite and the ClinVar drift check run weekly again, on the
+  public repository only (Mondays 06:00 UTC). Manual dispatch for release
+  candidates is unchanged.
+
+### Removed
+- Support for Python 3.11 (`requires-python` is now `>=3.12`).
+
+### Fixed
+- At a site whose GRCh37 and GRCh38 reference bases differ, the normal
+  allele that ClinPGx and SNPedia use to hide a normal genotype was taken
+  from the other build without writing it on the input's strand. Where the
+  reference strand was inverted between the assemblies, the two bases are
+  one allele on opposite strands, so a person carrying the uncommon allele
+  could have a real SNPedia or ClinPGx finding hidden, and a person with
+  the common one could get a normal genotype's row. An allele from the
+  other build (its ClinVar, the rsID identity table, and gnomAD's major
+  allele for a GRCh37 call) is now translated through the strand relation
+  between the builds, and abstains where that relation cannot be told.
+  gnomAD is GRCh38's own reading, so a GRCh38 call can still use it as it
+  is (ADR-0023, ADR-0039, ADR-0040).
+- With one ClinVar build installed (`db update --build grch37` or
+  `--build grch38`), a GRCh37 call at F5 rs6025 no longer takes its normal
+  allele from the other build, whose strand cannot be told there. With only
+  GRCh37's ClinVar that allele came from the rsID identity table; with only
+  GRCh38's it came from GRCh38's ClinVar or gnomAD. A C/C call (no Factor V
+  Leiden) now shows its ClinPGx and SNPedia rows again, as before 2.5.0,
+  instead of risking a wrong suppression elsewhere. A T/T call is reported
+  as before: with its ClinVar finding where GRCh37's ClinVar is installed,
+  and without one where only GRCh38's is, since ClinVar is matched on the
+  input's own build. A GRCh38 call is decided by its own ClinVar where that
+  is installed, else by gnomAD's major allele where gnomAD can tell; with
+  only GRCh37's ClinVar and no such gnomAD evidence, its C/C rows show too.
+  With both ClinVar builds installed (the default) nothing changes
+  (ADR-0023).
+- Two cache updates running at once (two `db update`s, or an `analyze`
+  that refreshes a stale source beside another) could install each other's
+  files. Every writer staged under a name made from the cache's name alone,
+  so one could publish another's unfinished file or delete it: a successful
+  GWAS Catalog refresh could install the other's empty cache and lose the
+  previous one. Each download, archive, extracted table and cache build now
+  has a staging name of its own, is moved into place only when complete,
+  and is removed on failure or interruption; no run removes another's
+  files. ClinPGx's downloaded archive is no longer left in the data
+  directory (ADR-0056, ADR-0053).
+- A GWAS Catalog cache and the table kept for its re-ingest could come from
+  two different updates run at once; the re-ingest after a categorizer
+  change then built one update's rows under the other's freshness stamp.
+  The cache now records the hash of the table it was built from, and a
+  re-ingest reads only that table; otherwise `db update` downloads again.
+  Caches from earlier versions stay valid and re-ingest their own table
+  (ADR-0024).
+- ClinPGx's "content unchanged" shortcut could store its freshness stamp on
+  a cache another update had just installed with different content. The
+  stamp is now stored only on the content that was checked (ADR-0068).
+- `compare` left out no mitochondrial calls. A GRCh37 VCF whose chrM has
+  the hg19 length (16,571 bp), or whose mitochondrion is named `chrM` or
+  `M` without the 16,569 bp length, had those calls compared anyway: they
+  entered the shared count, the chromosome breakdown and the concordance,
+  even between two different mitochondrial references, and the chrM note
+  counted nothing. `compare` now decides each file's build before reading
+  it, as the other commands do, so those calls are left out and counted in
+  the note (ADR-0044, ADR-0054). A file whose calls are all left out gets
+  that note, not the error for an empty file.
+- A SNPedia finding on an insertion, deletion or multi-base call shows its
+  genotype with a slash between the alleles (`GAC/GAC`, `GAC/G`), as
+  ClinVar, ClinPGx and GWAS Catalog findings already did, and gets the
+  right zygosity. Before, the alleles were run together (`GACGAC`), and a
+  homozygous `GAC/GAC` call was reported as heterozygous. SNV and chip
+  genotypes are unchanged. `--diff` against an older report shows such a
+  finding's genotype as changed (ADR-0047).
+- The annotated VCF (`--vcf-out`) no longer copies a finding to another
+  record at the same CHROM, POS, REF and ALT. Before, every record whose
+  call carried the allele took every finding at that allele, so a `1/1`
+  duplicate of a `0/1` record showed the `0/1` genotype's SNPedia, ClinPGx,
+  GWAS Catalog or ClinVar finding, its gnomAD, AlphaMissense and CADD
+  values, and its `ALLELIX_CLINVAR_REF` value. A record rejected for an
+  identity conflict (`identity_locus_conflict`) could take another
+  record's finding the same way. And where two records at one position
+  carried one ALT on different REFs (`G>A` and `GA>A`), a finding could be
+  filed under the other record's REF and be written on neither. Each record
+  now gets only the findings its own call produced, as the JSON and HTML
+  reports show them. The INFO
+  fields and the VCF schema (0.7.0) are unchanged (ADR-0059).
+- `db update` downloads the rsID identity cache from a URL pinned to a
+  HuggingFace commit, as it does the gnomAD, AlphaMissense, CADD and
+  SNPedia caches. Before, it used the repository's `main` branch. The file
+  is the same, and its SHA-256 was already checked, so an installed cache
+  is not downloaded again (ADR-0029).
+- An array's D/I call (an insertion or deletion written as `D` or `I`) no
+  longer gets SNPedia findings from a page's D/I genotypes, or GWAS Catalog
+  associations without a risk allele. A mixed call of one base and one code,
+  such as `AD`, no longer gets the ClinVar finding of its base either. A D/I code does not say which indel
+  was called, so no source interprets it: it is counted, and named at a
+  high-value or ClinVar P/LP rsID as not checked. It is no longer counted
+  among SNPedia's or GWAS's strand-check abstentions either (ADR-0070).
+- A VCF call whose selected sample has a failing genotype filter (FORMAT
+  `FT` other than `PASS` or `.`, such as `LowAD`) is treated as filtered,
+  like a call whose FILTER column rejects it. It is counted once in the
+  filtered rows, under each FT code, and is not annotated unless
+  `--keep-filtered` is given. Before, the call was annotated as passing.
+  `extract` shows it as a no-call (ADR-0060).
+- A VCF record without an rsID that is written with padding bases
+  (`GC>AC`, or `CG>CA` one base before) gets the ClinPGx, SNPedia and
+  GWAS Catalog findings of the plain `G>A` record. Before, it got its
+  rsID only when the file named it, so it had ClinVar findings only. The
+  2.5.2 note on trimming held only for named records. `extract`,
+  `stats` and `export plink` find the rsID the same way. `extract` also
+  finds such a record when its call is a no-call, a REF-only half call, a
+  reference call or a rejected call, and prefers a usable padded call to a
+  no-call at the same site. The record keeps its own spelling in every
+  output (ADR-0061).
+- A haploid record no longer makes a separate diploid call at the same
+  position hemizygous. Each finding keeps its own record's genotype and
+  zygosity, in VCF and chip files, however the records are ordered.
+  Calls at one position that disagree on ploidy (one copy in one record,
+  two in another) are counted in a report warning, `contradictory_calls`,
+  wherever they are in the file; a padded call counts at its trimmed site
+  (ADR-0062).
+- A call whose rsID the rsID identity table places elsewhere on the
+  analysis build (a stale rsID, or coordinates from another build) is
+  annotated by no source, and the report counts it in a warning,
+  `identity_locus_conflict`. Before, ClinPGx still matched it by rsID and
+  genotype while the other sources did not. Only single-base calls are
+  checked against single-base placements: indels, chip D/I calls and indel
+  identity rows differ by representation and are never a contradiction. An
+  rsID the table does not place is not affected (ADR-0063).
+- An explicit homozygous-reference VCF call (`0/0`, `0|0`, haploid `0`)
+  that passes the quality gate gets the ClinPGx, SNPedia and GWAS Catalog
+  rows the same call gets from a chip file. An example is a GWAS
+  association whose effect allele is the reference base. A record is
+  evidence only for the variant it describes: an insertion, deletion or
+  MNV target needs a record with its REF/ALT (trimmed, not left-aligned). Before, only
+  ClinVar's reference-carried sites read such a call, and a `0/.` half
+  call was annotated while `0/0` was not. A single-base record naming its
+  rsID stands for it at its own position, with or without the identity
+  table. No reference call is made where another record changes the
+  position: a split multi-allelic site, a quality-rejected record, or a
+  carried insertion at its anchor base; shared padding is no change.
+  An explicit reference record counts in `contradictory_calls` (a haploid
+  `0` beside a diploid call) only at a target site of an enabled source,
+  at the same site padded or trimmed; the warning counts records,
+  non-reference ones everywhere as before. Nothing is kept for a
+  reference record at any other site. gVCF reference blocks are not
+  expanded (ADR-0064).
+- A GWAS Catalog risk allele, or a SNPedia genotype from a page that does
+  not state its orientation, is read on the strand that fits the site's
+  alleles. Before, it was read as written wherever that fitted, even at a
+  site whose alleles also hold its complement, so a risk allele stated on
+  the reverse strand could be matched to the wrong genotype. Where both
+  readings fit, the row is not assessed, counted under a new
+  `strand_abstentions` reason, `both_fit` (`palindromic` at A/T and C/G
+  sites, as before). A SNPedia page that states its orientation is now read
+  at A/T and C/G sites too. ClinPGx is unchanged: its genotypes are on the
+  forward strand (ADR-0066).
+- `export plink` codes a call that fits its site's REF/ALT pair only as its
+  complement by that complement, at a non-palindromic pair, and counts
+  these calls on the console. Before, such a call was written as missing:
+  a 23andMe probe reported on the minus strand, such as `CC` at a G/A site,
+  lost its genotype. A call that fits neither reading is still written as
+  missing, and A/T and C/G pairs are unchanged (ADR-0066).
+- A report made with a ClinPGx cache that has no CPIC allele-function data
+  (CPIC was unavailable at `db update` time) says so in the console, HTML
+  and JSON (`report_warnings` code `cpic_unavailable`): ClinPGx rows for
+  normal-function alleles may be shown, and `allelix db update` tries CPIC
+  again. Before, only `db status` and `db update` said so (ADR-0065).
+- A `db update` error no longer repeats its source prefix. Before, some
+  read `clinvar: clinvar: ...` or `gwas: gwas: ...`.
+- `compare` no longer depends on the order of records that share an rsID.
+  - **VCF against VCF:** a named record is matched by its rsID and its
+    trimmed REF and ALT, so the records of a split multi-allelic site
+    (`rsX G>A` and `rsX G>T`) each meet their own partner. Before, only the
+    last record per rsID counted, and reversing one file could turn 100%
+    concordance into 100% discordance.
+  - **Padding:** padded and trimmed spellings of a record match, named or
+    unnamed.
+  - **Chip against VCF:** a chip call is compared with the one record under
+    its rsID whose alleles explain it. When none or several do, it is not
+    compared, and the output says how many and why (ADR-0054).
+- `db update` no longer rebuilds ClinPGx when a new download holds the
+  same content. The archive is still downloaded when its ETag changes (the
+  ETag is the file's MD5), but the cache is rebuilt only when the two
+  annotation files or CPIC's allele-function data differ from the last
+  build. Otherwise `db update` says "content unchanged" and keeps the
+  cache. Caches from earlier releases stay current and record the content
+  hash at their next real refresh (ADR-0068).
+- An outranked Pathogenic or Likely pathogenic ClinVar submission, under an
+  aggregate of "Likely risk allele" or "other", is scored as under
+  Conflicting (4.0) instead of its full score (9.0 Pathogenic, 7.0 Likely
+  pathogenic). It is still shown, with its split, among
+  the scored-down variants. Existing caches need no rebuild (ADR-0045).
+- An imputed input (the Genes for Good imputed file, a MyHeritage low-pass
+  whole-genome export, or a VCF declaring imputation fields) is now marked as imputed by every command that reads
+  it.
+  - The annotated VCF has a `##ALLELIX_InputMethod` header line, and the
+    annotated VCF schema version is now 0.7.0.
+  - `stats`, `extract`, `compare` and `export plink` say on the console
+    that the input is imputed. `compare` names which file is.
+  - The terminal, HTML and JSON reports already said so.
+- `allelix db update --allow-clinvar-shrink` accepts, for one run, a
+  ClinVar release with fewer rows than 90% of the cache it replaces.
+  - Before, such a release was refused, and the only way out was deleting
+    the cache.
+  - The fixed row floor and the zero-row check still apply.
+  - The old and new counts are printed and written to `clinvar-build.log`,
+    and the refusal message names the flag (ADR-0053).
+- A file that states its build but carries no known-SNP position still
+  stops, as in 2.5, and the message now names the build it states: "If the
+  file is GRCh37, run it again with --build grch37". Before, it listed every
+  build.
+- A source you switch off (in the config, with `--no-gnomad`,
+  `--no-alphamissense` or `--no-cadd`, or by a focused report's
+  exclusions) is now fully off.
+  - Before, it was left out of the findings but still used by the others:
+    ClinVar's reference allele and gnomAD's major allele still decided the
+    normal allele for ClinPGx and SNPedia, the rsID identity table still
+    gave placements and strand readings, and `stats`, `extract` and `export
+    plink` still resolved calls through all three. So the report could
+    change with a switched-off source's cache.
+  - Now it is never consulted, and the sources that depend on it run as
+    if it were not installed. A report command (`analyze`, `methylation`,
+    `pharmacogenomics`) does not prepare or refresh its cache either; an
+    explicit `allelix db update` still manages it as before.
+  - The report says so with a `source_dependency_unavailable` warning that
+    names what ran without it. With every source on, nothing changes
+    (ADR-0067).
+- `db update` reads a source's ETag and Last-Modified headers in any letter
+  case, and keeps both.
+  - Before, ClinPGx's lowercase `etag` header was missed, so its signal was
+    always Last-Modified.
+  - A switch in which header a server or CDN sends (ETag, Last-Modified or
+    both) could report "remote signal changed" and download unchanged data.
+    Now a cached and a remote signal are compared on a header they share,
+    and a cache whose stored header the server no longer sends is kept,
+    with a note.
+  - Existing caches stay current (ADR-0012).
+- `db status` marks ClinPGx "(no CPIC)", and `db update` says CPIC was
+  unavailable, only when the stamp's own CPIC part says so. Before, the
+  text "cpic:unavailable" anywhere in the stored signal, even inside a
+  server's ETag, set both labels on a healthy cache, and on the GWAS
+  Catalog too.
+- A long genotype, such as a deletion's reference allele shown twice, no
+  longer hides other columns in the terminal tables of `extract`,
+  `analyze`, `methylation`, `pharmacogenomics` and `--diff`. Before,
+  Position, Het? and the source or significance of every row could shrink
+  to nothing or be cut to "…", even in a wide terminal. The genotype now
+  wraps within its column and is shown in full. A variant without an
+  rsID, named by its position and alleles (`22:20010383 A>ACGT...`), is
+  shown in lines in the rsID column, so a long allele there cannot hide
+  them either. Below 80 columns, the `--diff` table of changed findings
+  shows old and new significance and magnitude as `old -> new` in one
+  column each, and lets the gene and source wrap. Every value stays
+  visible at 60 columns and wider; narrower terminals can still cut values.
+
+### Documentation
+- Chip `D`/`I` indel calls are not interpreted, also at known variants
+  such as BRCA1 5382insC, BRCA2 6174delT and CFTR F508del: the report
+  names them as not checked, and carrier status for these needs clinical
+  testing. README and docs/formats.md say so.
+- Released architecture decision records are kept as released: a
+  clarification is appended as a dated amendment, a changed decision gets
+  a new record, and a test checks that no released line changes
+  (ADR-0001).
+- ADR-0045 records the decision not to rank Conflicting ClinVar variants
+  by submitter count: ClinVar's own classification stays the rule. The
+  README explains why such variants are scored down and where the report
+  lists them with their split.
+- Command help and the documentation match this release.
+  - `--no-gnomad`, `--no-alphamissense` and `--no-cadd` say they switch the
+    source off for the run.
+  - Switching a source off in the config does not stop an explicit
+    `db update` from downloading it, except CADD, which `db update` fetches
+    only with `--cadd` or `sources.cadd true`.
+  - `db update` help lists the kept-cache outcomes.
+  - `compare` help describes trimmed-allele matching.
+  - `--build` help on `stats`, `extract` and `export plink` says an rsID and
+    genotype list is refused there, and on every command that confident
+    known-SNP positions replace a label they contradict, with the GRCh36
+    exceptions.
+  - The README covers `--allow-clinvar-shrink`, `identity_locus_conflict`
+    and `contradictory_calls`, and counts twelve formats.
+  - The HTML scored-down line counts ClinVar rows, not variants.
+  - Older ADRs carry dated amendments for the 2.6 changes.
+
 ## [2.5.2] - 2026-10-28
 
 No database needs rebuilding after upgrading: caches built by 2.5.1 stay
@@ -4363,6 +4695,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.6.0]: https://github.com/allelix/allelix/compare/v2.5.2...v2.6.0
 [2.5.2]: https://github.com/allelix/allelix/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/allelix/allelix/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/allelix/allelix/compare/v2.4.2...v2.5.0

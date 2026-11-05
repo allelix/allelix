@@ -50,7 +50,7 @@ def _plausibility_key(key: str) -> str:
 
 @main.group()
 def config() -> None:
-    """Manage persistent configuration (source toggles, license mode)."""
+    """Manage persistent configuration (sources, license, options, plausibility)."""
 
 
 @config.command("show")
@@ -113,7 +113,7 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
     \b
     Examples:
       allelix config get                     # dump entire config
-      allelix config get sources.cadd        # true
+      allelix config get sources.cadd        # false
       allelix config get license.cadd        # false
       allelix config get options.cadd_full   # false
     """  # noqa: D301 - plain string: click's \b marker is the backspace character

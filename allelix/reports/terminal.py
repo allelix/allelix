@@ -20,6 +20,7 @@ Source column already conveys.
 
 from __future__ import annotations
 
+import textwrap
 from typing import TYPE_CHECKING
 
 from rich.markup import escape
@@ -158,17 +159,17 @@ def render_terminal_diff(
         has_gene = any(a.gene for a in diff.new)
         has_condition = any(a.condition for a in diff.new)
         table = Table(title=f"New Annotations ({len(diff.new)})")
-        table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+        table.add_column("rsID", style="cyan", no_wrap=True, min_width=_LABEL_LINE)
         if has_gene:
             table.add_column("Gene", style="magenta", no_wrap=True)
         table.add_column("Source", style="blue", no_wrap=True)
-        table.add_column("Significance", style="yellow")
+        table.add_column("Significance", style="yellow", overflow="fold")
         table.add_column("Mag", justify="right", min_width=4)
-        table.add_column("GT", no_wrap=True)
+        table.add_column("GT", overflow="fold")
         if has_condition:
             table.add_column("Condition", overflow="fold")
         for a in diff.new:
-            row = [annotation_label(a)]
+            row = [_label_cell(annotation_label(a))]
             if has_gene:
                 row.append(a.gene or "—")
             row.extend(
@@ -190,16 +191,23 @@ def render_terminal_diff(
     if diff.changed:
         has_gene = any(c.current.gene for c in diff.changed)
         has_condition = any(c.current.condition for c in diff.changed)
+        # Below 80 columns nine columns cannot all fit: old and new values
+        # share one column each, as "old -> new", like the genotype.
+        narrow = console.width < _NARROW_WIDTH
         table = Table(title=f"Changed Annotations ({len(diff.changed)})")
-        table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+        table.add_column("rsID", style="cyan", no_wrap=True, min_width=_LABEL_LINE)
         if has_gene:
-            table.add_column("Gene", style="magenta", no_wrap=True)
-        table.add_column("Source", style="blue", no_wrap=True)
-        table.add_column("Old Sig", style="dim")
-        table.add_column("New Sig", style="yellow")
-        table.add_column("Old Mag", justify="right", style="dim", min_width=4)
-        table.add_column("New Mag", justify="right", min_width=4)
-        table.add_column("GT", no_wrap=True)
+            table.add_column("Gene", style="magenta", no_wrap=not narrow, overflow="fold")
+        table.add_column("Source", style="blue", no_wrap=not narrow, overflow="fold")
+        if narrow:
+            table.add_column("Significance", style="yellow", overflow="fold")
+            table.add_column("Mag", justify="right", overflow="fold", min_width=4)
+        else:
+            table.add_column("Old Sig", style="dim", overflow="fold")
+            table.add_column("New Sig", style="yellow", overflow="fold")
+            table.add_column("Old Mag", justify="right", style="dim", overflow="fold", min_width=4)
+            table.add_column("New Mag", justify="right", overflow="fold", min_width=4)
+        table.add_column("GT", overflow="fold")
         if has_condition:
             table.add_column("Condition", overflow="fold")
         for c in diff.changed:
@@ -207,20 +215,20 @@ def render_terminal_diff(
             genotype = c.current.genotype_match
             if c.previous_genotype_match and c.previous_genotype_match != genotype:
                 genotype = f"{c.previous_genotype_match} -> {genotype}"
-            row = [annotation_label(c.current)]
+            row = [_label_cell(annotation_label(c.current))]
             if has_gene:
                 row.append(c.current.gene or "—")
-            row.extend(
-                [
-                    _compact_source(c.current.attribution),
-                    _compact_significance(c.previous_significance, c.current.source),
-                    _compact_significance(c.current.significance, c.current.source),
-                    prev_mag_str,
-                    f"{c.current.magnitude:.1f}"
-                    + (" (below display floor)" if c.below_display_floor else ""),
-                    genotype,
-                ]
+            old_sig = _compact_significance(c.previous_significance, c.current.source)
+            new_sig = _compact_significance(c.current.significance, c.current.source)
+            new_mag = f"{c.current.magnitude:.1f}" + (
+                " (below display floor)" if c.below_display_floor else ""
             )
+            row.append(_compact_source(c.current.attribution))
+            if narrow:
+                row.extend([f"{old_sig} -> {new_sig}", f"{prev_mag_str} -> {new_mag}"])
+            else:
+                row.extend([old_sig, new_sig, prev_mag_str, new_mag])
+            row.append(genotype)
             if has_condition:
                 row.append(c.current.condition or "—")
             table.add_row(*row)
@@ -231,18 +239,18 @@ def render_terminal_diff(
         has_gene = any(d.get("gene") for d in diff.removed)
         has_condition = any(d.get("condition") for d in diff.removed)
         table = Table(title=f"Removed Annotations ({len(diff.removed)})")
-        table.add_column("rsID", style="dim cyan", no_wrap=True, min_width=11)
+        table.add_column("rsID", style="dim cyan", no_wrap=True, min_width=_LABEL_LINE)
         if has_gene:
             table.add_column("Gene", style="dim magenta", no_wrap=True)
         table.add_column("Source", style="dim blue", no_wrap=True)
-        table.add_column("Significance", style="dim")
+        table.add_column("Significance", style="dim", overflow="fold")
         table.add_column("Mag", justify="right", style="dim", min_width=4)
-        table.add_column("GT", no_wrap=True, style="dim")
+        table.add_column("GT", overflow="fold", style="dim")
         if has_condition:
             table.add_column("Condition", overflow="fold", style="dim")
         for d in diff.removed:
             source = d.get("source", "")
-            row = [public_dict_label(d)]
+            row = [_label_cell(public_dict_label(d))]
             if has_gene:
                 row.append(d.get("gene", "") or "—")
             row.extend(
@@ -260,6 +268,23 @@ def render_terminal_diff(
         total += len(diff.removed)
 
     return total
+
+
+# A positional label (``chrom:pos REF>ALT``, which spells its alleles) is shown
+# in lines of the rsID column's minimum width, so the column keeps its usual
+# width and cannot push the other columns out of the table. An rsID is whole.
+_LABEL_LINE = 11
+# The changed table puts old and new values in one column below this width.
+_NARROW_WIDTH = 80
+
+
+def _label_cell(label: str) -> str:
+    """The label as shown in the rsID column: an rsID whole, a locus in lines."""
+    if " " not in label:
+        return label
+    return "\n".join(
+        textwrap.wrap(label, _LABEL_LINE, break_long_words=True, break_on_hyphens=False)
+    )
 
 
 def _compact_significance(significance: str, source: str) -> str:
@@ -304,18 +329,18 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
     has_condition = any(a.condition for a in filtered)
 
     table = Table(title=f"Annotations ({len(filtered)})")
-    table.add_column("rsID", style="cyan", no_wrap=True, min_width=11)
+    table.add_column("rsID", style="cyan", no_wrap=True, min_width=_LABEL_LINE)
     if has_gene:
         table.add_column("Gene", style="magenta", no_wrap=True)
     table.add_column("Source", style="blue", no_wrap=True)
-    table.add_column("Significance", style="yellow")
+    table.add_column("Significance", style="yellow", overflow="fold")
     table.add_column("Mag", justify="right", min_width=4)
-    table.add_column("GT", no_wrap=True)
+    table.add_column("GT", overflow="fold")
     if has_condition:
         table.add_column("Condition", overflow="fold")
 
     for a in filtered:
-        row = [annotation_label(a)]
+        row = [_label_cell(annotation_label(a))]
         if has_gene:
             row.append(a.gene or "—")
         row.extend(

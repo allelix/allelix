@@ -428,6 +428,7 @@ SOURCE_SEEDS = "seeds"
 SOURCE_ASSEMBLY_HEADER = "assembly_header"
 SOURCE_FILE_LABEL = "file_label"
 SOURCE_DEFAULT = "default"
+SOURCE_RSID_PLACEMENT = "rsid_placement"
 BUILD_SOURCES = (
     SOURCE_OVERRIDE,
     SOURCE_CONTIG_LENGTHS,
@@ -435,6 +436,7 @@ BUILD_SOURCES = (
     SOURCE_ASSEMBLY_HEADER,
     SOURCE_FILE_LABEL,
     SOURCE_DEFAULT,
+    SOURCE_RSID_PLACEMENT,
 )
 # Short reader-facing wording for each source (HTML report, ``stats``).
 BUILD_SOURCE_LABELS = {
@@ -444,6 +446,7 @@ BUILD_SOURCE_LABELS = {
     SOURCE_ASSEMBLY_HEADER: "from the VCF assembly header",
     SOURCE_FILE_LABEL: "from the file's build line",
     SOURCE_DEFAULT: "format default; the file states no build",
+    SOURCE_RSID_PLACEMENT: "rsIDs placed from the rsID identity table; the file has no positions",
 }
 
 KIND_VCF = "vcf"
@@ -469,6 +472,12 @@ class BuildDecisionError(ValueError):
 
 class PositionsMatchNoBuildError(BuildDecisionError):
     """The file's known-SNP positions match no supported build: forcing one is not the fix."""
+
+    suggest_override = False
+
+
+class NoPositionsError(BuildDecisionError):
+    """A file with no positions met a command that needs them, or cannot be placed (ADR-0069)."""
 
     suggest_override = False
 
@@ -509,12 +518,18 @@ def _seed_text(seeds: BuildDetectionResult) -> str:
     )
 
 
-def _stop(file_name: str, problem: str, evidence: list[str]) -> BuildDecisionError:
+_BUILD_ADVICE = (
+    "Tell Allelix which genome build the file uses (command line: --build grch37 "
+    "or --build grch38; for an old GRCh36 / hg18 file, --build grch36, see "
+    "docs/grch36-liftover.md), and run it again."
+)
+
+
+def _stop(
+    file_name: str, problem: str, evidence: list[str], advice: str = _BUILD_ADVICE
+) -> BuildDecisionError:
     return BuildDecisionError(
-        f"Cannot use {file_name}: {problem}. Evidence: {'; '.join(evidence)}. "
-        "Tell Allelix which genome build the file uses (command line: --build grch37 "
-        "or --build grch38; for an old GRCh36 / hg18 file, --build grch36, see "
-        "docs/grch36-liftover.md), and run it again."
+        f"Cannot use {file_name}: {problem}. Evidence: {'; '.join(evidence)}. {advice}"
     )
 
 
@@ -663,10 +678,12 @@ def _decide_build(
             # decide alone: a wrong label attaches another build's records.
             # A vendor GRCh36 label is exempt, like --build grch36: GRCh36
             # turns position lookups off (ADR-0025), so it cannot.
+            # The label is the one build in question: name its override.
             raise _stop(
                 file_name,
                 f"{label_text} but carries no known-SNP position to check it",
                 [_seed_text(seeds), label_text],
+                f"If the file is {file_label}, run it again with --build {file_label.lower()}.",
             )
         if tentative is not None and tentative != file_label:
             raise _stop(
@@ -712,6 +729,26 @@ def _decide_build(
             [_seed_text(seeds), label_text],
         )
     return BuildDecision(default, SOURCE_DEFAULT, None, seeds, lengths)
+
+
+def decide_placement_build(*, file_name: str, override: str | None) -> BuildDecision:
+    """The build of a file with no positions: GRCh38, where its rsIDs are placed (ADR-0069).
+
+    Its rows are placed from the rsID identity table, so it carries no
+    build evidence of its own and has nothing to check. ``--build grch38``
+    agrees; any other ``--build`` stops, as the rows are not placed there.
+    """
+    if override and override not in SUPPORTED_OVERRIDES:
+        raise ValueError(
+            f"Unsupported build override {override!r}: use one of {', '.join(SUPPORTED_OVERRIDES)}"
+        )
+    if override and override != BUILD_GRCH38:
+        raise NoPositionsError(
+            f"Cannot use {file_name} with --build {override.lower()}: the file has no "
+            "positions, so Allelix places its rsIDs on GRCh38 from the rsID identity "
+            "table. Run it again without --build."
+        )
+    return BuildDecision(BUILD_GRCH38, SOURCE_RSID_PLACEMENT, None, NO_SEEDS, None)
 
 
 def _override_stop(file_name: str, problem: str, evidence: list[str]) -> BuildDecisionError:

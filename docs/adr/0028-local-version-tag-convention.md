@@ -120,3 +120,19 @@ The `local_version_tag` column is added lazily:
   of requiring reverse-engineering of the suffix convention.
 - Pre-v1.5.0 caches self-heal without re-download. The migration is
   invisible to users.
+
+## Amendment 2.6.0 (2026-11-03): an untagged cache is not ready
+
+- **No legacy-ready caches.** Rule 4's pure-prebuilt pattern
+  (`... or not tag`) is gone. A gnomAD, AlphaMissense, CADD or rsID
+  identity cache with no `local_version_tag` is not ready: `cache_state`
+  reports it `outdated`, and `db update` installs it again. Accepting an
+  empty tag would let every untagged cache pass after a schema bump.
+- **Where the constants live.** `allelix/databases/_versions.py` holds the
+  ClinVar and ClinPGx interpreter versions and the gnomAD, AlphaMissense,
+  CADD and rsID identity schema versions. The GWAS Catalog's
+  `_CATEGORIZER_VERSION` is in `gwas_loader.py`, and SNPedia's
+  `_PARSER_VERSION` in `snpedia_parser.py`.
+- **Eight tagged caches, not six.** ClinVar and ClinPGx (`iv:`), the GWAS
+  Catalog (`cv:`), SNPedia (`pv:`), and gnomAD, AlphaMissense, CADD and
+  the rsID identity table (`sv:`).

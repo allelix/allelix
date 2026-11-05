@@ -88,3 +88,9 @@ ADR-0039 and ADR-0040).
 - CADD variant deleteriousness scores (v1.5.0) — same enrichment pattern,
   non-commercial license requiring config system gating
 - Alt-aware enrichment lookups — proper fix for MAX aggregation caveat
+
+## Amendment 2.6.0 (2026-11-03): the dataset name
+
+The cache is distributed from the HuggingFace dataset
+`allelix/allelix-alphamissense` (`ALPHAMISSENSE_CACHE_URL` in
+`allelix/databases/alphamissense_loader.py`), not the dataset named above.

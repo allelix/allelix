@@ -24,3 +24,15 @@ What does NOT belong in ADRs:
 - ADR review is part of code review.
 - The ADR index in `docs/adr/README.md` is the entry point for understanding "why is it this way?"
 - Existing decisions are backfilled as ADRs when they come up — not all at once.
+
+## Amendment 2026-10-30 (2.6.0): released ADRs are append-only, and a test enforces it
+
+Owner order.
+
+- A released ADR's lines are not changed, moved or deleted.
+- A clarification that keeps the decision is appended at the end of the file as a dated amendment section.
+- A changed decision gets a new ADR that references the old one.
+- The one released line that may change is the Status line, and only to a "Superseded by ADR-NNNN" or "Superseded in part by ADR-NNNN" form naming an ADR that exists.
+- `tests/data/adr_released.json` holds, per released ADR, the number of lines released and their SHA-256. `tests/test_adr_released_lock.py` fails when a locked line is changed or deleted. ADRs added since the last release are free until it ships.
+- At each release `scripts/adr_lock.py` refreshes the lock: it adds the new ADRs, grows each entry to the full file, and refuses when a locked line changed. `scripts/adr_lock.py --covers` fails when the lock does not cover the released tree.
+- The index, `docs/adr/README.md`, is not locked.

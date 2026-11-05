@@ -37,3 +37,13 @@ This is the conservative default. We'd rather miss a hypothetical real array cal
 - The regulatory posture in ADR-0003 is reinforced. We do not assert carrier status on the basis of an anchor-base coincidence.
 - A future VCF parser that calls indels will deliver multi-base genotypes like CTT/C. The `user_is_multibase` check passes and indel matching works as designed (validated by the existing `test_indel_carrier_triggers` test on the CFTR ΔF508 fixture row).
 - The mock ClinVar fixture's CFTR row (rs113993960 REF=CTT ALT=C) and the MyHappyGenes mock's matching CTT/C genotype already validate the positive path. Three new regression tests in `tests/annotators/test_clinvar.py::TestIndelAnchorProtection` validate the negative paths (single-base array readout, single-base homozygous reference, multi-base homozygous deletion).
+
+## Amendment 2.6.0 (2026-11-03): the rule is for arrays only
+
+The check applies only to a call whose REF did not come from the input. A
+VCF call (`Variant.ref_from_input`) skips it, since REF equality already
+pins the variant, so a homozygous deletion to one base (`AC>A` 1/1)
+matches its ClinVar row (ADR-0047). Array calls keep the check, also when
+the identity table filled in their REF. In the ClinVar annotator the test
+is now `clinvar_is_indel and not user_is_multibase and not
+variant.ref_from_input`.

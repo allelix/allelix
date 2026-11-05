@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from allelix.databases.schema import GNOMAD_SCHEMA
+from allelix.databases.staging import owned_staging
 
 logger = logging.getLogger(__name__)
 
@@ -223,42 +224,51 @@ def build_cache(
             )
             sys.exit(1)
 
-    tmp_path = output_path.parent / f"{output_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    # A staging file of this build's own: another build of the same output can
+    # neither publish nor remove it, and a failed build leaves none behind.
+    with owned_staging(output_path) as tmp_path:
+        with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            for stmt in GNOMAD_SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.commit()
 
-    with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        for stmt in GNOMAD_SCHEMA.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                conn.execute(stmt)
-        conn.commit()
+            total_records = 0
+            t0 = time.monotonic()
 
-        total_records = 0
-        t0 = time.monotonic()
-
-        for chrom in chroms:
-            chrom_t0 = time.monotonic()
-            if local_dir is not None:
-                vcf_path = local_dir / GNOMAD_FILENAME.format(chrom=chrom)
-                print(f"Processing {vcf_path}...")
-            else:
-                print(f"Processing chr{chrom} (streaming)...")
-
-            try:
+            for chrom in chroms:
+                chrom_t0 = time.monotonic()
                 if local_dir is not None:
-                    records = _read_local_vcf_gz(vcf_path, rsid_filter)
+                    vcf_path = local_dir / GNOMAD_FILENAME.format(chrom=chrom)
+                    print(f"Processing {vcf_path}...")
                 else:
-                    url = GNOMAD_BASE_URL.format(chrom=chrom)
-                    records = _stream_vcf_gz_filtered(url, rsid_filter)
+                    print(f"Processing chr{chrom} (streaming)...")
 
-                batch: list[_FreqRow] = []
-                chrom_count = 0
-                for record in records:
-                    batch.append(record)
-                    if len(batch) >= _BATCH_SIZE:
+                try:
+                    if local_dir is not None:
+                        records = _read_local_vcf_gz(vcf_path, rsid_filter)
+                    else:
+                        url = GNOMAD_BASE_URL.format(chrom=chrom)
+                        records = _stream_vcf_gz_filtered(url, rsid_filter)
+
+                    batch: list[_FreqRow] = []
+                    chrom_count = 0
+                    for record in records:
+                        batch.append(record)
+                        if len(batch) >= _BATCH_SIZE:
+                            conn.executemany(
+                                "INSERT OR REPLACE INTO gnomad_frequencies "
+                                "(chrom, pos, ref, alt, rsid, af, af_popmax, popmax, "
+                                "af_afr, af_amr, af_asj, af_eas, af_fin, af_nfe, af_sas) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                batch,
+                            )
+                            chrom_count += len(batch)
+                            batch.clear()
+                    if batch:
                         conn.executemany(
                             "INSERT OR REPLACE INTO gnomad_frequencies "
                             "(chrom, pos, ref, alt, rsid, af, af_popmax, popmax, "
@@ -267,40 +277,30 @@ def build_cache(
                             batch,
                         )
                         chrom_count += len(batch)
-                        batch.clear()
-                if batch:
-                    conn.executemany(
-                        "INSERT OR REPLACE INTO gnomad_frequencies "
-                        "(chrom, pos, ref, alt, rsid, af, af_popmax, popmax, "
-                        "af_afr, af_amr, af_asj, af_eas, af_fin, af_nfe, af_sas) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        batch,
-                    )
-                    chrom_count += len(batch)
-                conn.commit()
-                total_records += chrom_count
-                elapsed = time.monotonic() - chrom_t0
-                print(f"  chr{chrom}: {chrom_count:,} records ({elapsed:.1f}s)")
-            except (urllib.error.URLError, FileNotFoundError, OSError) as exc:
-                print(f"  ERROR processing chr{chrom}: {exc}", file=sys.stderr)
-                continue
+                    conn.commit()
+                    total_records += chrom_count
+                    elapsed = time.monotonic() - chrom_t0
+                    print(f"  chr{chrom}: {chrom_count:,} records ({elapsed:.1f}s)")
+                except (urllib.error.URLError, FileNotFoundError, OSError) as exc:
+                    print(f"  ERROR processing chr{chrom}: {exc}", file=sys.stderr)
+                    continue
 
-        if local_dir is not None:
-            source_url = str(local_dir)
-        else:
-            source_url = GNOMAD_BASE_URL.replace("{chrom}", "*")
-        conn.execute(
-            "INSERT OR REPLACE INTO database_versions "
-            "(name, source_url, version, downloaded_at, record_count) "
-            "VALUES (?, ?, ?, datetime('now'), ?)",
-            ("gnomad", source_url, "4.1", total_records),
-        )
-        conn.commit()
+            if local_dir is not None:
+                source_url = str(local_dir)
+            else:
+                source_url = GNOMAD_BASE_URL.replace("{chrom}", "*")
+            conn.execute(
+                "INSERT OR REPLACE INTO database_versions "
+                "(name, source_url, version, downloaded_at, record_count) "
+                "VALUES (?, ?, ?, datetime('now'), ?)",
+                ("gnomad", source_url, "4.1", total_records),
+            )
+            conn.commit()
 
-        print("Compacting database...")
-        conn.execute("VACUUM")
+            print("Compacting database...")
+            conn.execute("VACUUM")
 
-    os.replace(tmp_path, output_path)
+        os.replace(tmp_path, output_path)
 
     elapsed_total = time.monotonic() - t0
     mode = "--full" if full else "--manifest"

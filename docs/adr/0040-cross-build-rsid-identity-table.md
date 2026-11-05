@@ -133,3 +133,14 @@ abstains. Everything else stays as before:
 Over the shipped table no key that translated before is lost or translated
 differently. `scripts/check_wrong_allele.py` applies the same rule
 independently.
+
+## Amendment 2.6.0 (2026-11-02): the strand relation for a normal allele
+
+A REF taken from the other build (the normal allele at a reference-carried
+site, ADR-0023) is written on the input build's strand. The relation is
+read from the rsID's allele sets on both builds, as `pair_alleles` pairs
+them: equal sets are the same strand, complemented sets inverted. A row
+flagged palindromic, or sets that fit both readings or neither, give no
+relation, and the normal allele abstains. Unlike enrichment translation
+(amendment 2026-10-25), equal REFs do not lift the flag here: these sites
+are exactly the ones whose REFs differ.

@@ -25,8 +25,10 @@ from allelix.databases.gwas_loader import (
     _is_uncharacterized_analyte,
     _parse_risk_allele,
     classify_gwas_trait,
+    gwas_source_hash,
     iter_gwas_records,
     load_gwas_tsv,
+    retained_source_stamp,
     schema_is_current,
 )
 from allelix.models import Annotation, Variant
@@ -301,6 +303,61 @@ class TestAutoReingest:
         assert annotator.is_ready() is False
         assert annotator.prepare_cache() is False
         assert annotator.is_ready() is False
+
+    def test_prepare_cache_refuses_a_table_the_cache_was_not_built_from(
+        self, tmp_path: Path, mock_gwas_tsv: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """2.6.0: a kept table that is not the cache's own source is never re-ingested."""
+        db_path = tmp_path / GWAS_DB_FILENAME
+        load_gwas_tsv(
+            mock_gwas_tsv,
+            db_path,
+            source_url="test://mock",
+            remote_signal="etag:mine",
+            content_hash=gwas_source_hash(mock_gwas_tsv),
+        )
+        # Other bytes than the ones this cache recorded: another refresh's table.
+        (tmp_path / "gwas_catalog_associations.tsv").write_bytes(
+            mock_gwas_tsv.read_bytes() + b"\n"
+        )
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE database_versions SET local_version_tag = 'cv:0' WHERE name = 'gwas'"
+            )
+            conn.commit()
+            before = conn.execute("SELECT * FROM gwas_associations ORDER BY id").fetchall()
+        annotator = GWASCatalogAnnotator(tmp_path)
+        assert annotator.prepare_cache() is False
+        assert "not the table this cache was built from" in capsys.readouterr().out
+        assert annotator.is_ready() is False
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            after = conn.execute("SELECT * FROM gwas_associations ORDER BY id").fetchall()
+        assert after == before
+        assert retained_source_stamp(db_path) == ("etag:mine", gwas_source_hash(mock_gwas_tsv))
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            GWAS_DB_FILENAME,
+            "gwas_catalog_associations.tsv",
+        ]
+
+    def test_a_cache_without_a_content_hash_reingests_as_before(
+        self, tmp_path: Path, mock_gwas_tsv: Path
+    ) -> None:
+        """A cache built before 2.6.0 has no content_hash column; it re-ingests and records one."""
+        db_path = tmp_path / GWAS_DB_FILENAME
+        tsv_dest = tmp_path / "gwas_catalog_associations.tsv"
+        load_gwas_tsv(mock_gwas_tsv, db_path, source_url="test://mock", remote_signal="etag:old")
+        shutil.copy2(mock_gwas_tsv, tsv_dest)
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            conn.execute("ALTER TABLE database_versions DROP COLUMN content_hash")
+            conn.execute(
+                "UPDATE database_versions SET local_version_tag = 'cv:0' WHERE name = 'gwas'"
+            )
+            conn.commit()
+        assert retained_source_stamp(db_path) == ("etag:old", None)
+        annotator = GWASCatalogAnnotator(tmp_path)
+        assert annotator.prepare_cache() is True
+        assert annotator.is_ready() is True
+        assert retained_source_stamp(db_path) == ("etag:old", gwas_source_hash(tsv_dest))
 
 
 class TestLegacyMigration:

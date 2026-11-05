@@ -1,0 +1,182 @@
+{
+  "schema_version": "11",
+  "allelix_version": "2.5.2",
+  "generated_at": "2026-11-01T15:10:18.882042+00:00",
+  "regulatory_notice": "This report is informational research output. It surfaces classifications made by external databases (ClinVar, ClinPGx, \u2026) for variants present in the input genotype file. It is not medical advice and not a diagnosis. Every classification is attributed to its source database; Allelix does not independently classify variants.",
+  "input": {
+    "file": "reference.vcf",
+    "format": "vcf",
+    "method": null,
+    "sample_id": "SAMPLE",
+    "build": "GRCh37",
+    "build_source": "contig_lengths",
+    "build_evidence": {
+      "file_label": null,
+      "contig_lengths": "match",
+      "contig_lengths_detail": "1 contig length(s) match GRCh37",
+      "seeds_build": null,
+      "seeds_matched": 0,
+      "seeds_inspected": 0,
+      "seeds_confident": false,
+      "label_overridden": false,
+      "mt_records_skipped": 0,
+      "seeds_tied": []
+    },
+    "total_variants": 0,
+    "skipped_lines": 0,
+    "gvcf": false,
+    "vcf_quality": {
+      "filtered_rows": 0,
+      "filtered_by_label": {},
+      "kept_filtered": false,
+      "low_quality_calls": 0,
+      "min_gq": 20,
+      "spanning_deletion_calls": 0,
+      "spanning_deletion_sites": [],
+      "symbolic_rows": 0,
+      "half_calls": 0,
+      "malformed_rows": 0,
+      "no_genotype_rows": 0,
+      "unusable_genotype_calls": 0,
+      "symbolic_allele_calls": 0,
+      "trimmed_matches": 0,
+      "clinvar_ref_mismatches": 0,
+      "reference_source_conflicts": 0,
+      "reference_ploidy_conflicts": 0,
+      "reference_carried_calls": 1,
+      "reference_carried_not_in_file": 2,
+      "genotype_records": 1,
+      "hom_ref_calls": 1,
+      "non_reference_calls": 0
+    },
+    "array_quality": null,
+    "probe_classes": null
+  },
+  "annotators": [
+    {
+      "name": "clinvar",
+      "version": "GRCh37:20261016"
+    }
+  ],
+  "sources": [
+    {
+      "name": "clinvar",
+      "display_name": "ClinVar",
+      "state": "used",
+      "reason": null,
+      "version": "GRCh37:20261016"
+    },
+    {
+      "name": "pharmgkb",
+      "display_name": "ClinPGx",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    },
+    {
+      "name": "gwas",
+      "display_name": "GWAS Catalog",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    },
+    {
+      "name": "snpedia",
+      "display_name": "SNPedia",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    },
+    {
+      "name": "gnomad",
+      "display_name": "gnomAD",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    },
+    {
+      "name": "alphamissense",
+      "display_name": "AlphaMissense",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    },
+    {
+      "name": "cadd",
+      "display_name": "CADD",
+      "state": "skipped",
+      "reason": "disabled",
+      "version": null
+    },
+    {
+      "name": "rsid_identity",
+      "display_name": "dbSNP rsID identity",
+      "state": "skipped",
+      "reason": "missing",
+      "version": null
+    }
+  ],
+  "report_warnings": [],
+  "filters": {
+    "min_magnitude": 5.0,
+    "category": null,
+    "genes": null,
+    "rsids": null
+  },
+  "clinvar": {
+    "pathogenic_rows_scored_down": 0,
+    "unrecognised_rows_hidden": 0,
+    "common_allele_rows_scored_down": 0,
+    "scored_down_variants": []
+  },
+  "strand_abstentions": {},
+  "annotations": [
+    {
+      "source": "clinvar",
+      "rsid": "rs900230001",
+      "significance": "clinvar_pathogenic",
+      "category": "clinical",
+      "magnitude": 9.0,
+      "description": "ClinVar classifies this allele as Pathogenic",
+      "attribution": "ClinVar",
+      "genotype_match": "TT",
+      "references": [
+        "clinvar:allele/2"
+      ],
+      "condition": "Synthetic condition",
+      "gene": "GENE",
+      "review_status": "criteria_provided,_single_submitter",
+      "alt": "T",
+      "allele_frequency": null,
+      "am_pathogenicity": null,
+      "am_class": "",
+      "cadd_phred": null,
+      "plausibility": "not_assessed",
+      "plausibility_reason": "gnomad_not_run",
+      "trait": "",
+      "p_value": null,
+      "phecode": "",
+      "effect_direction": "",
+      "clinvar_aggregate": "Pathogenic",
+      "submitters_same": 1,
+      "submitters_total": 1,
+      "aggregate_capped": false,
+      "outside_aggregate": false,
+      "common_allele_capped": false,
+      "clinvar_allele_af": null,
+      "chromosome": "2",
+      "position": 2000,
+      "ref": "T",
+      "zygosity": "homozygous"
+    }
+  ],
+  "license_attributions": [
+    {
+      "source": "ClinVar",
+      "source_url": "https://www.ncbi.nlm.nih.gov/clinvar/",
+      "license": "custom-clinvar",
+      "license_url": "https://www.ncbi.nlm.nih.gov/clinvar/docs/maintenance_use/",
+      "attribution": "ClinVar variant classifications from NCBI."
+    }
+  ]
+}

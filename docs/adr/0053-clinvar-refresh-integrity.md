@@ -110,3 +110,28 @@ after insertion that rolls the candidate back.
 A refused build, such as a candidate far below the floor, can then be
 traced to the stage that lost the rows. Nothing about the floors, the stamp or the
 stored cache changes.
+
+## Amendment 2.6.0 (2026-10-30): a one-run override for the 90% floor
+
+Supervisor ruling, 2026-10-30.
+
+**The override.** `allelix db update --allow-clinvar-shrink` lets one run publish a ClinVar build with fewer rows than 90% of the cache it replaces.
+- The fixed floor and the zero-row check still refuse.
+- Checksums, staging and publication of both builds are unchanged.
+- The flag is not saved: the next run, and the automatic refresh before analysis, apply the floor again.
+
+**The record.** An accepted shrink is printed and written to `clinvar-build.log` with the build and its old and new counts. A refusal at any floor is also written to the log, beside the stage counts. A 90%-floor refusal names the flag.
+
+## Amendment 2.6.0 (2026-11-02): direct loads stage under their own name
+
+`load_clinvar_tsv` staged its candidate at `<cache>.partial`, a name shared
+by every direct caller with the same target. It now stages under a unique
+name of its own (ADR-0056, amendment of this date). Production setup was
+already isolated in its own temporary directory and is unchanged.
+
+## Amendment 2.6.0 (2026-11-03): submission_summary is always verified
+
+The submission_summary download is always verified, like
+variant_summary. Its checksum is ClinVar's freshness signal; when it
+cannot be fetched (the fetch is tried twice), the refresh stops with an
+error and the existing caches are kept.

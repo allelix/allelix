@@ -213,7 +213,8 @@ def test_grch37_call_that_fits_neither_allele_is_missing(tmp_path: Path) -> None
     data.mkdir()
     _identity(data, [_INVERTED])
     src = tmp_path / "array37.txt"
-    src.write_text(ARRAY_HEADER + "rs900999001\t2\t1000\tCT\n")
+    # CA at a G/A site fits neither reading (CA, nor its complement GT).
+    src.write_text(ARRAY_HEADER + "rs900999001\t2\t1000\tCA\n")
     result = _export(src, tmp_path / "out", data, "--build", "grch37")
     assert _decode(tmp_path / "out") == [("rs900999001", "G/A", "missing")]
     assert "1 call(s) fit neither rsID identity table allele" in " ".join(result.output.split())
@@ -413,7 +414,10 @@ def test_neither_source_falls_back_as_before(tmp_path: Path) -> None:
 
 
 def test_grch38_export_is_unchanged(tmp_path: Path) -> None:
-    """(f) GRCh38 keeps gnomAD's coding: palindromic falls back, a misfit is missing."""
+    """(f) GRCh38 keeps gnomAD's coding: palindromic falls back, a misfit is missing.
+
+    GC at a C/T site fits neither reading (GC, nor its complement CG).
+    """
     calls, output = _coding(
         tmp_path,
         None,
@@ -422,7 +426,7 @@ def test_grch38_export_is_unchanged(tmp_path: Path) -> None:
             ("2", 2200, "A", "T", "rs900999022"),
             ("2", 2300, "C", "T", "rs900999023"),
         ],
-        "rs900999021\t2\t2100\tGA\nrs900999022\t2\t2200\tAA\nrs900999023\t2\t2300\tGA\n",
+        "rs900999021\t2\t2100\tGA\nrs900999022\t2\t2200\tAA\nrs900999023\t2\t2300\tGC\n",
         build="grch38",
     )
     assert calls == [

@@ -67,3 +67,38 @@ refreshes from a download it cannot verify (ADR-0053): if NCBI's checksum
 for `submission_summary` or `variant_summary` cannot be fetched, the
 refresh stops, the existing caches stay, and `db update` reports ClinVar
 as failed, with or without `--force`.
+
+## Amendment 2.6.0 (2026-10-30): header case, both fields, like-for-like comparison
+
+Supervisor ruling, 2026-10-30. This replaces "Type-prefixed signal values"
+above for HTTP signals.
+
+- **Header case.** HTTP header names are case-insensitive (RFC 9110).
+  `head_request_headers` lowercases them, and `http_signal` matches them in
+  any case. Before, the code read `ETag` or `Etag` only. The ClinPGx
+  download, served by a CDN that sends `etag`, therefore always fell back
+  to Last-Modified.
+- **Both fields stored.** An HTTP signal keeps the ETag and the
+  Last-Modified when both are present: `etag:…|lm:…`, prefixed `pgkb:`
+  and followed by `|cpic:…` for ClinPGx. A quoted ETag (RFC 9110 8.8.3)
+  is read whole up to its closing quote, so a `|` or `:` inside it never
+  splits it; an unquoted, non-standard ETag is read up to the next field.
+  It stays in `remote_signal`, so a
+  stamp of either older form (`etag:…`, `lm:…`) stays valid. No download is
+  forced by the change.
+- **Like with like** (`compare_signals`):
+  - A cached and a remote signal are compared on a field both have: the
+    ETag first, else Last-Modified.
+  - Any other field (ClinPGx's CPIC date) must also be equal.
+  - Signals that share no HTTP field cannot be compared. `db update` keeps
+    the cache and says the change cannot be verified (`--force` refreshes),
+    and the automatic update leaves it. A change only in which fields a
+    server sends is never a change by itself.
+  - Non-HTTP signals (ClinVar's checksum) are still compared whole.
+- **Unchanged means untouched.** The unchanged path writes nothing; a newly
+  seen header is recorded at the next real refresh.
+- **Content.** A real change still downloads. For ClinPGx, ADR-0068 then
+  skips the rebuild when the content is the same.
+
+The GWAS Catalog and ClinPGx are the only sources whose signal comes from
+HTTP headers.

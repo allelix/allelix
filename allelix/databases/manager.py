@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple, TypedDict
 from allelix import __version__
 from allelix.databases.cache_state import connect_readonly, is_wal
 from allelix.databases.schema import CLINVAR_SCHEMA
+from allelix.databases.staging import owned_staging
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -86,66 +87,153 @@ def head_request_headers(
 ) -> dict[str, str] | None:
     """Issue an HTTP HEAD and return the response headers as a plain dict.
 
-    Returns None on any failure. Never raises.
+    Header names are lowercased: HTTP names are case-insensitive (RFC 9110),
+    and servers and CDNs spell them differently (``ETag``, ``etag``;
+    ADR-0012). Returns None on any failure. Never raises.
     """
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return dict(response.headers.items())
+            return {name.lower(): value for name, value in response.headers.items()}
     except (OSError, ValueError) as exc:
         if hasattr(exc, "close"):
             exc.close()
         return None
 
 
-def download(url: str, dest: Path) -> None:
-    """Download `url` to `dest`. Streaming, atomic (.part rename), with timeout.
+# The HTTP fields of a freshness signal, in the order they decide (ADR-0012).
+_HTTP_SIGNAL_FIELDS = ("etag", "lm")
+_SIGNAL_FIELD_SPLIT = re.compile(r"\|(?=(?:etag|lm|cpic):)")
+# A quoted ETag (RFC 9110 8.8.3), weak or strong: it may hold "|" and ":",
+# never a double quote, so it ends at its closing quote.
+_QUOTED_ETAG = re.compile(r'etag:((?:W/)?"[^"]*")(?:\||$)')
 
-    - Streams chunks directly to a `.part` sibling file (no in-memory copy).
+
+def http_signal(headers: dict[str, str]) -> str | None:
+    """The freshness signal in a HEAD response: ``etag:…|lm:…``, either alone, or None.
+
+    Both fields are kept when present, so a later check can compare
+    whichever one the next response shares (ADR-0012). Header names are
+    matched in any case.
+    """
+    named = {name.lower(): value for name, value in headers.items()}
+    etag = (named.get("etag") or "").strip()
+    last_modified = (named.get("last-modified") or "").strip()
+    parts = [f"etag:{etag}"] * bool(etag) + [f"lm:{last_modified}"] * bool(last_modified)
+    return "|".join(parts) or None
+
+
+def _signal_fields(signal: str) -> tuple[str, dict[str, str]]:
+    """A signal's prefix (``pgkb:`` for ClinPGx) and its ``field: value`` parts."""
+    prefix = "pgkb:" if signal.startswith("pgkb:") else ""
+    rest = signal[len(prefix) :]
+    fields: dict[str, str] = {}
+    # The ETag comes first. A quoted one is read whole, whatever it holds;
+    # the other fields (an HTTP date, a CPIC date) hold no "|".
+    quoted = _QUOTED_ETAG.match(rest)
+    if quoted:
+        fields["etag"] = quoted.group(1)
+        rest = rest[quoted.end() :]
+    for part in _SIGNAL_FIELD_SPLIT.split(rest) if rest else ():
+        name, _, value = part.partition(":")
+        fields[name] = value
+    return prefix, fields
+
+
+def compare_signals(cached: str, remote: str) -> str:
+    """``"same"``, ``"changed"`` or ``"unknown"``: has the source changed (ADR-0012)?
+
+    HTTP signals are compared field by field: on the ETag when both have
+    one, else on Last-Modified. Any other field (ClinPGx's CPIC date) must
+    also be equal. Signals sharing no HTTP field cannot be compared:
+    ``"unknown"``, never a change by itself. Other signals (checksums) are
+    compared whole.
+    """
+    if cached == remote:
+        return "same"
+    _, old = _signal_fields(cached)
+    _, new = _signal_fields(remote)
+    if not any(f in old for f in _HTTP_SIGNAL_FIELDS) or not any(
+        f in new for f in _HTTP_SIGNAL_FIELDS
+    ):
+        return "changed"
+    others = (old.keys() | new.keys()) - set(_HTTP_SIGNAL_FIELDS)
+    if any(old.get(f) != new.get(f) for f in others):
+        return "changed"
+    for field in _HTTP_SIGNAL_FIELDS:
+        if field in old and field in new:
+            return "same" if old[field] == new[field] else "changed"
+    return "unknown"
+
+
+def update_remote_signal(
+    db_path: Path, name: str, remote_signal: str | None, *, content_hash: str | None = None
+) -> bool:
+    """Store a new freshness signal on a cache whose content is unchanged.
+
+    With ``content_hash``, the signal is stored only while the cache at
+    ``db_path`` still holds that content, checked in the same statement: a
+    cache another refresh installed since keeps its own signal. Returns
+    whether the signal was stored.
+    """
+    with contextlib.closing(sqlite3.connect(db_path)) as conn:
+        if content_hash is None:
+            cursor = conn.execute(
+                "UPDATE database_versions SET remote_signal = ? WHERE name = ?",
+                (remote_signal or "", name),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE database_versions SET remote_signal = ? "
+                "WHERE name = ? AND content_hash = ?",
+                (remote_signal or "", name, content_hash),
+            )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def download(url: str, dest: Path) -> None:
+    """Download `url` to `dest`. Streaming, atomic (owned `.part` rename), with timeout.
+
+    - Streams chunks directly to a `.part` file of this download's own beside
+      `dest` (`owned_staging`; no in-memory copy).
     - Sets a real User-Agent so CDNs don't reject the default python-urllib UA.
     - `os.replace`s the .part onto `dest` only after a full successful write,
       so a killed mid-download never leaves a half-file at the target name.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part_path = dest.parent / f"{dest.name}.part"
-    if part_path.exists():
-        part_path.unlink()
-
     logger.info("Downloading %s -> %s", url, dest)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with (
-            urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
-            part_path.open("wb") as out,
-        ):
-            expected_size = response.headers.get("Content-Length")
-            while chunk := response.read(DOWNLOAD_CHUNK_SIZE):
-                out.write(chunk)
-            out.flush()
-            try:
-                os.fsync(out.fileno())
-            except OSError:
-                logger.debug("fsync unsupported on this filesystem; continuing")
+    # A partial file of this download's own (``owned_staging``): another
+    # download to the same ``dest`` can neither publish nor remove it, and
+    # it is removed on any failure or interruption.
+    with owned_staging(dest, ".part") as part_path:
+        try:
+            with (
+                urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
+                part_path.open("wb") as out,
+            ):
+                expected_size = response.headers.get("Content-Length")
+                while chunk := response.read(DOWNLOAD_CHUNK_SIZE):
+                    out.write(chunk)
+                out.flush()
+                try:
+                    os.fsync(out.fileno())
+                except OSError:
+                    logger.debug("fsync unsupported on this filesystem; continuing")
 
-        actual_size = part_path.stat().st_size
-        if expected_size is not None:
-            expected = int(expected_size)
-            if actual_size != expected:
-                part_path.unlink(missing_ok=True)
-                raise OSError(
-                    f"Download truncated: expected {expected:,} bytes, "
-                    f"got {actual_size:,} bytes from {url}"
-                )
-        os.replace(part_path, dest)
-    except Exception as exc:
-        if hasattr(exc, "close"):
-            exc.close()
-        if part_path.exists():
-            try:
-                part_path.unlink()
-            except OSError:
-                logger.warning("Could not remove stale partial download %s", part_path)
-        raise
+            actual_size = part_path.stat().st_size
+            if expected_size is not None:
+                expected = int(expected_size)
+                if actual_size != expected:
+                    raise OSError(
+                        f"Download truncated: expected {expected:,} bytes, "
+                        f"got {actual_size:,} bytes from {url}"
+                    )
+            os.replace(part_path, dest)
+        except Exception as exc:
+            if hasattr(exc, "close"):
+                exc.close()
+            raise
 
 
 def verify_file_hash(path: Path, algorithm: str, expected_hex: str) -> None:
@@ -941,7 +1029,8 @@ def load_clinvar_tsv(
     previous_count: int | None = None,
     record_name: str = "clinvar",
     build_log: Path | None = None,
-) -> None:
+    allow_shrink: bool = False,
+) -> str | None:
     """Build a ClinVar SQLite cache from the per-SCV TSV sources.
 
     Production ingest path for ClinVar. The annotator returns
@@ -956,11 +1045,13 @@ def load_clinvar_tsv(
     before publishing any. Direct synthetic builds can use smaller floors.
     ``build_log``, when given, gets the build's sources and stage counts
     appended (``CLINVAR_BUILD_LOG``), on every outcome.
+
+    ``allow_shrink`` (``db update --allow-clinvar-shrink``) lifts the 90%
+    floor for this build only; the fixed floor and the zero check stay.
+    Returns the note recording an accepted shrink, or None.
     """
-    partial = db_path.with_name(db_path.name + ".partial")
-    partial.unlink(missing_ok=True)
-    try:
-        _build_clinvar_cache(
+    with owned_staging(db_path, ".partial") as partial:
+        note = _build_clinvar_cache(
             variant_summary_path,
             submission_summary_path,
             partial,
@@ -972,10 +1063,10 @@ def load_clinvar_tsv(
             previous_count=previous_count,
             record_name=record_name,
             build_log=build_log,
+            allow_shrink=allow_shrink,
         )
         os.replace(partial, db_path)
-    finally:
-        partial.unlink(missing_ok=True)
+    return note
 
 
 _CLINVAR_INSERT = (
@@ -1000,7 +1091,8 @@ def _build_clinvar_cache(
     previous_count: int | None,
     record_name: str,
     build_log: Path | None = None,
-) -> None:
+    allow_shrink: bool = False,
+) -> str | None:
     """Write a new ClinVar cache at ``db_path``; raise when it holds no records.
 
     The build log gets each source's MD5 and size and every stage's count
@@ -1015,7 +1107,7 @@ def _build_clinvar_cache(
     logger.info("%s", sources)
     _append_build_log(build_log, sources)
     try:
-        _write_clinvar_cache(
+        note = _write_clinvar_cache(
             variant_summary_path,
             submission_summary_path,
             db_path,
@@ -1027,11 +1119,20 @@ def _build_clinvar_cache(
             min_rows=min_rows,
             previous_count=previous_count,
             record_name=record_name,
+            allow_shrink=allow_shrink,
         )
+    except ClinVarFormatError as exc:
+        # A refusal (floors, metadata) is part of the build's record.
+        _append_build_log(build_log, str(exc))
+        raise
     finally:
         line = f"ClinVar {build} build counts: {counts.text()}"
         logger.info("%s", line)
         _append_build_log(build_log, line)
+    if note is not None:
+        logger.warning("%s", note)
+        _append_build_log(build_log, note)
+    return note
 
 
 def _write_clinvar_cache(
@@ -1047,7 +1148,8 @@ def _write_clinvar_cache(
     min_rows: int,
     previous_count: int | None,
     record_name: str,
-) -> None:
+    allow_shrink: bool = False,
+) -> str | None:
     """``_build_clinvar_cache``'s work, filling ``counts`` as it goes."""
     with contextlib.closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(CLINVAR_SCHEMA)
@@ -1097,17 +1199,26 @@ def _write_clinvar_cache(
         record_count = conn.execute("SELECT COUNT(*) FROM clinvar_variants").fetchone()[0]
         counts.final = record_count
         relative_floor = (9 * previous_count + 9) // 10 if previous_count is not None else 0
-        if record_count == 0 or record_count < min_rows or record_count < relative_floor:
+        hard_refusal = record_count == 0 or record_count < min_rows
+        shrunk = record_count < relative_floor
+        if hard_refusal or (shrunk and not allow_shrink):
             problem = (
                 "the source files gave no records (0 rows)"
                 if record_count == 0
                 else f"candidate has {record_count:,} rows"
             )
+            # Only the 90% floor can be lifted, and only for one run.
+            override = (
+                "; to accept a smaller release once, run `allelix db update "
+                "--allow-clinvar-shrink`"
+                if not hard_refusal
+                else ""
+            )
             raise ClinVarFormatError(
                 f"ClinVar {build}: {problem}; "
                 f"old count {previous_count if previous_count is not None else 'absent'}; "
                 f"requires fixed floor {min_rows:,} and 90% floor {relative_floor:,}; "
-                "existing caches kept"
+                f"existing caches kept{override}"
             )
         from datetime import UTC, datetime
 
@@ -1136,6 +1247,13 @@ def _write_clinvar_cache(
                 f"ClinVar {build}: candidate metadata is invalid; existing caches kept"
             )
         conn.commit()
+    if not shrunk:
+        return None
+    return (
+        f"ClinVar {build}: smaller release accepted with --allow-clinvar-shrink: "
+        f"old count {previous_count:,}, new count {record_count:,} "
+        f"(below the 90% floor of {relative_floor:,})"
+    )
 
 
 def get_database_info(db_path: Path, name: str) -> DatabaseInfo | None:

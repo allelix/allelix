@@ -221,3 +221,10 @@ asks the user to check the file's build and coordinates.
 - ADR-0024 (GWAS magnitude scoring — interacts with step 2: unknown-risk-allele
   cap at 3.0 still fires when `alt` is empty)
 - ADR-0033 (schema version bump policy — cluster carve-out documented above)
+
+## Amendment 2.6.0 (2026-11-03): ClinPGx's strand helper
+
+ClinPGx does not use `strand_aware_carrier_match`. It matches the
+diploid call with `strand_aware_genotype_match` (ADR-0009). No annotator
+calls `strand_aware_carrier_match`; it stays in `allelix.utils.allele`
+with its tests.

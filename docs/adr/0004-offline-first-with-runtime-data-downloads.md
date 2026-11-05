@@ -30,3 +30,13 @@ No telemetry. No analytics. No "optional" crash reports that might contain file 
 - Database staleness is the user's problem; `allelix db status` reports versions and freshness so the user can decide when to refresh.
 - README requires a "Data Sources & Licensing" section listing every database, its license, its URL, and any usage restrictions. This ships in v0.1.0 even though annotators don't land until v0.2.0 — contributors and users need to see the licensing posture from day one.
 - Architectural rule: any code that calls out to the network during analysis is a bug. Network is acceptable only inside the `databases/` module's update path.
+
+## Amendment 2.6.0 (2026-11-03): the update step runs before analysis
+
+The update path that may use the network is not only `db update`. The
+update step runs in `db update` and, by default, in `analyze`, before
+annotation (ADR-0012, ADR-0048; `_prepare_caches` and
+`_maybe_refresh_databases` in `allelix/cli/_helpers.py`): it fetches the
+sources' freshness signals and downloads a cache whose signal changed.
+`analyze --no-update` skips the step. Annotation itself never uses the
+network, and no genotype data is sent.

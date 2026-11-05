@@ -91,3 +91,25 @@ A call gnomAD was not asked about no longer counts: gnomAD not run, no
 identity table, or a GRCh37 translation that abstained (ADR-0040's 2.5.2
 amendment). On GRCh37 input such calls are common, and nothing says they are
 rare. The plausibility reasons are unchanged.
+
+### Amendment 2026-10-29 (2.6.0): one record per finding
+
+A finding is marked haploid only by the call it came from, never by
+another record at the same position; calls of different ploidy at one
+position are counted in the report warning `contradictory_calls`
+(ADR-0062).
+
+## Amendment 2.6.0 (2026-11-02): SNPedia sequence genotypes
+
+The zygosity codes are unchanged. `zygosity_code` reads a slashed label by
+its two alleles and an unslashed one by its bases, which is right only for
+two one-base alleles. Every source now writes a sequence allele with a slash
+(ADR-0047, amendment 2026-11-02), so a SNPedia finding on a homozygous
+multi-base call (`GAC/GAC`) is `homozygous`; before, its run-together label
+made it `heterozygous`.
+
+## Amendment 2.6.0 (2026-11-03): a one-letter call in an rsID list
+
+`Variant.haploid` is also set for a one-letter call in an rsID and
+genotype list (`allelix/parsers/rsidlist.py`, ADR-0069): `A` is a haploid
+call of A. A no-call is still never haploid.

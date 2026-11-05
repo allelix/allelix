@@ -28,3 +28,11 @@ The CLI's `stats` command computes its total from the parse loop directly, so th
 - Callers that want a count pay the cost of a full parse, but they get the truth.
 - Tests pin this: `tests/parsers/test_myhappygenes.py::TestEdgeCases::test_metadata_count_matches_parse_count_with_malformed_lines` verifies that a file with malformed lines yields the parse-derived count, not an inflated header-line count.
 - Annotators iterating `parse()` get the same count the CLI reports, so progress bars, percentages, and totals are consistent across the pipeline.
+
+## Amendment 2.6.0 (2026-11-03): two optional metadata fields
+
+`GenotypeMetadata` (`allelix/parsers/base.py`) also has two optional keys:
+`contig_lengths`, the lengths a VCF's `##contig` lines declare (ADR-0044),
+and `method`, how the genotypes were produced when the file says so (for
+example `low-pass-wgs-imputed`). Both are read from the header, so the
+principle holds: the SNP count is still not metadata.

@@ -22,6 +22,7 @@ from allelix.utils.build_detect import (
     SOURCE_CONTIG_LENGTHS,
     SOURCE_DEFAULT,
     SOURCE_FILE_LABEL,
+    SOURCE_RSID_PLACEMENT,
     SOURCE_SEEDS,
 )
 
@@ -116,6 +117,8 @@ def source_text(diag: BuildDiagnostics) -> str:
         )
     if diag.source == SOURCE_ASSEMBLY_HEADER:
         return f"from the VCF assembly header; {_seed_count(diag)}"
+    if diag.source == SOURCE_RSID_PLACEMENT:
+        return "the file has no positions; its rsIDs are placed from the rsID identity table"
     if diag.source == SOURCE_FILE_LABEL:
         return f"from the file's build line; {_seed_count(diag)}"
     return f"this format's default; the file states no build; {_seed_count(diag)}"

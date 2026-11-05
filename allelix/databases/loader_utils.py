@@ -16,6 +16,8 @@ import shutil
 import sqlite3
 from typing import TYPE_CHECKING
 
+from allelix.databases.staging import owned_staging
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -53,35 +55,34 @@ def install_prebuilt_gz_cache(
             "Free up space and retry."
         )
 
-    tmp_path = db_path.parent / f"{db_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    # A staging file of this install's own: another install of the same
+    # cache can neither publish nor remove it (``owned_staging``).
+    with owned_staging(db_path) as tmp_path:
+        with gzip.open(gz_path, "rb") as f_in, tmp_path.open("wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
 
-    with gzip.open(gz_path, "rb") as f_in, tmp_path.open("wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
+        with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
+            if remote_signal:
+                from allelix.databases.manager import stamp_remote_signal
 
-    with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
-        if remote_signal:
-            from allelix.databases.manager import stamp_remote_signal
+                stamp_remote_signal(conn, record_name, remote_signal, source_url)
 
-            stamp_remote_signal(conn, record_name, remote_signal, source_url)
+            if schema_version_tag:
+                from allelix.databases.manager import _ensure_local_version_tag_column
 
-        if schema_version_tag:
-            from allelix.databases.manager import _ensure_local_version_tag_column
+                _ensure_local_version_tag_column(conn)
+                conn.execute(
+                    "UPDATE database_versions SET local_version_tag = ? WHERE name = ?",
+                    (schema_version_tag, record_name),
+                )
 
-            _ensure_local_version_tag_column(conn)
-            conn.execute(
-                "UPDATE database_versions SET local_version_tag = ? WHERE name = ?",
-                (schema_version_tag, record_name),
-            )
+            conn.commit()
+            # ADR-0048: install in rollback-journal mode, which a read-only
+            # data directory can read; the published gnomAD, AlphaMissense and
+            # CADD files are WAL.
+            conn.execute("PRAGMA journal_mode=DELETE")
 
-        conn.commit()
-        # ADR-0048: install in rollback-journal mode, which a read-only
-        # data directory can read; the published gnomAD, AlphaMissense and
-        # CADD files are WAL.
-        conn.execute("PRAGMA journal_mode=DELETE")
-
-    os.replace(tmp_path, db_path)
+        os.replace(tmp_path, db_path)
     remove_side_files(db_path)
 
 

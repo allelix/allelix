@@ -91,7 +91,7 @@ class TestPlinkAlleleGuard:
             Variant("rs900750012", "1", 300, "A", "*"),
         ]
         prefix = tmp_path / "out"
-        written, no_calls, non_snv, _mono, _ = export_plink(iter(variants), prefix, "GRCh37")
+        written, no_calls, non_snv, _mono, *_ = export_plink(iter(variants), prefix, "GRCh37")
         assert (written, no_calls, non_snv) == (1, 0, 2)
         assert prefix.with_suffix(".bim").read_text().split("\t")[1] == "rs900750010"
 

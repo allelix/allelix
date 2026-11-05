@@ -90,3 +90,28 @@ The decision now:
   `0/.` is now read as a half call of REF, like the same GT on a record with
   an ALT. Before, it gave no call, and its finding was lost from the JSON
   too.
+
+## Amendment 2.6.0 (2026-11-02): a record takes only its own call's findings
+
+"Only the record the call was read from" was implemented as eligibility:
+the writer stamped a key's findings on every record whose own call carries
+that allele. That let a duplicate with another genotype borrow a finding its
+own call did not produce: an `AG`-only SNPedia row on the `1/1` record next
+to a `0/1` one, or a ClinVar reference-carried finding of one het record on
+another. The rule now has two parts:
+
+- **Eligibility**, as before: the record's own call carries the allele
+  (`record_rows`). A record the identity check rejected (ADR-0063) is not
+  eligible.
+- **Ownership**: among the findings at the key, the record gets only those
+  whose `record_index` is its own number. This holds for ALT findings,
+  enrichment and the `ALLELIX_CLINVAR_REF` value of a call carrying REF. The
+  report-rank choice of a source's value is made among that record's own
+  findings. The key itself is the producing record's REF and ALT, so a
+  record at the same position with another REF (`GA>A` beside `G>A`) keeps
+  its own finding (ADR-0036, amendment 2026-11-02).
+
+An explicit reference record's `ALLELIX_CLINVAR_REF` value still comes from
+`reference_rows`, unchanged: the rebuilt reference call keeps the number of
+the first record at its site (ADR-0062), and `END` blocks stay unstamped.
+Recovered rsIDs were already kept by record, and are unchanged.

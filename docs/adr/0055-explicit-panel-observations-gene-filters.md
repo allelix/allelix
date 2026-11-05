@@ -92,3 +92,8 @@ use one predicate, `allelix.attribution`.
 - **The streamed calls** the high-value scan and panel coverage read follow
   the same predicate: in `analyze`, and in `stats` for its high-value no-call
   count.
+
+## Amendment 2.6.0 (2026-11-03): schema 12
+
+Since 2.6.0 the report is schema 12, and `--diff` reads schemas 1 through
+12 (`SCHEMA_VERSION` in `allelix/reports/json_report.py`).

@@ -785,12 +785,14 @@ class TestInstallPrebuiltCache:
             f_out.write(f_in.read())
 
         dest_db = tmp_path / "snpedia.sqlite"
-        stale_tmp = tmp_path / "snpedia.sqlite.tmp"
-        stale_tmp.write_text("stale")
+        # A file at the old fixed staging name may be another writer's (2.6.0).
+        other = tmp_path / "snpedia.sqlite.tmp"
+        other.write_text("stale")
 
         install_prebuilt_cache(gz_path, dest_db)
         assert dest_db.exists()
-        assert not stale_tmp.exists()
+        assert other.read_text() == "stale"
+        assert not list(tmp_path.glob(".snpedia.sqlite.*"))
 
     def test_stamps_signal_when_versions_table_missing(self, tmp_path: Path) -> None:
         """Pre-built cache without database_versions must not crash."""

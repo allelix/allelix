@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from allelix.databases._versions import ALPHAMISSENSE_SCHEMA_VERSION
 from allelix.databases.schema import ALPHAMISSENSE_SCHEMA
+from allelix.databases.staging import owned_staging
 
 logger = logging.getLogger(__name__)
 
@@ -170,72 +171,84 @@ def build_cache(
     else:
         rsid_map = _load_gnomad_rsid_map(gnomad_db)
 
-    tmp_path = output_path.parent / f"{output_path.name}.tmp"
-    if tmp_path.exists():
-        tmp_path.unlink()
+    # A staging file of this build's own: another build of the same output can
+    # neither publish nor remove it, and a failed build leaves none behind.
+    with owned_staging(output_path) as tmp_path:
+        with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            for stmt in ALPHAMISSENSE_SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.commit()
 
-    with contextlib.closing(sqlite3.connect(tmp_path)) as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        for stmt in ALPHAMISSENSE_SCHEMA.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                conn.execute(stmt)
-        conn.commit()
+            total_records = 0
+            matched_rsids = 0
+            t0 = time.monotonic()
 
-        total_records = 0
-        matched_rsids = 0
-        t0 = time.monotonic()
+            source_label = str(tsv_path) if tsv_path else "Zenodo (streaming)"
+            print(f"Processing {source_label}...")
+            with _open_tsv(tsv_path) as fh:
+                batch: list[_AMRow] = []
+                for line in fh:
+                    if line.startswith("#"):
+                        continue
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) < 10:
+                        continue
 
-        source_label = str(tsv_path) if tsv_path else "Zenodo (streaming)"
-        print(f"Processing {source_label}...")
-        with _open_tsv(tsv_path) as fh:
-            batch: list[_AMRow] = []
-            for line in fh:
-                if line.startswith("#"):
-                    continue
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 10:
-                    continue
+                    chrom_raw = parts[0]
+                    chrom = chrom_raw.removeprefix("chr")
+                    try:
+                        pos = int(parts[1])
+                    except ValueError:
+                        continue
+                    ref = parts[2]
+                    alt = parts[3]
+                    # parts[4] is 'genome' (always 'hg38'), skip
+                    uniprot_id = parts[5] or None
+                    transcript_id = parts[6] or None
+                    protein_variant = parts[7] or None
+                    try:
+                        am_pathogenicity = float(parts[8])
+                    except ValueError:
+                        continue
+                    am_class = parts[9]
 
-                chrom_raw = parts[0]
-                chrom = chrom_raw.removeprefix("chr")
-                try:
-                    pos = int(parts[1])
-                except ValueError:
-                    continue
-                ref = parts[2]
-                alt = parts[3]
-                # parts[4] is 'genome' (always 'hg38'), skip
-                uniprot_id = parts[5] or None
-                transcript_id = parts[6] or None
-                protein_variant = parts[7] or None
-                try:
-                    am_pathogenicity = float(parts[8])
-                except ValueError:
-                    continue
-                am_class = parts[9]
+                    rsid = rsid_map.get((chrom, pos, ref, alt))
+                    if rsid is not None:
+                        matched_rsids += 1
 
-                rsid = rsid_map.get((chrom, pos, ref, alt))
-                if rsid is not None:
-                    matched_rsids += 1
-
-                batch.append(
-                    (
-                        chrom,
-                        pos,
-                        ref,
-                        alt,
-                        rsid,
-                        uniprot_id,
-                        transcript_id,
-                        protein_variant,
-                        am_pathogenicity,
-                        am_class,
+                    batch.append(
+                        (
+                            chrom,
+                            pos,
+                            ref,
+                            alt,
+                            rsid,
+                            uniprot_id,
+                            transcript_id,
+                            protein_variant,
+                            am_pathogenicity,
+                            am_class,
+                        )
                     )
-                )
 
-                if len(batch) >= _BATCH_SIZE:
+                    if len(batch) >= _BATCH_SIZE:
+                        conn.executemany(
+                            "INSERT OR REPLACE INTO alphamissense_scores "
+                            "(chrom, pos, ref, alt, rsid, uniprot_id, transcript_id, "
+                            "protein_variant, am_pathogenicity, am_class) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            batch,
+                        )
+                        total_records += len(batch)
+                        if total_records % 1_000_000 == 0:
+                            print(f"  {total_records:,} records...")
+                        batch.clear()
+
+                if batch:
                     conn.executemany(
                         "INSERT OR REPLACE INTO alphamissense_scores "
                         "(chrom, pos, ref, alt, rsid, uniprot_id, transcript_id, "
@@ -244,56 +257,43 @@ def build_cache(
                         batch,
                     )
                     total_records += len(batch)
-                    if total_records % 1_000_000 == 0:
-                        print(f"  {total_records:,} records...")
-                    batch.clear()
+                conn.commit()
 
-            if batch:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO alphamissense_scores "
-                    "(chrom, pos, ref, alt, rsid, uniprot_id, transcript_id, "
-                    "protein_variant, am_pathogenicity, am_class) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    batch,
-                )
-                total_records += len(batch)
+            conn.execute(
+                "INSERT OR REPLACE INTO database_versions "
+                "(name, source_url, version, downloaded_at, record_count, "
+                "local_version_tag) "
+                "VALUES (?, ?, ?, datetime('now'), ?, ?)",
+                (
+                    "alphamissense",
+                    "https://zenodo.org/records/10813168",
+                    "2023.2",
+                    total_records,
+                    f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",
+                ),
+            )
+
+            if skip_gnomad:
+                gnomad_version = "no_gnomad"
+            else:
+                gnomad_version = _get_gnomad_version(gnomad_db) or "unknown"
+            conn.execute(
+                "INSERT OR REPLACE INTO database_versions "
+                "(name, source_url, version, downloaded_at, record_count) "
+                "VALUES (?, ?, ?, datetime('now'), ?)",
+                (
+                    "alphamissense_gnomad_source",
+                    str(gnomad_db),
+                    gnomad_version,
+                    matched_rsids,
+                ),
+            )
             conn.commit()
 
-        conn.execute(
-            "INSERT OR REPLACE INTO database_versions "
-            "(name, source_url, version, downloaded_at, record_count, "
-            "local_version_tag) "
-            "VALUES (?, ?, ?, datetime('now'), ?, ?)",
-            (
-                "alphamissense",
-                "https://zenodo.org/records/10813168",
-                "2023.2",
-                total_records,
-                f"sv:{ALPHAMISSENSE_SCHEMA_VERSION}",
-            ),
-        )
+            print("Compacting database...")
+            conn.execute("VACUUM")
 
-        if skip_gnomad:
-            gnomad_version = "no_gnomad"
-        else:
-            gnomad_version = _get_gnomad_version(gnomad_db) or "unknown"
-        conn.execute(
-            "INSERT OR REPLACE INTO database_versions "
-            "(name, source_url, version, downloaded_at, record_count) "
-            "VALUES (?, ?, ?, datetime('now'), ?)",
-            (
-                "alphamissense_gnomad_source",
-                str(gnomad_db),
-                gnomad_version,
-                matched_rsids,
-            ),
-        )
-        conn.commit()
-
-        print("Compacting database...")
-        conn.execute("VACUUM")
-
-    os.replace(tmp_path, output_path)
+        os.replace(tmp_path, output_path)
 
     elapsed = time.monotonic() - t0
     rsid_pct = (matched_rsids / total_records * 100) if total_records else 0

@@ -358,8 +358,7 @@ class TestBuildCache:
         build_cache(snv_gz, None, output, tmp_path)
 
         assert output.exists()
-        tmp_file = tmp_path / "cadd.sqlite.tmp"
-        assert not tmp_file.exists()
+        assert not list(tmp_path.glob(".cadd.sqlite.*"))
 
     def test_indel_pass(self, tmp_path: Path) -> None:
         """Indel rows from the indel file are cached when they match."""
@@ -471,3 +470,42 @@ class TestBuildCache:
         build_cache(snv_gz, None, output, tmp_path)
 
         assert output.exists()
+
+
+# ── Owned staging (2.6.0) ─────────────────────────────────────────────
+
+
+def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
+    """A build stages under its own name: a file at the old fixed name is not
+    touched, a failed publication keeps the previous output, and no staging
+    file is left either way."""
+    other = output.parent / f"{output.name}.tmp"
+    other.write_bytes(b"another build's staging")
+    build()
+    assert output.exists()
+    before = output.read_bytes()
+
+    def fail(src, dst):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(module.os, "replace", fail)
+    with pytest.raises(OSError, match="synthetic"):
+        build()
+    assert output.read_bytes() == before
+    assert other.read_bytes() == b"another build's staging"
+    assert not list(output.parent.glob(f".{output.name}.*"))
+
+
+def test_build_owns_its_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import build_cadd_cache
+
+    _make_gnomad_db(tmp_path, [("1", 100, "A", "G")])
+    snv_gz = _make_cadd_gz(tmp_path, [_CADD_HEADER, _make_cadd_line("1", 100, "A", "G")])
+    output = tmp_path / "cadd.sqlite"
+    _owned_staging_contract(
+        tmp_path,
+        monkeypatch,
+        build_cadd_cache,
+        output,
+        lambda: build_cache(snv_gz, None, output, tmp_path),
+    )

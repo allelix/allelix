@@ -271,6 +271,16 @@ class Annotator(ABC):
         """
         return READY if self.is_ready() else CacheStatus(CacheState.MISSING)
 
+    def reference_call_rsids(self) -> Iterable[str]:
+        """The rsIDs whose explicit VCF reference calls this source reads (ADR-0064).
+
+        A source that, like a chip call, can match a homozygous-reference
+        genotype names its rsIDs here; the analysis then keeps a VCF's
+        confident ``0/0`` call at their placements. They may be streamed:
+        the caller reads them once. Empty by default.
+        """
+        return frozenset()
+
     def setup_destinations(self) -> tuple[Path, ...]:
         """The files ``setup()`` replaces or appends to, checked before a download (2.5.2).
 

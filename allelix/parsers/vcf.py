@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import re
+from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
@@ -57,10 +58,11 @@ from allelix.models import NO_CALL_MARKER, Variant
 from allelix.parsers._helpers import DamagedFileError, normalize_chromosome, open_genotype_text
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
 from allelix.parsers.genesforgood import METHOD_ARRAY_IMPUTED
+from allelix.utils.allele import trim_allele_pair
 from allelix.utils.build_detect import is_ucsc_mito_name
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -189,6 +191,27 @@ class ReferenceCall:
 
 
 @dataclass(frozen=True)
+class ReferenceTargetCall:
+    """A confident explicit reference call at a watched source site (ADR-0064).
+
+    ``locus`` is the watched position, ``base`` the record's REF base there,
+    ``rsid`` the record's own rsID or "" and ``record_index`` its number.
+    ``own_site`` is True for a single-base record, whose position is its own.
+    ``record`` is the record's POS, REF and ALTs, for a target that is not
+    a single-base change: such a call counts only for the variant its
+    record describes.
+    """
+
+    locus: Locus
+    base: str
+    haploid: bool
+    rsid: str
+    record_index: int
+    own_site: bool = False
+    record: tuple[int, str, tuple[str, ...]] = (0, "", ())
+
+
+@dataclass(frozen=True)
 class PanelObservation:
     """One explicit panel record, kept separately from annotation and high-value state."""
 
@@ -201,9 +224,11 @@ class PanelObservation:
 class VcfQualityStats:
     """What the quality gate saw and did during one ``parse()`` run.
 
-    ``filtered_rows``: rows whose FILTER was not ``PASS`` or ``.``.
-    ``filtered_by_label``: the same rows counted by each FILTER label
-    (a row with ``LowQual;VQSRTranche…`` counts once under each).
+    ``filtered_rows``: rows whose FILTER, or whose selected sample's
+    FORMAT/FT, was not ``PASS`` or ``.`` (ADR-0060), each counted once.
+    ``filtered_by_label``: the same rows counted by each FILTER label and
+    FT code (a row with ``LowQual;VQSRTranche…`` counts once under each; a
+    code in both FILTER and FT counts once).
     ``kept_filtered``: True when those rows were kept (``keep_filtered``).
     ``low_quality_calls``: calls reported as no-calls because their GQ
     was below ``min_gq`` or their DP was 0.
@@ -288,6 +313,10 @@ class VcfQualityStats:
     # watched position, by ``reference_row_key``, with the positions they
     # cover: the annotated VCF stamps exactly these records.
     reference_rows: dict[RowKey, set[Locus]] = field(default_factory=dict)
+    # The record number of the first explicit (non-block) reference record at
+    # each watched position, per base and ploidy it gave: a call rebuilt from
+    # the eligible ones keeps the first of them (ADR-0062).
+    reference_record_index: dict[tuple[Locus, ReferenceCall], int] = field(default_factory=dict)
     # For attribution to an rsID (``allelix.attribution``, 2.5.2): the state
     # of explicit records starting exactly at a watched position, by their
     # upper-case REF, and the state of reference blocks covering it.
@@ -301,6 +330,26 @@ ExtractLoci = dict[str, list[tuple[int, str]]]
 # One extract candidate: (rsID or "", the placement it stands for or None,
 # the call, its file-order key within the position).
 ExtractCandidate = tuple[str, Locus | None, Variant]
+
+
+def record_positions(pos: int, ref: str, alt_field: str | None) -> dict[int, str]:
+    """The positions a record stands at, with its (trimmed) REF there (ADR-0061).
+
+    Its own POS, and the position each non-symbolic ALT trims to against
+    REF (``CG>CA`` written one base before ``G>A`` stands at that base too).
+    A padded record whose call carries no ALT (a no-call, a REF-only half
+    call, ``0/0``) is then still found at the site it was written for.
+    """
+    ref = ref.upper()
+    out = {pos: ref}
+    for alt in (alt_field or "").split(","):
+        alt = alt.strip().upper()
+        if not alt or alt in (".", "*") or alt.startswith("<") or not ref:
+            continue
+        at, trimmed, _alt = trim_allele_pair(pos, ref, alt)
+        if at != pos and 0 <= at - pos < len(ref):
+            out.setdefault(at, trimmed)
+    return out
 
 
 def extract_reference_candidates(
@@ -331,6 +380,7 @@ def extract_reference_candidates(
     chrom = normalize_chromosome(cols[0])
     end = _info_end(cols) if _reference_block_alts(cols[4]) else None
     other_rsid = record_id.startswith("rs") and record_id not in rsids
+    stands_at = record_positions(pos, cols[3], cols[4]) if end is None else {}
 
     def call(rsid: str, at: int, base: str) -> Variant:
         a1 = a2 = base if state[0] == REFERENCE else NO_CALL_MARKER
@@ -353,8 +403,10 @@ def extract_reference_candidates(
     if other_rsid:
         return out
     for at, ref in loci.get(chrom, ()):
-        if end is None and at == pos and record_id not in rsids:
-            out.append(("", (chrom, at), call("", at, cols[3].upper())))
+        if end is None and at in stands_at and record_id not in rsids:
+            # The call as written (its POS and REF), standing for the placement
+            # at its POS or, for a padded record, at its trimmed site.
+            out.append(("", (chrom, at), call("", pos, cols[3].upper())))
         elif end is not None and pos <= at <= end:
             out.append(("", (chrom, at), call("", at, ref)))
     return out
@@ -374,8 +426,9 @@ def _extract_hit(cols: list[str], rsids: frozenset[str], loci: ExtractLoci) -> b
     except ValueError:
         return False
     end = _info_end(cols) if _reference_block_alts(cols[4]) else None
-    stop = pos if end is None else end
-    return any(pos <= at <= stop for at, _ref in places)
+    if end is None:
+        return any(at in record_positions(pos, cols[3], cols[4]) for at, _ref in places)
+    return any(pos <= at <= end for at, _ref in places)
 
 
 def is_data_line(stripped: str) -> bool:
@@ -507,6 +560,15 @@ class VcfParser(GenotypeParser):
         self._extract_rsids: frozenset[str] = frozenset()
         self._extract_loci: ExtractLoci = {}
         self.extract_candidates: list[ExtractCandidate] = []
+        self._reference_targets: Mapping[str, Sequence[int]] = {}
+        self._reference_rsids: Sequence[int] = ()
+        self._ploidy_loci: frozenset[Locus] = frozenset()
+        self.reference_target_calls: list[ReferenceTargetCall] = []
+        self.reference_target_blocked: set[Locus] = set()
+        # Called with ``(chrom, pos, haploid)`` for every explicit reference
+        # record at a target site that passes the quality gate (ADR-0062,
+        # ADR-0064).
+        self.on_reference_record: Callable[[str, int, bool], None] | None = None
         self.contig_order: list[str] = []
         # Set by the build decision (GRCh37): records named as UCSC hg19
         # names the mitochondrion (chrM, M) are left out and counted in
@@ -567,6 +629,33 @@ class VcfParser(GenotypeParser):
         """
         self._extract_rsids = rsids
         self._extract_loci = loci or {}
+
+    def watch_reference_targets(
+        self,
+        loci: Mapping[str, Sequence[int]],
+        rsids: Sequence[int] = (),
+        *,
+        ploidy_loci: frozenset[Locus] = frozenset(),
+    ) -> None:
+        """Keep confident explicit reference calls at these sites (ADR-0064).
+
+        ``loci`` maps a normalized chromosome to its sorted positions, and
+        ``rsids`` holds the sorted rsID numbers (``rs123`` is 123). An explicit
+        record (not a reference block) whose call is homozygous reference,
+        or haploid reference, and passes the quality gate gives one
+        ``ReferenceTargetCall`` for each watched position its REF covers.
+        A single-base record that names one of ``rsids`` gives one at its
+        own position too, whether or not the position is watched. Calls go
+        in ``reference_target_calls`` (reset on every parse), and the
+        positions of their records another record changes in
+        ``reference_target_blocked``. Only a reference record at one of
+        these sites, a record naming one of ``rsids`` or a record covering
+        one of ``ploidy_loci`` (ClinVar's reference-carried sites) is
+        reported to ``on_reference_record``; nothing is kept for any other.
+        """
+        self._reference_targets = loci
+        self._reference_rsids = rsids
+        self._ploidy_loci = ploidy_loci
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -654,6 +743,16 @@ class VcfParser(GenotypeParser):
             self.contig_order = list(header.contig_lengths)
             self.extract_candidates = []
             extract_rsids, extract_loci = self._extract_rsids, self._extract_loci
+            self.reference_target_calls = []
+            self.reference_target_blocked = set()
+            targets = self._reference_targets
+            reference_rsids = self._reference_rsids
+            watch_references = bool(targets or len(reference_rsids))
+            on_reference = self.on_reference_record
+            note_records = watch_references or on_reference is not None
+            # Positions each non-reference record changes, by chromosome.
+            changed: dict[str, array[int] | list[int]] = {}
+            chrom_names: dict[str, str] = {}
 
             def record(covering: list[tuple[list[str], list[Locus]]]) -> None:
                 for row, loci in covering:
@@ -690,6 +789,10 @@ class VcfParser(GenotypeParser):
                             gt = _sample_fields(row, sample_idx)["GT"]
                             source = ReferenceCall(base, "/" not in gt and "|" not in gt)
                             stats.reference_calls.setdefault(locus, Counter())[source] += 1
+                            number = watcher.record_number(row) if watcher is not None else -1
+                            if not block and number >= 0:
+                                # The first explicit reference record there (ADR-0062).
+                                stats.reference_record_index.setdefault((locus, source), number)
                             if watch_rows and base and not _is_reference_block(row, sample_idx):
                                 key = reference_row_key(row)
                                 stats.reference_rows.setdefault(key, set()).add(locus)
@@ -760,9 +863,47 @@ class VcfParser(GenotypeParser):
                     merged = strongest_state(stats.rsid_states.get(rsid), state)
                     stats.rsid_states[rsid] = merged or state
                 if watcher is not None:
-                    covering = watcher.feed(cols)
+                    covering = watcher.feed(cols, index)
                     if covering:
                         record(covering)
+                if (
+                    note_records
+                    and 0 <= sample_idx < len(cols) - 9
+                    and not (
+                        # A reference block (``_is_reference_block``) the
+                        # parse passed over, read from the raw columns:
+                        # nothing to note, and most gVCF records are one.
+                        variant is None
+                        and state is None
+                        and cols[9 + sample_idx].startswith(_REFERENCE_GT_PREFIXES)
+                        and cols[8].startswith("GT")
+                        and _reference_block_alts(cols[4])
+                        and (
+                            # INFO ``END=<n>`` alone, as gVCF blocks write it.
+                            (
+                                (info := cols[7]).startswith("END=")
+                                and ";" not in info
+                                and info[4:].isdigit()
+                                and cols[1].isdigit()
+                                and int(info[4:]) >= int(cols[1])
+                            )
+                            or _block_end_covers(cols)
+                        )
+                    )
+                ):
+                    chrom = chrom_names.get(cols[0])
+                    if chrom is None:
+                        chrom = chrom_names[cols[0]] = normalize_chromosome(cols[0])
+                    self._note_record(
+                        cols,
+                        chrom,
+                        sample_idx,
+                        index,
+                        scratch,
+                        changed if watch_references else None,
+                        variant,
+                        state,
+                    )
                 if variant is None:
                     continue
                 if drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito:
@@ -772,6 +913,159 @@ class VcfParser(GenotypeParser):
                 yield variant
             if watcher is not None:
                 record(watcher.finish())
+            if self.reference_target_calls and changed:
+                self._block_changed_sites(changed)
+
+    def _note_record(
+        self,
+        cols: list[str],
+        chrom: str,
+        sample_idx: int,
+        index: int,
+        scratch: VcfQualityStats,
+        changed: dict[str, array[int] | list[int]] | None,
+        variant: Variant | None = None,
+        state: LocusState | None = None,
+    ) -> None:
+        """Note an explicit record for reference calls and ploidy (ADR-0062, ADR-0064).
+
+        A record whose genotype carries an ALT, or leaves an allele unknown,
+        adds the positions it changes to ``changed``. A record the quality
+        gate makes a no-call adds the positions of every ALT, as for an
+        unknown allele, whatever its genotype. ``variant`` is the main
+        stream's call for the record, when it made one, and ``state`` what
+        the main stream's parse said: a record that parse classified needs
+        no second quality decision. A
+        confident reference record is reported to ``on_reference_record`` at
+        its ploidy site and, at a watched site, kept as a
+        ``ReferenceTargetCall``.
+        """
+        if (
+            self.drop_ucsc_mito
+            and is_ucsc_mito_name(cols[0])
+            and cols[0] not in self.rcrs_mito_names
+        ):
+            return
+        try:
+            pos = int(cols[1])
+        except ValueError:
+            return
+        if (
+            variant is None
+            and state is not None
+            and state[0] == REFERENCE
+            and not self._at_target_site(cols, chrom, pos, changed is not None)
+        ):
+            # A confident reference record away from every target site:
+            # nothing to keep or count (ADR-0064).
+            return
+        if cols[8] == "GT" or cols[8].startswith("GT:"):
+            gt = cols[9 + sample_idx].split(":", 1)[0]
+        else:
+            gt = _sample_fields(cols, sample_idx).get("GT", "")
+        alleles = gt.replace("|", "/").split("/")
+        ref, alt_field = cols[3].upper(), cols[4].upper()
+        if variant is None and state is None and _cannot_yield_call(cols[4]):
+            # The main parse passed over the record (a block, ALT ``.`` or a
+            # structural variant): classify it here, when it matters.
+            state = _UNCLASSIFIED
+        if any(allele != "0" for allele in alleles):
+            if changed is not None:
+                if "." not in alleles and (variant is None or variant.is_no_call):
+                    if state is _UNCLASSIFIED:
+                        state = _parse_record(cols, "", sample_idx, scratch, want_state=True)[1]
+                    if state is not None and state[0] == NO_CALL:
+                        # The quality gate's no-call: any ALT is possible (ADR-0064).
+                        alleles = ["."]
+                _add_changed(changed, chrom, _changed_positions(pos, ref, alt_field, alleles))
+            return
+        if len(alleles) <= 2 and _reference_block_alts(cols[4]):
+            # A reference block (``_is_reference_block``; the GT is already
+            # known to be reference): not expanded.
+            end = _info_end(cols)
+            if end is not None and end >= pos:
+                return
+        if state is _UNCLASSIFIED:
+            state = _parse_record(cols, "", sample_idx, scratch, want_state=True)[1]
+        if state is None:
+            return
+        if state[0] != REFERENCE:
+            # The quality gate's no-call: its alleles are unknown (ADR-0064).
+            if changed is not None:
+                _add_changed(changed, chrom, _changed_positions(pos, ref, alt_field, ["."]))
+            return
+        haploid = len(alleles) == 1
+        hits: list[int] = []
+        rsid = ""
+        if changed is not None:
+            at = self._reference_targets.get(chrom, ())
+            start = bisect_left(at, pos)
+            while start < len(at) and at[start] < pos + len(ref):
+                hits.append(at[start] - pos)
+                start += 1
+            record_id = _canonical_rsid(cols[2])
+            rsid = record_id if record_id.startswith("rs") else ""
+            if not hits and len(ref) == 1 and rsid and _sorted_has(self._reference_rsids, rsid):
+                hits = [0]
+        if self.on_reference_record is not None and (
+            hits or any((chrom, site) in self._ploidy_loci for site in range(pos, pos + len(ref)))
+        ):
+            # Only a record at a target site counts for ploidy (ADR-0064).
+            self.on_reference_record(chrom, _ploidy_site(pos, ref, alt_field), haploid)
+        if not hits:
+            return
+        alts = tuple(alt_field.split(","))
+        for offset in hits:
+            base = ref[offset]
+            if base in "ACGT":
+                self.reference_target_calls.append(
+                    ReferenceTargetCall(
+                        (chrom, pos + offset),
+                        base,
+                        haploid,
+                        rsid,
+                        index,
+                        own_site=len(ref) == 1,
+                        record=(pos, ref, alts),
+                    )
+                )
+
+    def _at_target_site(self, cols: list[str], chrom: str, pos: int, watched: bool) -> bool:
+        """Whether a reference record covers a target site or a ploidy site.
+
+        The sites ``_note_record`` keeps a reference record at: a watched
+        placement within REF, or a single-base record naming a source rsID
+        (when ``watched``), or a ploidy site within REF.
+        """
+        size = len(cols[3])
+        if watched:
+            at = self._reference_targets.get(chrom, ())
+            start = bisect_left(at, pos)
+            if start < len(at) and at[start] < pos + size:
+                return True
+            record_id = _canonical_rsid(cols[2]) if size == 1 and cols[2] != "." else ""
+            if record_id.startswith("rs") and _sorted_has(self._reference_rsids, record_id):
+                return True
+        if self.on_reference_record is None:
+            return False
+        if size == 1:
+            return (chrom, pos) in self._ploidy_loci
+        return any((chrom, site) in self._ploidy_loci for site in range(pos, pos + size))
+
+    def _block_changed_sites(self, changed: dict[str, array[int] | list[int]]) -> None:
+        """Block each position of a reference call's record that another record changes."""
+        wanted: dict[str, set[int]] = {}
+        for call in self.reference_target_calls:
+            at = wanted.setdefault(call.locus[0], set())
+            start, ref, _alts = call.record
+            at.add(call.locus[1])
+            if len(ref) > 1:
+                at.update(range(start, start + len(ref)))
+        for chrom, positions in wanted.items():
+            sites = changed.get(chrom)
+            if sites:
+                hit = positions.intersection(sites)
+                self.reference_target_blocked.update((chrom, pos) for pos in hit)
 
     def _panel_observation(
         self, cols: list[str], variant: Variant | None, state: LocusState | None
@@ -1105,6 +1399,106 @@ def _parse_data_line(
     return variant
 
 
+_VCF_BASES = frozenset("ACGTN")
+# A sample column whose GT (the first FORMAT key) is diploid or haploid reference.
+_REFERENCE_GT_PREFIXES = ("0/0:", "0|0:", "0:")
+# A record the main parse passed over without classifying it.
+_UNCLASSIFIED: LocusState = (NO_CALL, "unclassified")
+
+
+def _block_end_covers(cols: list[str]) -> bool:
+    """Whether a reference block's INFO ``END`` is at or after its POS."""
+    end = _info_end(cols)
+    return end is not None and cols[1].isdigit() and end >= int(cols[1])
+
+
+def _sorted_has(numbers: Sequence[int], rsid: str) -> bool:
+    """Whether ``rsid``'s number is in the sorted ``numbers``."""
+    digits = rsid[2:]
+    if not digits.isdigit():
+        return False
+    number = int(digits)
+    at = bisect_left(numbers, number)
+    return at < len(numbers) and numbers[at] == number
+
+
+def _add_changed(changed: dict[str, array[int] | list[int]], chrom: str, sites: list[int]) -> None:
+    if not sites:
+        return
+    store = changed.get(chrom)
+    if store is None:
+        # Four bytes a position; a larger one falls back to plain ints.
+        store = changed[chrom] = array("i")
+    try:
+        store.extend(sites)
+    except OverflowError:
+        # A position past the compact range keeps plain ints.
+        changed[chrom] = [*store, *sites]
+
+
+def _ploidy_site(pos: int, ref: str, alt_field: str) -> int:
+    """A reference record's ploidy site: where a call of it would stand (ADR-0062).
+
+    A padded record whose every ALT trims to one base at one position is
+    at that position, as its calls are (``CG>CA`` at ``P-1`` is at ``P``).
+    Otherwise (an indel, ALT ``.``, a single-base REF) it is at POS.
+    """
+    if len(ref) == 1:
+        return pos
+    sites = set()
+    for alt in alt_field.split(","):
+        if not alt or not set(alt) <= _VCF_BASES or not set(ref) <= _VCF_BASES:
+            return pos
+        site, trimmed_ref, trimmed_alt = trim_allele_pair(pos, ref, alt)
+        if len(trimmed_ref) != 1 or len(trimmed_alt) != 1:
+            return pos
+        sites.add(site)
+    return sites.pop() if len(sites) == 1 else pos
+
+
+def _changed_positions(pos: int, ref: str, alt_field: str, alleles: list[str]) -> list[int]:
+    """The reference positions a record's genotype changes (ADR-0064).
+
+    Each ALT the genotype carries counts, and every ALT when an allele is
+    unknown (``.``). Shared padding is not a change (ADR-0047, ADR-0061):
+    an equal-length ALT changes the bases that differ, a deletion the
+    bases it removes after the shared ones. An insertion changes its
+    anchor base: the base survives, but the allele there is not the
+    reference allele. A symbolic, ``*`` or unreadable ALT changes every
+    base of REF.
+    """
+    alts = alt_field.split(",")
+    if "." in alleles:
+        carried = alts
+    else:
+        carried = []
+        for allele in alleles:
+            if allele.isdigit() and 0 < int(allele) <= len(alts):
+                carried.append(alts[int(allele) - 1])
+    out: list[int] = []
+    for alt in carried:
+        if len(alt) == 1 == len(ref):
+            # A single-base record: its base changes unless the ALT is it.
+            if alt != ref or ref not in _VCF_BASES:
+                out.append(pos)
+        elif not alt or not set(alt) <= _VCF_BASES or not set(ref) <= _VCF_BASES:
+            out.extend(range(pos, pos + max(len(ref), 1)))
+        elif len(alt) == len(ref):
+            out.extend(pos + i for i, (r, a) in enumerate(zip(ref, alt, strict=True)) if r != a)
+        else:
+            start = 0
+            while start < min(len(ref), len(alt)) and ref[start] == alt[start]:
+                start += 1
+            end = 0
+            while end < min(len(ref), len(alt)) - start and ref[-1 - end] == alt[-1 - end]:
+                end += 1
+            if start < len(ref) - end:
+                out.extend(range(pos + start, pos + len(ref) - end))
+            else:
+                out.append(trim_allele_pair(pos, ref, alt)[0])
+    return out
+
+
 def _parse_record(
     cols: list[str],
     line: str,
@@ -1116,7 +1510,8 @@ def _parse_record(
     """Parse one data row: the ``Variant`` it yields and what it says about its span.
 
     The Variant is ``None`` for: malformed rows, rows the caller filtered
-    (FILTER not ``PASS`` / ``.``, unless ``stats.kept_filtered``),
+    (FILTER, or the sample's FORMAT/FT, not ``PASS`` / ``.``, unless
+    ``stats.kept_filtered``; ADR-0060),
     reference-only rows (ALT='.'), symbolic-allele rows (``<NON_REF>``,
     ``<DEL>``, ``<*>``, ``*``, etc.), rows without a genotype, and
     homozygous-reference calls (the user carries only REF — no actionable
@@ -1157,9 +1552,14 @@ def _parse_record(
         elif any(i not in ("0", ".") for i in gt):
             stats.non_reference_calls += 1
 
-    if filt not in _UNFILTERED:
+    site_labels = [label for label in filt.split(";") if label] if filt not in _UNFILTERED else []
+    sample_labels = _sample_filter_labels(fields)
+    if filt not in _UNFILTERED or sample_labels:
+        # The site's FILTER and the selected sample's FT are one gate
+        # (ADR-0060): the record is counted once, under every label.
         stats.filtered_rows += 1
-        stats.filtered_by_label.update(label for label in filt.split(";") if label)
+        stats.filtered_by_label.update(site_labels)
+        stats.filtered_by_label.update(code for code in sample_labels if code not in site_labels)
         if not stats.kept_filtered:
             return None, (NO_CALL, REASON_FILTERED)
 
@@ -1368,9 +1768,25 @@ class _LocusWatcher:
         self._held: list[tuple[list[str], int]] = []
         self._last_start = 0
         self._sorted = True
+        # Record numbers of the held rows (by ``id``), and of the row fed last.
+        self._numbers: dict[int, int] = {}
+        # The numbers of rows this feed released, until the next feed.
+        self._released: dict[int, int] = {}
+        self._fed: tuple[int, int] = (0, -1)
 
-    def feed(self, cols: list[str]) -> list[tuple[list[str], list[Locus]]]:
-        """Rows (this one or earlier) that cover watched positions, with those positions."""
+    def record_number(self, row: list[str]) -> int:
+        """The record number ``feed`` was given with ``row`` (-1 when unknown)."""
+        if self._fed[0] == id(row):
+            return self._fed[1]
+        return self._numbers.get(id(row), self._released.get(id(row), -1))
+
+    def feed(self, cols: list[str], number: int = -1) -> list[tuple[list[str], list[Locus]]]:
+        """Rows (this one or earlier) that cover watched positions, with those positions.
+
+        ``number`` is the row's record number (``record_number``).
+        """
+        self._fed = (id(cols), number)
+        self._released = {}
         if len(cols) < 8:
             return _NOTHING
         out = _NOTHING
@@ -1407,6 +1823,7 @@ class _LocusWatcher:
             self._hold_new_start(cols, start)
         else:
             self._held.append((cols, start))
+            self._numbers[id(cols)] = self._fed[1]
         return out
 
     def finish(self) -> list[tuple[list[str], list[Locus]]]:
@@ -1421,8 +1838,16 @@ class _LocusWatcher:
         if held:
             # Keep every row whose REF or reference-block END still covers
             # the new start, releasing expired rows on the sorted path.
-            held = [h for h in held if _row_stop(h[0], h[1]) >= start]
+            kept = [h for h in held if _row_stop(h[0], h[1]) >= start]
+            if len(kept) != len(held):
+                live = {id(h[0]) for h in kept}
+                numbers, self._numbers = self._numbers, {}
+                for k, v in numbers.items():
+                    # A row ``_advance`` just returned is read after this feed.
+                    (self._numbers if k in live else self._released)[k] = v
+            held = kept
         held.append((cols, start))
+        self._numbers[id(cols)] = self._fed[1]
         self._held = held
         self._last_start = start
 
@@ -1438,6 +1863,8 @@ class _LocusWatcher:
         self._positions = self._loci.get(chrom, [])
         self._idx = 0
         self._held = []
+        self._released.update(self._numbers)
+        self._numbers = {}
         self._last_start = 0
 
     def _advance(self, upto: int | None) -> list[tuple[list[str], list[Locus]]]:
@@ -1500,6 +1927,18 @@ def _sample_fields(cols: list[str], sample_idx: int) -> dict[str, str]:
     keys = cols[8].split(":")
     values = cols[9 + sample_idx].split(":")
     return dict(zip(keys, values, strict=False))
+
+
+def _sample_filter_labels(fields: dict[str, str]) -> list[str]:
+    """The selected sample's failed FT codes; empty when FT is absent, ``.`` or ``PASS``.
+
+    FT is the per-sample genotype filter (VCF 4.3, 1.6.2): ``PASS``, or the
+    semicolon-separated codes of the filters the call failed.
+    """
+    ft = fields.get("FT", ".").strip()
+    if ft in _UNFILTERED:
+        return []
+    return list(dict.fromkeys(label for label in ft.split(";") if label and label != "PASS"))
 
 
 def _int_field(fields: dict[str, str], key: str) -> int | None:

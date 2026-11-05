@@ -153,6 +153,16 @@ class Variant:
         return self.allele1 == NO_CALL_MARKER or self.allele2 == NO_CALL_MARKER
 
     @property
+    def is_di_call(self) -> bool:
+        """True for an array call with a ``D`` or ``I`` allele (ADR-0070).
+
+        A deletion or insertion code, not a base: no source interprets it
+        (the owner's decision on chip D/I calls). It is counted, and named
+        at a high-value rsID, among the unchecked D/I calls.
+        """
+        return self.allele1 in DI_ALLELES or self.allele2 in DI_ALLELES
+
+    @property
     def is_half_call(self) -> bool:
         """True for a VCF call with one allele called and the other missing.
 
@@ -317,6 +327,10 @@ class Annotation:
     # ``haploid``: the call is one the file declares haploid (Variant.haploid);
     #   ``genotype_match`` then holds the one allele.
     haploid: bool = field(default=False, compare=False, repr=False)
+    # ``record_index``: the input VCF record the finding's call was read
+    #   from (``Variant.record_index``; None for other inputs). Ploidy and
+    #   genotype come from that call alone (ADR-0062).
+    record_index: int | None = field(default=None, compare=False, repr=False)
     # ``effect_measure``: ``odds_ratio`` or ``beta`` when the GWAS row's
     #   effect direction was read from one, for the report's plain words.
     effect_measure: str = field(default="", compare=False, repr=False)
@@ -396,6 +410,7 @@ _INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset(
         "reference_carries_alt",
         "record_key",
         "haploid",
+        "record_index",
         "effect_measure",
     }
 )
@@ -452,7 +467,14 @@ def annotation_to_public_dict(a: Annotation) -> dict:
     # ADR-0046: where the call sits, so a finding without an rsID still
     # names its variant. ``ref`` is the forward-strand reference allele
     # when the annotator knows it.
-    d["chromosome"], d["position"] = a.locus if a.locus is not None else ("", None)
+    if a.locus is not None and a.locus[1] > 0:
+        d["chromosome"], d["position"] = a.locus
+    elif a.locus is not None:
+        # A row of a file without positions that could not be placed
+        # (locus ("", 0), ADR-0069): neither is known.
+        d["chromosome"], d["position"] = None, None
+    else:
+        d["chromosome"], d["position"] = "", None
     d["ref"] = a.locus_ref or ""
     return d
 

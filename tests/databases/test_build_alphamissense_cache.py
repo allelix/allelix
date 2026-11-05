@@ -514,3 +514,42 @@ class TestBuildCacheIntegration:
                 "SELECT record_count FROM database_versions WHERE name='alphamissense'"
             ).fetchone()
         assert row[0] == 5
+
+
+# ── Owned staging (2.6.0) ─────────────────────────────────────────────
+
+
+def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
+    """A build stages under its own name: a file at the old fixed name is not
+    touched, a failed publication keeps the previous output, and no staging
+    file is left either way."""
+    other = output.parent / f"{output.name}.tmp"
+    other.write_bytes(b"another build's staging")
+    build()
+    assert output.exists()
+    before = output.read_bytes()
+
+    def fail(src, dst):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(module.os, "replace", fail)
+    with pytest.raises(OSError, match="synthetic"):
+        build()
+    assert output.read_bytes() == before
+    assert other.read_bytes() == b"another build's staging"
+    assert not list(output.parent.glob(f".{output.name}.*"))
+
+
+def test_build_owns_its_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import build_alphamissense_cache
+
+    tsv = tmp_path / "data.tsv"
+    tsv.write_text(_TSV_HEADER + _make_tsv_line())
+    output = tmp_path / "am.sqlite"
+    _owned_staging_contract(
+        tmp_path,
+        monkeypatch,
+        build_alphamissense_cache,
+        output,
+        lambda: build_cache(output, tmp_path / "gnomad.sqlite", tsv_path=tsv, skip_gnomad=True),
+    )

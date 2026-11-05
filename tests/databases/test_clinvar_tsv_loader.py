@@ -921,7 +921,7 @@ class TestFailedLoadKeepsCache:
         with pytest.raises(ClinVarFormatError):
             load_clinvar_tsv(vs, ss, db, "GRCh38", remote_signal="md5:new")
         assert db.read_bytes() == before
-        assert not (tmp_path / "clinvar.sqlite.partial").exists()
+        assert not list(tmp_path.glob(".clinvar.sqlite.*"))
 
     def test_no_records_keeps_existing_cache(self, tmp_path):
         """Files with the right header and no usable record (for example an
@@ -932,7 +932,7 @@ class TestFailedLoadKeepsCache:
         with pytest.raises(ClinVarFormatError, match="no records"):
             load_clinvar_tsv(vs, ss, db, "GRCh38", remote_signal="md5:new")
         assert db.read_bytes() == before
-        assert not (tmp_path / "clinvar.sqlite.partial").exists()
+        assert not list(tmp_path.glob(".clinvar.sqlite.*"))
 
     def test_no_records_and_no_cache_leaves_nothing(self, tmp_path):
         vs = _write_tsv(tmp_path / "vs.tsv", _VS_HEADER, [_vs_row(assembly="GRCh38.p14")])

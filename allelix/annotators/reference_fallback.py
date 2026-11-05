@@ -10,13 +10,26 @@ Without that cache, this module answers for those sites only: rsIDs whose
 GRCh37 and GRCh38 single-base REFs differ in the rsID identity table. Every
 other site is left as it was (no suppression without ClinVar).
 
+REFs that differ are not always a changed reference allele: where the
+reference strand was inverted between the assemblies, the two REFs can be
+one allele written on opposite strands. Every allele taken from the other
+build is therefore written on the input build's strand, through the
+identity table's strand relation for the rsID (``strand_relation``), before
+it is compared with a call. Where that relation cannot be told (a row
+flagged palindromic, or allele sets that fit both readings or neither),
+nothing is carried across: GRCh37 input abstains, and GRCh38 input is
+decided by gnomAD alone, which is GRCh38's own reading.
+
 The normal allele comes from, in order:
 
-1. the other build's ClinVar, when it classifies the input build's REF as
-   the variant allele (a row REF = other build's REF, ALT = this build's
-   REF): the other build's REF is normal;
+1. the other build's ClinVar, when the two REFs are different alleles and
+   it classifies the input build's REF as the variant allele (a row REF =
+   other build's REF, ALT = this build's REF as the other build writes
+   it): the other build's REF is normal;
 2. gnomAD's frequencies at the site: the major allele, among the REF and
-   every ALT gnomAD lists, is normal (a tie decides nothing);
+   every ALT gnomAD lists, is normal (a tie decides nothing). gnomAD is
+   keyed on GRCh38; for GRCh37 input the allele is written on GRCh37's
+   strand;
 3. otherwise nothing: the site abstains, nothing is suppressed, and the
    abstention is counted.
 
@@ -30,8 +43,9 @@ pharmacogenomic finding is worse than showing a normal genotype's row.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from allelix.annotators.rsid_identity import on_other_strand
 from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 
 if TYPE_CHECKING:
@@ -39,11 +53,8 @@ if TYPE_CHECKING:
 
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
-    from allelix.annotators.rsid_identity import RsidIdentityAnnotator
+    from allelix.annotators.rsid_identity import ReferenceSite, RsidIdentityAnnotator
     from allelix.models import Variant
-
-# One identity row's placement and REF on each build.
-_Site = tuple[str, int, str, int, str]
 
 
 class ReferenceCarriedFallback:
@@ -63,7 +74,7 @@ class ReferenceCarriedFallback:
         self._clinvar = clinvar
         self._identity = identity
         self._gnomad = gnomad
-        self._sites: dict[str, _Site] | None = None
+        self._sites: dict[str, ReferenceSite] | None = None
         self._reads: dict[str, bool] = {}
         self._gnomad_ready: bool | None = None
         self._normal: dict[tuple[str, str], str | None] = {}
@@ -126,7 +137,7 @@ class ReferenceCarriedFallback:
             self._reads[build] = self._clinvar.reads_build(build)
         return self._reads[build]
 
-    def _site(self, rsid: str, build: str) -> _Site | None:
+    def _site(self, rsid: str, build: str) -> ReferenceSite | None:
         if build not in (BUILD_GRCH37, BUILD_GRCH38):
             return None
         if self._sites is None:
@@ -154,12 +165,26 @@ class ReferenceCarriedFallback:
             rows = self._clinvar.snv_alleles_many(rsids, other_build)
         undecided: list[str] = []
         for rsid in rsids:
-            _chrom, _pos37, ref37, _pos38, ref38 = self._sites[rsid]
+            _chrom, _pos37, ref37, _pos38, ref38, same = self._sites[rsid]
+            if same is None:
+                # No strand relation: no allele can be carried across. gnomAD
+                # is GRCh38's own reading, so GRCh38 input still asks it.
+                if build == BUILD_GRCH38:
+                    undecided.append(rsid)
+                else:
+                    self._record(rsid, build, None)
+                continue
             here, other = (ref37, ref38) if build == BUILD_GRCH37 else (ref38, ref37)
+            # This build's REF as the other build writes it.
+            here_there = on_other_strand(here, same)
             alleles = rows.get(rsid, set())
+            if here_there == other:
+                # One allele on opposite strands: the reference did not
+                # change, and the other build's ClinVar decides nothing here.
+                undecided.append(rsid)
             # ClinVar's variant allele is this build's REF: the other REF is normal.
-            if (other, here) in alleles:
-                self._record(rsid, build, other)
+            elif (other, here_there) in alleles:
+                self._record(rsid, build, on_other_strand(other, same))
             # The other build's reference carries ClinVar's variant (REF == ALT).
             elif (other, other) in alleles:
                 self._record(rsid, build, here)
@@ -171,9 +196,13 @@ class ReferenceCarriedFallback:
                 {(s[0], s[3], s[4]) for s in (self._sites[r] for r in undecided)}
             )
         for rsid in undecided:
-            chrom, _pos37, _ref37, pos38, ref38 = self._sites[rsid]
-            alts = frequencies.get((chrom, pos38, ref38), {})
-            self._record(rsid, build, _major_allele(ref38, alts))
+            chrom, _pos37, _ref37, pos38, ref38, same = self._sites[rsid]
+            major = _major_allele(ref38, frequencies.get((chrom, pos38, ref38), {}))
+            if major is not None and build == BUILD_GRCH37:
+                # gnomAD writes GRCh38's strand; ``same`` is set for GRCh37
+                # input here (checked above).
+                major = on_other_strand(major, cast("bool", same))
+            self._record(rsid, build, major)
 
     def _record(self, rsid: str, build: str, normal: str | None) -> None:
         self._normal[(rsid, build)] = normal

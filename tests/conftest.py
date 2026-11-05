@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -21,6 +22,15 @@ from allelix.databases.pharmgkb_loader import (
 )
 from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME, write_identity_db
 from allelix.databases.schema import CLINVAR_SCHEMA
+
+# Rich fixes a console's width for good when COLUMNS is set as the console is
+# created, and the CLI's shared console is created when the CLI is imported.
+# pytest-xdist workers start with COLUMNS=80 and LINES=24 (a shell may export
+# them too), which pinned that console at 80 columns and broke every test that
+# sets its own width. Drop both before any test module imports the CLI, so
+# each test gets the width it sets, whatever the caller's environment.
+os.environ.pop("COLUMNS", None)
+os.environ.pop("LINES", None)
 
 # Synthetic ClinVar cache rows used by clinvar_data_dir and
 # all_annotators_data_dir. Before v2.2 this content lived in

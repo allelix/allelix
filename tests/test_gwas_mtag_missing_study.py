@@ -32,7 +32,7 @@ def test_publications_and_study_accessions_do_not_split_mtag_twins(
     }[study_kind]
     _, data, variant = _annotations(
         tmp_path,
-        [(TRAIT, "G", first), (TRAIT + " (MTAG)", "G", second)],
+        [(TRAIT, "A", first), (TRAIT + " (MTAG)", "A", second)],
         build,
     )
     with contextlib.closing(sqlite3.connect(data / "gwas.sqlite")) as connection:
@@ -60,7 +60,7 @@ def test_publications_and_study_accessions_do_not_split_mtag_twins(
     source.write_text(
         "##fileformat=VCFv4.2\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
-        f"1\t{variant.position}\t{RSID}\tA\tG,C\t.\tPASS\t.\tGT\t1/2\n"
+        f"1\t{variant.position}\t{RSID}\tA\tC\t.\tPASS\t.\tGT\t0/1\n"
     )
     output = tmp_path / f"report.{surface}"
     args = [

@@ -140,3 +140,24 @@ included. Only `END` blocks stay unstamped (ADR-0059's 2.5.2 amendment).
   until Allelix can left-align against a reference sequence.
 - A call with one haplotype deleted (`*`) still has no Variant shape; that
   stays with the single-copy representation planned for 3.0.
+
+### Amendment 2026-10-29 (2.6.0): unnamed padded calls
+
+The 2.5.2 amendment above held for a padded call that carried its rsID.
+An unnamed padded call got no rsID from position resolution, so ClinPGx,
+SNPedia and the GWAS Catalog still found nothing for it. Since 2.6.0 the
+call is trimmed before resolution as well (ADR-0061).
+
+## Amendment 2.6.0 (2026-11-02): SNPedia labels a call as every source does
+
+The slash rule above named ClinVar, ClinPGx and GWAS. SNPedia joined its
+matched alleles without a boundary instead, so a homozygous insertion
+`G>GAC` 1/1 was labelled `GACGAC`, which `zygosity_code` read as two
+different bases: heterozygous. SNPedia now labels the call with
+`models.diploid_label` too: an SNV's two bases sorted and joined, a
+sequence allele or an indel record's alleles with a slash in the call's
+order (`GAC/GAC`, `GAC/G`). A SNPedia row matches a call only when its
+forward genotype is the call's own pair, so the label is the call's, as for
+the other sources. The match itself (orientation, reverse complement of a
+minus page, ADR-0066) is unchanged, and so are chip, D/I (ADR-0070) and
+haploid labels.

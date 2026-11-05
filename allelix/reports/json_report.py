@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "11",
+      "schema_version": "12",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -23,7 +23,8 @@ Output schema (versioned via `schema_version`):
         "vcf_quality": null,
         "array_quality": {"di_calls": 0, "unreadable_genotypes": 0,
                           "not_genotyped": 0, "wrong_column_rows": 0},
-        "probe_classes": {"i_probes_at_plp_loci": 0, "di_calls_at_plp_rsids": 0}
+        "probe_classes": {"i_probes_at_plp_loci": 0, "di_calls_at_plp_rsids": 0},
+        "placement": null
       },
       "annotators": [
         {"name": "clinvar", "version": "20260101"}
@@ -71,7 +72,15 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "12"
+# v11 -> v12 (2.6.0, one bump for every 2.6 report field): ``input.placement``
+# and the ``input.build_source`` value ``rsid_placement`` (ADR-0069), with a
+# null ``chromosome`` and ``position`` on an unplaced row's findings; the
+# ``strand_abstentions`` reason ``both_fit`` (ADR-0066); the
+# ``report_warnings`` codes ``contradictory_calls``, ``identity_locus_conflict``,
+# ``cpic_unavailable`` and ``source_dependency_unavailable``; and a VCF call
+# with a failing FORMAT ``FT`` counted in the filtered rows under its FT code
+# (ADR-0060). Each is described below where it lands.
 # v10 -> v11 (2.5.2): each ``diff.changed`` entry adds ``below_display_floor``,
 # true when the finding is still there but scored below the display floor (so
 # it is changed, not removed, and not in ``annotations``). ``--diff`` pairs
@@ -107,7 +116,16 @@ SCHEMA_VERSION = "11"
 # reader that does not recognise the file, and ``input_stray_characters`` when
 # characters before the first ``#`` of the file's first line were ignored.
 # ``build_override_unmatched`` when --build forced a build that none of the
-# file's known-SNP positions match (2.5.2).
+# file's known-SNP positions match (2.5.2). ``contradictory_calls`` counts the
+# records in scope at positions whose records in scope disagree on ploidy:
+# every non-reference record, and an explicit reference record only at a
+# target site of an enabled source (2.6.0, ADR-0062, ADR-0064).
+# ``identity_locus_conflict`` counts the named calls no source read because the
+# rsID identity table places their rsID elsewhere on the build (2.6.0, ADR-0063).
+# ``cpic_unavailable`` when ClinPGx ran on a cache without CPIC's allele-function
+# data, so normal-function rows may be shown (2.6.0, ADR-0065).
+# ``source_dependency_unavailable`` when a switched-off ClinVar, gnomAD or rsID
+# identity table was not consulted by the sources that depend on it (2.6.0, ADR-0067).
 # ``panel_coverage`` (ADR-0051) is ``{requested, counts, variants}``: ``counts``
 # has ``annotated``, ``typed_no_annotation``, ``no_call`` and
 # ``not_on_chip`` (summing to ``requested``), and each ``variants`` entry
@@ -125,12 +143,19 @@ SCHEMA_VERSION = "11"
 # ClinVar never matches at an aggregate-P/LP site
 # (``i_probes_at_plp_loci``, ``di_calls_at_plp_rsids``). Both are null for
 # VCF input; ``probe_classes`` is also null when ClinVar did not run.
+# ADR-0069: ``input.placement`` says how a file without positions (an rsID
+# and genotype list) was placed on GRCh38 from the rsID identity table:
+# ``{build, rows, placed, complemented, unplaced}``, ``unplaced`` counting
+# rows by reason (``not_an_rsid``, ``not_in_table``, ``palindromic``,
+# ``both_fit``, ``no_fit``, ``di_call``). Null for files with positions.
+# An unplaced row's findings have a null ``chromosome`` and ``position``.
 # GWAS annotations carry ``effect_direction`` (``increases``,
 # ``decreases``, ``unknown``; empty on other sources), and the top-level
 # ``strand_abstentions`` gives, per strand-checked source that ran
 # (``gwas``, ``snpedia``), the counts not assessed by reason
-# (``not_in_identity_table``, ``palindromic``, ``no_fit``): GWAS
-# association rows, SNPedia sites.
+# (``not_in_identity_table``, ``palindromic``, ``both_fit``, ``no_fit``;
+# ``both_fit`` since 2.6.0, ADR-0066): GWAS association rows, SNPedia
+# sites.
 # v7 -> v8 bump (ADR-0033): ``input.build_source`` says where the build came
 # from (ADR-0044 vocabulary: override, contig_lengths, seeds, assembly_header,
 # file_label, default) and ``input.build_evidence`` records the evidence
@@ -274,6 +299,7 @@ def render_json(
             "gvcf": result.vcf_quality is not None and result.vcf_quality.is_gvcf,
             "vcf_quality": _vcf_quality_dict(result),
             "array_quality": _array_quality_dict(result),
+            "placement": result.placement.to_dict() if result.placement is not None else None,
             "probe_classes": dict(result.probe_classes)
             if result.probe_classes is not None
             else None,

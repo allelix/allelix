@@ -420,16 +420,20 @@ class TestLoadPharmgkbTsv:
         # 16 records / batch_size 3 = 5 full batches + 1 remainder.
         assert executemany_payloads == [3, 3, 3, 3, 3, 1]
 
-    def test_leftover_tmp_file_is_cleared(self, tmp_path: Path, mock_pharmgkb_dir: Path):
+    def test_a_file_at_the_old_staging_name_is_not_touched(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path
+    ):
+        # 2.6.0: each load stages under a name of its own; a file at the old
+        # fixed name may belong to another writer, so it is left alone.
         db = tmp_path / "pharmgkb.sqlite"
-        stale_tmp = tmp_path / "pharmgkb.sqlite.tmp"
-        stale_tmp.write_bytes(b"\x00\x01garbage\x02\x03")
-        assert stale_tmp.exists()
+        other = tmp_path / "pharmgkb.sqlite.tmp"
+        other.write_bytes(b"\x00\x01garbage\x02\x03")
 
         count = load_pharmgkb_tsv(mock_pharmgkb_dir, db, source_url="test://restart")
         assert count == 16
         assert db.exists()
-        assert not stale_tmp.exists()
+        assert other.read_bytes() == b"\x00\x01garbage\x02\x03"
+        assert sorted(p.name for p in tmp_path.iterdir()) == [db.name, other.name]
 
     def test_atomic_load_preserves_old_cache_on_failure(
         self,
@@ -456,7 +460,7 @@ class TestLoadPharmgkbTsv:
 
         info_after = get_database_info(db, "pharmgkb")
         assert info_after == info_before
-        assert not (tmp_path / "pharmgkb.sqlite.tmp").exists()
+        assert not list(tmp_path.glob(".pharmgkb.sqlite.*"))
 
 
 class TestMinRowsFloor:
@@ -479,7 +483,7 @@ class TestMinRowsFloor:
                 min_rows=999_999,
             )
         assert not db.exists()
-        assert not (tmp_path / "pharmgkb.sqlite.tmp").exists()
+        assert not list(tmp_path.glob(".pharmgkb.sqlite.*"))
 
     def test_default_min_rows_zero_loads_small_fixtures(self, mock_pharmgkb_dir, tmp_path) -> None:
         from allelix.databases.pharmgkb_loader import load_pharmgkb_tsv

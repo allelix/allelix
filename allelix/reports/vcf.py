@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 __all__ = ["VCF_LICENSE", "VCF_SCHEMA_VERSION", "VcfWriteInputs", "render_vcf"]
 
 
-VCF_SCHEMA_VERSION = "0.6.0"
+VCF_SCHEMA_VERSION = "0.7.0"
 """Semantic version of the annotated-VCF output contract.
 
 Experimental — INFO field names and structure may change before v3.0.
@@ -88,6 +88,9 @@ haploid, and a single-position record with ALT ``.``; not on a gVCF
 Every field is written only on the records the analysis read a call from
 that carries its allele: a duplicate record at the same CHROM, POS, REF
 and ALT that gave no such call (low GQ, no call, hom-ref) borrows nothing.
+0.7.0: ``##ALLELIX_InputMethod=<ID=...,Description="...">`` says the input's
+genotypes are imputed (``array-imputed``, ``vcf-imputed``), as the JSON
+``input.method`` does. A measured input has no such line.
 """
 
 VCF_LICENSE = "AGPL-3.0-or-later"
@@ -363,6 +366,7 @@ def _emit_provenance_lines(
     annotators_used: list[tuple[str, str | None]],
     run_date: datetime,
     skipped_sources: list[tuple[str, str]] | None = None,
+    input_method: str = "",
 ) -> list[str]:
     """Emit the provenance header block.
 
@@ -379,6 +383,11 @@ def _emit_provenance_lines(
         "##ALLELIX_SkippedSources="
         + (",".join(f"{name}:{reason}" for name, reason in skipped_sources or []) or "none"),
     ]
+    from allelix.reports import input_method_label, is_imputed
+
+    if is_imputed(input_method):
+        label = input_method_label(input_method).replace('"', "'")
+        lines.append(f'##ALLELIX_InputMethod=<ID={input_method},Description="{label}">')
     for name, version in annotators_used:
         version_str = version if version else "unknown"
         lines.append(f"##ALLELIX_Database=<Name={name},Version={version_str}>")
@@ -517,6 +526,7 @@ def render_vcf(
     reference_rows: Mapping[RowKey, set[Locus]] | None = None,
     record_rows: Mapping[_VariantKey, set[int]] | None = None,
     record_recovered: Mapping[int, str] | None = None,
+    input_method: str = "",
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -614,6 +624,7 @@ def render_vcf(
                         annotators_used=annotators_used,
                         run_date=run_date,
                         skipped_sources=skipped_sources,
+                        input_method=input_method,
                     ):
                         fout.write(h + "\n")
                     fout.write(raw_line)
@@ -721,15 +732,31 @@ def _stamp_data_line(
         """Whether this record's own call carries REF: needs ``record_rows``."""
         return record_rows is not None and record_index in record_rows.get(key, ())
 
+    def produced_here(annotation: Annotation) -> bool:
+        """Whether this record's own call produced ``annotation`` (``record_index``).
+
+        Carrying the allele makes a record eligible; it does not make another
+        record's finding its own. A duplicate with another genotype, or a
+        record the analysis rejected (ADR-0063), produced none.
+        """
+        return record_rows is None or annotation.record_index == record_index
+
     reference_value = _reference_value(
-        cols, key_chrom, pos, ref, annotations_by_key, reference_rows or {}, carries_reference
+        cols,
+        key_chrom,
+        pos,
+        ref,
+        annotations_by_key,
+        reference_rows or {},
+        carries_reference,
+        produced_here,
     )
 
     for i, alt in enumerate(alts):
         if _is_symbolic(alt):
             continue
         key: _VariantKey = (key_chrom, pos, ref.upper(), alt.upper())
-        anns = annotations_by_key.get(key, []) if own(key) else []
+        anns = [a for a in annotations_by_key.get(key, []) if produced_here(a)] if own(key) else []
         # Primary sources: source-dispatched, one Annotation → one INFO
         # value slot. Where a source has several rows at the variant (two
         # ClinVar conditions, say), the slot takes the row the report
@@ -792,6 +819,7 @@ def _reference_value(
     annotations_by_key: Mapping[_VariantKey, list[Annotation]],
     reference_rows: Mapping[RowKey, set[Locus]],
     carries_reference: Callable[[_VariantKey], bool],
+    produced_here: Callable[[Annotation], bool],
 ) -> str:
     """The ``ALLELIX_CLINVAR_REF`` value of one record, or "".
 
@@ -801,21 +829,25 @@ def _reference_value(
     record the analysis used (``reference_rows``), at the base of REF that
     covers the finding's position.
     """
-    loci: list[tuple[Locus, str]] = []
+    # Each candidate locus says whether a finding there must come from this
+    # record's own call (a call carrying REF), or from the explicit reference
+    # record the analysis used (``reference_rows``, ADR-0059 and ADR-0062).
+    loci: list[tuple[Locus, str, bool]] = []
     upper = ref.upper()
     if len(upper) == 1 and carries_reference((key_chrom, pos, upper, upper)):
-        loci.append(((key_chrom, pos), upper))
+        loci.append(((key_chrom, pos), upper, True))
     # A reference block spans many positions: never stamped (ADR-0059).
     block = _info_end(cols) is not None and _reference_block_alts(cols[4])
     for locus in () if block else reference_rows.get(reference_row_key(cols), ()):
         offset = locus[1] - pos
         if 0 <= offset < len(upper):
-            loci.append((locus, upper[offset]))
+            loci.append((locus, upper[offset], False))
     candidates = [
         annotation
-        for locus, base in loci
+        for locus, base, own_call in loci
         for annotation in annotations_by_key.get((*locus, base, base), [])
-        if annotation.source == "clinvar"
+        if (not own_call or produced_here(annotation))
+        and annotation.source == "clinvar"
         and annotation.reference_carries_alt
         and annotation.locus == locus
         and annotation.locus_ref == base

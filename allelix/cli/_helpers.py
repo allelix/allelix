@@ -25,7 +25,9 @@ from rich.markup import escape
 
 from allelix.annotators import get_annotators
 from allelix.annotators.clinvar import CLINVAR_SUPPORTED_BUILDS, ClinVarAnnotator
+from allelix.annotators.pharmgkb import PharmGKBAnnotator, signal_lacks_cpic
 from allelix.databases import resolve_data_dir
+from allelix.databases.manager import compare_signals
 from allelix.parsers import ParserNotFoundError, detect_parser, get_parser_by_name
 from allelix.parsers._helpers import (
     INPUT_NOTICE_CODES,
@@ -36,6 +38,7 @@ from allelix.reports import (
     array_quality_lines,
     input_method_label,
     is_imputed,
+    placement_lines,
     vcf_quality_lines,
 )
 from allelix.reports._pipeline import (
@@ -66,7 +69,7 @@ from allelix.reports.terminal import render_terminal, render_terminal_diff
 from allelix.utils.build_detect import BuildDecisionError, needs_late_seeds
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Collection, Iterator
     from pathlib import Path
 
     from allelix.annotators.alphamissense import AlphaMissenseAnnotator
@@ -107,6 +110,30 @@ def _percent(part: int, total: int) -> str:
 _LOGGED_INPUT_NOTICES = frozenset(INPUT_NOTICE_CODES.values())
 # report_warnings code: --build forced a build no known-SNP position matches.
 BUILD_OVERRIDE_UNMATCHED = "build_override_unmatched"
+# report_warnings code: ClinPGx ran without CPIC's allele-function data (ADR-0065).
+CPIC_UNAVAILABLE = "cpic_unavailable"
+CPIC_UNAVAILABLE_TEXT = (
+    "ClinPGx's cache has no CPIC allele-function data (CPIC was unavailable when it "
+    "was built), so ClinPGx rows for normal-function alleles, which CPIC data would "
+    "hide, may be shown. Run `allelix db update` to try CPIC again."
+)
+# report_warnings code: a source the user switched off is one other sources
+# depend on, and they ran without it (ADR-0067).
+SOURCE_DEPENDENCY_UNAVAILABLE = "source_dependency_unavailable"
+_DEPENDENCY_USES = {
+    "clinvar": (
+        "the reference allele that tells ClinPGx and SNPedia a call carries the normal "
+        "allele (not a finding)"
+    ),
+    "gnomad": (
+        "the major allele used as the normal allele for ClinPGx and SNPedia where ClinVar "
+        "has no reference, and rsID resolution of calls without one"
+    ),
+    "rsid_identity": (
+        "rsID placements: the normal allele on the other build for ClinPGx and SNPedia, "
+        "strand readings for the GWAS Catalog and SNPedia, and rsID resolution"
+    ),
+}
 
 
 class _WarningCounter(logging.Handler):
@@ -163,6 +190,28 @@ def _unwire_parser_logging(
     parser_logger.removeHandler(stderr_handler)
     parser_logger.setLevel(snapshot.level)
     parser_logger.propagate = snapshot.propagate
+
+
+def note_imputed_input(
+    parser: GenotypeParser, file_path: Path, *, which: str = "", extra: str = ""
+) -> None:
+    """Say on the console that an input's genotypes are imputed, for any command.
+
+    Allelix never shows genotypes from a file without the warnings that
+    apply to it. ``which`` names the file when a command reads two
+    (``compare``); ``extra`` adds the command's own consequence.
+    """
+    from allelix.reports import input_method_label, is_imputed
+
+    method = parser.get_metadata(file_path).get("method", "")
+    if not is_imputed(method):
+        return
+    prefix = f"{which}: " if which else ""
+    tail = f" {extra}" if extra else ""
+    console.print(
+        f"[yellow]Note:[/yellow] {escape(prefix)}input method: "
+        f"{escape(input_method_label(method))}.{escape(tail)}"
+    )
 
 
 def _resolve_parser(
@@ -266,8 +315,12 @@ def _ready_annotators(
     include_benign: bool = False,
     gwas_filter_traits: bool = True,
     cadd_full: bool = False,
+    switched_off: frozenset[str] = frozenset(),
 ) -> tuple[Path, list[Annotator], list[Annotator], list[Annotator]]:
-    """The data directory, the ready and not-ready annotators, and every annotator in order."""
+    """The data directory, the ready and not-ready annotators, and every annotator in order.
+
+    ``switched_off`` sources are never consulted as a dependency (ADR-0067).
+    """
     resolved = resolve_data_dir(data_dir)
     # ClinVar is ready when one build's cache is: a user who installed
     # only GRCh37 can analyze GRCh37 input. Input on the other build
@@ -283,16 +336,19 @@ def _ready_annotators(
         gwas_filter_traits=gwas_filter_traits,
         cadd_full=cadd_full,
         clinvar_builds=ready_builds or CLINVAR_SUPPORTED_BUILDS,
+        switched_off=switched_off,
     )
     ready: list[Annotator] = []
     not_ready: list[Annotator] = []
-    for a in annotators:
+    # A switched-off source's cache never decides whether the run can start.
+    considered = [a for a in annotators if a.name not in switched_off]
+    for a in considered:
         if a.is_ready():
             ready.append(a)
         else:
             not_ready.append(a)
     if not ready:
-        reasons = "\n".join(f"  {unready_line(a, a.cache_status())}" for a in annotators)
+        reasons = "\n".join(f"  {unready_line(a, a.cache_status())}" for a in considered)
         raise click.ClickException(
             f"No annotators are ready. Run `allelix db update` first.\n{reasons}"
         )
@@ -439,6 +495,7 @@ def _resolved_variants(
     creates. They close before the providers even if the returned stream is
     retained or a consumer exits early; remaining rows are not consumed.
     """
+    from allelix.annotators import configured_source
     from allelix.annotators._resolution import resolve_rsidless
     from allelix.annotators.clinvar import ClinVarAnnotator
     from allelix.annotators.gnomad import GnomadAnnotator
@@ -460,9 +517,10 @@ def _resolved_variants(
     except (BuildDecisionError, UnusableInputError) as exc:
         raise click.ClickException(str(exc)) from exc
     resolved = resolve_data_dir(data_dir)
-    clinvar = ClinVarAnnotator(resolved)
-    gnomad = GnomadAnnotator(resolved)
-    identity = RsidIdentityAnnotator(resolved)
+    # A source switched off in the config is not consulted here (ADR-0067).
+    clinvar = configured_source("clinvar", ClinVarAnnotator, resolved)
+    gnomad = configured_source("gnomad", GnomadAnnotator, resolved)
+    identity = configured_source("rsid_identity", RsidIdentityAnnotator, resolved)
     hv = high_value or set()
     with _owned_annotators((clinvar, gnomad, identity)), _cleanup_on_exit() as cleanup:
         if hv and isinstance(parser, VcfParser):
@@ -546,7 +604,6 @@ def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
     signal is the checksum that verifies its download, so it never can.
     """
     from allelix.annotators.gwas import GWASCatalogAnnotator
-    from allelix.annotators.pharmgkb import PharmGKBAnnotator
 
     without_signal = False
     try:
@@ -560,6 +617,8 @@ def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
             exc.close()
         console.print(f"  [red]{annotator.name}: {exc}[/red]")
         return False
+    for note in getattr(annotator, "shrink_notes", ()):
+        console.print(f"  [yellow]{escape(note)}[/yellow]")
     sig = getattr(annotator, "cached_remote_signal", lambda: None)()
     # No freshness signal stored: none at all, or (ClinPGx) only the CPIC mark.
     no_pgkb_part = isinstance(annotator, PharmGKBAnnotator) and not (sig or "").startswith("pgkb:")
@@ -568,7 +627,7 @@ def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
             f"  [yellow]{annotator.name}: refreshed without a freshness signal; none is "
             "stored, so the next `db update` refreshes again once it is available.[/yellow]"
         )
-    if sig and "cpic:unavailable" in sig:
+    if isinstance(annotator, PharmGKBAnnotator) and signal_lacks_cpic(sig):
         console.print(
             f"  [yellow]{annotator.name}: updated (CPIC unavailable — "
             "non-finding filter degraded, retry later)[/yellow]"
@@ -576,18 +635,24 @@ def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
     return True
 
 
-def _prepare_caches(annotators: list[Annotator], data_dir: Path) -> None:
+def _prepare_caches(
+    annotators: list[Annotator], data_dir: Path, *, switched_off: Collection[Annotator] = ()
+) -> None:
     """The update step's local work: no network, may write (ADR-0048).
 
     Converts every WAL cache in the data directory to rollback-journal
     mode, so a later read-only analysis can read it, then lets each
     outdated cache bring itself up to date from local data (a legacy
-    stamp, a GWAS re-ingest from the cached TSV, a SNPedia parse).
+    stamp, a GWAS re-ingest from the cached TSV, a SNPedia parse). The
+    files of a ``switched_off`` source are left untouched (ADR-0067).
     """
     from allelix.databases.cache_state import CacheState
     from allelix.databases.loader_utils import convert_to_rollback_journal
 
+    untouched = {path.name for source in switched_off for path in source.setup_destinations()}
     for db_path in sorted(data_dir.glob("*.sqlite")):
+        if db_path.name in untouched:
+            continue
         if convert_to_rollback_journal(db_path):
             console.print(f"  [dim]{db_path.name}: converted to rollback-journal mode[/dim]")
     for annotator in annotators:
@@ -596,14 +661,16 @@ def _prepare_caches(annotators: list[Annotator], data_dir: Path) -> None:
                 annotator.prepare_cache()
 
 
-def _maybe_refresh_databases(data_dir: Path) -> None:
+def _maybe_refresh_databases(
+    data_dir: Path, *, switched_off: frozenset[str] = frozenset()
+) -> None:
     """Check database mtimes; refresh any that are stale and have a changed remote signal.
 
     Only runs for annotators that download data (SNPedia excluded).
     If the network is unreachable, warns and continues with stale caches.
     """
     now = time.time()
-    annotators = get_annotators(data_dir)
+    annotators = [a for a in get_annotators(data_dir) if a.name not in switched_off]
     for annotator in annotators:
         with annotator:
             if not annotator.requires_download or not annotator.is_ready():
@@ -630,7 +697,8 @@ def _maybe_refresh_databases(data_dir: Path) -> None:
                 continue
 
             cached = annotator.cached_remote_signal()
-            if cached == remote:
+            # Only a detected change refreshes; "unknown" keeps the cache (ADR-0012).
+            if cached is not None and compare_signals(cached, remote) != "changed":
                 continue
 
             console.print(f"[bold]Updating {annotator.display_name}…[/bold]")
@@ -949,20 +1017,29 @@ def _run_analysis_command(
 
     # An unreadable config.toml stops the run before the update step writes.
     cfg = load_config(resolved, create=not no_update)
-    if not no_update:
-        _prepare_caches(get_annotators(resolved), resolved)
-        _maybe_refresh_databases(resolved)
-    _, ready, not_ready, registry = _ready_annotators(
-        data_dir,
-        include_benign=include_benign,
-        gwas_filter_traits=not gwas_all,
-        cadd_full=cfg.cadd_full,
-    )
+    # The user's choices come first: a source switched off is neither
+    # prepared, refreshed nor consulted for another source (ADR-0067).
+    registry = get_annotators(resolved)
     choices = _source_choices(
         registry,
         cfg,
         exclude_sources=exclude_sources,
         flags={"gnomad": no_gnomad, "alphamissense": no_alphamissense, "cadd": no_cadd},
+    )
+    switched_off = frozenset(choices)
+    if not no_update:
+        _prepare_caches(
+            [a for a in registry if a.name not in switched_off],
+            resolved,
+            switched_off=[a for a in registry if a.name in switched_off],
+        )
+        _maybe_refresh_databases(resolved, switched_off=switched_off)
+    _, ready, not_ready, registry = _ready_annotators(
+        data_dir,
+        include_benign=include_benign,
+        gwas_filter_traits=not gwas_all,
+        cadd_full=cfg.cadd_full,
+        switched_off=switched_off,
     )
     ready = [a for a in ready if a.name not in choices]
     # gnomAD, AlphaMissense, CADD and the identity table run through
@@ -1048,6 +1125,22 @@ def _run_analysis_command(
     warning = clinvar_skipped_warning(result.sources)
     if warning is not None:
         result.report_warnings.insert(0, warning)
+    # ClinPGx ran on a cache without CPIC's allele-function data (ADR-0065).
+    for annotator in ready:
+        if isinstance(annotator, PharmGKBAnnotator) and annotator.cpic_unavailable():
+            result.report_warnings.append(ReportWarning(CPIC_UNAVAILABLE, CPIC_UNAVAILABLE_TEXT))
+    # A switched-off source is not consulted by the sources that depend on it.
+    display = {a.name: a.display_name for a in registry}
+    for name in choices:
+        if name in _DEPENDENCY_USES:
+            result.report_warnings.append(
+                ReportWarning(
+                    SOURCE_DEPENDENCY_UNAVAILABLE,
+                    f"{display.get(name, name)} is switched off, so no other source used "
+                    f"it: {_DEPENDENCY_USES[name]}. Results that would need it are made "
+                    "without it.",
+                )
+            )
     forced = forced_warning(parser)
     if forced is not None:
         result.report_warnings.insert(0, forced)
@@ -1122,8 +1215,10 @@ def _run_analysis_command(
             f"[yellow]Note:[/yellow] {counter.count:,} malformed line(s) skipped "
             "(see warnings on stderr)."
         )
-    for line in vcf_quality_lines(result.vcf_quality) + array_quality_lines(
-        result.array_quality, result.probe_classes
+    for line in (
+        vcf_quality_lines(result.vcf_quality)
+        + array_quality_lines(result.array_quality, result.probe_classes)
+        + placement_lines(result.placement)
     ):
         console.print(f"[yellow]Note:[/yellow] {line}")
     if result.input_method:
@@ -1254,6 +1349,7 @@ def _run_analysis_command(
         # a defensive assert, not a runtime path.
         assert result.vcf_write_inputs is not None
         stamped = render_vcf(
+            input_method=result.input_method,
             input_path=file_path,
             output_path=vcf_out,
             build=result.build,

@@ -23,6 +23,7 @@ from allelix.parsers.genesforgood import GenesForGoodParser
 from allelix.parsers.livingdna import LivingDNAParser
 from allelix.parsers.myhappygenes import MyHappyGenesParser
 from allelix.parsers.myheritage import MyHeritageParser
+from allelix.parsers.rsidlist import RsidGenotypeListParser
 from allelix.parsers.twentythreeandme import TwentyThreeAndMeParser
 from allelix.parsers.vcf import VcfParser
 
@@ -41,6 +42,9 @@ PARSERS: list[GenotypeParser] = [
     FTDNAFamFinderParser(),  # 5-col tab; must precede FTDNAIlluminaParser
     FTDNAIlluminaParser(),
     VcfParser(),
+    # No positions: placed from the rsID identity table. Last, as the
+    # plainest shape (an ID and a call).
+    RsidGenotypeListParser(),
 ]
 
 

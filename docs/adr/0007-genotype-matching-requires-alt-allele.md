@@ -39,3 +39,12 @@ Strand orientation is assumed consistent (forward) for v0.2.0. Strand-flipping f
 - Future annotators (PharmGKB, GWAS, SNPedia) inherit the same rule. The Annotator ABC docstring states it; per-annotator implementation enforces it.
 - The `Annotation.genotype_match` field records which ALT allele triggered the annotation, so reports can show the user *why* a row appeared.
 - Edge case: A/T and G/C SNPs are strand-ambiguous (the complement is the same letter pair). We accept the small risk of false matches and document the strand-flipping work in ADR-0010.
+
+## Amendment 2.6.0 (2026-11-03): strand handling
+
+Strand orientation is no longer assumed forward. ADR-0066 reads a GWAS
+risk allele, and a SNPedia genotype without a stated orientation, on the
+one strand that fits, and abstains when both fit or neither does. ADR-0023
+(amendment 2026-11-02) writes a normal allele taken from the other build
+on the input build's strand. ClinVar matches the call's REF and ALT as
+written: a VCF REF and an identity-table REF are forward (ADR-0035).

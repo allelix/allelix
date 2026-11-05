@@ -34,6 +34,6 @@ def test_partial_insertion_is_logged_before_rollback(tmp_path, monkeypatch, buil
 
     _log_build(log, call)
     assert cache.read_bytes() == before
-    assert not cache.with_name(cache.name + ".partial").exists()
+    assert not list(cache.parent.glob(f".{cache.name}.*"))
     _metric(log.read_text(), ("records yielded",), 1)
     _metric(log.read_text(), ("rows inserted",), 1)

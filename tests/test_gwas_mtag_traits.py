@@ -26,7 +26,7 @@ SUFFIXES = (" (MTAG)", " (mtag)", " (MtAg)", "  ( MTAG )  ", "(MTAG)", " \t( mTa
 
 
 def _annotations(tmp_path, traits, build, *, batch=True, rsid=RSID):
-    """traits is (trait, risk allele, study); a G/C carrier supports both risk alleles."""
+    """traits is (trait, risk allele, study); A/C supports both with one reading each."""
     data = tmp_path / "data"
     data.mkdir()
     with contextlib.closing(sqlite3.connect(data / "gwas.sqlite")) as conn:
@@ -46,7 +46,7 @@ def _annotations(tmp_path, traits, build, *, batch=True, rsid=RSID):
         )
         conn.commit()
     write_identity_db(
-        [(rsid, "1", 1000, "A", alt, 2000, "A", alt, 0) for alt in ("G", "C")],
+        [(rsid, "1", 1000, "A", "C", 2000, "A", "C", 0)],
         data / RSID_IDENTITY_DB_FILENAME,
         version="synthetic",
         source_url="test://identity",
@@ -56,7 +56,7 @@ def _annotations(tmp_path, traits, build, *, batch=True, rsid=RSID):
         rsid,
         "1",
         1000 if build == "GRCh37" else 2000,
-        "G",
+        "A",
         "C",
         build=build,
         ref="A",
@@ -81,8 +81,8 @@ def test_plain_twin_wins_with_real_trait_suffix(tmp_path, suffix, build, batch, 
     rows, _, _ = _annotations(
         tmp_path,
         [
-            (TRAIT, "G", "GCST900252701"),
-            (TRAIT + suffix, "G", "GCST900252701" if same_study else "GCST900252702"),
+            (TRAIT, "A", "GCST900252701"),
+            (TRAIT + suffix, "A", "GCST900252701" if same_study else "GCST900252702"),
         ],
         build,
         batch=batch,
@@ -95,7 +95,7 @@ def test_plain_twin_wins_with_real_trait_suffix(tmp_path, suffix, build, batch, 
 @pytest.mark.parametrize("suffix", SUFFIXES)
 @pytest.mark.parametrize("build", ["GRCh37", "GRCh38"])
 def test_mtag_only_trait_is_retained(tmp_path, suffix, build):
-    rows, _, _ = _annotations(tmp_path, [(TRAIT + suffix, "G", "GCST900252701")], build)
+    rows, _, _ = _annotations(tmp_path, [(TRAIT + suffix, "A", "GCST900252701")], build)
     assert rollup_gwas_duplicates(rows) == rows
 
 
@@ -103,11 +103,11 @@ def test_mtag_only_trait_is_retained(tmp_path, suffix, build):
 @pytest.mark.parametrize("build", ["GRCh37", "GRCh38"])
 def test_other_differences_are_not_mtag_twins(tmp_path, difference, build):
     other = {
-        "trait": ("Another synthetic trait (MTAG)", "G", "GCST900252701"),
+        "trait": ("Another synthetic trait (MTAG)", "A", "GCST900252701"),
         "allele": (TRAIT + " (MTAG)", "C", "GCST900252701"),
-        "internal-mtag": (TRAIT + " (MTAG) subtype", "G", "GCST900252701"),
+        "internal-mtag": (TRAIT + " (MTAG) subtype", "A", "GCST900252701"),
     }[difference]
-    rows, _, _ = _annotations(tmp_path, [(TRAIT, "G", "GCST900252701"), other], build)
+    rows, _, _ = _annotations(tmp_path, [(TRAIT, "A", "GCST900252701"), other], build)
     for ordered in (rows, rows[::-1]):
         assert len(rollup_gwas_duplicates(ordered)) == 2
 
@@ -118,9 +118,9 @@ def test_different_rsids_are_not_mtag_twins(tmp_path, build):
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
-    plain, _, _ = _annotations(first, [(TRAIT, "G", "GCST900252701")], build)
+    plain, _, _ = _annotations(first, [(TRAIT, "A", "GCST900252701")], build)
     mtag, _, _ = _annotations(
-        second, [(TRAIT + " (MTAG)", "G", "GCST900252701")], build, rsid="rs900252702"
+        second, [(TRAIT + " (MTAG)", "A", "GCST900252701")], build, rsid="rs900252702"
     )
     for ordered in (plain + mtag, mtag + plain):
         result = rollup_gwas_duplicates(ordered)
@@ -135,8 +135,8 @@ def test_cli_reports_roll_up_actual_mtag_twins(tmp_path, build, report_format, s
     annotations, data, variant = _annotations(
         tmp_path,
         [
-            (TRAIT, "G", "GCST900252701"),
-            (TRAIT + " (MTAG)", "G", "GCST900252701" if same_study else "GCST900252702"),
+            (TRAIT, "A", "GCST900252701"),
+            (TRAIT + " (MTAG)", "A", "GCST900252701" if same_study else "GCST900252702"),
         ],
         build,
     )
@@ -144,7 +144,7 @@ def test_cli_reports_roll_up_actual_mtag_twins(tmp_path, build, report_format, s
     source.write_text(
         "##fileformat=VCFv4.2\n"
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n"
-        f"1\t{variant.position}\t{RSID}\tA\tG,C\t.\tPASS\t.\tGT\t1/2\n"
+        f"1\t{variant.position}\t{RSID}\tA\tC\t.\tPASS\t.\tGT\t0/1\n"
     )
     output = tmp_path / f"report.{report_format}"
     args = [

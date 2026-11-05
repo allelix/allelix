@@ -249,4 +249,4 @@ def test_vcf_cli_explicit_reference_and_rejected_rows(
     assert coverage["variants"][0]["genotype"] == "G/G"
     output = _analyze(data, panel, vcf, None)
     assert "0 annotated / 1 typed (no annotation) / 3 no call / 1 not in file" in output
-    assert "Caller FILTER rejected" in output
+    assert "Caller FILTER or sample FT rejected" in output
