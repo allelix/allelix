@@ -303,6 +303,50 @@ class TestMultiAllelicStrandCollision:
         assert bed[3] == 0x01
 
 
+class TestVcfCallsAreNotComplemented:
+    """On VCF input: a VCF call is on the forward strand, so it is never coded
+    by its complement. The complement reading is for chip calls."""
+
+    def test_hom_call_that_fits_only_as_its_complement_is_missing(self, tmp_path):
+        """A/A at a C>T site: missing and counted, never T/T."""
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="A", a2="A")]),
+            prefix,
+            "GRCh37",
+            {"rs1": ("C", "T")},
+            forward_strand_calls=True,
+        )
+        assert counts.allele_mismatches == 1
+        assert counts.complemented == 0
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+
+    def test_het_call_that_fits_only_as_its_complement_is_missing(self, tmp_path):
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="G", a2="A")]),
+            prefix,
+            "GRCh37",
+            {"rs1": ("C", "T")},
+            forward_strand_calls=True,
+        )
+        assert counts.allele_mismatches == 1
+        assert counts.complemented == 0
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x01
+
+    def test_call_that_fits_as_written_is_coded(self, tmp_path):
+        prefix = tmp_path / "out"
+        counts = export_plink(
+            iter([_v("rs1", a1="C", a2="T")]),
+            prefix,
+            "GRCh37",
+            {"rs1": ("C", "T")},
+            forward_strand_calls=True,
+        )
+        assert (counts.allele_mismatches, counts.complemented) == (0, 0)
+        assert (tmp_path / "out.bed").read_bytes()[3] == 0x02
+
+
 class TestComplementOnExport:
     def test_hom_call_that_fits_only_as_its_complement_is_coded_by_it(self, tmp_path):
         """A/A at a C>T site fits only as its complement, T/T: coded homozygous ALT, counted.

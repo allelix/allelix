@@ -7,9 +7,12 @@ onto it once they are complete. A staging name derived from the target alone
 (``gwas.sqlite.tmp``) is shared by every writer of that target: one writer's
 start-up or failure cleanup could delete another's bytes, and its rename
 could publish them. Each operation therefore gets its own name, and removes
-only that name, on success, failure or interruption. A file left behind by a
-killed process is never removed by another run, since it cannot be told
-from a live operation's.
+only that name, on success, failure or interruption: SIGTERM and SIGHUP end
+a command through that cleanup too (2.6.1). A file left behind by a process
+killed outright (SIGKILL, a crash) is never removed by another run, since it
+cannot be told from a live operation's; `db clean` removes it. On Windows a
+forced end (TerminateProcess, SIGTERM there), closing the console and
+Ctrl-Break do not run the SIGTERM/SIGHUP cleanup either.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import secrets
 import tempfile
 from pathlib import Path
@@ -28,6 +32,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ATTEMPTS = 100
+
+# An ``owned_staging`` name with a suffix its callers give it, or a side file
+# SQLite leaves beside a staging database.
+_STAGING_FILE = re.compile(
+    r"\.(?P<target>.+)\.[0-9a-f]{16}(?:\.tmp|\.part|\.partial)(?:-wal|-shm|-journal)?"
+)
+# ``tempfile`` names a directory ``<prefix><8 characters>`` from this alphabet.
+_STAGING_DIRECTORY = re.compile(r"\.(?P<prefix>[a-z_]+)-[a-z0-9_]{8}")
+
+
+def staging_file_target(name: str) -> str | None:
+    """The target name of an ``owned_staging`` file name (or of its side file), else None."""
+    match = _STAGING_FILE.fullmatch(name)
+    return match["target"] if match else None
+
+
+def staging_directory_prefix(name: str) -> str | None:
+    """The prefix of an ``owned_directory`` name, else None."""
+    match = _STAGING_DIRECTORY.fullmatch(name)
+    return match["prefix"] if match else None
 
 
 @contextlib.contextmanager

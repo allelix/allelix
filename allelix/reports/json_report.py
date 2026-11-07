@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "12",
+      "schema_version": "13",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -23,7 +23,12 @@ Output schema (versioned via `schema_version`):
         "vcf_quality": null,
         "array_quality": {"di_calls": 0, "unreadable_genotypes": 0,
                           "not_genotyped": 0, "wrong_column_rows": 0},
-        "probe_classes": {"i_probes_at_plp_loci": 0, "di_calls_at_plp_rsids": 0},
+        "probe_classes": {
+            "i_probes_at_plp_loci": 0,
+            "di_calls_at_plp_rsids": 0,
+            "foreign_allele_calls_at_plp_loci": 0,
+            "unknown_allele_calls_at_plp_loci": 0,
+        },
         "placement": null
       },
       "annotators": [
@@ -72,7 +77,13 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "13"
+# v12 -> v13 (2.6.1, one bump for every 2.6.1 report field):
+# ``input.probe_classes.foreign_allele_calls_at_plp_loci`` and
+# ``unknown_allele_calls_at_plp_loci``; ``high_value_unchecked``
+# adds the reasons ``unplaced``, ``identity_locus_conflict``,
+# ``foreign_alleles``, ``vendor_probe`` and ``unknown_alleles``, and
+# ``di_call`` entries at vendor probes; a probe's ``rsid`` is its ID.
 # v11 -> v12 (2.6.0, one bump for every 2.6 report field): ``input.placement``
 # and the ``input.build_source`` value ``rsid_placement`` (ADR-0069), with a
 # null ``chromosome`` and ``position`` on an unplaced row's findings; the
@@ -91,8 +102,11 @@ SCHEMA_VERSION = "12"
 # unfiltered findings. ``high_value_unchecked`` lists the high-value and
 # ClinVar P/LP sites that could not be checked (``{rsid, gene, name, reason,
 # call, message}``; ``reason`` is ``di_call`` or
-# ``reference_carried_not_in_file``), and ``report_warnings`` carries
-# ``di_calls_not_checked`` naming the D/I calls among them.
+# ``reference_carried_not_in_file``, and since v13 ``unplaced``,
+# ``identity_locus_conflict``, ``foreign_alleles``, ``vendor_probe`` or
+# ``unknown_alleles``), and
+# ``report_warnings`` carries ``di_calls_not_checked`` naming the D/I calls
+# among them.
 # v9 -> v10 (2.5.1): ``input.vcf_quality`` adds the VCF genotype counts and the
 # reference-source/ploidy conflict counts; each panel variant adds nullable
 # ``reason`` for an explicit unusable VCF record (ADR-0055). Arrays emit null;
@@ -141,7 +155,9 @@ SCHEMA_VERSION = "12"
 # saw (``di_calls``, ``unreadable_genotypes``, ``not_genotyped``,
 # ``wrong_column_rows``), and ``input.probe_classes`` the array calls
 # ClinVar never matches at an aggregate-P/LP site
-# (``i_probes_at_plp_loci``, ``di_calls_at_plp_rsids``). Both are null for
+# (``i_probes_at_plp_loci``, ``di_calls_at_plp_rsids``, and since v13
+# ``foreign_allele_calls_at_plp_loci``: chip calls naming a base their own
+# rsID does not list at the locus). Both are null for
 # VCF input; ``probe_classes`` is also null when ClinVar did not run.
 # ADR-0069: ``input.placement`` says how a file without positions (an rsID
 # and genotype list) was placed on GRCh38 from the rsID identity table:

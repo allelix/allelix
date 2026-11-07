@@ -188,3 +188,25 @@ directly. Their non-finding filter reads
 own position on that build. An rsID ClinVar places elsewhere, or a call
 with no position, suppresses nothing. The cross-build rsID identity table
 (ADR-0040) is in place.
+
+## Amendment 2.6.1 (2026-11-05): REF and normal allele from the call's own locus
+
+The 2.6.0 amendment checked that ClinVar places the rsID at the call's
+position, and then took `reference_for`'s rsID-wide answer, and
+`normal_allele_for` ignored the locus. Where ClinVar holds one rsID at more
+than one position, another placement could decide a call: an insertion's
+one-base anchor or another row's REF hid a homozygous-ALT ClinPGx or SNPedia
+finding (or showed a homozygous-reference one), and a reference-carried
+site's normal allele elsewhere replaced an ordinary call's REF, so ClinPGx
+and SNPedia derived an empty ALT. Two reference-carried positions with
+different normal alleles pooled into no answer.
+
+Both lookups now read only the rows at the call's own locus
+(`reference_at`; `normal_allele_for` with a locus). The locus's single-base
+REF and ALT rows count; an insertion anchor does not. Where the reference
+carries the variant allele there (a REF == ALT row), the normal allele is
+that locus's own VariationIDs on the other build, written on this build's
+strand as before (`_normal_at`). A locus without ClinVar's row of the rsID
+gives no REF and no normal allele. A caller that has no locus keeps the
+rsID's single answer, as before. An outdated cache (before iv:9) keeps its
+locus REF until `db update`, the 2.4.1 behaviour.

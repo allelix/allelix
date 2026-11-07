@@ -59,6 +59,16 @@ BOTH_FIT = STRAND_BOTH_FIT
 NO_FIT = STRAND_NO_FIT
 UNPLACED_REASONS = (NOT_AN_RSID, NOT_IN_TABLE, PALINDROMIC, BOTH_FIT, NO_FIT, DI_CALL)
 
+# Why a row of a position-less file stayed unplaced, in report words (ADR-0069).
+UNPLACED_WORDS = {
+    "not_an_rsid": "no rsID",
+    "not_in_table": "rsID not placed once on GRCh38 in the identity table",
+    "palindromic": "A/T or C/G site (strand cannot be told)",
+    "both_fit": "call fits both strands at the site",
+    "no_fit": "call fits neither strand at the site",
+    "di_call": "D/I call",
+}
+
 
 @dataclass
 class PlacementStats:
@@ -69,6 +79,10 @@ class PlacementStats:
     placed: int = 0
     complemented: int = 0
     unplaced: dict[str, int] = field(default_factory=lambda: dict.fromkeys(UNPLACED_REASONS, 0))
+    # Each unplaced row with an rsID: rsID -> (call as written, reason), so
+    # the report can name the ones at high-value or P/LP rsIDs. Not in
+    # ``to_dict``; one entry per rsID.
+    unplaced_rows: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     @property
     def unplaced_total(self) -> int:
@@ -118,6 +132,8 @@ def _place_chunk(
         placed, reason = _place(variant, sites.get(variant.rsid))
         if placed is None:
             stats.unplaced[reason] += 1
+            if reason != NOT_AN_RSID:
+                stats.unplaced_rows.setdefault(variant.rsid, (variant.genotype, reason))
             yield variant
             continue
         stats.placed += 1

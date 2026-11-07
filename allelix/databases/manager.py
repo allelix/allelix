@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import hashlib
+import http.client
 import logging
 import os
 import re
@@ -60,6 +61,20 @@ class DatabaseInfo(TypedDict):
     local_version_tag: str | None
 
 
+# Everything a network reply can raise: transport errors (OSError, URLError
+# among them), a cut or malformed reply (http.client.HTTPException: an
+# IncompleteRead, a BadStatusLine), and a bad URL or body (ValueError). The
+# freshness helpers catch all of them and never raise (ADR-0012, 2.6.1).
+PROBE_ERRORS: tuple[type[Exception], ...] = (OSError, ValueError, http.client.HTTPException)
+
+
+def _probe_failed(url: str, exc: Exception) -> None:
+    """Close an HTTP error's response and log why the probe failed, keeping its type."""
+    if hasattr(exc, "close"):
+        exc.close()
+    logger.debug("Freshness probe of %s failed: %s: %s", url, type(exc).__name__, exc)
+
+
 def fetch_remote_text(
     url: str, timeout: float = SIGNAL_TIMEOUT_SECONDS, *, max_bytes: int | None = None
 ) -> str | None:
@@ -76,9 +91,8 @@ def fetch_remote_text(
             if max_bytes is not None and len(body) > max_bytes:
                 return None
             return body.decode("utf-8", errors="replace")
-    except (OSError, ValueError) as exc:
-        if hasattr(exc, "close"):
-            exc.close()
+    except PROBE_ERRORS as exc:
+        _probe_failed(url, exc)
         return None
 
 
@@ -95,9 +109,8 @@ def head_request_headers(
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return {name.lower(): value for name, value in response.headers.items()}
-    except (OSError, ValueError) as exc:
-        if hasattr(exc, "close"):
-            exc.close()
+    except PROBE_ERRORS as exc:
+        _probe_failed(url, exc)
         return None
 
 

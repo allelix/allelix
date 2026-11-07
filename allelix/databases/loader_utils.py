@@ -82,13 +82,100 @@ def install_prebuilt_gz_cache(
             # CADD files are WAL.
             conn.execute("PRAGMA journal_mode=DELETE")
 
-        os.replace(tmp_path, db_path)
+        publish_cache(tmp_path, db_path)
+
+
+class UnrecoveredJournalError(RuntimeError):
+    """The cache to be replaced has side files SQLite could not fold back into it."""
+
+
+_SIDE_SUFFIXES = ("-journal", "-wal", "-shm")
+
+
+def publish_cache(staged: Path, db_path: Path) -> None:
+    """Move a complete staged cache onto ``db_path``, with no side file of the old one beside it.
+
+    A side file left beside the old cache (a hot ``-journal``, a ``-wal`` with
+    committed frames, its ``-shm``) belongs to the old file: it may be what
+    the old file needs to get back its committed rows, and a reader of a new
+    file at that name would apply it to the new file (2.6.1). So, before
+    anything is replaced, the old file settles them itself (``_settle``). If
+    any side file is still there afterwards, UnrecoveredJournalError is raised
+    and nothing is changed. Only then is the new file moved in.
+    """
+    _settle(db_path)
+    os.replace(staged, db_path)
     remove_side_files(db_path)
 
 
+def _side_files(db_path: Path) -> list[Path]:
+    return [
+        side
+        for suffix in _SIDE_SUFFIXES
+        if (side := db_path.parent / f"{db_path.name}{suffix}").exists()
+    ]
+
+
+def _settle(db_path: Path) -> None:
+    """Fold every side file beside ``db_path`` back into it, or refuse to replace it.
+
+    One rule for every side file of an old database that exists: open it
+    read-write, so SQLite rolls back a hot journal and checkpoints a WAL
+    (``wal_checkpoint(TRUNCATE)``); close it, which removes the WAL and its
+    ``-shm``; then require that no ``-journal``, ``-wal`` or ``-shm`` remains.
+    Then a no-op write in an exclusive transaction lets SQLite remove a stale
+    journal on commit; if a live writer holds the lock, nothing is replaced.
+    A journal is never removed by hand while the database could be in use.
+    Side files whose database is gone are orphans and are removed.
+    """
+    if not _side_files(db_path):
+        return
+    if not db_path.exists():
+        # Orphans of a cache file that is gone hold nothing committed of
+        # anything; left there, a new file at this name would inherit them.
+        remove_side_files(db_path)
+        return
+    reason = "SQLite left them in place"
+    try:
+        with contextlib.closing(sqlite3.connect(db_path, timeout=1, isolation_level=None)) as conn:
+            # The open rolls back a hot journal; the checkpoint folds a WAL in.
+            conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            # A no-op write in an exclusive transaction lets SQLite itself
+            # decide about any journal left (2.6.1): it takes the lock, and on
+            # commit removes a stale journal. A live writer holds the lock, so
+            # the old cache is in use and nothing is replaced. No journal is
+            # ever removed here by hand.
+            conn.execute("PRAGMA busy_timeout = 0")
+            try:
+                conn.execute("BEGIN EXCLUSIVE")
+            except sqlite3.OperationalError as exc:
+                msg = (
+                    f"{db_path} is in use by another program ({exc}); it was not "
+                    "replaced. Close the program using it and run db update again."
+                )
+                raise UnrecoveredJournalError(msg) from exc
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            conn.execute(f"PRAGMA user_version = {int(version)}")
+            conn.execute("COMMIT")
+    except UnrecoveredJournalError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        reason = str(exc)
+    left = _side_files(db_path)
+    if left:
+        msg = (
+            f"{db_path} has SQLite side files beside it "
+            f"({', '.join(side.name for side in left)}) that could not be folded back into "
+            f"it ({reason}); it was not replaced. Close any program using it and run db "
+            "update again, or remove it with `allelix db clean`."
+        )
+        raise UnrecoveredJournalError(msg)
+
+
 def remove_side_files(db_path: Path) -> None:
-    """Remove ``<name>-wal`` and ``<name>-shm`` left beside ``db_path``."""
-    for suffix in ("-wal", "-shm"):
+    """Remove ``<name>-wal``, ``<name>-shm`` and ``<name>-journal`` left beside ``db_path``."""
+    for suffix in ("-wal", "-shm", "-journal"):
         with contextlib.suppress(FileNotFoundError):
             (db_path.parent / f"{db_path.name}{suffix}").unlink()
 

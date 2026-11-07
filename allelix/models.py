@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 NO_CALL_MARKER = "-"
 # Array codes for a deletion and an insertion allele (23andMe ``DI``), not bases.
 DI_ALLELES = frozenset({"D", "I"})
+_BASES = frozenset("ACGT")
 DEFAULT_BUILD = "GRCh37"
 # A half call's missing allele as reports show it (``T/.``), and its zygosity.
 MISSING_ALLELE_DISPLAY = "."
@@ -105,6 +106,13 @@ class Variant:
     # order (``parsers.vcf.is_data_line``). The annotated-VCF writer stamps
     # only the records a call was read from (2.5.2). None for other inputs.
     record_index: int | None = field(default=None, compare=False, repr=False)
+    # A chip call's own rsID's single-base alleles at its build and locus, as
+    # the resolution step learns them while filling REF: the identity table's
+    # SNV rows and gnomAD's rows of that rsID there. ClinVar adds
+    # its own rows of the rsID when it matches. None when the resolution step
+    # did not look (VCF input, or a call built directly with its REF); empty
+    # when it looked and neither source knows the rsID there.
+    allele_evidence: frozenset[str] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         """Normalize allele case at construction (ADR-0035).
@@ -151,6 +159,19 @@ class Variant:
         meaning is format-dependent (some VCFs use `-` for indel deletions).
         """
         return self.allele1 == NO_CALL_MARKER or self.allele2 == NO_CALL_MARKER
+
+    @property
+    def foreign_alleles(self) -> bool:
+        """True when a single-base call names a base outside ``allele_evidence``.
+
+        Only what the resolution step learned; ClinVar decides with its own
+        rows of the rsID added (``ClinVarAnnotator._annotations_for``).
+        """
+        called = {a.upper() for a in (self.allele1, self.allele2) if a and a != NO_CALL_MARKER}
+        evidence = self.allele_evidence or frozenset()
+        if not called or not called <= _BASES or not evidence:
+            return False
+        return not called <= evidence
 
     @property
     def is_di_call(self) -> bool:

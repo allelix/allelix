@@ -32,6 +32,7 @@ from allelix.databases.cache_state import (
     cache_state,
     connect_readonly,
 )
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.manager import (
     download,
     verify_file_hash,
@@ -182,6 +183,18 @@ class SNPediaAnnotator(Annotator):
         self._forward_site_provider = forward_site_provider
         self._reference_prefetch = reference_prefetch
         self._strand_abstained = dict.fromkeys(STRAND_ABSTAIN_REASONS, 0)
+        # whether a D/I call at a vendor i ID reads that probe's page.
+        self._vendor_probe_pages = False
+
+    def read_vendor_probe_pages(self, enabled: bool) -> None:
+        """Let a D/I call at an ``i`` ID read its page, for a 23andMe file only.
+
+        A 23andMe ``i`` ID names 23andMe's own probe, and SNPedia's page for it
+        is written for that probe, so the page says which indel the call names.
+        The pipeline turns this on only when the 23andMe parser read the file;
+        everywhere else a D/I call reaches no source (ADR-0070).
+        """
+        self._vendor_probe_pages = enabled
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -192,9 +205,11 @@ class SNPediaAnnotator(Annotator):
         """Download the pre-built SNPedia cache from HuggingFace.
 
         The HuggingFace asset contains raw wiki markup (third-party,
-        CC-BY-NC-SA). After download, ``prepare_cache()`` runs the
-        client-side parse into structured genotype rows and stamps
-        ``database_versions`` with proper version metadata.
+        CC-BY-NC-SA). It is installed and parsed into structured genotype
+        rows in this setup's own staging directory, and moved onto the cache
+        only once parsed (2.6.1): an interrupted, failed or concurrent
+        refresh keeps the cache you had. A parse that leaves no usable cache
+        raises, so it is never reported as installed.
         """
         # This setup's own download directory: another setup of the same
         # cache can neither replace nor remove the file it verifies.
@@ -202,12 +217,50 @@ class SNPediaAnnotator(Annotator):
             gz_path = staging / "snpedia.sqlite.gz"
             download(SNPEDIA_CACHE_URL, gz_path)
             verify_file_hash(gz_path, "sha256", SNPEDIA_EXPECTED_SHA256)
-            install_prebuilt_cache(
-                gz_path,
-                self._db_path,
-                source_url=SNPEDIA_CACHE_URL,
+            staged = staging / SNPEDIA_DB_FILENAME
+            install_prebuilt_cache(gz_path, staged, source_url=SNPEDIA_CACHE_URL)
+            gz_path.unlink()
+            self._parse_and_publish(staged)
+
+    def _parse_and_publish(self, staged: Path) -> None:
+        """Parse the raw pages in ``staged`` and move it onto the cache once it is ready."""
+        from allelix.databases.snpedia_parser import (
+            detect_raw_table,
+            has_structured_table,
+            parse_raw_pages,
+            parser_is_current,
+        )
+
+        with contextlib.closing(sqlite3.connect(staged)) as conn:
+            has_rows = has_structured_table(conn)
+            # A legacy `|pv:` signal is stamped as the tag here, not re-parsed.
+            current = has_rows and parser_is_current(conn)
+            raw_table = None if current else detect_raw_table(conn)
+            if raw_table is not None:
+                snp_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {raw_table} WHERE category='snp'"
+                ).fetchone()[0]
+                genotype_count = conn.execute(
+                    f"SELECT COUNT(*) FROM {raw_table} WHERE category='genotype'"
+                ).fetchone()[0]
+        if raw_table is not None:
+            reason = "parser version changed" if has_rows else "one-time"
+            print(
+                f"Parsing {snp_count} SNP pages + {genotype_count} genotype pages"
+                f" into structured table ({reason}, ~5 min)...",
+                flush=True,
             )
-        self.prepare_cache()
+            parsed = parse_raw_pages(str(staged))
+            print(f"Parsed {parsed} SNPedia genotype rows.", flush=True)
+        status = self._status_of(staged)
+        if not status.ready:
+            why = status.detail or status.state.value
+            raise RuntimeError(
+                f"SNPedia pages did not parse into a usable cache ({why}); "
+                "the cache you had is kept"
+            )
+        self.close()
+        publish_cache(staged, self._db_path)
 
     def reference_call_rsids(self) -> Iterable[str]:
         """Every rsID with a row here, streamed (ADR-0064); none when the cache is not ready."""
@@ -226,7 +279,11 @@ class SNPediaAnnotator(Annotator):
         Raw pages not yet parsed, or parsed by an older parser, are
         ``outdated``: the update step parses them (``prepare_cache``).
         """
-        status = cache_state(self._db_path, None)
+        return self._status_of(self._db_path)
+
+    def _status_of(self, path: Path) -> CacheStatus:
+        """The state of the SNPedia cache at ``path``: the live cache or a staged one."""
+        status = cache_state(path, None)
         if not status.ready:
             return status
         from allelix.databases.snpedia_parser import (
@@ -236,19 +293,17 @@ class SNPediaAnnotator(Annotator):
         )
 
         try:
-            with contextlib.closing(connect_readonly(self._db_path)) as conn:
+            with contextlib.closing(connect_readonly(path)) as conn:
                 if has_structured_table(conn):
                     if parser_tag_is_current(conn):
                         return READY
-                    return CacheStatus(
-                        CacheState.OUTDATED, self._db_path, "parser version changed"
-                    )
+                    return CacheStatus(CacheState.OUTDATED, path, "parser version changed")
                 if detect_raw_table(conn) is not None:
-                    return CacheStatus(CacheState.OUTDATED, self._db_path, "pages not parsed yet")
+                    return CacheStatus(CacheState.OUTDATED, path, "pages not parsed yet")
         except sqlite3.DatabaseError as exc:
-            return CacheStatus(CacheState.CORRUPT, self._db_path, str(exc))
+            return CacheStatus(CacheState.CORRUPT, path, str(exc))
         return CacheStatus(
-            CacheState.CORRUPT, self._db_path, "no rows in snpedia_genotypes and no raw pages"
+            CacheState.CORRUPT, path, "no rows in snpedia_genotypes and no raw pages"
         )
 
     def prepare_cache(self) -> bool:
@@ -256,43 +311,26 @@ class SNPediaAnnotator(Annotator):
 
         Also runs when the parser version changed. A legacy cache whose
         ``remote_signal`` carries the current ``|pv:`` marker is stamped
-        instead of re-parsed.
+        instead of re-parsed. The work is done on a copy in this
+        operation's own staging directory and moved onto the cache once
+        ready (2.6.1); if it fails, the cache is left as it was, and the
+        reason is printed.
         """
         if self.cache_status().state is not CacheState.OUTDATED:
             return False
         try:
-            from allelix.databases.snpedia_parser import (
-                detect_raw_table,
-                has_structured_table,
-                parse_raw_pages,
-                parser_is_current,
-            )
-
-            with contextlib.closing(sqlite3.connect(self._db_path)) as conn:
-                has_rows = has_structured_table(conn)
-                if has_rows and parser_is_current(conn):
-                    return True
-                raw_table = detect_raw_table(conn)
-                if raw_table is None:
-                    return False
-                snp_count = conn.execute(
-                    f"SELECT COUNT(*) FROM {raw_table} WHERE category='snp'"
-                ).fetchone()[0]
-                genotype_count = conn.execute(
-                    f"SELECT COUNT(*) FROM {raw_table} WHERE category='genotype'"
-                ).fetchone()[0]
-
-            reason = "parser version changed" if has_rows else "one-time"
-            print(
-                f"Parsing {snp_count} SNP pages + {genotype_count} genotype pages"
-                f" into structured table ({reason}, ~5 min)...",
-                flush=True,
-            )
-            parsed = parse_raw_pages(str(self._db_path))
-            print(f"Parsed {parsed} SNPedia genotype rows.", flush=True)
-            return parsed > 0
-        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            with owned_directory(self.data_dir, "snpedia") as staging:
+                staged = staging / SNPEDIA_DB_FILENAME
+                with (
+                    contextlib.closing(connect_readonly(self._db_path)) as source,
+                    contextlib.closing(sqlite3.connect(staged)) as copy,
+                ):
+                    source.backup(copy)
+                self._parse_and_publish(staged)
+        except (sqlite3.DatabaseError, RuntimeError, OSError) as exc:
+            print(f"SNPedia: could not parse the pages ({exc}); the cache you had is kept.")
             return False
+        return True
 
     def version(self) -> str | None:
         """Return a version string from the database_versions table."""
@@ -420,10 +458,13 @@ class SNPediaAnnotator(Annotator):
 
     def _candidate(self, variant: Variant) -> tuple[str, str, tuple[str, str]] | None:
         """``(snp_id, page path, sorted alleles)`` for a call SNPedia can match, else None."""
-        if variant.is_no_call or variant.is_di_call:
-            # A D/I call is not interpreted (ADR-0070).
-            return None
         snp_id = variant.rsid.lower()
+        if variant.is_no_call or (
+            variant.is_di_call and not (self._vendor_probe_pages and snp_id.startswith("i"))
+        ):
+            # A D/I call is not interpreted (ADR-0070), except at a 23andMe
+            # file's own i-probe page.
+            return None
         if snp_id.startswith("rs"):
             snp_num = snp_id[2:]
             snp_url_path = f"Rs{snp_num}"

@@ -116,7 +116,12 @@ class ReferenceCarriedFallback:
 
         ``reference_at`` and ``normal_allele_for`` then answer those sites
         from memory; a site not prefetched is still decided on its own.
+        Where ClinVar answers, it reads the batch's loci in bulk too.
         """
+        variants = list(variants)
+        read = [variant for variant in variants if self._reads_build(variant.build)]
+        if read:
+            self._clinvar.prefetch_rows_at(read)
         wanted: dict[str, set[str]] = {}
         for variant in variants:
             build = variant.build

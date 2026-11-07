@@ -102,3 +102,21 @@ above for HTTP signals.
 
 The GWAS Catalog and ClinPGx are the only sources whose signal comes from
 HTTP headers.
+
+## Amendment 2.6.1 (2026-11-05): a one-build ClinVar install is checked too
+
+The pre-analysis freshness check and `db status` built ClinVar for both
+builds. With only one build installed (`db update --build grch37` or
+`grch38`), that annotator was not ready, so the check skipped ClinVar (no
+probe, no refresh, no "N days old" notice) and `db status` showed it not
+ready, although `analyze` used it. Both now build ClinVar from the builds
+whose caches are ready, as the analysis already did
+(`installed_clinvar_builds`), and fall back to both builds when none is:
+a stale one-build cache is probed and refreshed for its own build only.
+
+## Amendment 2.6.1 (2026-11-06): db status shows the builds that are there
+
+`db status` builds ClinVar from the builds whose cache file exists, not only
+the ready ones, so a damaged or outdated second build shows ClinVar not
+ready instead of being left out. The freshness check keeps using the ready
+builds, as above.

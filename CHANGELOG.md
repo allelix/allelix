@@ -2,6 +2,206 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-11-07
+
+### Changed
+- The 2.6.0 note on speed is corrected: whole-genome VCF and gVCF input
+  take roughly 30-40% longer than in 2.5.2, not up to about a fifth, and
+  plain VCFs slow down too, measured on real input. Speed is about the
+  same as in 2.6.0, although a homozygous-reference call is now checked
+  against ClinVar's REF at the call's own position. Most chip files take
+  the same time or less; two smaller 23andMe files took about 10% longer,
+  within the run-to-run spread on the test machine, and a GRCh37
+  whole-genome VCF about 6% longer.
+- SNPedia reads 23andMe's own probe pages again: a `D`/`I` call at a 23andMe
+  `i` probe, in a file the 23andMe parser read, is matched to SNPedia's page
+  for that probe, as in 2.5.2. The `i` ID names 23andMe's own probe, so its
+  page says which indel the call names; 23andMe's CFTR probe `i4000292`
+  gets its finding back. A `D`/`I` call at an rsID, or from any other
+  parser, is still interpreted by no source (ADR-0070).
+- JSON reports use schema 13 (2.6.0 wrote 12), and `--diff` reads
+  baselines in schemas 1 to 13. `input.probe_classes` adds
+  `foreign_allele_calls_at_plp_loci` and `unknown_allele_calls_at_plp_loci`,
+  and `high_value_unchecked` adds the reasons `unplaced`,
+  `identity_locus_conflict`, `foreign_alleles`, `vendor_probe` and
+  `unknown_alleles`.
+- The report names every call it could not check at a high-value site, or
+  where ClinVar classifies the variant as Pathogenic or Likely pathogenic, not
+  only counts it: rows of an rsID and genotype list that could not be placed
+  (each once), calls at vendor probes without an rsID (23andMe `i` probes,
+  `D`/`I` or bases), `D`/`I` calls under an rsID with no Pathogenic or Likely
+  pathogenic ClinVar row, calls the rsID identity table places elsewhere, chip
+  calls naming a base their own rsID does not have there, and rsID calls whose
+  alleles no source knows there, those with no REF included. They are listed
+  with the D/I calls already named, on the console, in HTML and in JSON, each
+  with why; the existing counts are unchanged (ADR-0051). For positional D/I
+  naming, a Pathogenic or Likely pathogenic row at the call's position, or an
+  indel whose REF span covers it or ends up to five bases before it, supplies
+  the notice, which the line names; long deletions are included. An
+  insertion's REF span is only its anchor, with the same five-base allowance.
+  A call under an rsID ClinVar holds keeps that rsID's own ClinVar gene. A D/I
+  call whose own rsID has such a row is named by its rsID, as before.
+
+### Fixed
+- `export plink` reads a VCF call as written. In 2.6.0 a VCF call that did
+  not fit its site's REF/ALT pair, but whose complement did, was coded as
+  the complement: `T/T` at an A/G site was written as `A/A`, a homozygous
+  reference call. It is now exported as missing and counted, as a call that
+  fits neither allele. The complement reading is kept for chip files,
+  whose probes can be on the minus strand (ADR-0066).
+- `export plink` without `--output-prefix` no longer replaces an existing
+  file that shares the input's stem, such as an unrelated `genome.bed`
+  next to `genome.vcf`. When the `.bed`, `.bim` or `.fam` it would write
+  already exists, it stops before any work and names the file; pass
+  `--output-prefix` to choose another (ADR-0056).
+- `compare` pairs a gVCF record with the same record in a plain VCF again.
+  A gVCF writes `<NON_REF>` as an extra ALT on every variant record; in
+  2.6.0 it was part of the record's identity, so `rs1 A G,<NON_REF>` and
+  `rs1 A G` were each reported as in one file only instead of being
+  compared. The reference-block ALT (`<NON_REF>`, `<*>`) is now left out,
+  for named and unnamed records (ADR-0054).
+- `allelix db clean` removes only the names allelix creates in the data
+  directory: the caches and their side files, the GWAS Catalog table kept
+  for re-ingest, the ClinVar build log, staging entries left by a killed
+  update, and downloads earlier releases left there. It used to remove
+  every entry except `config.toml`, so it deleted CADD full-mode files
+  (`whole_genome_SNVs.tsv.gz`, the indel table and their `.tbi` indexes),
+  even with `--keep-cadd`, and any other file kept in the data directory,
+  such as a genome file or a reports folder (the 2.6.0 Known issue).
+  A directory is removed only when it is one of allelix's staging
+  directories, so a folder named like a cache keeps its contents. What it
+  keeps, apart from `config.toml` and what `--keep-cadd` keeps, is now
+  listed. Its help and the README no longer say that everything it removes
+  can be fetched again: the ClinVar build log cannot. `--force` is accepted
+  and has no effect, and a directory holding only staging entries is cleaned
+  without it. A staging-shaped hidden directory (`.<source>-<8 characters>`)
+  is removed only when every entry in it is a name allelix writes there: its
+  downloads, the partial files of a download or of a cache being built, and
+  an empty `extracted/`. An update killed while it downloads, loads the
+  GWAS table or builds the first ClinVar build leaves only those. One
+  holding anything else is kept and listed as "may be an interrupted
+  update's leftovers; delete it by hand if so", since allelix cannot tell:
+  a backup named like `.clinvar-20261101/`, an extracted table, or a
+  finished candidate not yet moved into place (the first build of a
+  two-build ClinVar update, SNPedia's staged pages while they parse). v0.7.x's
+  single `clinvar.sqlite` cache and its side files are allelix's and are
+  removed.
+- A `db update` (or any command) stopped by SIGTERM or SIGHUP removes its
+  staging files, which can be several GB, on the way out, and exits with
+  status 128 + the signal number. Before, those signals ended it without
+  its cleanup. One killed by SIGKILL or a crash still leaves them; `db
+  clean` removes them, except a staging directory holding a finished cache or
+  an extracted table, which it keeps and lists (above). A ClinVar build's
+  temporary index of `variant_summary` (a `tmp….sqlite` file in the system
+  temp directory) is outside the data directory, so `db clean` does not
+  remove one a killed update left; delete it by hand. On Windows a forced
+  end (TerminateProcess, as `taskkill /F` and Task Manager use, and SIGTERM
+  there), closing the console and Ctrl-Break do not run this cleanup either;
+  `db clean` removes what they leave by the same rule. Do not run `db
+  clean` while an update is running in the same data directory, including
+  an `analyze` without `--no-update`, whose refresh can build a cache there.
+- A SNPedia refresh keeps the cache you had until the new one is parsed. It
+  used to install the raw pages over `snpedia.sqlite` and parse them there,
+  so a Ctrl-C or an SQLite error (a full disk, for example) during the
+  several-minute parse, or two refreshes at once, left SNPedia unusable, and
+  `db update` could report "✓ refreshed" over it. A parse killed outright
+  left a journal beside the cache that made it unreadable for good: every
+  later `db update` downloaded it again and still reported success. The
+  pages are now parsed in a staging directory, and the parsed cache moved
+  into place only when it is ready; a failed parse is reported as a
+  failure. Before installing a prebuilt cache (gnomAD, AlphaMissense, CADD,
+  the rsID identity table) or SNPedia, allelix lets SQLite fold a journal or
+  write-ahead log left beside the old cache back into it, so that data can
+  neither be lost when the install fails nor applied to the new cache. A
+  stale journal is left to SQLite to remove, in a no-op write under its
+  exclusive lock, so a journal that holds nothing no longer blocks every
+  install. If the old cache is in use by another program, SQLite cannot
+  recover it, or a side file remains, the install stops and says so, and
+  nothing is replaced. ClinVar,
+  GWAS Catalog and ClinPGx still install as before.
+- In CADD full mode without CADD's `whole_genome_SNVs.tsv.gz` and its
+  `.tbi` index in the data directory, `db update --cadd` downloaded and
+  installed the 5.8 GB CADD cache again on every run, and reported CADD
+  ready, although full mode never reads that cache. It now downloads nothing
+  in full mode, names the missing file, says `db update` cannot fetch it,
+  and fails; a file that is there but cannot be read fails too, with a
+  permissions message. `analyze` names the file and where to get it,
+  instead of advising `db update`.
+- A ClinVar install with only one build (`db update --build grch37` or
+  `grch38`) is freshness-checked before an analysis and refreshed when
+  NCBI's release has changed, like a two-build install; offline, the
+  "N days old" notice is shown. It used to be skipped, and `db status`
+  showed ClinVar not ready although `analyze` used it. `db status` shows
+  the builds whose cache file is there, so a damaged or outdated second
+  build shows ClinVar not ready.
+- A freshness check whose reply was cut short or malformed (a chunked body
+  cut off, a bad status line) crashed `analyze` and `db update`; the CPIC
+  check also crashed on a connection closed without a reply, or on a reply
+  that was valid JSON but not a list of rows. They now count
+  as a check that could not be made: `analyze` goes on with the cache it
+  has, and prints its usual "N days old" notice (ADR-0012).
+- A partial reply from CPIC's API was used as the whole table, which could
+  hide a ClinPGx finding: a Normal-function row kept and a Decreased-function
+  row for the same variant dropped. Each CPIC table is now used only when the
+  reply holds all of it; otherwise the ClinPGx cache is built without CPIC
+  data and marked so, as when CPIC is down, and the next update tries again.
+  The same goes for a reply whose rows are not JSON objects, or hold a value
+  of the wrong type (a number for a function status, a list for an id),
+  which used to fail the ClinPGx update.
+- A ClinVar cache file that is not an SQLite database (an empty, cut or
+  overwritten file) is replaced by `db update`, as `analyze` advises. `db
+  update` used to refuse it ("existing cache record count is missing or
+  invalid"), with or without `--force`, and with `--build both` it held back
+  the healthy other build too. A readable ClinVar cache with a missing or
+  invalid record count is still refused (ADR-0053).
+- `analyze` printing to a console, pipe or redirect that is not UTF-8 (a
+  Windows cp1252 pipe, an ASCII locale) crashed with `UnicodeEncodeError` on
+  a character the stream cannot hold, such as the plausibility marker "○".
+  Such a character is now printed as "?". A UTF-8 console, and a non-strict
+  error mode set with `PYTHONIOENCODING` (`cp1252:ignore`,
+  `cp1252:backslashreplace`), are unchanged; a strict one, given or by
+  default, is replaced. Reports and other files are written as UTF-8, as
+  before.
+- A chip call that names a base its own rsID does not have at that
+  position no longer gets another rsID's ClinVar finding there. A `CC` call
+  for an rsID whose alleles are G and A, at a position where another rsID
+  has a Pathogenic G>C row, was reported as that Pathogenic finding. The
+  rsID's alleles there are taken from the rsID identity table's SNV rows,
+  ClinVar's own rows of the rsID and, for GRCh38 input only, gnomAD's
+  (gnomAD's positions are GRCh38). A call is matched to its own rsID's
+  rows as before, and to another rsID's row only when every called base is
+  one of those alleles. Where no source knows the rsID's alleles, no other
+  rsID's row is matched either. So a call whose rsID only gnomAD knows can
+  get another rsID's finding at that position on GRCh38, and is named as
+  unknown on GRCh37. The report counts and names these calls at a
+  Pathogenic or Likely pathogenic position (ADR-0051). VCF input is
+  unchanged. gnomAD is listed among the sources used when ClinVar asked it
+  only for a call's alleles.
+- `analyze`, `methylation` and `pharmacogenomics` stop at once on an
+  `--output` whose extension names no report format, or a `--diff`
+  baseline that is not a usable report (not JSON, not an object, or with an
+  annotation value of the wrong type), before the update step and the
+  analysis.
+  Before, both were found only after the freshness check and the whole
+  analysis had run (ADR-0056).
+- `compare`'s error for a multi-sample VCF names `--sample1` or `--sample2`
+  for the file concerned. It said `--sample`, an option `compare` does not
+  have.
+- `--vcf-out` no longer writes a call's `ALLELIX_CLINVAR_REF` finding on an
+  explicit hom-ref record at the same site that gave no call of its own (a
+  `0/0` duplicate, or a `0/0` deletion whose REF covers the site), at sites
+  where the reference carries ClinVar's variant allele. A VCF reader took
+  that `0/0` record as a homozygous carrier. A reference record the
+  analysis rebuilt a call from is still stamped, identical duplicates
+  included (docs/formats.md, Annotated VCF).
+- ClinPGx and SNPedia take ClinVar's REF, and the normal allele where the
+  reference carries a variant, from the rows at the call's own position.
+  Where ClinVar holds one rsID at more than one position (an insertion
+  anchored a base earlier next to an SNV, two placements, or a
+  reference-carried site elsewhere), another placement could hide a
+  homozygous-ALT finding, report a homozygous-reference call, or give a
+  finding an empty ALT (ADR-0023, ADR-0039).
+
 ## [2.6.0] - 2026-11-05
 
 No database needs rebuilding after upgrading: caches built by 2.5.2 stay
@@ -44,9 +244,11 @@ uses its pure-Python parser.
   `contradictory_calls`, `identity_locus_conflict`, `cpic_unavailable` and
   `source_dependency_unavailable`. A call with a failing FORMAT `FT` is
   counted in the filtered rows. `--diff` reads schemas 1 to 12.
-- Whole-genome gVCF input can take up to about a fifth longer, because
+- Whole-genome VCF and gVCF input take roughly 30-40% longer than in 2.5.2
+  (a whole genome still takes about three and a half minutes), because
   every call is checked for conflicts with reference calls at target sites
-  (ADR-0064).
+  (ADR-0064). [Corrected in 2.6.1: this said gVCF input could take up to
+  about a fifth longer.]
 - GWAS Catalog associations whose risk allele fits both strands at the site
   are now skipped and counted in the report instead of read as written
   (ADR-0066). This can leave out many GWAS rows, most visibly at a low
@@ -4695,6 +4897,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.6.1]: https://github.com/allelix/allelix/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/allelix/allelix/compare/v2.5.2...v2.6.0
 [2.5.2]: https://github.com/allelix/allelix/compare/v2.5.1...v2.5.2
 [2.5.1]: https://github.com/allelix/allelix/compare/v2.5.0...v2.5.1

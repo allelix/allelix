@@ -219,6 +219,12 @@ def _populate_ref_from_identity(identity: RsidIdentityAnnotator, variants: list[
     Such a call keeps ``ref`` None, and ClinVar matches it by locus only
     when ClinVar holds its rsID.
 
+    The alleles of those rows that are SNVs (REF and ALT one base each) are
+    added to the call's ``allele_evidence``; an indel row's
+    one-base side says nothing about SNV alleles. ClinVar uses that evidence,
+    with its own rows of the rsID, to decide whether another rsID's row at
+    the locus may match the call. REF is filled as before.
+
     A call without an rsID (array vendor probes such as 23andMe
     ``i5000123``) never gets a REF from position alone. The REF at a locus
     says nothing about which strand the vendor reported the probe's alleles
@@ -240,11 +246,24 @@ def _populate_ref_from_identity(identity: RsidIdentityAnnotator, variants: list[
         group = [v for v in pending if v.build == build]
         rows_at = identity.alleles_at_loci(build, {variant_locus(v) for v in group})
         for v in group:
-            refs = {ref for ref, _alt, rsid in rows_at.get(variant_locus(v), []) if rsid == v.rsid}
+            own = [
+                (ref, alt)
+                for ref, alt, rsid in rows_at.get(variant_locus(v), [])
+                if rsid == v.rsid
+            ]
+            refs = {ref for ref, _alt in own}
             if len(v.allele1) <= 1 and len(v.allele2) <= 1:
                 refs = {r for r in refs if len(r) == 1}
+                v.allele_evidence = (v.allele_evidence or frozenset()) | _snv_alleles(own)
             if len(refs) == 1:
                 v.ref = next(iter(refs))
+
+
+def _snv_alleles(rows: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """The bases of the (REF, ALT) rows that are SNVs; an indel row is no evidence."""
+    return frozenset(
+        a.upper() for ref, alt in rows if len(ref) == 1 and len(alt) == 1 for a in (ref, alt)
+    )
 
 
 def _resolve_from_identity(
@@ -320,8 +339,10 @@ def _populate_ref_from_gnomad(gnomad: GnomadAnnotator, variants: list[Variant]) 
     """GRCh38 ``Variant.ref`` fallback from gnomAD's rsID coordinates.
 
     Accepted only when the coordinate is the variant's own locus and its
-    REF is unique there. Variants no source covers keep ``ref=None`` and
-    degrade gracefully (direct match, no strand flip).
+    REF is unique there. gnomAD's SNV alleles of the rsID at the locus are
+    added to ``allele_evidence``, after the identity step. Variants
+    no source covers keep ``ref=None`` and degrade gracefully (direct match,
+    no strand flip).
     """
     need_ref = {
         v.rsid
@@ -334,10 +355,14 @@ def _populate_ref_from_gnomad(gnomad: GnomadAnnotator, variants: list[Variant]) 
     for v in variants:
         if v.build != BUILD_GRCH38 or v.ref is not None:
             continue
-        refs = {
-            ref
-            for chrom, pos, ref, _alt in coord_map.get(v.rsid, [])
+        here = [
+            (ref, alt)
+            for chrom, pos, ref, alt in coord_map.get(v.rsid, [])
             if (chrom, pos) == variant_locus(v)
-        }
+        ]
+        # gnomAD's rows of the call's own rsID are allele evidence too.
+        if len(v.allele1) <= 1 and len(v.allele2) <= 1:
+            v.allele_evidence = (v.allele_evidence or frozenset()) | _snv_alleles(here)
+        refs = {ref for ref, _alt in here}
         if len(refs) == 1:
             v.ref = refs.pop()

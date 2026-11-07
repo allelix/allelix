@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from allelix.models import Variant
@@ -168,6 +169,35 @@ DI_CALLS_NOT_CHECKED = "di_calls_not_checked"
 # Why a high-value or Pathogenic site could not be checked.
 UNCHECKED_DI_CALL = "di_call"
 UNCHECKED_NOT_IN_FILE = "reference_carried_not_in_file"
+# 2.6.1: calls the counts already covered, now also named.
+UNCHECKED_UNPLACED = "unplaced"
+UNCHECKED_IDENTITY_CONFLICT = "identity_locus_conflict"
+UNCHECKED_FOREIGN_ALLELES = "foreign_alleles"
+UNCHECKED_VENDOR_PROBE = "vendor_probe"
+UNCHECKED_UNKNOWN_ALLELES = "unknown_alleles"
+# ``detail`` of a foreign- or unknown-allele call when another rsID's ClinVar
+# row stands at its position.
+OTHER_RSID_AT_LOCUS = "other_rsid"
+
+
+@dataclass(frozen=True)
+class UncheckedCall:
+    """A call the run could not check, before the high-value / P/LP filter.
+
+    ``site`` is the call's rsID or vendor probe ID, ``call`` the call as the
+    file wrote it, ``reason`` one of the ``UNCHECKED_*`` reasons, and
+    ``detail`` the words that say more (an unplaced row's reason, a
+    conflict's position, the row that names a D/I call by position).
+    ``plp_gene`` is ClinVar's gene where ClinVar classifies the site
+    Pathogenic or Likely pathogenic, None where it does not; a call is named
+    when it is P/LP or its rsID is high-value.
+    """
+
+    site: str
+    call: str
+    reason: str
+    detail: str = ""
+    plp_gene: str | None = None
 
 
 @dataclass(frozen=True)
@@ -176,9 +206,18 @@ class UncheckedSite:
 
     ``reason`` is ``di_call`` (an array call written as D or I, a deletion
     or insertion code no source can be matched to; ``call`` is the call as
-    written) or ``reference_carried_not_in_file`` (a plain VCF with no
+    written), ``reference_carried_not_in_file`` (a plain VCF with no
     record where the reference genome carries the ClinVar variant allele,
-    so a person homozygous for it has no record either).
+    so a person homozygous for it has no record either), or since 2.6.1
+    ``unplaced`` (a row of an rsID and genotype list that placement could
+    not place), ``identity_locus_conflict`` (a call at a position the rsID
+    identity table does not give for its rsID) or ``foreign_alleles`` (a
+    chip call naming a base that is not one of its own rsID's alleles there)
+    or ``vendor_probe`` (a base call at a vendor probe without an rsID
+    where ClinVar classifies the variant Pathogenic or Likely pathogenic), or
+    ``unknown_alleles`` (an rsID call whose alleles at its position no source
+    knows).
+    ``rsid`` is the probe ID (``i…``) for a call at a vendor probe.
     """
 
     rsid: str
@@ -186,17 +225,82 @@ class UncheckedSite:
     name: str
     reason: str
     call: str = ""
+    detail: str = ""
 
     @property
     def text(self) -> str:
         """The site and why it was not checked, in one line."""
         label = " ".join(part for part in (self.gene, self.name) if part)
         site = f"{label} ({self.rsid})" if label else self.rsid
+        not_assessed = "Not assessed: this is neither a finding nor a normal result."
+        if self.reason == UNCHECKED_DI_CALL and not self.rsid.startswith("rs"):
+            # A vendor probe: only ClinVar's side is said; SNPedia may read the
+            # probe's own page.
+            if self.detail:  # named by the P/LP row at or near its position
+                return (
+                    f"{site}: called {self.call}, a deletion or insertion code at a vendor "
+                    f"probe, named because {self.detail}. ClinVar does not match a probe "
+                    "to that variant, so ClinVar did not check it."
+                )
+            return (
+                f"{site}: called {self.call}, a deletion or insertion code at a vendor "
+                "probe. ClinVar does not match a probe to the variant at its position, "
+                "so ClinVar did not check it."
+            )
+        if self.reason == UNCHECKED_VENDOR_PROBE:
+            return (
+                f"{site}: called {self.call} at a vendor probe without an rsID. ClinVar "
+                "does not match a probe to the variant at its position (nothing confirms "
+                "the probe tests it), so ClinVar did not check it."
+            )
+        if self.reason == UNCHECKED_DI_CALL and self.detail:
+            # an rsID with no P/LP row, named by position. The detail says
+            # which row named it, and for an rsID ClinVar holds, that ClinVar
+            # does not classify the rsID itself as P/LP.
+            return (
+                f"{site}: called {self.call}, a deletion or insertion code that Allelix "
+                f"cannot check against its sources, named because {self.detail}. "
+                f"{not_assessed}"
+            )
         if self.reason == UNCHECKED_DI_CALL:
             return (
                 f"{site}: called {self.call}, a deletion or insertion code that Allelix "
-                "cannot check against its sources. Not assessed: this is neither a "
-                "finding nor a normal result."
+                f"cannot check against its sources. {not_assessed}"
+            )
+        if self.reason == UNCHECKED_UNPLACED:
+            return (
+                f"{site}: called {self.call}, a row of the rsID and genotype list that "
+                f"could not be placed ({self.detail}), so ClinVar could not check it. "
+                "This does not affect a source that looks a call up by its rsID."
+            )
+        if self.reason == UNCHECKED_IDENTITY_CONFLICT:
+            return (
+                f"{site}: called {self.call} at {self.detail}, a position the rsID "
+                "identity table does not give for this rsID, so no source read it. "
+                f"{not_assessed}"
+            )
+        other = self.detail == OTHER_RSID_AT_LOCUS
+        if self.reason == UNCHECKED_FOREIGN_ALLELES:
+            return (
+                f"{site}: called {self.call}, a base that is not one of its own rsID's "
+                "alleles at this position (in the rsID identity table, ClinVar or gnomAD), "
+                + (
+                    "so ClinVar did not match it to another rsID's row there, which could "
+                    "have been taken for it."
+                    if other
+                    else "so ClinVar compared it only with its own rsID's rows."
+                )
+            )
+        if self.reason == UNCHECKED_UNKNOWN_ALLELES:
+            return (
+                f"{site}: called {self.call}. No source knows this rsID's alleles at its "
+                "position, "
+                + (
+                    "so ClinVar did not match it to another rsID's row there, which could "
+                    "have been taken for it."
+                    if other
+                    else "so ClinVar did not check it against the variant there."
+                )
             )
         return (
             f"{site}: no record in this VCF. The reference genome carries the ClinVar "
@@ -221,6 +325,7 @@ def unchecked_sites(
     variants: list[Variant],
     di_calls_at_plp: dict[str, tuple[str, str]],
     not_in_file: list[str],
+    other_calls: Iterable[UncheckedCall] = (),
 ) -> list[UncheckedSite]:
     """The high-value and ClinVar P/LP sites that could not be checked, by rsID.
 
@@ -228,6 +333,8 @@ def unchecked_sites(
     rsID ClinVar classifies Pathogenic or Likely pathogenic
     (``di_calls_at_plp``: rsID -> call, gene). A reference-carried site with
     no record in a plain VCF (``not_in_file``) is named when it is high-value.
+    Each of ``other_calls`` is named when ClinVar classifies its site P/LP
+    or its rsID is high-value, once per site and reason.
     """
     from allelix.models import DI_ALLELES
 
@@ -251,6 +358,22 @@ def unchecked_sites(
         snp = high_value[rsid]
         sites.append(
             UncheckedSite(rsid=rsid, gene=snp.gene, name=snp.name, reason=UNCHECKED_NOT_IN_FILE)
+        )
+    named = {(site.rsid, site.reason) for site in sites}
+    for c in sorted(other_calls, key=lambda c: (c.site, c.reason)):
+        snp = high_value.get(c.site)
+        if (c.site, c.reason) in named or (c.plp_gene is None and snp is None):
+            continue
+        named.add((c.site, c.reason))
+        sites.append(
+            UncheckedSite(
+                rsid=c.site,
+                gene=snp.gene if snp is not None and snp.gene else c.plp_gene or "",
+                name=snp.name if snp is not None else "",
+                reason=c.reason,
+                call=c.call,
+                detail=c.detail,
+            )
         )
     return sites
 

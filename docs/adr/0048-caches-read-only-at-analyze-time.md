@@ -121,3 +121,60 @@ In `analyze` and the focused reports, the automatic update step leaves the
 cache files of a source switched off for the run untouched: no WAL
 conversion, no `prepare_cache`, no refresh, and its cache never decides
 readiness. `db update` still converts and prepares every cache (ADR-0067).
+
+## Amendment 2.6.1 (2026-11-05): SNPedia parses a staged copy
+
+The SNPedia parse ran on the published cache: `setup()` installed the raw
+pages over `snpedia.sqlite`, then `prepare_cache()` parsed that file in
+place, in one long transaction, and returned False on an SQLite error. A
+Ctrl-C or SQLite error during the parse left the cache unparsed; two
+refreshes at once could leave it unparsed while both reported success; and
+a parse killed outright left a hot `-journal` beside the published file,
+which a read-only open cannot recover and the next read-write open would
+replay into a newly installed file.
+
+Both now work in an `owned_directory` of their own (ADR-0056, 2.6.0
+amendment): `setup()` installs the download there, and `prepare_cache()`
+copies the outdated cache there through SQLite's backup API. The parse,
+or the legacy `|pv:` stamp, runs on that copy, and the copy is moved onto
+`snpedia.sqlite` only once it reads as ready. Until then the cache you had
+is the one published. A parse that leaves no usable cache raises in
+`setup()`, so `db update` reports a failure, not a success. In
+`prepare_cache()` the failure is printed and the outdated cache is left as
+it was.
+
+Every prebuilt install, and SNPedia's publish, goes through
+`publish_cache`, with one rule for every side file the old cache leaves.
+A hot `-journal` is what the old file needs to get back its committed rows,
+and a `-wal` holds committed pages the old file has not absorbed yet; a
+reader of a new file at the same name would apply either to the new file.
+So, before anything is replaced, the old database is opened read-write:
+SQLite rolls back a hot journal and checkpoints a WAL
+(`PRAGMA wal_checkpoint(TRUNCATE)`), and closing it removes the WAL and its
+`-shm`. Then no `-journal`, `-wal` or `-shm` may remain beside it. If
+recovery fails (the old file is locked or cannot be opened) or any side file
+remains, the install stops with `UnrecoveredJournalError`, which
+names `db clean`, before `os.replace`: the old file keeps its committed rows
+and its side files. Only then is the new file moved in, and its name's side
+files removed. Side files whose old cache file is gone are orphans that hold
+nothing committed of anything: they are removed before the new file moves
+in, as the installer did before 2.6.1.
+
+## Amendment 2.6.1 (2026-11-06): which installs settle, and an empty journal
+
+The amendment above holds for the installs that go through `publish_cache`:
+the prebuilt caches (gnomAD, AlphaMissense, CADD, the rsID identity table)
+and SNPedia. ClinVar, GWAS Catalog and ClinPGx still publish their cache with
+a bare `os.replace`, as in 2.6.0; moving them onto `publish_cache` is left
+for a later release.
+
+A `-journal` that holds nothing (empty, or without SQLite's journal header)
+is not hot: SQLite ignores it and leaves it in place when the old file is
+opened, and refusing over it blocked every later install. It is also what a
+live writer's open transaction has, so `_settle` does not judge it by its
+bytes. After the open, it runs a no-op write in an exclusive transaction
+(`BEGIN EXCLUSIVE` with no busy timeout, `user_version` rewritten to its
+own value, `COMMIT`): SQLite takes the lock and removes a stale journal on
+commit. If the lock is busy, the old cache is in use and nothing is
+replaced. A journal still left after the commit refuses, as above. No
+journal is removed by hand while the database could be in use.

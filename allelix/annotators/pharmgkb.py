@@ -5,10 +5,8 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import sqlite3
-import urllib.error
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.annotators.base import (
@@ -25,6 +23,7 @@ from allelix.databases.cpic_loader import (
     fetch_cpic_remote_signal,
 )
 from allelix.databases.manager import (
+    PROBE_ERRORS,
     download,
     get_database_info,
     head_request_headers,
@@ -226,7 +225,9 @@ class PharmGKBAnnotator(Annotator):
             download(url, zip_path)
             try:
                 cpic_lookup = fetch_cpic_allele_functions()
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except PROBE_ERRORS as exc:
+                # A transport failure, a cut reply, or a partial table
+                # (CpicIncompleteError): the cache is built without CPIC rows.
                 logger.warning(
                     "CPIC API unavailable (%s) -- proceeding without "
                     "allele function data. Non-finding filter degraded.",

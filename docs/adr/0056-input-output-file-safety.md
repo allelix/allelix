@@ -123,3 +123,97 @@ or updates a cache it did not just build:
   that cache still holds the content it checked, in the same statement; a
   cache another refresh installed meanwhile keeps its own signal (ADR-0068,
   amendment 2026-11-03).
+
+## Amendment 2.6.1 (2026-11-05): the default PLINK prefix never replaces a file
+
+Without `--output-prefix`, `export plink` derives its prefix from the
+input's stem, so its three destinations are files the user did not name.
+When any of them already exists, a link (even a dangling one) included,
+the command stops before any work, names it and writes nothing
+(`export_plink_cmd` in `allelix/cli/utility.py`). In 2.6.0 an unrelated
+`genome.bed` beside `genome.vcf` was replaced. An explicit
+`--output-prefix` keeps the rule above: its files are replaced, atomically
+per file.
+
+## Amendment 2.6.1 (2026-11-05): `db clean` removes only allelix's names
+
+`db clean` removed every entry in the data directory except `config.toml`,
+behind a guard that only asked for one name starting with a source prefix.
+CADD full-mode files, which the user downloads and places there and
+`db update` cannot fetch, were deleted with the caches, `--keep-cadd`
+included, and so was any other file kept there.
+
+It now removes only names allelix creates in the data directory: each
+cache and its SQLite side files (`-wal`, `-shm`, `-journal`); GWAS's kept
+table and the ClinVar build log; staging entries, both this ADR's
+per-operation names (`.<name>.<16 hex digits><suffix>` and the
+`.<source>-<8 characters>` directories) and the shared `<name>.tmp`,
+`.part` and `.partial` names of earlier releases; and the downloads
+earlier releases left in the data directory (the prebuilt `.gz` files, the
+GWAS and ClinPGx zips, ClinVar's VCF). A name given to a file counts only
+for a file or a symbolic link, and a link is removed, never followed; a
+directory is removed only when it has the staging-directory shape. Every
+other entry is kept, and listed apart from `config.toml` and what
+`--keep-cadd` keeps.
+`--keep-cadd` keeps the CADD cache's names. The guard is gone, since
+nothing allelix did not create is removed; `--force` is accepted and has
+no effect. A staging entry left by a killed process is therefore removed by
+`db clean` without `--force`.
+
+## Amendment 2.6.1 (2026-11-05): signals end a command through its cleanup
+
+A `db update` stopped by SIGTERM or SIGHUP left its staging entries (which
+can be several GB), since Python's default action for those signals ends
+the process without running `finally` blocks. SIGTERM and SIGHUP now end
+every command as a normal exit, with status 128 + the signal number, so each
+owner removes its own entries. A signal the caller ignores (SIGHUP under
+`nohup`) or handles is left alone; during the cleanup only the handlers
+installed here are set to ignore a second signal, and they are restored
+afterwards.
+
+A process killed outright (SIGKILL, a crash) still removes nothing, and no
+other run removes what it left: it cannot be told from a live operation's.
+`db clean` removes it, since it removes only names allelix creates (above).
+`db clean` cannot tell that an update is running, so it is not to be run
+during one. Telling a dead operation's entries from a live one's (a lock the
+live operation holds, and a sweep at the start of the next) is left for a
+later release.
+
+## Amendment 2.6.1 (2026-11-06): staging-shaped directories, legacy names, Windows
+
+`db clean` removes a directory of the staging shape (`.<source>-<8
+characters>`) only when every entry in it is an exact name allelix
+downloads there (the ClinVar TSV pair, the prebuilt `.sqlite.gz` files, the
+GWAS zip and its table, the ClinPGx zip) or a partial file of one. The
+shape alone is not enough: a user's dated backup such as
+`.clinvar-20261101/` has it too. GWAS's extracted table is named by EBI's
+zip, so it cannot be proven allelix's either. A staging directory holding
+anything else, a cache built there by a killed update included, is kept and
+listed as possibly an interrupted update's leftovers, to delete by hand.
+
+v0.7.x's single `clinvar.sqlite`, before the per-build files, is one of
+allelix's names, with its side files. No other name of a release before 2.0
+is written into the data directory: the CHANGELOG's other file names are
+read inside a download, fetched without being kept, or were never written.
+
+On Windows a forced end (TerminateProcess, as `taskkill /F` and Task
+Manager use, and SIGTERM there), closing the console and Ctrl-Break do not
+run the SIGTERM/SIGHUP cleanup of the amendment above. A normal exit, an
+error and Ctrl-C do. After a forced end, as after SIGKILL, `db clean`
+removes what is left.
+
+## Amendment 2.6.1 RC3 (2026-11-06): what a killed update's staging directory holds
+
+`db clean` removes a staging directory when it holds only names allelix
+writes there: its downloads and their partial files (amendment above), a
+cache's partial file while it is built there (`.<cache>.<16
+hex>.partial`, with its side files), and an empty `extracted/`, which a
+GWAS refresh leaves once its table is moved out. So an update killed while
+it downloads, loads the GWAS table or builds the first ClinVar build leaves
+only allelix's names, and `db clean` removes the directory. A staging
+directory holding anything else is kept and listed, to delete by hand: a
+finished candidate under its own name (the first build of a two-build
+ClinVar update, SNPedia's staged pages while they parse), a table still in
+`extracted/`, a user's backup. Marking a finished candidate
+as allelix's own, so that it too can be removed, is left for a later
+release.

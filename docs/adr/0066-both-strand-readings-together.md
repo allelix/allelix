@@ -149,3 +149,14 @@ have got right, to avoid the ones it got wrong.
   result depend on whether a site is exonic. A common-allele site definition
   from a whole-genome frequency source would need its own ADR, superseding
   ADR-0024's "no allele-frequency rescue".
+
+## Amendment 2.6.1 (2026-11-05): PLINK reads a VCF call as written
+
+The complement reading in PLINK export is for chip probes, whose strand is
+not known. A VCF or gVCF call is on the forward strand already, so
+`export plink` reads it only as written (`forward_strand_calls` in
+`allelix/exporters/plink.py`): at a pair that is not A/T or C/G, a VCF call
+that does not fit the pair as written is exported as missing and counted,
+not coded as its complement. In 2.6.0 a `T/T` call at an A/G site was
+written as `A/A`. Chip calls keep the reading above, and the A/T and C/G
+rule is unchanged.

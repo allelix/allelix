@@ -356,6 +356,21 @@ def array_quality_lines(
             "ClinVar classifies the variant as Pathogenic or Likely pathogenic. They are "
             "not matched to ClinVar: nothing confirms that a probe tests that variant."
         )
+    foreign = probe_classes.get("foreign_allele_calls_at_plp_loci", 0) if probe_classes else 0
+    if foreign:
+        lines.append(
+            f"{foreign:,} call(s) sit where ClinVar classifies a variant as Pathogenic or "
+            "Likely pathogenic, but name a base that is not one of their own rsID's alleles "
+            "there (in the rsID identity table, ClinVar or gnomAD). ClinVar compared them "
+            "only with their own rsID's rows."
+        )
+    unknown = probe_classes.get("unknown_allele_calls_at_plp_loci", 0) if probe_classes else 0
+    if unknown:
+        lines.append(
+            f"{unknown:,} call(s) sit where ClinVar classifies a variant as Pathogenic or "
+            "Likely pathogenic, under an rsID whose alleles there no source knows. ClinVar "
+            "did not take the variant there for theirs."
+        )
     if stats is not None and stats.di_calls:
         at_plp = probe_classes.get("di_calls_at_plp_rsids", 0) if probe_classes else 0
         lines.append(
@@ -371,22 +386,13 @@ def array_quality_lines(
     return lines
 
 
-# Why a row of a position-less file stayed unplaced, in report words (ADR-0069).
-_UNPLACED_WORDS = {
-    "not_an_rsid": "no rsID",
-    "not_in_table": "rsID not placed once on GRCh38 in the identity table",
-    "palindromic": "A/T or C/G site (strand cannot be told)",
-    "both_fit": "call fits both strands at the site",
-    "no_fit": "call fits neither strand at the site",
-    "di_call": "D/I call",
-}
-
-
 def placement_lines(placement: PlacementStats | None) -> list[str]:
     """Plain-language lines on how a position-less file's rows were placed (ADR-0069).
 
     Shared by the terminal and HTML output. Empty for files with positions.
     """
+    from allelix.annotators._placement import UNPLACED_WORDS
+
     if placement is None:
         return []
     lines = [
@@ -400,7 +406,7 @@ def placement_lines(placement: PlacementStats | None) -> list[str]:
     ]
     if placement.unplaced_total:
         reasons = "; ".join(
-            f"{count:,} {_UNPLACED_WORDS[reason]}"
+            f"{count:,} {UNPLACED_WORDS[reason]}"
             for reason, count in placement.unplaced.items()
             if count
         )
@@ -441,7 +447,11 @@ def input_left_unchecked(
         or stats.symbolic_rows
     ):
         return True
-    if probe_classes and probe_classes.get("i_probes_at_plp_loci", 0):
+    if probe_classes and (
+        probe_classes.get("i_probes_at_plp_loci", 0)
+        or probe_classes.get("foreign_allele_calls_at_plp_loci", 0)
+        or probe_classes.get("unknown_allele_calls_at_plp_loci", 0)
+    ):
         return True
     return bool(array_stats is not None and array_stats.di_calls)
 

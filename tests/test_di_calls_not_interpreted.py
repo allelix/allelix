@@ -7,7 +7,9 @@ specification available to Allelix establishes which allele each letter
 stands for, so
 ClinVar does not match such a call, and no other source may either:
 not SNPedia, whose pages can be written in the same letters (``(D;I)``),
-whatever orientation the page states, at an rsID or a vendor i-ID; not the
+whatever orientation the page states, at an rsID or a vendor i-ID (apart
+from a 23andMe file's own i-probe page,
+``test_snpedia_23andme_probe_pages.py``); not the
 GWAS Catalog, whose rows without a risk allele fire on the rsID alone; and
 not ClinPGx. The call is still counted (``array_quality.di_calls``), and at
 a high-value or ClinVar Pathogenic rsID it is named as not checked.
@@ -355,10 +357,12 @@ _DI_RSIDS = {rsid for rsid, gt in _CHIP_CALLS if set(gt) & {"D", "I"}}
 
 
 def test_chip_report_has_no_source_row_for_any_di_call(tmp_path, data):
+    # The one exception is SNPedia's page for a 23andMe file's own i probe
+    # (tests/test_snpedia_23andme_probe_pages.py).
     report = _analyze_json(
         data, _array(tmp_path / "a.txt", _CHIP_CALLS), tmp_path / "r.json", "--build", "grch37"
     )
-    assert _di_rows(report, _DI_RSIDS) == []
+    assert _di_rows(report, _DI_RSIDS - {IPROBE}) == []
 
 
 def test_chip_report_still_counts_every_di_call(tmp_path, data):
@@ -389,7 +393,9 @@ def test_switching_snpedia_off_changes_nothing_for_di_calls(tmp_path, data):
     off = _analyze_json(
         data, array, tmp_path / "off.json", "--build", "grch37", "--exclude-snpedia"
     )
-    assert _di_rows(on, _DI_RSIDS) == _di_rows(off, _DI_RSIDS) == []
+    # Apart from SNPedia's page for a 23andMe file's own i probe.
+    assert _di_rows(on, _DI_RSIDS - {IPROBE}) == _di_rows(off, _DI_RSIDS) == []
+    assert _di_rows(on, {IPROBE}) == [("snpedia", IPROBE)]
     assert on["input"]["array_quality"] == off["input"]["array_quality"]
     assert on["high_value_unchecked"] == off["high_value_unchecked"]
 

@@ -111,6 +111,7 @@ if TYPE_CHECKING:
         VcfQualityStats,
     )
     from allelix.reports._sources import SourceRecord
+    from allelix.reports.high_value import UncheckedCall
     from allelix.reports.vcf import VcfWriteInputs
 
 
@@ -316,6 +317,10 @@ class AnalysisResult:
     # pathogenic: rsID -> (the call as written, ClinVar's gene). They are
     # never matched; the report names them as not checked.
     di_calls_at_plp: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # other calls the run could not check (unplaced rsID-list rows,
+    # identity locus conflicts, foreign-allele calls, D/I calls at vendor
+    # probes), before the high-value / P/LP filter of ``unchecked_sites``.
+    unchecked_calls: list[UncheckedCall] = field(default_factory=list)
     # when --filter-file supplies a rsid panel, the pipeline
     # records which panel rsIDs the input file actually carries so
     # reporters can surface coverage (state 2: genotyped but no
@@ -1642,6 +1647,117 @@ def _with_trimmed_matches(
     return stats
 
 
+def _read_vendor_probe_pages(annotators: list[Annotator], parser: GenotypeParser) -> None:
+    """SNPedia reads 23andMe's own i-probe pages for a file the 23andMe parser read.
+
+    The exact parser, not a subclass: Genes for Good writes 23andMe-style
+    files, but its ``i`` IDs are not 23andMe's probes.
+    """
+    from allelix.annotators.snpedia import SNPediaAnnotator
+    from allelix.parsers.twentythreeandme import TwentyThreeAndMeParser
+
+    for annotator in annotators:
+        if isinstance(annotator, SNPediaAnnotator):
+            annotator.read_vendor_probe_pages(parser.name == TwentyThreeAndMeParser.name)
+
+
+def _wire_allele_evidence(
+    annotators: list[Annotator], gnomad: GnomadAnnotator | None
+) -> list[bool]:
+    """Give ClinVar gnomAD's own-rsID alleles as evidence for this run.
+
+    Only an enabled, ready gnomAD; its coordinates are GRCh38, so other builds
+    get nothing. Each (rsID, locus) is looked up once. Returns a one-item list
+    that turns True when gnomAD is first queried, hit or empty, so the report
+    records gnomAD as used (ADR-0049).
+    """
+    from allelix.annotators.clinvar import ClinVarAnnotator
+
+    queried = [False]
+    provider = None
+    if gnomad is not None and gnomad.is_ready():
+        seen: dict[tuple[str, str, int], frozenset[str]] = {}
+
+        def provider(v: Variant) -> frozenset[str]:
+            if v.build != BUILD_GRCH38 or not v.rsid.startswith("rs"):
+                return frozenset()
+            chrom, pos = variant_locus(v)
+            key = (v.rsid, chrom, pos)
+            if key not in seen:
+                queried[0] = True
+                seen[key] = frozenset(
+                    a.upper()
+                    for c, p, ref, alt in gnomad.bulk_resolve_coordinates({v.rsid}).get(v.rsid, [])
+                    if (c, p) == (chrom, pos) and len(ref) == 1 and len(alt) == 1
+                    for a in (ref, alt)
+                )
+            return seen[key]
+
+    for annotator in annotators:
+        if isinstance(annotator, ClinVarAnnotator):
+            annotator.set_allele_evidence_provider(provider)
+    return queried
+
+
+def _unchecked_calls(
+    clinvar: ClinVarAnnotator | None,
+    variants: list[Variant],
+    conflict_ids: set[int],
+    placement: PlacementStats | None,
+    build: str,
+) -> list[UncheckedCall]:
+    """The calls the run could not check, each with its ClinVar P/LP gene if any.
+
+    ClinVar keeps the calls it did not fully check (foreign or unknown
+    alleles, vendor probes, vendor-probe D/I calls), with the gene of a P/LP
+    row at the locus or None; identity conflicts and unplaced rsID-list rows
+    never reach it, so their rsIDs are looked up there (``plp_genes``). An
+    unplaced D/I row is left to the D/I naming, which already names it.
+    """
+    from allelix.annotators._placement import DI_CALL, UNPLACED_WORDS
+    from allelix.reports.high_value import (
+        UNCHECKED_IDENTITY_CONFLICT,
+        UNCHECKED_UNPLACED,
+        UncheckedCall,
+    )
+
+    kept = clinvar.unchecked() if clinvar is not None else {}
+    calls = [
+        UncheckedCall(site, call, reason, detail=detail, plp_gene=gene)
+        for (site, reason), (call, gene, detail) in kept.items()
+    ]
+    conflicts = [v for v in variants if id(v) in conflict_ids]
+    unplaced = placement.unplaced_rows if placement is not None else {}
+    genes = clinvar.plp_genes({v.rsid for v in conflicts}, build) if clinvar is not None else {}
+    unplaced_genes = (
+        clinvar.plp_genes(unplaced, placement.build)
+        if clinvar is not None and placement is not None
+        else {}
+    )
+    calls.extend(
+        UncheckedCall(
+            v.rsid,
+            v.genotype,
+            UNCHECKED_IDENTITY_CONFLICT,
+            detail=f"{v.chromosome}:{v.position} on {build}",
+            plp_gene=genes.get(v.rsid),
+        )
+        for v in conflicts
+    )
+    calls.extend(
+        UncheckedCall(
+            rsid,
+            call,
+            UNCHECKED_UNPLACED,
+            detail=UNPLACED_WORDS[reason],
+            plp_gene=unplaced_genes.get(rsid),
+        )
+        for rsid, (call, reason) in unplaced.items()
+        if reason != DI_CALL
+    )
+    return calls
+
+
 def _probe_classes(
     clinvar: Annotator | None, clinvar_counts: dict[str, int], build: str
 ) -> dict[str, int] | None:
@@ -1651,6 +1767,12 @@ def _probe_classes(
     return {
         "i_probes_at_plp_loci": clinvar_counts.get("i_probes_at_plp_loci", 0),
         "di_calls_at_plp_rsids": clinvar_counts.get("di_calls_at_plp_rsids", 0),
+        "foreign_allele_calls_at_plp_loci": clinvar_counts.get(
+            "foreign_allele_calls_at_plp_loci", 0
+        ),
+        "unknown_allele_calls_at_plp_loci": clinvar_counts.get(
+            "unknown_allele_calls_at_plp_loci", 0
+        ),
     }
 
 
@@ -1803,6 +1925,11 @@ def run_analysis(
         chain(annotators, (gnomad, alphamissense, cadd, identity), resource_owners)
     ) as owners:
         bound = [owners[id(a)] for a in annotators]
+        _read_vendor_probe_pages(bound, parser)
+        # True once ClinVar's lazy evidence lookup has queried gnomAD.
+        gnomad_queried = _wire_allele_evidence(
+            bound, cast("GnomadAnnotator", owners[id(gnomad)]) if gnomad is not None else None
+        )
         metadata = parser.get_metadata(file_path)
         decision = decide_file_build(
             parser, file_path, metadata, override=build_override, place_rows=True
@@ -1891,7 +2018,13 @@ def run_analysis(
         # annotated VCF stamps reference records by ``reference_rows`` only
         # (ADR-0059), never as a record's own call.
         rebuilt_calls: set[int] = set()
+        # The input records those reference calls were rebuilt from.
+        rebuilt_records: set[int] = set()
         identity_conflict_total = 0
+        # identity-conflict calls (``id()`` of the
+        # conflicts in ``conflict_ids``), named later where it matters.
+        unchecked_variants: list[Variant] = []
+        conflict_ids: set[int] = set()
 
         def _flush() -> None:
             if not batch_buf:
@@ -1941,6 +2074,9 @@ def run_analysis(
             conflicts = _identity_conflicts(batch_buf, identity, effective_build)
             nonlocal identity_conflict_total
             identity_conflict_total += len(conflicts)
+            # kept to name the ones at high-value or P/LP sites.
+            unchecked_variants.extend(v for v in batch_buf if id(v) in conflicts)
+            conflict_ids.update(conflicts)
             to_annotate = (
                 [v for v in batch_buf if id(v) not in conflicts] if conflicts else batch_buf
             )
@@ -2089,6 +2225,8 @@ def run_analysis(
                 cast("VcfParser", parser).quality_stats.reference_carried_calls -= 1
                 continue
             rebuilt_calls.add(id(call))
+            if call.record_index is not None:
+                rebuilt_records.add(call.record_index)
             rc_keys.add((call.rsid, variant_locus(call)))
             _accept(call)
         _flush()
@@ -2120,6 +2258,8 @@ def run_analysis(
                 # single-base record placed elsewhere is a counted conflict.
                 conflicts = _identity_conflicts(chunk, identity, effective_build)
                 identity_conflict_total += len(conflicts)
+                unchecked_variants.extend(v for v in chunk if id(v) in conflicts)
+                conflict_ids.update(conflicts)
                 # One rsID can stand at two placements in a chunk: annotate in
                 # runs so each finding keeps its own call (ADR-0062).
                 for run in _record_runs([v for v in chunk if id(v) not in conflicts]):
@@ -2185,6 +2325,9 @@ def run_analysis(
         if identity is not None and identity.is_ready() and effective_build in _IDENTITY_BUILDS:
             annotators_used.append((identity.name, identity.version()))
         annotators_used.extend((e.name, e.version()) for e in enriched_by)
+        if gnomad is not None and gnomad_queried[0] and gnomad not in enriched_by:
+            # Queried as allele evidence only: used, though it enriched nothing.
+            annotators_used.append((gnomad.name, gnomad.version()))
 
         # panel coverage derives genotyped rsIDs above (state 2+3
         # boundary) and annotated rsIDs from the post-enrichment annotation
@@ -2220,6 +2363,7 @@ def run_analysis(
                 record_rows=vcf_record_rows,
                 record_recovered=vcf_record_recovered,
                 reference_rows=vcf_stats.reference_rows if vcf_stats is not None else {},
+                reference_records=frozenset(rebuilt_records),
             )
 
         clinvar_counts = clinvar_resolver.run_counts() if clinvar_resolver is not None else {}
@@ -2254,6 +2398,15 @@ def run_analysis(
             di_calls_at_plp=cast("ClinVarAnnotator", clinvar_resolver).di_calls_at_plp()
             if clinvar_resolver is not None
             else {},
+            unchecked_calls=_unchecked_calls(
+                cast("ClinVarAnnotator", clinvar_resolver)
+                if clinvar_resolver is not None
+                else None,
+                unchecked_variants,
+                conflict_ids,
+                placement,
+                effective_build,
+            ),
             panel_rsids=result_panel,
             genotyped_panel_rsids=result_genotyped,
             panel_annotated_rsids=result_annotated,

@@ -24,7 +24,11 @@ from rich.console import Console
 from rich.markup import escape
 
 from allelix.annotators import get_annotators
-from allelix.annotators.clinvar import CLINVAR_SUPPORTED_BUILDS, ClinVarAnnotator
+from allelix.annotators.clinvar import (
+    CLINVAR_SUPPORTED_BUILDS,
+    ClinVarAnnotator,
+    clinvar_db_filename,
+)
 from allelix.annotators.pharmgkb import PharmGKBAnnotator, signal_lacks_cpic
 from allelix.databases import resolve_data_dir
 from allelix.databases.manager import compare_signals
@@ -221,6 +225,7 @@ def _resolve_parser(
     *,
     keep_filtered: bool = False,
     min_gq: int | None = None,
+    sample_option: str = "--sample",
 ) -> GenotypeParser:
     """Resolve the parser for ``file_path``, with VCF sample binding.
 
@@ -235,6 +240,9 @@ def _resolve_parser(
       (it's not wrong, just redundant).
     - ``--sample`` on a non-VCF format → silently ignored (no error;
       the option is VCF-specific by design).
+
+    ``sample_option`` is the option the error names (``compare`` reads two
+    files, with ``--sample1`` and ``--sample2``).
 
     ``keep_filtered`` / ``min_gq`` set the VCF quality gate;
     ``min_gq=None`` keeps the parser default. Both are ignored for
@@ -270,7 +278,12 @@ def _resolve_parser(
         )
         try:
             bound.validate_sample(file_path)
-        except (MultiSampleError, SampleNotFoundError) as exc:
+        except MultiSampleError as exc:
+            # The parser names --sample; a command whose option differs
+            # (compare's --sample1/--sample2) is named instead (2.6.1).
+            text = str(exc).replace("pass --sample <ID>", f"pass {sample_option} <ID>")
+            raise click.ClickException(text) from exc
+        except SampleNotFoundError as exc:
             raise click.ClickException(str(exc)) from exc
         return _mark_forced(bound, warning)
 
@@ -309,6 +322,38 @@ def forced_warning(parser: GenotypeParser) -> ReportWarning | None:
     return ReportWarning(FORCED_FORMAT_CODE, message) if message else None
 
 
+def present_clinvar_builds(data_dir: Path) -> tuple[str, ...]:
+    """The ClinVar builds whose cache file exists, or every build when none does.
+
+    `db status` shows these (2.6.1): a build whose file is there but damaged
+    or outdated makes ClinVar not ready, rather than being left out as
+    ``installed_clinvar_builds`` (the ready builds) leaves it out.
+    """
+    present = tuple(
+        build
+        for build in CLINVAR_SUPPORTED_BUILDS
+        if (data_dir / clinvar_db_filename(build)).exists()
+    )
+    return present or CLINVAR_SUPPORTED_BUILDS
+
+
+def installed_clinvar_builds(data_dir: Path) -> tuple[str, ...]:
+    """The ClinVar builds whose caches are ready, or every build when none is.
+
+    ClinVar is ready when one build's cache is: a user who installed only
+    GRCh37 can analyze GRCh37 input. Input on the other build finds ClinVar
+    skipped once the build is decided. The freshness check and `db status`
+    use the same builds (2.6.1), so a one-build install is checked and shown
+    like a two-build one.
+    """
+    ready_builds = tuple(
+        build
+        for build in CLINVAR_SUPPORTED_BUILDS
+        if ClinVarAnnotator(data_dir, builds=(build,)).cache_status().ready
+    )
+    return ready_builds or CLINVAR_SUPPORTED_BUILDS
+
+
 def _ready_annotators(
     data_dir: Path | None,
     *,
@@ -322,20 +367,12 @@ def _ready_annotators(
     ``switched_off`` sources are never consulted as a dependency (ADR-0067).
     """
     resolved = resolve_data_dir(data_dir)
-    # ClinVar is ready when one build's cache is: a user who installed
-    # only GRCh37 can analyze GRCh37 input. Input on the other build
-    # finds ClinVar skipped once the build is decided.
-    ready_builds = tuple(
-        build
-        for build in CLINVAR_SUPPORTED_BUILDS
-        if ClinVarAnnotator(resolved, builds=(build,)).cache_status().ready
-    )
     annotators = get_annotators(
         resolved,
         include_benign=include_benign,
         gwas_filter_traits=gwas_filter_traits,
         cadd_full=cadd_full,
-        clinvar_builds=ready_builds or CLINVAR_SUPPORTED_BUILDS,
+        clinvar_builds=installed_clinvar_builds(resolved),
         switched_off=switched_off,
     )
     ready: list[Annotator] = []
@@ -379,6 +416,8 @@ def unready_line(annotator: Annotator, status: CacheStatus) -> str:
             "you cannot write. Run `allelix db update` once with write access to "
             f"{where.parent}."
         )
+    if status.remedy:
+        return f"{name}: {where} not found. {status.remedy}"
     return f"{name}: not installed. Run `allelix db update`."
 
 
@@ -670,7 +709,11 @@ def _maybe_refresh_databases(
     If the network is unreachable, warns and continues with stale caches.
     """
     now = time.time()
-    annotators = [a for a in get_annotators(data_dir) if a.name not in switched_off]
+    annotators = [
+        a
+        for a in get_annotators(data_dir, clinvar_builds=installed_clinvar_builds(data_dir))
+        if a.name not in switched_off
+    ]
     for annotator in annotators:
         with annotator:
             if not annotator.requires_download or not annotator.is_ready():
@@ -991,6 +1034,18 @@ def _run_analysis_command(
                 check_writable(destination)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
+    # The report format and the --diff baseline are checked here too, before
+    # the update step and the analysis (ADR-0056, 2.6.1).
+    chosen = _format_from_path(output, report_format) if output is not None else None
+    prev = None
+    if diff_path is not None:
+        try:
+            prev = load_previous_report(diff_path)
+        except OSError as exc:
+            msg = f"Cannot read the --diff baseline {diff_path}: {exc.strerror or exc}"
+            raise click.ClickException(msg) from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     # The parser first: a --format warning is printed before anything else.
     parser = _resolve_parser(
@@ -1162,6 +1217,7 @@ def _run_analysis_command(
         result.vcf_quality.reference_carried_not_in_file_rsids
         if result.vcf_quality is not None
         else [],
+        result.unchecked_calls,
     )
     di_unchecked = [site for site in unchecked if site.reason == UNCHECKED_DI_CALL]
     if di_unchecked:
@@ -1241,11 +1297,7 @@ def _run_analysis_command(
             source_floors["snpedia"] = snpedia_min_magnitude
 
     diff_result = None
-    if diff_path is not None:
-        try:
-            prev = load_previous_report(diff_path)
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+    if prev is not None:
         filtered_for_diff = result.filter(
             min_magnitude=min_magnitude,
             category=category,
@@ -1297,7 +1349,6 @@ def _run_analysis_command(
                 source_min_magnitudes=source_floors,
             )
     else:
-        chosen = _format_from_path(output, report_format)
         hv_warning_lines = format_warnings(hv_warnings) if hv_warnings else None
         if chosen == "json":
             hv_dicts = (
@@ -1364,6 +1415,7 @@ def _run_analysis_command(
             recovered_rsids=result.vcf_write_inputs.recovered_rsids,
             keep_filtered=keep_filtered,
             reference_rows=result.vcf_write_inputs.reference_rows,
+            reference_records=result.vcf_write_inputs.reference_records,
             record_rows=result.vcf_write_inputs.record_rows,
             record_recovered=result.vcf_write_inputs.record_recovered,
         )

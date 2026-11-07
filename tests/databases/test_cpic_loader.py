@@ -10,6 +10,7 @@ urlopen is monkey-patched to return canned JSON.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 from contextlib import contextmanager
@@ -29,6 +30,22 @@ from allelix.databases.cpic_loader import (
 )
 
 
+class _Response(io.BytesIO):
+    """A response body with headers, as urlopen returns.
+
+    A list body carries the exact total CPIC's API gives for a whole table
+    (status 200, ``Content-Range: 0-<n-1>/<n>``, or ``*/0`` when empty).
+    """
+
+    def __init__(self, body: bytes) -> None:
+        super().__init__(body)
+        self.headers: dict[str, str] = {}
+        with contextlib.suppress(ValueError):
+            rows = json.loads(body)
+            if isinstance(rows, list):
+                self.headers["Content-Range"] = f"0-{len(rows) - 1}/{len(rows)}" if rows else "*/0"
+
+
 def _stub_responses(seq_locs: list[dict], loc_values: list[dict], alleles: list[dict]):
     """Build a urlopen replacement that returns canned JSON per CPIC endpoint."""
 
@@ -43,7 +60,7 @@ def _stub_responses(seq_locs: list[dict], loc_values: list[dict], alleles: list[
         url = request.full_url if hasattr(request, "full_url") else str(request)
         for key, payload in payloads.items():
             if f"/{key}?" in url or url.endswith(f"/{key}"):
-                yield io.BytesIO(json.dumps(payload).encode("utf-8"))
+                yield _Response(json.dumps(payload).encode("utf-8"))
                 return
         raise AssertionError(f"unexpected URL: {url}")
 
@@ -297,7 +314,7 @@ class TestHttpRetryBehavior:
             attempts["n"] += 1
             if attempts["n"] < 3:
                 raise urllib.error.URLError(f"transient error #{attempts['n']}")
-            yield io.BytesIO(b'[{"id": 1, "dbsnpid": "rs1"}]')
+            yield _Response(b'[{"id": 1, "dbsnpid": "rs1"}]')
 
         monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", flaky)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
@@ -314,7 +331,7 @@ class TestHttpRetryBehavior:
             attempts["n"] += 1
             if attempts["n"] == 1:
                 raise TimeoutError("first call timed out")
-            yield io.BytesIO(b"[]")
+            yield _Response(b"[]")
 
         monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", slow)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
@@ -330,9 +347,9 @@ class TestHttpRetryBehavior:
         def garbage_then_good(request, timeout=None):
             attempts["n"] += 1
             if attempts["n"] == 1:
-                yield io.BytesIO(b"not json {")
+                yield _Response(b"not json {")
             else:
-                yield io.BytesIO(b'[{"ok": true}]')
+                yield _Response(b'[{"ok": true}]')
 
         monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", garbage_then_good)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)

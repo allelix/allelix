@@ -844,8 +844,8 @@ def _hv_unchecked_banner(sites: list[str] | None) -> str:
     items = "".join(f"<li>{_escape(s)}</li>" for s in sites)
     return (
         '<div class="notice-warn"><strong>High-value sites not checked.</strong> '
-        "These clinically important sites could not be checked, so the report says "
-        f"nothing about them:<ul>{items}</ul></div>"
+        "These clinically important sites could not be fully checked; each line says "
+        f"what was not checked:<ul>{items}</ul></div>"
     )
 
 

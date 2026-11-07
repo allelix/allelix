@@ -338,7 +338,7 @@ def test_schema10_actual_writer_snapshot_diff_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "report.json"
     render_json(result, output_path=path)
     payload = json.loads(path.read_text())
-    assert payload["schema_version"] == "12"
+    assert payload["schema_version"] == "13"
     previous = load_previous_report(path)
     assert previous["panel_coverage"]["variants"][0]["genotype"] == "A/A"
     assert not compute_diff(
@@ -368,6 +368,6 @@ def test_snapshot_legacy_and_current_compatibility(tmp_path: Path, version: str)
 
 def test_future_schema_rejected(tmp_path: Path) -> None:
     path = tmp_path / "future.json"
-    path.write_text('{"schema_version":"13","annotations":[]}')
+    path.write_text('{"schema_version":"14","annotations":[]}')
     with pytest.raises(ValueError, match="schema version"):
         load_previous_report(path)

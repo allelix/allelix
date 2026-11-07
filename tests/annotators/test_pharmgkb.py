@@ -575,6 +575,37 @@ class TestCpicFallback:
         assert ann.is_ready()
         assert ann.version() is not None
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            lambda: __import__(
+                "allelix.databases.cpic_loader", fromlist=["x"]
+            ).CpicIncompleteError("allele_location_value: 1 of 2 rows"),
+            lambda: __import__("http.client", fromlist=["x"]).IncompleteRead(b"", 64),
+        ],
+        ids=["incomplete-table", "cut-reply"],
+    )
+    def test_setup_takes_the_cpic_unavailable_path_on_a_bad_cpic_reply(
+        self, tmp_path: Path, mock_pharmgkb_dir: Path, failure
+    ):
+        """A partial CPIC table (or a cut reply) is not used: the cache is built
+        without CPIC rows and marked cpic:unavailable, as when CPIC is down."""
+        ann = PharmGKBAnnotator(tmp_path)
+        with (
+            patch.object(ann, "fetch_remote_signal", return_value="pgkb:etag:test123|cpic:x"),
+            patch(
+                "allelix.annotators.pharmgkb.download",
+                side_effect=lambda url, dest: _fake_download(mock_pharmgkb_dir, url, dest),
+            ),
+            patch(
+                "allelix.annotators.pharmgkb.fetch_cpic_allele_functions",
+                side_effect=failure(),
+            ),
+        ):
+            ann.setup()
+        assert ann.is_ready()
+        assert "cpic:unavailable" in (ann.cached_remote_signal() or "")
+
     def test_signal_cpic_down_returns_unavailable(self):
         ann = PharmGKBAnnotator.__new__(PharmGKBAnnotator)
         with (

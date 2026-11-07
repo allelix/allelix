@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from allelix.parsers._helpers import normalize_chromosome
+from allelix.parsers.vcf import _REFERENCE_BLOCK_ALTS
 from allelix.utils.allele import complement, is_strand_ambiguous
 from allelix.utils.build_detect import SUPPORTED_OVERRIDES
 
@@ -89,8 +90,10 @@ def _trimmed(variant: Variant) -> tuple[int, str, tuple[str, ...], dict[str, str
 
     REF and every ALT lose the bases they all share at the end, then at the
     start, while each keeps one base (ADR-0047, ADR-0061; no left-alignment).
-    A dropped leading base moves the position on by one. None when the record
-    has no literal input REF and ALT.
+    A dropped leading base moves the position on by one. A gVCF's
+    reference-block ALT (``<NON_REF>``, ``<*>``) names no allele and is left
+    out, so ``A G,<NON_REF>`` is the record ``A G``. None when the record has
+    no literal input REF and ALT.
     """
     if not (
         variant.ref_from_input
@@ -100,7 +103,10 @@ def _trimmed(variant: Variant) -> tuple[int, str, tuple[str, ...], dict[str, str
     ):
         return None
     assert variant.ref is not None and variant.input_alt is not None
-    alleles = [variant.ref.upper(), *variant.input_alt.upper().split(",")]
+    alts = [a for a in variant.input_alt.upper().split(",") if a not in _REFERENCE_BLOCK_ALTS]
+    if not alts:
+        return None
+    alleles = [variant.ref.upper(), *alts]
     start, end, position = 0, 0, variant.position
     while (
         all(len(a) - start - end > 1 for a in alleles)

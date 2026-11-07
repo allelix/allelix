@@ -71,7 +71,8 @@ def _confirm_cadd_license(*, license_held: bool = False) -> bool:
     default=False,
     help=(
         "Re-download even if the local cache appears current. ClinVar is still "
-        "refreshed only when NCBI's checksums can be fetched."
+        "refreshed only when NCBI's checksums can be fetched; CADD full mode "
+        "downloads nothing."
     ),
 )
 @click.option(
@@ -140,6 +141,9 @@ def db_update(
     For each annotator:
       - no cache → download
       - --force → download
+      - CADD full mode → nothing is downloaded, even with --force: ready
+        when its tabix files are in place and readable, otherwise the
+        update fails naming the file (db update cannot fetch them)
       - cache + remote signal matches cache → skip
       - cache + remote signal differs (or legacy v0.4.1 cache with no
         stored signal) → download
@@ -190,8 +194,12 @@ def db_update(
                         "or pass `--cadd`)[/dim]"
                     )
                     continue
-                if (not annotator.is_ready() or force) and not _confirm_cadd_license(
-                    license_held=cfg.license_held("cadd"),
+                if (
+                    annotator.update_supplies_backend()
+                    and (not annotator.is_ready() or force)
+                    and not _confirm_cadd_license(
+                        license_held=cfg.license_held("cadd"),
+                    )
                 ):
                     console.print(f"  [dim]{annotator.name}: skipped (declined)[/dim]")
                     continue
@@ -208,12 +216,26 @@ def db_update(
                 failed.append(annotator.name)
                 continue
 
-            if not annotator.requires_download:
-                if annotator.is_ready():
+            if not annotator.update_supplies_backend():
+                # Nothing to download: the files it reads are the user's (CADD
+                # full mode). If they cannot be used (missing, unreadable), the
+                # reason is printed and the source fails.
+                status = annotator.cache_status()
+                if status.ready:
                     console.print(
                         f"  [dim]{annotator.name}: ready "
                         f"({annotator.version() or 'unknown'})[/dim]"
                     )
+                elif annotator.requires_download:
+                    # A downloaded source whose backend update cannot supply
+                    # (CADD full mode): it fails. A source that downloads
+                    # nothing is not managed here and is skipped, as before.
+                    # soft_wrap: a long path is never broken across lines.
+                    console.print(
+                        f"  [yellow]{escape(_helpers.unready_line(annotator, status))}[/yellow]",
+                        soft_wrap=True,
+                    )
+                    failed.append(annotator.name)
                 continue
 
             if not annotator.is_ready():
@@ -305,43 +327,183 @@ def db_update(
         sys.exit(1)
 
 
-# Cache items considered part of the CADD opt-in footprint. Matched by
-# prefix against each entry in the data dir so a future renaming of the
-# sqlite file (e.g. cadd.GRCh38.sqlite) is still caught.
-_CADD_PREFIXES: tuple[str, ...] = ("cadd",)
+def _owned_cache_names() -> tuple[str, ...]:
+    """The file name of every cache allelix builds or installs, legacy ones included."""
+    from allelix.annotators.clinvar import CLINVAR_SUPPORTED_BUILDS, clinvar_db_filename
+    from allelix.annotators.snpedia import SNPEDIA_DB_FILENAME
+    from allelix.databases.alphamissense_loader import ALPHAMISSENSE_DB_FILENAME
+    from allelix.databases.cadd_loader import CADD_DB_FILENAME
+    from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
+    from allelix.databases.gwas_loader import GWAS_DB_FILENAME
+    from allelix.databases.pharmgkb_loader import PHARMGKB_DB_FILENAME
+    from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME
+
+    prebuilt = (
+        GNOMAD_DB_FILENAME,
+        ALPHAMISSENSE_DB_FILENAME,
+        CADD_DB_FILENAME,
+        SNPEDIA_DB_FILENAME,
+        RSID_IDENTITY_DB_FILENAME,
+    )
+    return (
+        *(clinvar_db_filename(build) for build in CLINVAR_SUPPORTED_BUILDS),
+        # v0.7.x's single ClinVar cache, before the per-build files (2.6.1).
+        "clinvar.sqlite",
+        *prebuilt,
+        GWAS_DB_FILENAME,
+        PHARMGKB_DB_FILENAME,
+    )
 
 
-# Names that identify a directory as an allelix data dir for `db clean`'s
-# pre-deletion guard. Matched by prefix so future variants (e.g. multi-
-# build forms like clinvar.GRCh37.sqlite, sidecar files like
-# snpedia.sqlite-bak, the PharmGKB raw zip `clinicalAnnotations.zip`) are
-# all caught.
-#
-# (v2.2.1): `config.toml` is intentionally NOT a marker here.
-# It used to be — on the reasoning that any allelix data dir likely
-# carries one — but `config.toml` is a generic filename (Rust projects,
-# Hugo, Rocket, etc. all use it). A typo'd `--data-dir ~/my-rust-project`
-# slipped past the guard simply because that project's root has a
-# `Cargo.lock` and a `config.toml`. The marker set must be allelix-
-# specific.
-#
-# The fresh-install case — a dir with only config.toml and no cache
-# files — is unaffected: `_iter_cache_entries` excludes config.toml,
-# so `entries` is empty and the `if not entries: ... return` short-
-# circuit in `db_clean` reports "Nothing to clean" before the guard
-# ever runs.
-_KNOWN_ARTIFACT_PREFIXES: frozenset[str] = frozenset(
+def _owned_final_names() -> frozenset[str]:
+    """Every name allelix writes into the data directory, without staging names.
+
+    The caches; the files kept beside them; and the downloads earlier releases
+    wrote into the data directory itself (prebuilt ``.gz`` files, the GWAS and
+    ClinPGx zips, ClinVar's VCF before the tab-delimited source).
+    """
+    from allelix.annotators.gwas import GWAS_TSV_FILENAME
+    from allelix.annotators.snpedia import SNPEDIA_DB_FILENAME
+    from allelix.databases.alphamissense_loader import ALPHAMISSENSE_DB_FILENAME
+    from allelix.databases.cadd_loader import CADD_DB_FILENAME
+    from allelix.databases.gnomad_loader import GNOMAD_DB_FILENAME
+    from allelix.databases.manager import CLINVAR_BUILD_LOG
+    from allelix.databases.rsid_identity_loader import RSID_IDENTITY_DB_FILENAME
+
+    prebuilt = (
+        GNOMAD_DB_FILENAME,
+        ALPHAMISSENSE_DB_FILENAME,
+        CADD_DB_FILENAME,
+        SNPEDIA_DB_FILENAME,
+        RSID_IDENTITY_DB_FILENAME,
+    )
+    downloads = (
+        *(f"{name}.gz" for name in prebuilt),
+        "gwas_catalog_associations.zip",
+        "clinicalAnnotations.zip",
+        "clinvar.vcf.gz",
+        "clinvar.vcf",
+    )
+    return frozenset((*_owned_cache_names(), GWAS_TSV_FILENAME, CLINVAR_BUILD_LOG, *downloads))
+
+
+# Prefixes of the staging directories (``owned_directory``) allelix makes.
+_STAGING_DIRECTORY_PREFIXES: frozenset[str] = frozenset(
     {
         "alphamissense",
         "cadd",
-        "clinicalAnnotations",
         "clinvar",
         "gnomad",
         "gwas",
         "pharmgkb",
+        "rsid_identity",
         "snpedia",
     }
 )
+
+# Suffixes allelix adds to a name above: SQLite's side files, and the staging
+# names earlier releases shared between writers (``<name>.tmp``, ``.part``,
+# ``.partial``), with their own side files.
+_SIDE_SUFFIXES: tuple[str, ...] = ("-wal", "-shm", "-journal")
+_SHARED_STAGING_SUFFIXES: tuple[str, ...] = (".tmp", ".part", ".partial")
+
+
+def _owned_base(name: str, finals: frozenset[str]) -> str | None:
+    """The name in ``finals`` that ``name`` belongs to, if allelix created it."""
+    from allelix.databases.staging import staging_file_target
+
+    target = staging_file_target(name)
+    if target is not None:
+        return target if target in finals else None
+    for side in ("", *_SIDE_SUFFIXES):
+        stem = name.removesuffix(side) if side else name
+        if side and stem == name:
+            continue
+        if stem in finals:
+            return stem
+        for shared in _SHARED_STAGING_SUFFIXES:
+            if stem.endswith(shared) and stem.removesuffix(shared) in finals:
+                return stem.removesuffix(shared)
+    return None
+
+
+# What a staging directory holds while a download runs: the downloads
+# themselves, the GWAS table once moved out of ``extracted/``, their partial
+# (``owned_staging``) files, and a cache's partial file while it builds there
+# (``.<cache>.<16 hex>.partial`` and its side files). A directory holding
+# anything else (a finished cache built or copied there, an extraction, files
+# of the user's own) is not removed, only listed (2.6.1).
+_STAGING_DOWNLOAD_NAMES: frozenset[str] = frozenset(
+    {
+        "variant_summary.txt.gz",
+        "submission_summary.txt.gz",
+        "gnomad.sqlite.gz",
+        "alphamissense.sqlite.gz",
+        "cadd.sqlite.gz",
+        "snpedia.sqlite.gz",
+        "rsid_identity.sqlite.gz",
+        "gwas_catalog_associations.zip",
+        "gwas_catalog_associations.tsv",
+        "clinicalAnnotations.zip",
+    }
+)
+
+
+def _is_staging_download(entry: Path) -> bool:
+    """An exact name allelix writes in a staging directory.
+
+    A download, a partial file of a download or of a cache, or an empty
+    ``extracted/``. A non-empty ``extracted/`` holds a table whose name comes
+    from EBI's zip, so it cannot be told from a user's file; a directory
+    holding one is kept.
+    """
+    from allelix.databases.staging import staging_file_target
+
+    if entry.is_symlink():
+        return False
+    if entry.is_dir():
+        return entry.name == "extracted" and not any(entry.iterdir())
+    name = entry.name
+    target = staging_file_target(name)
+    return (
+        name in _STAGING_DOWNLOAD_NAMES
+        or target in _STAGING_DOWNLOAD_NAMES
+        or target in _owned_cache_names()
+    )
+
+
+def _has_staging_shape(entry: Path) -> bool:
+    """A real directory named like allelix's staging (``.<source>-<8 characters>``)."""
+    from allelix.databases.staging import staging_directory_prefix
+
+    return (
+        staging_directory_prefix(entry.name) in _STAGING_DIRECTORY_PREFIXES
+        and entry.is_dir()
+        and not entry.is_symlink()
+    )
+
+
+def _is_owned_staging_directory(entry: Path) -> bool:
+    """A real directory of allelix's staging shape holding only names allelix writes there.
+
+    The shape alone (``.<source>-<8 characters>``) is not enough: a user's
+    dated backup such as ``.clinvar-20261101/`` has it too.
+    """
+    if not _has_staging_shape(entry):
+        return False
+    try:
+        return all(_is_staging_download(child) for child in entry.iterdir())
+    except OSError:
+        return False
+
+
+def _is_cadd_name(entry: Path, base: str | None) -> bool:
+    from allelix.databases.cadd_loader import CADD_DB_FILENAME
+    from allelix.databases.staging import staging_directory_prefix
+
+    if base is not None:
+        return base.startswith(CADD_DB_FILENAME)
+    return staging_directory_prefix(entry.name) == "cadd"
 
 
 def _check_setup_destinations(annotator: Annotator, resolved: Path) -> None:
@@ -360,24 +522,6 @@ def _check_setup_destinations(annotator: Annotator, resolved: Path) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-def _is_cadd_cache(name: str) -> bool:
-    return any(name.startswith(p) for p in _CADD_PREFIXES)
-
-
-def _looks_like_data_dir(resolved: Path) -> bool:
-    """Return True if the dir contains at least one recognized allelix artifact.
-
-    The guard for `db clean`: a fat-fingered `--data-dir ~/Documents` should
-    not result in `rm -rf ~/Documents`. We scan the dir for any name matching
-    a known cache-file prefix; absence of any match means the user almost
-    certainly mistyped the path.
-    """
-    return any(
-        any(entry.name.startswith(p) for p in _KNOWN_ARTIFACT_PREFIXES)
-        for entry in resolved.iterdir()
-    )
-
-
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -386,24 +530,39 @@ def _human_bytes(n: int) -> str:
     return f"{n:,.1f} TB"
 
 
-def _iter_cache_entries(resolved: Path, *, keep_cadd: bool) -> list[Path]:
-    """Return data-dir entries to be deleted by `db clean`.
+def _clean_plan(resolved: Path, *, keep_cadd: bool) -> tuple[list[Path], list[Path]]:
+    """Split the data directory into the entries `db clean` removes and those it keeps.
 
-    Excludes `config.toml` (per ADR-0006: the cache dir doubles as the
-    XDG-shaped config home in older installs; never delete config). When
-    `keep_cadd` is True, also excludes CADD cache files.
+    It removes only entries allelix creates: caches, their side files, the
+    files kept beside them, staging entries and earlier releases' downloads.
+    A name allelix gives a file counts only for a file or a symbolic link (a
+    link is removed, never followed); a directory is removed only when it
+    has the shape of a staging directory allelix makes and holds nothing but
+    names allelix writes there (2.6.1). Every other entry is
+    kept, among them CADD full-mode files, which the user places there, a
+    real directory under a cache's name, and `config.toml` (ADR-0006). With
+    `keep_cadd`, the CADD cache's own entries are kept too. The kept list
+    leaves out `config.toml` and those CADD entries, which `db clean` names
+    on its own.
     """
-    out: list[Path] = []
+    finals = _owned_final_names()
+    remove: list[Path] = []
+    keep: list[Path] = []
     for entry in sorted(resolved.iterdir()):
-        if entry.name == "config.toml":
-            continue
-        if keep_cadd and _is_cadd_cache(entry.name):
-            continue
-        out.append(entry)
-    return out
+        is_file_like = entry.is_symlink() or not entry.is_dir()
+        base = _owned_base(entry.name, finals) if is_file_like else None
+        owned = base is not None or _is_owned_staging_directory(entry)
+        if not owned:
+            if entry.name != "config.toml":
+                keep.append(entry)
+        elif not (keep_cadd and _is_cadd_name(entry, base)):
+            remove.append(entry)
+    return remove, keep
 
 
 def _entry_size(path: Path) -> int:
+    if path.is_symlink():
+        return path.lstat().st_size  # only the link is removed
     if path.is_file():
         return path.stat().st_size
     return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
@@ -421,7 +580,10 @@ def _entry_size(path: Path) -> int:
     "--keep-cadd",
     is_flag=True,
     default=False,
-    help="Preserve the CADD cache (the largest opt-in download, ~5.8 GB).",
+    help=(
+        "Keep the CADD cache (cadd.sqlite, the largest opt-in download, ~5.8 GB). "
+        "CADD full-mode files are kept either way: allelix did not create them."
+    ),
 )
 @click.option(
     "--yes",
@@ -435,9 +597,8 @@ def _entry_size(path: Path) -> int:
     is_flag=True,
     default=False,
     help=(
-        "Bypass the looks-like-an-allelix-cache safety guard. Required when "
-        "the target directory contains content but no recognized allelix "
-        "cache files (e.g. you've staged caches under a non-standard name)."
+        "Accepted for scripts written for 2.6.0 and earlier; it has no effect. "
+        "db clean removes only names allelix creates, so it needs no override."
     ),
 )
 def db_clean(
@@ -447,50 +608,66 @@ def db_clean(
     skip_confirm: bool,
     force: bool,
 ) -> None:
-    """Remove downloaded reference database caches to reclaim disk space.
+    """Remove the reference database caches allelix downloaded and built.
 
-    The caches are disposable — every cache removed here can be re-fetched
-    by `allelix db update`. The ClinVar build log (clinvar-build.log, the
-    sources and counts of past builds) is removed too and cannot be
-    re-fetched; copy it elsewhere first to keep it. Your config.toml
-    (license assertions, source toggles) lives in the data directory and
-    is never removed.
+    Only entries allelix creates in the data directory are removed: the
+    caches and their side files, GWAS's kept table, the ClinVar build log,
+    staging entries a killed update left, and earlier releases' downloads.
+    A directory is removed only when it is one of allelix's staging
+    directories holding nothing but names allelix writes there: downloads,
+    the partial files of a download or of a cache being built, an empty
+    extracted/. One holding anything else (a backup, a finished cache, an
+    extracted table) is kept and listed. A link is removed, never followed.
+    Everything allelix did
+    not create stays, and is listed: CADD full-mode files, a genome file or
+    reports kept there, a directory under a cache's name. Your config.toml
+    (license assertions, source toggles) is always kept, and is not listed.
 
-    Pass `--keep-cadd` to preserve the CADD cache (largest opt-in
-    download, ~5.8 GB; expensive to re-download). Pass `--dry-run` to
-    preview the deletion without acting. Pass `--yes` to skip the
-    confirmation prompt for scripted use.
+    Do not run db clean while a database update is running in the same data
+    directory, including an analyze without --no-update, whose refresh can
+    build a cache there: it would remove that update's staging files.
+
+    `allelix db update` downloads and builds the caches again. The ClinVar
+    build log (clinvar-build.log, the sources and counts of past builds)
+    cannot be fetched again; copy it elsewhere first to keep it.
+
+    Pass `--keep-cadd` to keep the CADD cache (largest opt-in download,
+    ~5.8 GB; expensive to re-download). Pass `--dry-run` to preview the
+    deletion without acting. Pass `--yes` to skip the confirmation prompt
+    for scripted use.
     """
     import os
     import shutil
-    import sys
 
+    del force  # no guard to bypass: nothing allelix did not create is removed
     # resolve_data_dir creates the dir if missing — existence is guaranteed
     # but the dir may be empty (matched as a no-op below).
     resolved = resolve_data_dir(data_dir)
-    entries = _iter_cache_entries(resolved, keep_cadd=keep_cadd)
-
-    # Safety guard: refuse to delete content from a directory that doesn't
-    # look like an allelix cache. Runs BEFORE --yes / --dry-run so a typo'd
-    # --data-dir cannot result in `rm -rf` against an unrelated tree even
-    # in the scripted-skip-confirm path. --force is the explicit opt-out.
-    # Plain print to stderr (same routing as `db path --check`) — Rich
-    # console.print would wrap the message at the terminal width and
-    # would route to stdout, both of which are wrong for an error.
-    if entries and not force and not _looks_like_data_dir(resolved):
-        print(
-            f"error: {resolved} doesn't look like an allelix cache directory "
-            "(no recognized cache files found). Refusing to delete. "
-            "Pass --force if this is intended.",
-            file=sys.stderr,
+    entries, kept = _clean_plan(resolved, keep_cadd=keep_cadd)
+    kept_note = ""
+    # A staging-shaped folder that is kept may be an interrupted update's, or
+    # the user's own: allelix cannot tell, so it says so (2.6.1).
+    staging_kept = [entry for entry in kept if _has_staging_shape(entry)]
+    others = [entry for entry in kept if entry not in staging_kept]
+    notes = []
+    if others:
+        shown = ", ".join(escape(entry.name) for entry in others[:6])
+        more = f" and {len(others) - 6} more" if len(others) > 6 else ""
+        notes.append(f"Kept {len(others)} item(s) allelix did not create: {shown}{more}.")
+    for entry in staging_kept:
+        notes.append(
+            f"Kept {escape(entry.name)}: may be an interrupted update's leftovers; "
+            "delete it by hand if so."
         )
-        sys.exit(1)
+    kept_note = "\n".join(notes)
 
     if not entries:
         console.print(
             f"[dim]Nothing to clean at {resolved}"
             f"{' (CADD preserved via --keep-cadd)' if keep_cadd else ''}[/dim]"
         )
+        if kept_note:
+            console.print(f"[dim]{kept_note}[/dim]")
         return
 
     table = Table(title=f"{'Would delete' if dry_run else 'Will delete'} ({resolved})")
@@ -500,7 +677,7 @@ def db_clean(
     for entry in entries:
         size = _entry_size(entry)
         total += size
-        table.add_row(entry.name, _human_bytes(size))
+        table.add_row(escape(entry.name), _human_bytes(size))
     table.add_row("[bold]total[/bold]", f"[bold]{_human_bytes(total)}[/bold]")
     console.print(table)
 
@@ -509,6 +686,8 @@ def db_clean(
             "[dim]CADD cache preserved (--keep-cadd). Re-running `db update --cadd` "
             "would otherwise re-download ~5.8 GB.[/dim]"
         )
+    if kept_note:
+        console.print(f"[dim]{kept_note}[/dim]")
 
     if dry_run:
         console.print("[dim]Dry run — no files removed.[/dim]")
@@ -539,9 +718,16 @@ def db_clean(
             f"Cannot delete {exc.filename or resolved}: {exc.strerror or exc}. "
             f"{removed} item(s) were removed first."
         ) from exc
+    from allelix.databases.manager import CLINVAR_BUILD_LOG
+
+    log_note = (
+        " The ClinVar build log cannot be fetched again."
+        if any(entry.name == CLINVAR_BUILD_LOG for entry in entries)
+        else ""
+    )
     console.print(
         f"[green]✓ Removed {removed} item(s) ({_human_bytes(total)}).[/green] "
-        "Re-populate with [bold]allelix db update[/bold]."
+        f"[bold]allelix db update[/bold] downloads and builds the caches again.{log_note}"
     )
 
 
@@ -593,7 +779,8 @@ def db_status(data_dir: Path | None) -> None:
     table.add_column("Ready", justify="center")
     table.add_column("Version")
     table.add_column("Records", justify="right")
-    for annotator in get_annotators(resolved, cadd_full=cfg.cadd_full):
+    builds = _helpers.present_clinvar_builds(resolved)
+    for annotator in get_annotators(resolved, cadd_full=cfg.cadd_full, clinvar_builds=builds):
         with annotator:
             status = annotator.cache_status()
             if status.state in (CacheState.WAL, CacheState.READONLY_WAL):

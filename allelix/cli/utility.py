@@ -940,7 +940,8 @@ def compare(
 
     Reports shared records and their genotype agreement. A VCF record is
     matched by its rsID and trimmed REF/ALT or, unnamed, by its trimmed
-    position and alleles in two files of the same known build. A chip call
+    position and alleles in two files of the same known build; a gVCF's
+    <NON_REF> ALT is not part of a record's identity. A chip call
     is matched by rsID; against a VCF, with the one record under that rsID
     whose alleles explain it, and calls that none or several explain are
     counted as not compared. Also shows file-specific records, strand-flip
@@ -960,8 +961,8 @@ def compare(
     )
     from allelix.reports._pipeline import StreamBuild, decide_file_build, with_effective_build
 
-    parser1 = _helpers._resolve_parser(file1, fmt1, sample=sample1)
-    parser2 = _helpers._resolve_parser(file2, fmt2, sample=sample2)
+    parser1 = _helpers._resolve_parser(file1, fmt1, sample=sample1, sample_option="--sample1")
+    parser2 = _helpers._resolve_parser(file2, fmt2, sample=sample2, sample_option="--sample2")
     _helpers.note_imputed_input(parser1, file1, which=f"File 1 ({file1.name})")
     _helpers.note_imputed_input(parser2, file2, which=f"File 2 ({file2.name})")
 
@@ -1113,8 +1114,9 @@ def export() -> None:
     type=click.Path(path_type=Path),
     default=None,
     help=(
-        "Base path for .bed/.bim/.fam (default: input stem). Refuses input aliases; "
-        "stages all three before atomic publication per file."
+        "Base path for .bed/.bim/.fam (default: input stem, refused if any of the "
+        "three exists). Refuses input aliases; stages all three before atomic "
+        "publication per file."
     ),
 )
 @_FORMAT_OPT
@@ -1140,9 +1142,10 @@ def export_plink_cmd(
     A/T or C/G and the call fits it as written. A site without a known pair
     falls back to monomorphic (A2=0) for homozygous calls; a
     two-ALT call whose alleles are both the site's keeps its observed pair.
-    At a pair that is not A/T or C/G, a call is coded by the one strand
-    reading that fits it, as written or by its complement (counted); a call
-    that fits neither is exported as missing and counted. At an A/T or C/G
+    At a pair that is not A/T or C/G, a chip call is coded by the one strand
+    reading that fits it, as written or by its complement (counted), and a
+    VCF call, already on the forward strand, only as written; a call that
+    fits no reading is exported as missing and counted. At an A/T or C/G
     pair a call that fits as written keeps the fallback coding and any other
     is exported as missing. A variant without an rsID gets the ID
     chr:pos:ref:alt.
@@ -1160,6 +1163,7 @@ def export_plink_cmd(
         resolve_ref_alt_via_gnomad_records,
         resolve_ref_alt_via_identity,
     )
+    from allelix.parsers.vcf import VcfParser
 
     parser = _helpers._resolve_parser(file_path, fmt, sample=sample)
     # PLINK files carry no provenance, so an imputed input is said here.
@@ -1169,6 +1173,17 @@ def export_plink_cmd(
     prefix = output_prefix if output_prefix else default_plink_prefix(file_path)
     from allelix.reports import check_writable, validate_output_path
 
+    if output_prefix is None:
+        # The default prefix is the input's stem: never replace a file the
+        # user did not name, such as an unrelated genome.bed.
+        taken = [path for path in plink_paths(prefix).values() if os.path.lexists(path)]
+        if taken:
+            names = ", ".join(str(path) for path in taken)
+            raise click.ClickException(
+                f"{names} already exist{'s' if len(taken) == 1 else ''}; nothing was written. "
+                "Pass --output-prefix "
+                "to choose where the PLINK files go."
+            )
     try:
         for destination in plink_paths(prefix).values():
             validate_output_path(file_path, destination)
@@ -1246,6 +1261,8 @@ def export_plink_cmd(
             record_alleles=record_alleles,
             # Only an ID with a colon can collide with a generated one.
             supplied_ids={v.rsid for v in variants if ":" in v.rsid},
+            # A VCF call is on the forward strand: never read by its complement.
+            forward_strand_calls=isinstance(parser, VcfParser),
         )
     except EmptyPlinkSetError as exc:
         reasons = [f"{exc.no_calls:,} no-calls", f"{exc.indels:,} indels"]

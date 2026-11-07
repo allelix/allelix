@@ -63,3 +63,24 @@ sequences, as before.
   keeps only A, C, G and T risk alleles. Only rows without one change.
 - Interpreting D/I calls would still need a vendor probe map. That is a
   separate decision.
+
+## Amendment 2.6.1 (2026-11-05): 23andMe's own i-probe pages
+
+Owner's decision: SNPedia reads its page for a 23andMe `i` ID
+again, for a D/I call in a file the 23andMe parser read. The `i` ID names
+23andMe's own probe, and SNPedia's page for it is written for that probe,
+so the page says which indel the `D` or `I` names: the question this ADR
+is about. In 2.6.0 a carrier call at 23andMe's CFTR probe (`i4000292`,
+`DI`) lost its SNPedia finding. The pipeline turns this on per run
+(`_read_vendor_probe_pages`, `SNPediaAnnotator.read_vendor_probe_pages`)
+only when the parser is the 23andMe parser itself, not a subclass: Genes
+for Good writes 23andMe-style files, but its `i` IDs are not 23andMe's
+probes.
+
+Everywhere else this ADR stands: a D/I call at an rsID, a D/I call from
+any other parser, and every other source (ClinVar, the GWAS Catalog,
+ClinPGx). The call is still counted in `array_quality.di_calls`. At a
+locus where ClinVar classifies a variant as Pathogenic or Likely
+pathogenic, or near one (an indel whose REF span covers the call or ends
+up to five bases before it), the call is still named, because ClinVar
+does not match a probe to that variant (ADR-0051).

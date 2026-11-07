@@ -139,6 +139,8 @@ class TestClinVarCounts:
             "trimmed_matches": 0,
             "i_probes_at_plp_loci": 1,
             "di_calls_at_plp_rsids": 2,
+            "foreign_allele_calls_at_plp_loci": 0,
+            "unknown_allele_calls_at_plp_loci": 0,
             "ref_mismatches": 0,
         }
 
@@ -166,7 +168,12 @@ class TestReport:
             "not_genotyped": 0,
             "wrong_column_rows": 0,
         }
-        assert block["probe_classes"] == {"i_probes_at_plp_loci": 1, "di_calls_at_plp_rsids": 2}
+        assert block["probe_classes"] == {
+            "i_probes_at_plp_loci": 1,
+            "di_calls_at_plp_rsids": 2,
+            "foreign_allele_calls_at_plp_loci": 0,
+            "unknown_allele_calls_at_plp_loci": 0,
+        }
 
     def test_console_and_html_say_so(self, tmp_path: Path, data: Path) -> None:
         html = tmp_path / "r.html"

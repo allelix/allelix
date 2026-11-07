@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 13)}
+_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 14)}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -149,8 +149,15 @@ def load_previous_report(path: Path) -> dict:
         msg = f"Cannot parse {path.name} as JSON: {exc}"
         raise ValueError(msg) from exc
 
+    if not isinstance(data, dict):
+        msg = f"{path.name} is not an Allelix JSON report (a JSON object at the top)."
+        raise ValueError(msg)
     version = data.get("schema_version")
-    if version not in _SUPPORTED_SCHEMA_VERSIONS:
+    generated_at = data.get("generated_at")
+    if generated_at is not None and not isinstance(generated_at, str):
+        msg = f"{path.name}: 'generated_at' must be a string, got {type(generated_at).__name__}."
+        raise ValueError(msg)
+    if not isinstance(version, str) or version not in _SUPPORTED_SCHEMA_VERSIONS:
         msg = (
             f"Cannot diff against schema version {version!r} "
             f"(expected one of {sorted(_SUPPORTED_SCHEMA_VERSIONS)}). "
@@ -179,8 +186,61 @@ def load_previous_report(path: Path) -> dict:
             if required not in entry:
                 msg = f"{path.name}: annotation #{i} is missing required key {required!r}."
                 raise ValueError(msg)
+        _check_entry_values(path, i, entry)
 
     return data
+
+
+# The values `compute_diff` and the diff's output (the terminal's removed
+# table, `summarize_diff`) read from a baseline, by type (2.6.1). A field may
+# be missing (older reports wrote fewer); one that is present must have the
+# type they use, so a malformed baseline stops before any work.
+_STRING_FIELDS = ("source", "rsid")
+# Present, these must be strings; null is never written for them.
+_NON_NULL_STRING_FIELDS = ("significance",)
+# Present, these are a string or null (a locus a report does not know).
+_OPTIONAL_STRING_FIELDS = (
+    "condition",
+    "chromosome",
+    "ref",
+    "alt",
+    "description",
+    "genotype_match",
+    "gene",
+    "attribution",
+)
+
+
+def _check_entry_values(path: Path, i: int, entry: dict) -> None:
+    def refuse(name: str, kind: str) -> None:
+        value = entry[name]
+        msg = f"{path.name}: annotation #{i} {name!r} must be {kind}, got {type(value).__name__}."
+        raise ValueError(msg)
+
+    for name in _STRING_FIELDS:
+        if not isinstance(entry[name], str):
+            refuse(name, "a string")
+    for name in _NON_NULL_STRING_FIELDS:
+        if name in entry and not isinstance(entry[name], str):
+            refuse(name, "a string")
+    for name in _OPTIONAL_STRING_FIELDS:
+        if name in entry and entry[name] is not None and not isinstance(entry[name], str):
+            refuse(name, "a string or null")
+    position = entry.get("position")
+    if position is not None and (isinstance(position, bool) or not isinstance(position, int)):
+        refuse("position", "an integer or null")
+    if "magnitude" in entry and not _is_finite_number(entry["magnitude"]):
+        refuse("magnitude", "a finite number")
+
+
+def _is_finite_number(value: object) -> bool:
+    """A JSON number the diff can compare and print: not bool, null, NaN, or too large."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def compute_diff(

@@ -63,6 +63,9 @@ def test_prebuilt_setup_keeps_its_download_until_installed(
     monkeypatch.setattr(module, "install_prebuilt_cache", install)
     if source == "snpedia":
         monkeypatch.setattr(cls, "prepare_cache", lambda self: None)
+        # 2.6.1: setup parses and publishes the staged file after the install;
+        # the install is faked here, so there is nothing to parse.
+        monkeypatch.setattr(cls, "_parse_and_publish", lambda self, staged: None)
     outer_error = None
     try:
         with cls(tmp_path) as outer:

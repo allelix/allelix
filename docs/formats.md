@@ -175,7 +175,7 @@ under `input.vcf_quality`. Reference blocks count as records, not as one
 record for every base they span. Non-reference counts include symbolic
 ALT genotypes; they do not imply those structural calls were assessed.
 Schema 10 also adds a nullable `reason` to panel coverage entries.
-Reports in schemas 1–12 can be used as `--diff` baselines; versions 13
+Reports in schemas 1–13 can be used as `--diff` baselines; versions 14
 and later are rejected. `--diff` identifies a finding by its source, variant
 (rsID, or locus without one), condition and allele, whatever the order of
 either report. Its classification, magnitude, genotype and the text
@@ -210,7 +210,11 @@ The field goes on every record whose call carries the reference allele:
 a het (`0/1`, `1|0`), a half call (`0/.`), a hom-ref (`0/0`, haploid `0`),
 and a single-position record with ALT `.` (an all-sites VCF), whose site is
 exact. A record whose REF has more than one base gets it when that REF
-starts at or covers the site. gnomAD, AlphaMissense and CADD values for the
+starts at or covers the site. A hom-ref record, or one whose REF covers the
+site, gets the finding only when the analysis rebuilt its reference call
+from that record (see Reference calls in VCFs); beside a het or half call at
+the same site, which produced the finding itself, it borrows nothing (2.6.1).
+gnomAD, AlphaMissense and CADD values for the
 reference allele are not written, since they would read as values for an
 ALT.
 
@@ -237,7 +241,9 @@ allele is not enough either: a record gets only the findings its own call
 produced, so a `1/1` duplicate of a `0/1` record does not take a finding for
 the `0/1` genotype, in any source, enrichment or `ALLELIX_CLINVAR_REF` field,
 and a record with another REF at the same position (`GA>A` beside `G>A`)
-keeps its own finding.
+keeps its own finding. The one exception is a reference call rebuilt from
+explicit hom-ref records: identical such records it was rebuilt from all get
+its `ALLELIX_CLINVAR_REF`, since each is the call it was read from.
 A record whose call was rejected for contradicting its rsID's identity
 placement (the `identity_locus_conflict` warning) gets none.
 
@@ -414,12 +420,34 @@ alleles in separate columns). Allelix does not interpret these calls,
 including those at known disease variants such as BRCA1 5382insC, BRCA2
 6174delT and CFTR F508del. Allelix has found no published specification
 of which allele `D` and `I` stand for at each probe, and has no sample
-with a confirmed genotype to check one against. A `D`/`I` call at a
+with a confirmed genotype to check one against. One exception: in a file
+the 23andMe parser read, a `D`/`I` call at a 23andMe `i` probe is matched
+to SNPedia's page for that probe, which is written for 23andMe's own probe
+and says which indel the call names (ADR-0070, 2.6.1). A `D`/`I` call at a
 high-value rsID, or at one ClinVar classifies Pathogenic or Likely
 pathogenic, is named in the report as not checked: gene, variant name,
 rsID and call, in JSON `high_value_unchecked` (reason `di_call`), and
-counted under the `report_warnings` code `di_calls_not_checked`. Other `D`/`I` calls are
-only counted. Allelix neither confirms nor rules out carrier status for
+counted under the `report_warnings` code `di_calls_not_checked`. So is a
+call at a vendor probe without an rsID (23andMe `i…`), `D`/`I` or bases,
+where ClinVar classifies the variant at the probe's position as Pathogenic
+or Likely pathogenic, named by its probe ID and ClinVar's gene (reason
+`di_call` or `vendor_probe`): ClinVar does not match a probe to that
+variant. So is a `D`/`I` call under an rsID with no Pathogenic or Likely
+pathogenic ClinVar row (absent, merged or outdated, or held only as Benign
+or VUS). Such a call is named by a Pathogenic or
+Likely pathogenic row at its own position, or by such an indel row whose
+reference span (its first to last REF base) covers the position or ends
+up to five bases before it, however long a deletion: ClinVar writes an indel
+left-aligned and a chip may give a later position in a short repeat. An
+insertion reaches only its anchor and those five bases. Its line says
+which row named it, with that row's gene: a Pathogenic or Likely
+pathogenic variant at its position, an indel whose REF span covers the
+position, or an indel whose span ends a stated number of bases (one to
+five) before it. A call under an rsID ClinVar holds keeps that rsID's own
+ClinVar gene, and its line says ClinVar does not classify the rsID itself
+as Pathogenic or Likely pathogenic. A vendor probe's call, or one under an
+rsID ClinVar does not hold, is named under the naming row's gene. Other `D`/`I` calls are only
+counted. Allelix neither confirms nor rules out carrier status for
 these variants; that needs clinical testing.
 
 ## Genes for Good
@@ -476,6 +504,21 @@ strand without GRCh37 or GRCh38 positions, and the report says how many. ClinVar
 CADD give nothing (see [grch36-liftover.md](grch36-liftover.md) to lift
 the file over first).
 
+## Chip calls at another rsID's ClinVar row
+
+A chip call is matched to its own rsID's ClinVar rows. It is matched to
+another rsID's row at the same position only when every called base is
+one of its rsID's alleles there. Those alleles come from the rsID
+identity table's SNV rows, ClinVar's own rows of the rsID and, for GRCh38
+input only, gnomAD's (gnomAD's positions are GRCh38). A call naming a
+base outside them (`foreign_alleles`), or whose rsID's alleles no source
+knows (`unknown_alleles`), matches no other rsID's row. At a Pathogenic
+or Likely pathogenic position it is counted and named in
+`high_value_unchecked`. So a call whose rsID only gnomAD knows can get
+another rsID's finding on GRCh38 and is named `unknown_alleles` on
+GRCh37. When gnomAD was asked only for these alleles, it is still listed
+among the sources used (ADR-0051).
+
 ## Comparing and extracting VCF calls
 
 `allelix compare first.vcf second.vcf` matches each record by its allele
@@ -497,7 +540,10 @@ left out is not empty: it gets the notice and no eligible calls.
 
 The alleles are trimmed first: REF and every ALT lose the bases they all
 share at the end, then at the start, so `CG>CA` and `G>A` are one record.
-There is no left-alignment. The ALT list is literal: reordered lists,
+A gVCF's reference-block ALT (`<NON_REF>`, `<*>`) names no allele and is
+left out first, so `A G,<NON_REF>` in a gVCF and `A G` in a plain VCF are
+one record. There is no left-alignment. The ALT list is otherwise literal:
+reordered lists,
 different uncalled alternatives, and a split record against a merged one
 (`A` and `T` against `A,T`) are distinct records. Quality-masked and
 explicit no-calls keep their original allele identity. No liftover,
@@ -613,6 +659,14 @@ homozygous for the reference is not suppressed either, so findings for
 that genotype can appear. A `di_call` row reaches no source: a D/I call is
 counted and never interpreted (ADR-0070).
 
+An unplaced row at a high-value rsID, or at an rsID ClinVar classifies as
+Pathogenic or Likely pathogenic on GRCh38, is also named in the report as
+not checked by ClinVar, with the reason it was not placed: in JSON
+`high_value_unchecked` (reason `unplaced`), on the console and in HTML. The
+name says only that ClinVar could not check the row; it does not claim the
+rsID-keyed sources read it, since they may be switched off. The counts
+above are unchanged.
+
 Only `analyze`, `methylation` and `pharmacogenomics` read these files.
 `stats`, `extract`, `export` and `compare` stop with a message.
 
@@ -625,7 +679,11 @@ Two other layouts without positions (`SNP,Chr,Allele1,Allele2`, and
 `<prefix>.fam`, adding the endings to the whole prefix: `-o release.v1`
 gives `release.v1.bed`. Without `-o`, the prefix is the input name minus one
 genotype-file ending (`.vcf.gz`, `.vcf.bgz`, `.txt`, `.csv`, `.tsv`, `.vcf`,
-`.zip` or `.gz`), so `my.genome.txt` gives `my.genome`.
+`.zip` or `.gz`), so `my.genome.txt` gives `my.genome`. A default
+destination never replaces a file: when `my.genome.bed`, `.bim` or `.fam`
+already exists (a link included), the export stops before any work, names
+the file and writes nothing; pass `-o` to choose the prefix. With `-o`, the
+three files are replaced.
 
 A1/A2 come from the export's own build where it has a pair (on GRCh37, the
 gnomAD fallback below can supply one), chosen for each record on its own:
@@ -648,17 +706,20 @@ Against the chosen pair, a call is coded by the one strand reading that
 fits it (ADR-0066):
 
 - At a pair that is not A/T or C/G, the call is coded as written when its
-  alleles are the pair's, and by its complement when only the complement's
-  are (an array probe reported on the minus strand: `CC` at a G/A site is
-  coded `GG`). The console counts the calls coded by their complement. A
-  call that fits neither reading is exported as missing and counted.
+  alleles are the pair's. A chip call is coded by its complement when only
+  the complement's are (an array probe reported on the minus strand: `CC`
+  at a G/A site is coded `GG`), and the console counts the calls coded by
+  their complement. A VCF call is already on the forward strand, so it is
+  never read by its complement: `T/T` at an A/G site is exported as
+  missing, not as `A/A`. A call that fits no reading is exported as missing
+  and counted.
 - At an A/T or C/G pair the strand cannot be told: a call that fits as
   written keeps the fallback coding, and any other call is exported as
   missing and counted.
 
 A third allele the pair does not list (for example G>C at a G/A site, called
-on the minus strand) would be coded as its complement; that is the accepted
-risk of reading minus-strand probes.
+on the minus strand) would be coded as its complement in a chip file; that
+is the accepted risk of reading minus-strand probes.
 
 A variant without an rsID gets the ID `chr:pos:ref:alt` from the input, with
 `.` for an unknown part and `:2`, `:3` and so on when that ID is already

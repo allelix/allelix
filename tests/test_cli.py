@@ -539,6 +539,9 @@ class TestDbCommands:
             def setup_destinations(self):
                 return ()
 
+            def update_supplies_backend(self):
+                return self.requires_download
+
             def setup(self):
                 self.setup_called = True
 
@@ -594,6 +597,9 @@ class TestDbCommands:
 
             def setup_destinations(self):
                 return ()
+
+            def update_supplies_backend(self):
+                return self.requires_download
 
             def setup(self):
                 self.setup_called = True
@@ -1300,7 +1306,7 @@ class TestDbCommands:
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
         assert result.exit_code == 0
-        assert "Nothing to clean" in result.output
+        assert "Nothing to clean" in " ".join(result.output.split())
 
     def test_db_clean_missing_dir_resolves_to_empty_noop(self, tmp_path: Path):
         # resolve_data_dir creates the dir if missing; clean then finds
@@ -1310,23 +1316,23 @@ class TestDbCommands:
         missing = tmp_path / "does-not-exist"
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(missing), "--yes"])
         assert result.exit_code == 0
-        assert "Nothing to clean" in result.output
+        assert "Nothing to clean" in " ".join(result.output.split())
         assert missing.exists() and missing.is_dir()
 
     def test_db_clean_removes_caches_with_yes(self, tmp_path: Path):
-        # Stage mock cache files + a sub-dir + a config.toml that MUST survive
+        # Stage mock cache files + a staging dir + a config.toml that MUST survive
         (tmp_path / "clinvar.GRCh38.sqlite").write_bytes(b"x" * 1024)
         (tmp_path / "gnomad.sqlite").write_bytes(b"y" * 2048)
         (tmp_path / "cadd.sqlite").write_bytes(b"z" * 4096)
-        nested = tmp_path / "snpedia"
+        nested = tmp_path / ".snpedia-abc12345"
         nested.mkdir()
-        (nested / "page.txt").write_text("snpedia raw")
+        (nested / "snpedia.sqlite.gz").write_text("snpedia raw")
         (tmp_path / "config.toml").write_text("[sources]\nclinvar = true\n")
 
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
         assert result.exit_code == 0
-        assert "Removed" in result.output
+        assert "Removed" in " ".join(result.output.split())
         # Cache files gone
         assert not (tmp_path / "clinvar.GRCh38.sqlite").exists()
         assert not (tmp_path / "gnomad.sqlite").exists()
@@ -1357,8 +1363,8 @@ class TestDbCommands:
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--dry-run"])
         assert result.exit_code == 0
-        assert "Dry run" in result.output
-        assert "Would delete" in result.output
+        assert "Dry run" in " ".join(result.output.split())
+        assert "Would delete" in " ".join(result.output.split())
         assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
         assert (tmp_path / "cadd.sqlite").exists()
 
@@ -1369,7 +1375,7 @@ class TestDbCommands:
         # Send "n\n" to the confirmation prompt
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path)], input="n\n")
         assert result.exit_code == 0
-        assert "Aborted" in result.output
+        assert "Aborted" in " ".join(result.output.split())
         assert (tmp_path / "clinvar.GRCh38.sqlite").exists()
 
     def test_db_clean_keep_cadd_with_only_cadd_present_is_noop(self, tmp_path: Path):
@@ -1386,34 +1392,29 @@ class TestDbCommands:
         assert "CADD preserved" in output
         assert (tmp_path / "cadd.sqlite").exists()
 
-    def test_db_clean_refuses_unrecognized_dir_even_with_yes(self, tmp_path: Path):
+    def test_db_clean_leaves_unrecognized_dir_alone_even_with_yes(self, tmp_path: Path):
         # Fat-fingered --data-dir pointing at a user's documents folder. No
-        # recognized allelix artifacts. The --yes path MUST still refuse.
+        # name allelix creates is there, so nothing is removed, --yes or not.
         (tmp_path / "resume.pdf").write_bytes(b"x" * 1024)
         (tmp_path / "tax_2025.xlsx").write_bytes(b"y" * 2048)
         subdir = tmp_path / "vacation_photos"
         subdir.mkdir()
         (subdir / "IMG_0001.jpg").write_bytes(b"z" * 4096)
 
-        # Click 8.4 separates result.stdout / result.stderr automatically;
-        # the guard error routes to stderr (matches `db path --check` pattern).
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
-        assert result.exit_code == 1
-        # Normalize whitespace so the assertion survives any line-wrapping —
-        # the resolved tmp_path can push the phrase across terminal-width
-        # boundaries on narrow runners. (console.print() was
-        # Rich-wrapping mid-phrase under CliRunner's 80-col default.)
-        stderr_flat = " ".join(result.stderr.split())
-        assert "doesn't look like an allelix cache" in stderr_flat
-        assert "--force" in stderr_flat
+        assert result.exit_code == 0
+        # Normalize whitespace: Rich wraps at CliRunner's 80 columns.
+        output = " ".join(result.output.split())
+        assert "Nothing to clean" in output
+        assert "Kept 3 item(s) allelix did not create" in output
         # Everything still present
         assert (tmp_path / "resume.pdf").exists()
         assert (tmp_path / "tax_2025.xlsx").exists()
         assert (subdir / "IMG_0001.jpg").exists()
 
-    def test_db_clean_force_bypasses_guard(self, tmp_path: Path):
-        # User explicitly opts in via --force.
+    def test_db_clean_force_removes_nothing_allelix_did_not_create(self, tmp_path: Path):
+        # --force is accepted for older scripts and has no effect.
         (tmp_path / "non_standard_cache.bin").write_bytes(b"x" * 1024)
 
         runner = CliRunner()
@@ -1422,8 +1423,8 @@ class TestDbCommands:
             ["db", "clean", "--data-dir", str(tmp_path), "--force", "--yes"],
         )
         assert result.exit_code == 0
-        assert "Removed" in result.output
-        assert not (tmp_path / "non_standard_cache.bin").exists()
+        assert "Nothing to clean" in " ".join(result.output.split())
+        assert (tmp_path / "non_standard_cache.bin").exists()
 
     def test_db_clean_config_toml_alone_is_recognition_marker(self, tmp_path: Path):
         # A data dir with ONLY config.toml means a fresh install pre-update.
@@ -1433,31 +1434,24 @@ class TestDbCommands:
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
         assert result.exit_code == 0
-        assert "Nothing to clean" in result.output
+        assert "Nothing to clean" in " ".join(result.output.split())
         assert (tmp_path / "config.toml").exists()
 
-    def test_db_clean_dry_run_also_blocks_unrecognized_dir(self, tmp_path: Path):
-        # The guard runs BEFORE --dry-run so even previewing against an
-        # unrelated tree is refused — would print a misleading "would
-        # delete" listing otherwise.
+    def test_db_clean_dry_run_lists_nothing_in_unrecognized_dir(self, tmp_path: Path):
+        # A preview against an unrelated tree lists nothing to delete.
         (tmp_path / "random_file.txt").write_text("not allelix")
 
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--dry-run"])
-        assert result.exit_code == 1
-        stderr_flat = " ".join(result.stderr.split())
-        assert "doesn't look like an allelix cache" in stderr_flat
+        assert result.exit_code == 0
+        assert "Would delete" not in " ".join(result.output.split())
+        assert "Nothing to clean" in " ".join(result.output.split())
+        assert (tmp_path / "random_file.txt").exists()
 
-    def test_db_clean_refuses_dir_with_only_generic_config_toml(self, tmp_path: Path):
+    def test_db_clean_leaves_dir_with_generic_config_toml_alone(self, tmp_path: Path):
         """A `config.toml` alongside non-allelix content (the
-        Rust / Hugo / Rocket / etc. project shape) must NOT pass the
-        guard. Previously, the guard accepted any dir with a config.toml
-        — so a typo'd `--data-dir ~/my-rust-project` could trigger
-        `rm -rf` against a Cargo project root.
-
-        Pinned: a generic config.toml + any non-allelix file →
-        guard refuses with the "doesn't look like an allelix cache"
-        error and exit code 1, regardless of what's in config.toml.
+        Rust / Hugo / Rocket / etc. project shape): a typo'd
+        `--data-dir ~/my-rust-project` removes nothing from the project.
         """
         # A Rust-shaped config.toml (no allelix-specific sections).
         (tmp_path / "config.toml").write_text("[package]\nname = 'not-allelix'\n")
@@ -1467,9 +1461,8 @@ class TestDbCommands:
 
         runner = CliRunner()
         result = runner.invoke(main, ["db", "clean", "--data-dir", str(tmp_path), "--yes"])
-        assert result.exit_code == 1
-        stderr_flat = " ".join(result.stderr.split())
-        assert "doesn't look like an allelix cache" in stderr_flat
+        assert result.exit_code == 0
+        assert "Nothing to clean" in " ".join(result.output.split())
         # And the Cargo project survives the encounter unharmed.
         assert (tmp_path / "config.toml").exists()
         assert (tmp_path / "Cargo.lock").exists()
@@ -2904,6 +2897,36 @@ class TestExportPlinkCommand:
         assert "1 call(s) fit neither gnomAD allele" in result.output
         bim = [line.split("\t") for line in (tmp_path / "out.bim").read_text().splitlines()]
         assert [row[4:6] for row in bim] == [["G", "A"], ["G", "T"]]
+        assert (tmp_path / "out.bed").read_bytes()[3:] == bytes([0x01, 0x02])
+
+    def test_vcf_call_that_fits_only_as_its_complement_is_missing(self, tmp_path, monkeypatch):
+        """On VCF input: A/A at a C>T site is written missing, not as T/T."""
+        fixture = tmp_path / "donor.vcf"
+        fixture.write_text(
+            "##fileformat=VCFv4.2\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+            "1\t100\trs1\tC\tA\t.\tPASS\t.\tGT\t1/1\n"
+            "1\t200\trs2\tG\tT\t.\tPASS\t.\tGT\t0/1\n"
+        )
+
+        class _FakeGnomad(GnomadAnnotator):
+            def is_ready(self):
+                return True
+
+            def bulk_resolve_coordinates(self, rsids):
+                return {"rs1": [("1", 100, "C", "T")], "rs2": [("1", 200, "G", "T")]}
+
+        monkeypatch.setattr("allelix.annotators.gnomad.GnomadAnnotator", _FakeGnomad)
+
+        result = CliRunner().invoke(
+            main,
+            ["export", "plink", str(fixture), "-o", str(tmp_path / "out"), "--build", "grch38"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 call(s) fit neither gnomAD allele" in result.output
+        assert "complement" not in result.output
+        bim = [line.split("\t") for line in (tmp_path / "out.bim").read_text().splitlines()]
+        assert [row[4:6] for row in bim] == [["C", "T"], ["G", "T"]]
         assert (tmp_path / "out.bed").read_bytes()[3:] == bytes([0x01, 0x02])
 
     def test_split_chromosome_sorted(self, tmp_path, monkeypatch):

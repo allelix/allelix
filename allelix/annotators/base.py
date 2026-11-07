@@ -290,6 +290,15 @@ class Annotator(ABC):
         db_path: Path | None = getattr(self, "_db_path", None)
         return (db_path,) if db_path is not None else ()
 
+    def update_supplies_backend(self) -> bool:
+        """Whether ``setup()`` installs what this source reads (2.6.1).
+
+        True for every source that downloads its cache. CADD full mode reads
+        files the user places in the data directory, so `db update` has
+        nothing to install for it.
+        """
+        return self.requires_download
+
     def prepare_cache(self) -> bool:
         """Bring an outdated cache up to date from local data only (ADR-0048).
 

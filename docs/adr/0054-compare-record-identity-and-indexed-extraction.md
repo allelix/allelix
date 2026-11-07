@@ -181,3 +181,14 @@ A call that the file's build decision leaves out (ADR-0044: MT under an
 hg19-length chrM; a UCSC-named mitochondrion in a GRCh37 VCF) is in no
 comparison key, coverage count, concordance or chromosome breakdown. A
 declared rCRS mitochondrion, and MT on GRCh38, are compared as before.
+
+## Amendment 2.6.1 (2026-11-05): a gVCF's reference-block ALT is not part of a record
+
+A gVCF lists `<NON_REF>` (or `<*>`) as an extra ALT on every variant
+record. It names no allele the record carries, so `compare` leaves it out
+of a record's alleles before trimming (`_trimmed` in `allelix/compare.py`):
+`rs1 A G,<NON_REF>` in a gVCF and `rs1 A G` in a plain VCF are one record
+and are compared, and so are the same unnamed records in two files of one
+build. In 2.6.0 the named records got different keys and were each counted
+as in one file only; 2.5.2, which keyed a named record by its rsID alone,
+paired them. Every other ALT stays literal, as above.

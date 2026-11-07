@@ -58,6 +58,12 @@ _BULK_BATCH_SIZE = 900
 
 CADD_FULL_FILENAME = "whole_genome_SNVs.tsv.gz"
 CADD_INDEL_FILENAME = "gnomad.genomes.r4.0.indel.tsv.gz"
+_FULL_MODE_REMEDY = (
+    f"CADD full mode reads {CADD_FULL_FILENAME} and its .tbi index from the data "
+    "directory: download them from https://cadd.gs.washington.edu/download "
+    "(`allelix db update` cannot fetch them), or switch full mode off with "
+    "`allelix config set options.cadd_full false` to use the cache."
+)
 
 
 class CaddAnnotator(Annotator):
@@ -170,13 +176,17 @@ class CaddAnnotator(Annotator):
         """
         return self.cache_status().ready
 
+    def update_supplies_backend(self) -> bool:
+        """False in full mode: it reads CADD's own files, which `db update` cannot fetch."""
+        return not self._full_mode
+
     def cache_status(self) -> CacheStatus:
         """State of the active backend: the tabix pair, or the SQLite cache (ADR-0048)."""
         if self._full_mode:
             tbi = self._tabix_path.parent / (CADD_FULL_FILENAME + ".tbi")
             for path in (self._tabix_path, tbi):
                 if not path.exists():
-                    return CacheStatus(CacheState.MISSING, path)
+                    return CacheStatus(CacheState.MISSING, path, remedy=_FULL_MODE_REMEDY)
                 if not os.access(path, os.R_OK):
                     return CacheStatus(CacheState.UNREADABLE, path)
             return READY

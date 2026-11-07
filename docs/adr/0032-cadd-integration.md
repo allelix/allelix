@@ -143,3 +143,25 @@ Users assert a held license via `allelix config set license.cadd true`.
   is not supported.
 - JSON schema version stays at "3" — `cadd_phred` is a new optional
   field that `asdict()` serializes automatically.
+
+## Amendment 2.6.1 (2026-11-05): full mode without its tabix files
+
+Full mode reads only `whole_genome_SNVs.tsv.gz` and its `.tbi` (and the
+optional indel pair), which the user downloads from CADD and places in the
+data directory; it never reads the SQLite cache. Readiness in full mode
+already looked only at those files, but `db update --cadd` decided the
+download from that readiness: with the files not yet in place, every run
+downloaded and installed the ~5.8 GB cache again, which full mode does not
+read, and printed "✓ cadd ready". `analyze` meanwhile told the user to run
+`db update`, which cannot supply them.
+
+Now, in full mode:
+- `db update --cadd` downloads nothing, with or without `--force`, and
+  asks for no download confirmation. With both files in place it reports
+  CADD ready; without them it names the missing file, says `db update`
+  cannot fetch it, and fails (exit 1). A file that is there but cannot be
+  read fails the same way, with the permissions message: every full-mode
+  status that is not ready is reported and fails, with no download.
+- `analyze` names the missing file and where to get it, and points to
+  `options.cadd_full false` to use the cache instead, not to `db update`.
+- `db status` shows CADD not ready, as before.

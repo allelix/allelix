@@ -233,11 +233,16 @@ class CacheState(enum.Enum):
 
 @dataclass(frozen=True)
 class CacheStatus:
-    """A cache's state, the file it concerns, and a detail for the console."""
+    """A cache's state, the file it concerns, and a detail for the console.
+
+    ``remedy`` replaces the console's "Run `allelix db update`" for a file
+    `db update` cannot supply (CADD full mode's tabix files, 2.6.1).
+    """
 
     state: CacheState
     path: Path | None = None
     detail: str = ""
+    remedy: str = ""
 
     @property
     def ready(self) -> bool:

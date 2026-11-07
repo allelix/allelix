@@ -78,3 +78,45 @@ None. `pharmgkb_allele_function` keeps its v0.7.0 schema. Only the data source c
 - **The data classification principle (ADR-0016) is finally enforced end-to-end.** Filter input = structured table. Description text serves only its real purpose: display to the user in the report.
 
 *Amended (2.5.1):* the stored signal's CPIC part records what the cache holds. A build whose CPIC fetch failed or returned nothing is stamped `cpic:unavailable` even when CPIC's change-log probe answered, and a cache stamped with a CPIC date but holding no CPIC rows reports `cpic:unavailable` (a read-only one-row check), so `db status` shows "(no CPIC)" and the next `db update` rebuilds it. `PHARMGKB_INTERPRETER_VERSION` is unchanged: what the loader stores is the same.
+
+## Amendment 2.6.1 (2026-11-05): only a whole table is used
+
+The three CPIC tables were requested with `Range: 0-99999` and used as
+returned: neither the status nor the range was checked. Without
+`Prefer: count=exact`, PostgREST answers a slice with HTTP 200 and
+`Content-Range: 0-N/*`, so a partial table could not even be told from a
+whole one (with it, a slice is 206 and the whole table 200, `0-N/<total>`;
+observed on api.cpicpgx.org, 2026-11-05). A partial `allele_location_value`
+could keep a Normal row and drop the Decreased row for the same rsID and
+base, so the non-finding filter suppressed a real ClinPGx finding.
+
+Each request now asks for the exact total, and a response is used only when
+it is a list, its range starts at row 0 and covers every row returned, and
+it holds the stated total. A reply with no total (`*`, or no Content-Range)
+is incomplete too: a body shorter than the window asked for proves nothing,
+since a server can cap a reply below it. CPIC's API gives the exact total for
+all three requests (`sequence_location` 200 `0-991/992`,
+`allele_location_value` 200 `0-3159/3160`, `allele` 200 `0-1377/1378`,
+2026-11-05), so this rule does not drop CPIC. Anything else
+raises `CpicIncompleteError`, which is retried like a transport failure and
+then takes the CPIC-unavailable path: the ClinPGx cache is built without
+CPIC rows and marked `cpic:unavailable`, so the next update tries again. The
+outage policy itself is unchanged. ClinPGx setup now catches every probe
+error there (`PROBE_ERRORS`), so a cut CPIC reply takes the same path instead
+of failing the ClinPGx update.
+
+## Amendment 2.6.1 (2026-11-06): rows are objects
+
+A reply whose range and total agree but whose rows are not JSON objects is
+not a table either: `_check_whole_table` raises `CpicIncompleteError` for
+it, so it takes the CPIC-unavailable path instead of failing the ClinPGx
+update.
+
+## Amendment 2.6.1 RC3 (2026-11-06): column types
+
+Each column read from the three tables has a type: `id`, `locationid`,
+`alleledefinitionid` and `definitionid` are integers, `dbsnpid`,
+`variantallele` and `clinicalfunctionalstatus` strings. A row object with
+a value of another type (null aside, which skips the row as before) makes
+`_check_whole_table` raise `CpicIncompleteError`, so the reply takes the
+CPIC-unavailable path instead of failing the ClinPGx update.

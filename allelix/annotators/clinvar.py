@@ -13,9 +13,11 @@ and dispatches per-variant by `variant.build`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -54,7 +56,6 @@ from allelix.utils.allele import (
 from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Callable, Iterable, Iterator
 
     from allelix.models import Variant
@@ -88,6 +89,24 @@ def _fetch_checksum(source_url: str) -> str | None:
                 return None
         digests.add(parts[0].lower())
     return digests.pop() if len(digests) == 1 else None
+
+
+def _holds_no_database(path: Path) -> bool:
+    """True when ``path`` is readable but not an SQLite database, or one with no tables.
+
+    A file that cannot be read, or a database that is locked, is not judged
+    here: it raises, or keeps its cache, as before.
+    """
+    if not os.access(path, os.R_OK):
+        return False
+    try:
+        with contextlib.closing(connect_readonly(path)) as conn:
+            tables = conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+    except sqlite3.OperationalError:
+        return False
+    except sqlite3.DatabaseError:
+        return True
+    return tables == 0
 
 
 def clinvar_db_filename(build: str) -> str:
@@ -343,6 +362,23 @@ class ClinVarAnnotator(Annotator):
         # row: i-probes at its locus, and D/I calls at its rsID.
         self._i_probes_at_plp_loci = 0
         self._di_calls_at_plp_rsids = 0
+        # chip calls naming a base their own rsID does not list there,
+        # not matched, at a locus with an aggregate-P/LP row.
+        self._foreign_allele_calls_at_plp_loci = 0
+        # rsID calls at an aggregate-P/LP locus whose rsID's alleles
+        # nothing knows, not matched to another rsID's row there.
+        self._unknown_allele_calls_at_plp_loci = 0
+        # gnomAD's alleles of an rsID at a locus, asked only for a call
+        # the identity table and ClinVar's own rows do not settle. None when
+        # gnomAD is off or not ready (the pipeline wires it per run).
+        self._allele_evidence_provider: Callable[[Variant], frozenset[str]] | None = None
+        # per build, then chromosome, the aggregate-P/LP rows whose REF
+        # is longer than ``_SHORT_INDEL`` (D/I-call naming), read in one scan;
+        # cleared on close.
+        self._long_indels: dict[str, dict[str, list[tuple[int, str, str, str]]]] = {}
+        # calls ClinVar did not fully check, named in the report:
+        # (call ID, reason) -> (call, P/LP gene or None, detail).
+        self._unchecked: dict[tuple[str, str], tuple[str, str | None, str]] = {}
         # rsID -> (the call as the file wrote it, gene) for those D/I calls.
         self._di_calls_at_plp: dict[str, tuple[str, str]] = {}
         for build in self._builds:
@@ -363,9 +399,23 @@ class ClinVarAnnotator(Annotator):
         # allele from the other build (the build's reference carries a
         # ClinVar variant allele), with that allele.
         self._normal_alleles: dict[str, dict[str, str]] = {}
+        # Per (build, rsID, locus), the normal allele from the reference-
+        # carried rows at that locus only (2.6.1), or None.
+        self._normal_at_locus: dict[tuple[str, str, tuple[str, int]], str | None] = {}
         # Per build, whether its cache is ready for this version: rsID
         # resolution outside annotation uses only a ready cache.
         self._ready_builds: dict[str, bool] = {}
+        # Per build, whether its cache carries the current interpreter-version
+        # tag: read once, not on each ``reference_at`` / ``normal_allele_for``
+        # call (2.6.1).
+        self._current_builds: dict[str, bool] = {}
+        # The single-base rows at the loci of the batch last prefetched
+        # (``prefetch_rows_at``), per build: the loci asked, and the rows per
+        # (rsID, locus). Only one batch is held, so memory stays bounded.
+        self._prefetched_loci: dict[str, set[tuple[str, int]]] = {}
+        self._prefetched_rows: dict[
+            str, dict[tuple[str, tuple[str, int]], list[tuple[str, str, int, int]]]
+        ] = {}
 
     def setup_destinations(self) -> tuple[Path, ...]:
         """Each managed build's cache, and the build log every build appends to."""
@@ -376,12 +426,14 @@ class ClinVarAnnotator(Annotator):
         return build in self._db_paths
 
     def run_counts(self) -> dict[str, int]:
-        """ADR-0045, ADR-0047 and ADR-0051 counts for the run so far."""
+        """ADR-0045, ADR-0047, ADR-0051 and foreign-allele counts for the run so far."""
         return {
             "unrecognised_rows": self._unrecognised_rows,
             "trimmed_matches": self._trimmed_matches,
             "i_probes_at_plp_loci": self._i_probes_at_plp_loci,
             "di_calls_at_plp_rsids": self._di_calls_at_plp_rsids,
+            "foreign_allele_calls_at_plp_loci": self._foreign_allele_calls_at_plp_loci,
+            "unknown_allele_calls_at_plp_loci": self._unknown_allele_calls_at_plp_loci,
             "ref_mismatches": self._ref_mismatches,
         }
 
@@ -482,6 +534,15 @@ class ClinVarAnnotator(Annotator):
         path = self._db_paths[build]
         if not path.exists():
             return None
+        if _holds_no_database(path):
+            # Nothing to protect (2.6.1): the file is not an SQLite database,
+            # or one with no tables. It is replaced like a missing cache; the
+            # absolute floor still applies.
+            self.shrink_notes.append(
+                f"ClinVar {build}: the existing {path.name} is not an SQLite database "
+                "with ClinVar data; it is replaced, checked against the absolute floor only."
+            )
+            return None
         info = get_database_info(path, clinvar_record_name(build))
         if info is None:
             info = get_database_info(path, "clinvar")
@@ -552,16 +613,22 @@ class ClinVarAnnotator(Annotator):
             if self._build_status(build).state is not CacheState.OUTDATED:
                 continue
             changed = stamp_existing_clinvar_cache(self._db_paths[build]) or changed
+        if changed:
+            # Everything read from the outdated cache (its tag, the lookups
+            # built from it, the open connection) is read again (2.6.1).
+            self.close()
         return changed
 
     def _cache_is_current(self, build: str) -> bool:
         """True when ``build``'s cache carries the current interpreter-version tag."""
         if build not in self._db_paths:
             return False
-        info = get_database_info(self._db_paths[build], clinvar_record_name(build))
-        return info is not None and info.get("local_version_tag") == (
-            f"iv:{CLINVAR_INTERPRETER_VERSION}"
-        )
+        if build not in self._current_builds:
+            info = get_database_info(self._db_paths[build], clinvar_record_name(build))
+            self._current_builds[build] = info is not None and info.get("local_version_tag") == (
+                f"iv:{CLINVAR_INTERPRETER_VERSION}"
+            )
+        return self._current_builds[build]
 
     def version(self) -> str | None:
         """Composite version string across managed builds.
@@ -592,9 +659,15 @@ class ClinVarAnnotator(Annotator):
         for conn in self._conns.values():
             conn.close()
         self._conns.clear()
+        # The long-indel rows belong to the connection they were read from.
+        self._long_indels.clear()
         self._ref_lookups.clear()
         self._normal_alleles.clear()
+        self._normal_at_locus.clear()
         self._ready_builds.clear()
+        self._current_builds.clear()
+        self._prefetched_loci.clear()
+        self._prefetched_rows.clear()
 
     def reference_for(self, rsid: str, build: str) -> str | None:
         """Return ClinVar's single-base REF allele for `rsid` in `build`, or None.
@@ -675,28 +748,124 @@ class ClinVarAnnotator(Annotator):
         return out
 
     def reference_at(self, rsid: str, build: str, locus: tuple[str, int]) -> str | None:
-        """``reference_for``, only where ClinVar places ``rsid`` at ``locus`` on ``build``.
+        """ClinVar's REF for ``rsid`` at ``locus`` on ``build``, from the rows at that locus.
 
         The ADR-0023 hom-ref filter of ClinPGx and SNPedia uses this, so a
         call is suppressed only by ClinVar's REF at the call's own position.
-        An rsID ClinVar places elsewhere, or a call with no position, gives
+        Only that locus's single-base rows count (2.6.1): the REF of another
+        row of the same rsID, or the one-base anchor of an insertion, is
+        never used. Where the reference carries the variant allele at the
+        locus (a REF == ALT row), the answer is the normal allele of that
+        locus's own VariationIDs on the other build (``_normal_at``), or
+        None. A normal-allele record written REF == ALT gives no REF. An
+        rsID ClinVar places elsewhere, or a call with no position, gives
         None and nothing is suppressed.
         """
-        ref = self.reference_for(rsid, build)
-        if ref is None:
-            return None
-        # One indexed query per call: a map of every rsID's loci would
-        # hold millions of entries for the few thousand calls made.
+        rows = self._single_base_rows_at(rsid, build, locus)
+        if any(ref == alt and not normal for ref, alt, _, normal in rows):
+            if not self._cache_is_current(build):
+                # An outdated cache keeps the locus REF, the 2.4.1 behaviour,
+                # until `db update` (as ``_load_ref_lookup``).
+                carried = {ref for ref, alt, _, normal in rows if ref == alt and not normal}
+                return next(iter(carried)) if len(carried) == 1 else None
+            return self._normal_at(rsid, build, locus, rows)
+        refs = sorted({ref for ref, alt, _, _ in rows if ref != alt})
+        return refs[0] if refs else None
+
+    def prefetch_rows_at(self, variants: Iterable[Variant]) -> None:
+        """Read the single-base rows at every positioned call's locus in bulk.
+
+        ClinPGx and SNPedia ask ``reference_at`` and ``normal_allele_for``
+        about each call of a batch; this answers them from one query per
+        chromosome and chunk instead of one per call (2.6.1). The batch
+        replaces the one held before, unless its loci were all held already.
+        """
+        wanted: dict[str, set[tuple[str, int]]] = {}
+        for v in variants:
+            if v.position and v.chromosome:
+                wanted.setdefault(v.build, set()).add(variant_locus(v))
+        for build, loci in wanted.items():
+            if loci <= self._prefetched_loci.get(build, set()):
+                continue
+            conn = self._connection(build)
+            if conn is None:
+                continue
+            normal_col = "normal_allele" if self._cache_is_current(build) else "0"
+            by_chrom: dict[str, list[int]] = {}
+            for chrom, pos in loci:
+                by_chrom.setdefault(chrom, []).append(pos)
+            rows: dict[tuple[str, tuple[str, int]], list[tuple[str, str, int, int]]] = {}
+            for chrom, positions in by_chrom.items():
+                positions.sort()
+                for start in range(0, len(positions), _BATCH_CHUNK):
+                    chunk = positions[start : start + _BATCH_CHUNK]
+                    placeholders = ",".join("?" * len(chunk))
+                    for rsid, pos, ref, alt, variation_id, normal in conn.execute(
+                        f"SELECT DISTINCT rsid, position, ref, alt, allele_id, {normal_col} "
+                        f"FROM clinvar_variants WHERE chromosome = ? "
+                        f"AND position IN ({placeholders}) "
+                        "AND length(ref) = 1 AND length(alt) = 1",
+                        (chrom, *chunk),
+                    ):
+                        rows.setdefault((rsid, (chrom, pos)), []).append(
+                            (ref, alt, variation_id, normal)
+                        )
+            self._prefetched_loci[build] = loci
+            self._prefetched_rows[build] = rows
+
+    def _single_base_rows_at(
+        self, rsid: str, build: str, locus: tuple[str, int]
+    ) -> list[tuple[str, str, int, int]]:
+        """The (REF, ALT, VariationID, normal-allele flag) rows of ``rsid`` at ``locus``.
+
+        Single-base REF and ALT only: an insertion's one-base anchor row is
+        left out. A locus of the batch last prefetched (``prefetch_rows_at``)
+        is answered from memory; any other takes one indexed query.
+        """
+        if locus in self._prefetched_loci.get(build, ()):
+            return self._prefetched_rows[build].get((rsid, locus), [])
         conn = self._connection(build)
         if conn is None:
-            return None
+            return []
         chrom, pos = locus
-        row = conn.execute(
-            "SELECT 1 FROM clinvar_variants WHERE rsid = ? AND chromosome = ? "
-            "AND position = ? AND length(ref) = 1 LIMIT 1",
+        normal_col = "normal_allele" if self._cache_is_current(build) else "0"
+        return conn.execute(
+            f"SELECT DISTINCT ref, alt, allele_id, {normal_col} FROM clinvar_variants "
+            "WHERE rsid = ? AND chromosome = ? AND position = ? "
+            "AND length(ref) = 1 AND length(alt) = 1",
             (rsid, chrom, pos),
-        ).fetchone()
-        return ref if row is not None else None
+        ).fetchall()
+
+    def _normal_at(
+        self,
+        rsid: str,
+        build: str,
+        locus: tuple[str, int],
+        rows: list[tuple[str, str, int, int]] | None = None,
+    ) -> str | None:
+        """The normal allele where ``build``'s reference carries ``rsid``'s variant at ``locus``.
+
+        From the reference-carried rows at that locus only: their carried
+        allele and VariationIDs, matched on the other build as
+        ``_normal_alleles_on_other_build`` does. Another placement of the
+        rsID never answers for this one (2.6.1). None where the locus holds
+        no such row, or the answer is not decided.
+        """
+        key = (build, rsid, locus)
+        if key in self._normal_at_locus:
+            return self._normal_at_locus[key]
+        if rows is None:
+            rows = self._single_base_rows_at(rsid, build, locus)
+        carried_rows = [(ref, vid) for ref, alt, vid, normal in rows if ref == alt and not normal]
+        carried = {ref for ref, _ in carried_rows}
+        answer = None
+        if len(carried) == 1 and self._cache_is_current(build):
+            normal = self._normal_alleles_on_other_build(
+                build, {rsid: {vid for _, vid in carried_rows}}, {rsid: next(iter(carried))}
+            )
+            answer = normal.get(rsid)
+        self._normal_at_locus[key] = answer
+        return answer
 
     def _load_ref_lookup(self, build: str) -> dict[str, str]:
         """Read the per-build cache once and build the `(rsid -> REF)` map."""
@@ -784,13 +953,18 @@ class ClinVarAnnotator(Annotator):
     ) -> str | None:
         """The normal allele at `rsid` where `build`'s reference carries a variant, or None.
 
-        Set only where ``reference_for`` returns the other build's REF of
-        the same ClinVar variant (C at F5 rs6025 on GRCh37). ClinPGx and
-        SNPedia derive their ``alt`` against it there; everywhere else
-        they keep ``Variant.ref``, even where ClinVar's REF differs from it.
-        ``locus`` is accepted for the provider's signature and not used, as
-        before 2.5.2.
+        With ``locus``, only the reference-carried rows at that locus answer
+        (``_normal_at``, 2.6.1): another placement's normal allele never
+        replaces the call's own REF, and a locus without such a row gives
+        None. ClinPGx and SNPedia derive their ``alt`` against it there;
+        everywhere else they keep ``Variant.ref``, even where ClinVar's REF
+        differs from it. Without ``locus`` (a caller that has none), the
+        rsID's single build-wide answer, as before 2.6.1: set only where
+        ``reference_for`` returns the other build's REF of the same ClinVar
+        variant (C at F5 rs6025 on GRCh37).
         """
+        if locus is not None:
+            return self._normal_at(rsid, build, locus)
         self.reference_for(rsid, build)
         return self._normal_alleles.get(build, {}).get(rsid)
 
@@ -913,6 +1087,7 @@ class ClinVarAnnotator(Annotator):
         if conn is None:
             return []
         self._count_di_calls_at_plp(conn, [variant])
+        self._name_probe_di_calls(conn, [variant])
         rows = _candidate_rows(variant, self._rows_at_loci(conn, [variant]))
         known = self._loci_of_rsids(conn, [variant])
         return self._annotations_for(variant, rows, known.get(variant.rsid))
@@ -1003,6 +1178,7 @@ class ClinVarAnnotator(Annotator):
             if conn is None:
                 continue
             self._count_di_calls_at_plp(conn, build_variants)
+            self._name_probe_di_calls(conn, build_variants)
             rows_at = self._rows_at_loci(conn, build_variants)
             known = self._loci_of_rsids(conn, build_variants)
             for variant in build_variants:
@@ -1072,6 +1248,242 @@ class ClinVarAnnotator(Annotator):
         for v in di_calls:
             if v.rsid in plp:
                 self._di_calls_at_plp.setdefault(v.rsid, (v.genotype, genes[v.rsid]))
+
+    def set_allele_evidence_provider(
+        self, provider: Callable[[Variant], frozenset[str]] | None
+    ) -> None:
+        """Wire gnomAD's own-rsID alleles in as allele evidence for this run.
+
+        Asked only when the identity table and ClinVar's own rows do not hold
+        every called base, so the union does not depend on which source
+        filled REF. None (gnomAD off or not ready) supplies nothing.
+        """
+        self._allele_evidence_provider = provider
+
+    def _others_allowed(self, variant: Variant, rows: list[tuple]) -> bool:
+        """Whether a chip call may match another rsID's row at its locus.
+
+        The call's own rsID's single-base alleles there are the evidence: the
+        identity table's SNV rows and gnomAD's rows (``allele_evidence``, from
+        the resolution step), ClinVar's own SNV rows of the rsID here, and,
+        when those do not hold every called base, gnomAD's rows of the rsID
+        asked directly (``set_allele_evidence_provider``), so the union does
+        not depend on which source filled REF. The
+        call may match another rsID's row only when every called base is in
+        that evidence. When it names a base outside it (``foreign_alleles``),
+        or nothing knows the rsID's alleles (``unknown_alleles``), only its own
+        rows match, and the call is counted and named at a P/LP locus. A VCF
+        record (REF and ALT from the file), a sequence call, and a call whose
+        REF was given with it rather than filled by the resolution step are
+        not judged.
+        """
+        called = {a.upper() for a in variant.carried_pair if a and a != NO_CALL_MARKER}
+        if variant.ref_from_input or not called or not called <= _SNV_BASES:
+            return True
+        pos = variant_locus(variant)[1]
+        own = {
+            a.upper()
+            for row in rows
+            if row[_R_RSID] == variant.rsid
+            and row[_R_POS] == pos
+            and len(row[_R_REF]) == 1
+            and len(row[_R_ALT]) == 1
+            for a in (row[_R_REF], row[_R_ALT])
+        }
+        evidence = (variant.allele_evidence or frozenset()) | own
+        if evidence and called <= evidence:
+            return True
+        if self._allele_evidence_provider is not None:
+            # gnomAD's rows of the rsID, whatever filled REF.
+            evidence |= self._allele_evidence_provider(variant)
+            if evidence and called <= evidence:
+                return True
+        if not evidence and variant.ref is not None and variant.allele_evidence is None:
+            # A REF given with the call, not filled by the resolution step
+            # (direct use of the annotator): judged by REF as before.
+            return True
+        other_rows = [row for row in rows if row[_R_RSID] and row[_R_RSID] != variant.rsid]
+        gene = self._plp_gene_at_locus(variant, rows)
+        if evidence:
+            # A base outside the rsID's alleles: counted where a P/LP row
+            # stands, with whether another rsID's row is there.
+            if gene is not None:
+                self._foreign_allele_calls_at_plp_loci += 1
+            self._note_unchecked(
+                variant, "foreign_alleles", gene, "other_rsid" if other_rows else ""
+            )
+        elif other_rows:
+            # Nothing knows the rsID's alleles here: another rsID's row could
+            # be taken for the call.
+            other_gene = self._plp_gene_at_locus(variant, other_rows)
+            if other_gene is not None:
+                self._unknown_allele_calls_at_plp_loci += 1
+            self._note_unchecked(variant, "unknown_alleles", other_gene, "other_rsid")
+        return False
+
+    def _note_unchecked(
+        self, variant: Variant, reason: str, gene: str | None, detail: str = ""
+    ) -> None:
+        """Keep a call ClinVar did not fully check, for the report's naming.
+
+        ``gene`` is the gene of an aggregate-P/LP row at the locus, or None
+        where there is none (the call is then named only at a high-value rsID);
+        a D/I call named by position under an rsID ClinVar holds gives that
+        rsID's own gene.
+        """
+        self._unchecked.setdefault((variant.rsid, reason), (variant.genotype, gene, detail))
+
+    @staticmethod
+    def _plp_gene_at_locus(variant: Variant, rows: list[tuple]) -> str | None:
+        """The gene of an aggregate-P/LP row at the call's position, or None."""
+        pos = variant_locus(variant)[1]
+        for row in rows:
+            if row[_R_POS] == pos and is_pathogenic_aggregate(row[_R_AGGREGATE] or ""):
+                return row[_R_GENE] or ""
+        return None
+
+    def unchecked(self) -> dict[tuple[str, str], tuple[str, str | None, str]]:
+        """Calls ClinVar did not fully check: (ID, reason) -> (call, P/LP gene, detail).
+
+        The gene is None where no aggregate-P/LP row stands at the locus. A D/I
+        call named by position gives its rsID's own ClinVar gene where ClinVar
+        holds the rsID, and says in the detail which row named it.
+        """
+        return dict(self._unchecked)
+
+    def plp_genes(self, rsids: Iterable[str], build: str) -> dict[str, str]:
+        """The rsIDs with an aggregate-P/LP row on ``build``, with ClinVar's gene."""
+        wanted = sorted({r for r in rsids if r.startswith("rs")})
+        conn = self._connection(build) if wanted else None
+        if conn is None:
+            return {}
+        out: dict[str, str] = {}
+        for start in range(0, len(wanted), _BATCH_CHUNK):
+            chunk = wanted[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, aggregate, gene in conn.execute(
+                f"SELECT DISTINCT rsid, aggregate, gene FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders}) ORDER BY id",
+                chunk,
+            ):
+                if is_pathogenic_aggregate(aggregate or ""):
+                    out.setdefault(rsid, gene or "")
+        return out
+
+    def _name_probe_di_calls(self, conn: sqlite3.Connection, variants: list[Variant]) -> None:
+        """Name a D/I call that ClinVar cannot place by rsID, by position.
+
+        That is a vendor probe's D/I call (no rsID) and a D/I call under an rsID
+        with no aggregate-P/LP row on this build (absent, merged or outdated, or
+        held only as Benign or VUS); a P/LP rsID's D/I call is counted and named
+        by rsID (``_count_di_calls_at_plp``), so it is not named twice. It
+        is named by an aggregate-P/LP row at its own position, or by an
+        aggregate-P/LP indel row at or before it whose reference span covers
+        the position or ends at most ``_PROBE_INDEL_SLACK`` bases before it.
+        The span is the REF's length: an insertion covers no reference base
+        after its anchor. Indels with a REF up to ``_SHORT_INDEL`` bases are
+        found in a fixed window behind the call; longer ones are read in one
+        scan per build and looked up by chromosome (``_long_plp_indels``), so
+        an unrelated long indel elsewhere does not widen every call's window.
+        Naming only; the call is still not interpreted.
+
+        The detail says which row named it. A call under an rsID
+        ClinVar holds keeps that rsID's own ClinVar gene; a vendor probe's or
+        an unheld rsID's call takes the naming row's gene.
+        """
+        di_calls = [v for v in variants if v.is_di_call and v.chromosome and v.position > 0]
+        held = self._held_rsids(conn, {v.rsid for v in di_calls if v.rsid.startswith("rs")})
+        for v in di_calls:
+            plp, own_gene = held.get(v.rsid, (False, None))
+            if plp:
+                continue
+            chrom, pos = variant_locus(v)
+            # (gene, how the row reaches the call, bases from its REF's end to the call)
+            named: tuple[str, str, int] | None = None
+            for row_pos, ref, alt, row_gene, aggregate in conn.execute(
+                "SELECT position, ref, alt, gene, aggregate FROM clinvar_variants "
+                "WHERE chromosome = ? AND position BETWEEN ? AND ? ORDER BY id",
+                (chrom, pos - _SHORT_INDEL - _PROBE_INDEL_SLACK, pos),
+            ):
+                if is_pathogenic_aggregate(aggregate or "") and (
+                    row_pos == pos or _covers(row_pos, ref, alt, pos)
+                ):
+                    named = (row_gene or "", *_reach(row_pos, ref, pos))
+                    break
+            if named is None:
+                long_rows = self._long_plp_indels(conn, v.build, chrom)
+                named = next(
+                    ((g, *_reach(at, ref, pos)) for at, ref, alt, g in long_rows
+                     if _covers(at, ref, alt, pos)),
+                    None,
+                )  # fmt: skip
+            if named is not None:
+                gene, reach, gap = named
+                row = (
+                    "a Pathogenic or Likely pathogenic "
+                    + ("variant" if reach == _AT else "indel")
+                    + (f" in {gene}" if gene else "")
+                )
+                detail = {
+                    _AT: f"{row} is at its position",
+                    _SPANS: f"{row} covers its position",
+                    _NEAR: f"{row} ends {gap} base{'s' if gap > 1 else ''} before its position",
+                }[reach]
+                if own_gene is not None:
+                    # Only an rsID ClinVar holds is said to be classified otherwise.
+                    detail += (
+                        ". ClinVar does not classify this rsID itself as Pathogenic or "
+                        "Likely pathogenic"
+                    )
+                self._note_unchecked(
+                    v, "di_call", own_gene if own_gene is not None else gene, detail
+                )
+
+    def _long_plp_indels(
+        self, conn: sqlite3.Connection, build: str, chrom: str
+    ) -> list[tuple[int, str, str, str]]:
+        """Aggregate-P/LP rows of a chromosome whose REF is longer than ``_SHORT_INDEL``.
+
+        Every chromosome's are read in one scan of the table, once per build and
+        connection, and cleared on ``close``: a query per chromosome went
+        through the position index and a sort each time, many times slower
+        than one scan for a chip with D/I calls on every chromosome.
+        """
+        if build not in self._long_indels:
+            by_chrom: dict[str, list[tuple[int, str, str, str]]] = {}
+            for row_chrom, row_pos, ref, alt, gene, aggregate in conn.execute(
+                "SELECT chromosome, position, ref, alt, gene, aggregate FROM clinvar_variants "
+                "WHERE length(ref) > ? ORDER BY id",
+                (_SHORT_INDEL,),
+            ):
+                if is_pathogenic_aggregate(aggregate or ""):
+                    by_chrom.setdefault(row_chrom, []).append((row_pos, ref, alt, gene or ""))
+            self._long_indels[build] = by_chrom
+        return self._long_indels[build].get(chrom, [])
+
+    @staticmethod
+    def _held_rsids(conn: sqlite3.Connection, rsids: set[str]) -> dict[str, tuple[bool, str]]:
+        """The rsIDs among ``rsids`` ClinVar holds on this build: rsID -> (P/LP, gene).
+
+        P/LP is whether any row's aggregate is Pathogenic or Likely pathogenic;
+        such an rsID's D/I call is counted and named by rsID
+        (``_count_di_calls_at_plp``). Any other rsID's D/I call, Benign or VUS
+        rows included, is named by position, under the rsID's own
+        ClinVar gene: its first row's with a gene, or "".
+        """
+        wanted = sorted(rsids)
+        held: dict[str, tuple[bool, str]] = {}
+        for start in range(0, len(wanted), _BATCH_CHUNK):
+            chunk = wanted[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, aggregate, gene in conn.execute(
+                f"SELECT rsid, aggregate, gene FROM clinvar_variants "
+                f"WHERE rsid IN ({placeholders}) ORDER BY id",
+                chunk,
+            ):
+                plp, own = held.get(rsid, (False, ""))
+                held[rsid] = (plp or is_pathogenic_aggregate(aggregate or ""), own or gene or "")
+        return held
 
     def di_calls_at_plp(self) -> dict[str, tuple[str, str]]:
         """The D/I calls ``di_calls_at_plp_rsids`` counts: rsID -> (call, gene)."""
@@ -1162,17 +1574,25 @@ class ClinVarAnnotator(Annotator):
         if (variant.is_no_call and not variant.is_half_call) or variant.is_di_call:
             # A D/I call, mixed (``AD``) or not, is not interpreted (ADR-0070).
             # ``annotate`` and ``batch_annotate`` have already counted it at a
-            # P/LP rsID.
+            # P/LP rsID, and named a vendor probe's by the indel rows near it
+            # (``_name_probe_di_calls``).
             return []
         if variant.ref is None and not rsid_loci:
-            if variant.rsid.startswith("i") and any(
-                row[_R_POS] == variant_locus(variant)[1]
-                and is_pathogenic_aggregate(row[_R_AGGREGATE] or "")
-                for row in rows
-            ):
-                # ADR-0051: a vendor probe at a locus with an aggregate-P/LP row.
+            gene = self._plp_gene_at_locus(variant, rows)
+            if gene is not None and variant.rsid.startswith("i"):
+                # ADR-0051: a vendor probe at a locus with an aggregate-P/LP row,
+                # also named.
                 self._i_probes_at_plp_loci += 1
+                self._note_unchecked(variant, "vendor_probe", gene)
+            elif gene is not None and variant.rsid.startswith("rs"):
+                # an rsID neither ClinVar nor the identity table knows,
+                # at a P/LP position: nothing says the row is its variant.
+                self._unknown_allele_calls_at_plp_loci += 1
+                self._note_unchecked(variant, "unknown_alleles", gene)
             return []
+        # whether another rsID's row at the locus may match a chip
+        # call. The call's own rows always may.
+        others_allowed = self._others_allowed(variant, rows)
         record_locus = variant_locus(variant)
         trimmed = _trimmed_alleles(variant)
         if rsid_loci and not rsid_loci & (
@@ -1214,6 +1634,11 @@ class ClinVarAnnotator(Annotator):
                 # locus and alleles alone, so only a REF read from the
                 # input (VCF) can confirm it. An array call's REF comes
                 # from the rsID identity table of its own rsID.
+                continue
+            if row_rsid != variant.rsid and not others_allowed:
+                # another rsID's row, for a chip call whose bases
+                # its own rsID's known alleles do not hold, or whose alleles
+                # nothing knows.
                 continue
             written = trimmed.get((row_pos, ref, alt))
             if written is not None:
@@ -1315,8 +1740,49 @@ class ClinVarAnnotator(Annotator):
 _R_POS = 1
 _R_REF = 2
 _R_ALT = 3
+_R_GENE = 6
 _R_RSID = 9
 _R_AGGREGATE = 10
+# Bases a chip call's alleles must be to be judged by the foreign-allele guard.
+_SNV_BASES = frozenset("ACGT")
+# indels with a REF up to this length are found in a fixed window behind
+# a D/I call; longer ones are read in one scan per build, by chromosome.
+_SHORT_INDEL = 64
+# how far past an indel row's span a vendor probe's D/I call may stand
+# and still be named by it. ClinVar writes an indel left-aligned, while a chip
+# can give a position at the right end of a short repeat (BRCA1 5382insC: the
+# row at 41209079, the probe at 41209083). Naming only; nothing is matched.
+_PROBE_INDEL_SLACK = 5
+
+
+# How a P/LP row that names a D/I call reaches it: a row at the call's
+# position, an indel whose REF span holds the position, or one whose span ends
+# up to ``_PROBE_INDEL_SLACK`` bases before it.
+_AT, _SPANS, _NEAR = "at", "spans", "near"
+
+
+def _reach(row_pos: int, ref: str, pos: int) -> tuple[str, int]:
+    """How a naming row at ``row_pos`` with ``ref`` reaches a call at ``pos``.
+
+    With the number of bases from the row's last REF base to the call (0
+    unless the call is past the REF span).
+    """
+    if row_pos == pos:
+        return _AT, 0
+    gap = pos - (row_pos + len(ref) - 1)
+    return (_NEAR, gap) if gap > 0 else (_SPANS, 0)
+
+
+def _covers(row_pos: int, ref: str, alt: str, pos: int) -> bool:
+    """True when an indel row's reference span reaches ``pos``.
+
+    Only an indel (REF or ALT longer than one base) has a span: its REF's
+    bases, ``row_pos`` to ``row_pos + len(ref) - 1`` inclusive, plus up to
+    ``_PROBE_INDEL_SLACK`` bases after the last. An insertion's REF is its anchor
+    alone, so a long insertion reaches no further than a short one.
+    """
+    indel = len(ref) > 1 or len(alt) > 1
+    return indel and row_pos <= pos <= row_pos + len(ref) - 1 + _PROBE_INDEL_SLACK
 
 
 # An allele that has another shape at a trimmed row's position (the deletion

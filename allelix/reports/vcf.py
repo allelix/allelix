@@ -124,6 +124,10 @@ class VcfWriteInputs:
     record_rows: dict[_VariantKey, set[int]] | None = None
     # The rsID recovered for a record's own call, by record number.
     record_recovered: dict[int, str] = field(default_factory=dict)
+    # The records (``Variant.record_index``) a reference call was rebuilt
+    # from: only a finding of theirs is stamped on a ``reference_rows``
+    # record (2.6.1). None: no such filter (a caller that keeps no numbers).
+    reference_records: frozenset[int] | None = None
 
 
 _logger = logging.getLogger(__name__)
@@ -527,6 +531,7 @@ def render_vcf(
     record_rows: Mapping[_VariantKey, set[int]] | None = None,
     record_recovered: Mapping[int, str] | None = None,
     input_method: str = "",
+    reference_records: frozenset[int] | None = None,
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
 
@@ -653,6 +658,7 @@ def render_vcf(
                     record_rows=record_rows,
                     record_index=record_index,
                     record_recovered=record_recovered,
+                    reference_records=reference_records,
                 )
                 fout.write(new_line)
                 if row_stamped:
@@ -674,6 +680,7 @@ def _stamp_data_line(
     record_rows: Mapping[_VariantKey, set[int]] | None = None,
     record_index: int = -1,
     record_recovered: Mapping[int, str] | None = None,
+    reference_records: frozenset[int] | None = None,
 ) -> tuple[str, bool]:
     """Rewrite one VCF data line with Allelix INFO fields.
 
@@ -750,6 +757,7 @@ def _stamp_data_line(
         reference_rows or {},
         carries_reference,
         produced_here,
+        reference_records,
     )
 
     for i, alt in enumerate(alts):
@@ -811,6 +819,16 @@ def _stamp_data_line(
     return "\t".join(new_cols) + "\n", row_stamped or recovered is not None
 
 
+def _rebuilt_from(annotation: Annotation, reference_records: frozenset[int] | None) -> bool:
+    """Whether ``annotation`` came from a reference call rebuilt from explicit records.
+
+    A ``reference_rows`` record is stamped only with such a finding: a call
+    carrying REF at the same site produced its finding itself, and an
+    explicit hom-ref record beside it gave no call (2.6.1).
+    """
+    return reference_records is None or annotation.record_index in reference_records
+
+
 def _reference_value(
     cols: list[str],
     key_chrom: str,
@@ -820,6 +838,7 @@ def _reference_value(
     reference_rows: Mapping[RowKey, set[Locus]],
     carries_reference: Callable[[_VariantKey], bool],
     produced_here: Callable[[Annotation], bool],
+    reference_records: frozenset[int] | None = None,
 ) -> str:
     """The ``ALLELIX_CLINVAR_REF`` value of one record, or "".
 
@@ -846,7 +865,9 @@ def _reference_value(
         annotation
         for locus, base, own_call in loci
         for annotation in annotations_by_key.get((*locus, base, base), [])
-        if (not own_call or produced_here(annotation))
+        if (
+            produced_here(annotation) if own_call else _rebuilt_from(annotation, reference_records)
+        )
         and annotation.source == "clinvar"
         and annotation.reference_carries_alt
         and annotation.locus == locus

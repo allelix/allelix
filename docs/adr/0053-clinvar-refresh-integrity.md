@@ -135,3 +135,17 @@ The submission_summary download is always verified, like
 variant_summary. Its checksum is ClinVar's freshness signal; when it
 cannot be fetched (the fetch is tried twice), the refresh stops with an
 error and the existing caches are kept.
+
+## Amendment 2.6.1 (2026-11-05): a file that is not a database has no baseline
+
+The relative floor refused a refresh whenever the existing cache's record
+count was missing or invalid. That also caught a `clinvar.<build>.sqlite`
+that is not an SQLite database at all, which `analyze` reports as damaged
+with "Run `allelix db update`" (ADR-0048): `db update` then refused it with
+or without `--force`, and with `--build both` the healthy other build was
+blocked too. Such a file has no baseline to protect. A readable file that
+is not an SQLite database, or one with no tables (an empty file among
+them), is now replaced as a missing cache would be: the absolute floor
+still applies, and `db update` says so. A readable database with ClinVar
+tables but a missing or invalid count is still refused, as is a file that
+cannot be read or a database that is locked.

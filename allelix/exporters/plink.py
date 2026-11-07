@@ -135,17 +135,22 @@ def plink_writable(v: Variant) -> bool:
     return not v.is_no_call and v.allele1 in _NUCLEOTIDES and v.allele2 in _NUCLEOTIDES
 
 
-def _pair_reading(v: Variant, ref: str, alt: str) -> tuple[str, str] | None:
+def _pair_reading(
+    v: Variant, ref: str, alt: str, *, forward_strand: bool = False
+) -> tuple[str, str] | None:
     """The call's alleles on the strand of a non-palindromic pair, or None.
 
     The one strand reading that fits the pair (ADR-0066's helper): as
     written, or complemented. None when neither fits; both cannot, since a
-    non-palindromic pair shares no base with its complement.
+    non-palindromic pair shares no base with its complement. A call already
+    on the forward strand (``forward_strand``: VCF input) is read only as
+    written; the complement reading is for chip probes, whose strand is not
+    known.
     """
     reading = forward_strand_reading((v.allele1, v.allele2), frozenset((ref, alt)))
     if reading == STRAND_DIRECT:
         return v.allele1, v.allele2
-    if reading == STRAND_COMPLEMENT:
+    if reading == STRAND_COMPLEMENT and not forward_strand:
         return complement(v.allele1), complement(v.allele2)
     return None
 
@@ -176,6 +181,7 @@ def export_plink(
     *,
     record_alleles: Mapping[RecordKey, tuple[str, str]] | None = None,
     supplied_ids: Iterable[str] = (),
+    forward_strand_calls: bool = False,
 ) -> PlinkCounts:
     """Write .bed/.bim/.fam from parsed variants.
 
@@ -189,11 +195,16 @@ def export_plink(
             it is used instead of ``ref_alt_map``.
         supplied_ids: IDs the input supplies anywhere in the stream; a
             generated ID never takes one of them.
+        forward_strand_calls: True when the calls are on the forward strand
+            (VCF input): a call is never read by its complement, so one that
+            does not fit a non-palindromic pair as written is written as
+            missing.
             When provided, uses ref/alt to assign A1/A2 for proper allele coding.
             When None or rsid missing, falls back to ``A2="0"`` for homozygotes.
             At a pair that is not A/T or C/G a call is coded by the one strand
             reading that fits (as written, or complemented and counted in
-            ``complemented``); one that fits neither is written as missing.
+            ``complemented``; with ``forward_strand_calls``, as written
+            only); one that fits neither is written as missing.
             At an A/T or C/G pair a call that fits as written gets the
             fallback, and any other is written as missing.
 
@@ -231,7 +242,14 @@ def export_plink(
             bim = streams.enter_context(stages[".bim"].open_text(encoding=None))
             bed = streams.enter_context(stages[".bed"].open_binary())
             counts = _write_plink(
-                variants, fam, bim, bed, ref_alt_map, record_alleles, supplied_ids
+                variants,
+                fam,
+                bim,
+                bed,
+                ref_alt_map,
+                record_alleles,
+                supplied_ids,
+                forward_strand_calls,
             )
         if counts[0] == 0:
             raise EmptyPlinkSetError(counts[1], counts[2])
@@ -248,6 +266,7 @@ def _write_plink(
     ref_alt_map: dict[str, tuple[str, str]] | None,
     record_alleles: Mapping[RecordKey, tuple[str, str]] | None = None,
     supplied_ids: Iterable[str] = (),
+    forward_strand_calls: bool = False,
 ) -> PlinkCounts:
     """The body of ``export_plink``: write through the three owned streams."""
     fam_f.write("0\tSAMPLE\t0\t0\t0\t-9\n")
@@ -284,7 +303,11 @@ def _write_plink(
             pair = ref_alt_map.get(v.rsid) if ref_alt_map else None
         if pair is not None:
             ref, alt = pair
-            called = None if is_strand_ambiguous(ref, alt) else _pair_reading(v, ref, alt)
+            called = (
+                None
+                if is_strand_ambiguous(ref, alt)
+                else _pair_reading(v, ref, alt, forward_strand=forward_strand_calls)
+            )
             if called is not None:
                 if called != (v.allele1, v.allele2):
                     complemented += 1
