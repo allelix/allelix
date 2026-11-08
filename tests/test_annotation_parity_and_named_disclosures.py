@@ -554,7 +554,14 @@ def test_indel_naming_uses_the_union_of_high_value_and_plp_sites(
         aggregate = "Pathogenic" if selection == "plp-only" else "Uncertain significance"
         _clinvar(data, "GRCh37", [(rsid, "2", 1000, "AT", "A", gene, aggregate, aggregate, 1, 1)])
     source = _chip(tmp_path / "input.txt", [(rsid, "2", 1000, "DI")], kind)
-    report, console = _run(tmp_path, data, source, "GRCh37", surface)
+    report, console = _run(
+        tmp_path,
+        data,
+        source,
+        "GRCh37",
+        surface,
+        extra=("--show-unchecked",) if selection == "plp-only" else (),
+    )
     if surface == "json":
         assert report["annotations"] == []
         text = json.dumps(report.get("report_warnings", []))

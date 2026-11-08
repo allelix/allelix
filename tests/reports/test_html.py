@@ -827,9 +827,19 @@ class TestMetricsPerAllele:
         )
         assert entry["allele_metrics"] == [
             {"allele": "A", "allele_frequency": 0.1},
-            {"allele": "T", "cadd_phred": 35.0},
+            {
+                "allele": "T",
+                "cadd_phred": 35.0,
+                "cadd_label": "35.0 (top 0.1% predicted deleterious)",
+            },
         ]
-        for unlabelled in ("allele_frequency", "am_pathogenicity", "am_class", "cadd_phred"):
+        for unlabelled in (
+            "allele_frequency",
+            "am_pathogenicity",
+            "am_class",
+            "cadd_phred",
+            "cadd_label",
+        ):
             assert unlabelled not in entry
 
     def test_one_allele_keeps_the_flat_fields(self) -> None:

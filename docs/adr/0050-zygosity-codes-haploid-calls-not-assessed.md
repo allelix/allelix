@@ -113,3 +113,44 @@ made it `heterozygous`.
 `Variant.haploid` is also set for a one-letter call in an rsID and
 genotype list (`allelix/parsers/rsidlist.py`, ADR-0069): `A` is a haploid
 call of A. A no-call is still never haploid.
+
+## Amendment 2.6.2 (2026-11-07): plausibility is shown only when it warns
+
+The HTML report and the terminal show plausibility only when it warns. A
+call that is `implausible` or `suspicious` keeps its mark (HTML `⚠` with
+its hover text and its detail-panel row; terminal `⚠` or `?`). A call that
+was `not_assessed` gets no mark and no detail-panel row, and the terminal's
+`○` legend line is gone. The muted `○` was barely visible and explained
+itself only on hover, which a phone cannot do; the panel row appeared on
+some findings and not others, which read as random.
+
+The warning is explained once, in plain words, in the HTML "Reading This
+Report" section, in the terminal's legend line (shown when a call is
+flagged) and in the README: the call looks doubtful because the variant is
+rarer in the population (gnomAD) than Allelix's limit for that call. The
+wording names no input type, since VCF and chip calls are assessed alike,
+and it gives the default limits as defaults: a configured
+`heterozygous_max_af` above 0 flags alleles gnomAD has seen. A call this rare
+can be a genotyping or sequencing error; confirm it before relying on it.
+Allelix can only check variants with population counts in gnomAD, so no
+warning is not a guarantee. The suspicious hover text and detail-panel row
+say the same: at or below the limit for one copy, by default no carriers.
+Classification is unchanged.
+
+The JSON report is unchanged, with no schema change: every annotation keeps
+`plausibility`, and a `not_assessed` one keeps `plausibility_reason`. The
+HTML page's embedded data no longer carries the reason's display text,
+which nothing shows. The multi-homozygote report warning is unchanged.
+
+## Amendment 2.6.2 (2026-11-07): at or under the limit for one copy
+
+The 2.6.2 amendment above words the explanation as "rarer in the population
+(gnomAD) than Allelix's limit for that call". That is exact for two copies
+only. The rules are unchanged: a homozygous call is implausible when its
+allele's gnomAD frequency is strictly below `homozygous_max_af`, and a
+heterozygous call is suspicious when the frequency is at or below
+`heterozygous_max_af` (with the default 0, every suspicious call is at the
+limit). The HTML "Reading This Report" section, the terminal's legend line
+and the README now say the call looks doubtful because the variant's
+frequency in gnomAD is at or under Allelix's limit for that call (under it
+for two copies). Classification is unchanged.

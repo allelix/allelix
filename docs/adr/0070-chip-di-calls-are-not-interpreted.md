@@ -84,3 +84,15 @@ locus where ClinVar classifies a variant as Pathogenic or Likely
 pathogenic, or near one (an indel whose REF span covers the call or ends
 up to five bases before it), the call is still named, because ClinVar
 does not match a probe to that variant (ADR-0051).
+
+## Amendment 2.6.2 (2026-11-07): what is named where, and the warning's count
+
+The Decision's "named in `high_value_unchecked` and the
+`di_calls_not_checked` warning ... in JSON, HTML and the terminal" holds
+for JSON. Since 2.6.2 the terminal and HTML name a D/I call only at a
+high-value rsID and count the rest, one line per kind, with the full list
+behind `--show-unchecked` and in a collapsed HTML section (ADR-0051).
+The warning's count is the number of D/I calls listed in JSON
+`high_value_unchecked` (reason `di_call`), so it grew in
+2.6.1 with the vendor-probe and positional naming; the count of D/I
+calls at P/LP rsIDs (`di_calls_at_plp_rsids`) did not change (ADR-0051).

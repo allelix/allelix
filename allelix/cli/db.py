@@ -7,7 +7,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import click
-from rich.markup import escape
 from rich.table import Table
 
 from allelix.annotators import get_annotators
@@ -19,6 +18,7 @@ from allelix.cli._options import _DATA_DIR_OPT
 from allelix.databases import resolve_data_dir
 from allelix.databases.cache_state import CacheState
 from allelix.databases.manager import compare_signals
+from allelix.utils.markup import literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -33,7 +33,7 @@ def db() -> None:
 
 def _print_refreshed(annotator: Annotator) -> None:
     """The line after a successful refresh; a download with unchanged content says so."""
-    version = annotator.version() or "(unknown)"
+    version = literal(annotator.version() or "(unknown)")
     if getattr(annotator, "content_unchanged", False):
         console.print(
             f"  [green]✓ {annotator.name}: content unchanged; cache kept[/green] "
@@ -159,7 +159,7 @@ def db_update(
     downloads GRCh37 and GRCh38 caches.
     """  # noqa: D301 - plain string: click's \b marker is the backspace character
     resolved = resolve_data_dir(data_dir)
-    console.print(f"Data directory: [cyan]{resolved}[/cyan]")
+    console.print(f"Data directory: [cyan]{literal(str(resolved))}[/cyan]")
 
     from allelix.config import load_config
 
@@ -209,7 +209,7 @@ def db_update(
             status = annotator.cache_status()
             if not force and status.state in (CacheState.WAL, CacheState.READONLY_WAL):
                 console.print(
-                    f"  [yellow]{annotator.name}: {escape(str(status.path))} is still in WAL "
+                    f"  [yellow]{annotator.name}: {literal(str(status.path))} is still in WAL "
                     "mode and could not be converted (no write access to its directory, or "
                     "another process has it open). Nothing was downloaded.[/yellow]"
                 )
@@ -224,7 +224,7 @@ def db_update(
                 if status.ready:
                     console.print(
                         f"  [dim]{annotator.name}: ready "
-                        f"({annotator.version() or 'unknown'})[/dim]"
+                        f"({literal(annotator.version() or 'unknown')})[/dim]"
                     )
                 elif annotator.requires_download:
                     # A downloaded source whose backend update cannot supply
@@ -232,7 +232,7 @@ def db_update(
                     # nothing is not managed here and is skipped, as before.
                     # soft_wrap: a long path is never broken across lines.
                     console.print(
-                        f"  [yellow]{escape(_helpers.unready_line(annotator, status))}[/yellow]",
+                        f"  [yellow]{literal(_helpers.unready_line(annotator, status))}[/yellow]",
                         soft_wrap=True,
                     )
                     failed.append(annotator.name)
@@ -244,7 +244,7 @@ def db_update(
                 if _helpers._run_setup(annotator, force=force):
                     console.print(
                         f"  [green]✓ {annotator.name} ready[/green] "
-                        f"(version {annotator.version() or '(unknown)'})"
+                        f"(version {literal(annotator.version() or '(unknown)')})"
                     )
                 else:
                     failed.append(annotator.name)
@@ -264,7 +264,7 @@ def db_update(
             if not annotator.server_driven_freshness:
                 console.print(
                     f"  [dim]{annotator.name}: already current "
-                    f"(version {annotator.version() or '(unknown)'})[/dim]"
+                    f"(version {literal(annotator.version() or '(unknown)')})[/dim]"
                 )
                 continue
 
@@ -288,7 +288,7 @@ def db_update(
             if verdict == "same":
                 console.print(
                     f"  [dim]{annotator.name}: already current "
-                    f"(version {annotator.version() or '(unknown)'})[/dim]"
+                    f"(version {literal(annotator.version() or '(unknown)')})[/dim]"
                 )
                 continue
             if verdict == "unknown":
@@ -651,33 +651,35 @@ def db_clean(
     others = [entry for entry in kept if entry not in staging_kept]
     notes = []
     if others:
-        shown = ", ".join(escape(entry.name) for entry in others[:6])
+        shown = ", ".join(literal(entry.name) for entry in others[:6])
         more = f" and {len(others) - 6} more" if len(others) > 6 else ""
         notes.append(f"Kept {len(others)} item(s) allelix did not create: {shown}{more}.")
     for entry in staging_kept:
         notes.append(
-            f"Kept {escape(entry.name)}: may be an interrupted update's leftovers; "
+            f"Kept {literal(entry.name)}: may be an interrupted update's leftovers; "
             "delete it by hand if so."
         )
     kept_note = "\n".join(notes)
 
     if not entries:
         console.print(
-            f"[dim]Nothing to clean at {resolved}"
+            f"[dim]Nothing to clean at {literal(str(resolved))}"
             f"{' (CADD preserved via --keep-cadd)' if keep_cadd else ''}[/dim]"
         )
         if kept_note:
             console.print(f"[dim]{kept_note}[/dim]")
         return
 
-    table = Table(title=f"{'Would delete' if dry_run else 'Will delete'} ({resolved})")
+    table = Table(
+        title=f"{'Would delete' if dry_run else 'Will delete'} ({literal(str(resolved))})"
+    )
     table.add_column("Item", style="cyan", no_wrap=True)
     table.add_column("Size", justify="right")
     total = 0
     for entry in entries:
         size = _entry_size(entry)
         total += size
-        table.add_row(escape(entry.name), _human_bytes(size))
+        table.add_row(literal(entry.name), _human_bytes(size))
     table.add_row("[bold]total[/bold]", f"[bold]{_human_bytes(total)}[/bold]")
     console.print(table)
 
@@ -774,7 +776,7 @@ def db_status(data_dir: Path | None) -> None:
 
     resolved = resolve_data_dir(data_dir)
     cfg = load_config(resolved)
-    table = Table(title=f"Reference Databases ({resolved})")
+    table = Table(title=f"Reference Databases ({literal(str(resolved))})")
     table.add_column("Annotator", style="cyan", no_wrap=True)
     table.add_column("Ready", justify="center")
     table.add_column("Version")
@@ -804,5 +806,5 @@ def db_status(data_dir: Path | None) -> None:
                 count = count_fn()
                 if count is not None:
                     records = f"{count:,}"
-            table.add_row(annotator.display_name, ready_marker, version, records)
+            table.add_row(annotator.display_name, ready_marker, literal(version), records)
     console.print(table)

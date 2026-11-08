@@ -4,14 +4,16 @@
 
 `analyze` to a cp1252 pipe or redirect (Windows' legacy encoding) crashed
 with UnicodeEncodeError on a character the stream cannot encode, such as the
-plausibility marker "○". At CLI start-up, a stdout or stderr that is not
-UTF-8 and would raise is switched to replace such a character. Reports and
+plausibility marker "○". At CLI start-up, a stdout or stderr whose error
+mode would raise on such a character (strict, or a POSIX ASCII locale's
+surrogateescape) is switched to replace it. Reports and
 other files are written as UTF-8 and are unaffected. Synthetic data only.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import os
 import sqlite3
@@ -123,6 +125,16 @@ def test_a_strict_legacy_stream_replaces_what_it_cannot_encode():
     assert stream.buffer.getvalue() == "? ? café".encode("cp1252")  # type: ignore[attr-defined]
 
 
+def test_a_surrogateescape_ascii_stream_replaces_but_keeps_file_name_bytes():
+    stream = _stream("ascii", "surrogateescape")
+
+    _replace_unencodable_output(stream)
+    stream.write("✓ caf" + b"\xe9".decode("ascii", "surrogateescape") + " …")
+    stream.flush()
+
+    assert stream.buffer.getvalue() == b"? caf\xe9 ?"  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize(
     ("encoding", "errors"),
     [
@@ -146,3 +158,173 @@ def test_a_stream_that_cannot_be_reconfigured_is_left_alone():
         errors = "strict"
 
     _replace_unencodable_output(Plain())  # no reconfigure(): nothing to do, no error
+
+
+# ── A POSIX ASCII locale: stdout and stderr are ascii/surrogateescape (2.6.2) ──
+#
+# With LC_ALL=C, PYTHONUTF8=0 and no PYTHONIOENCODING, Python gives the
+# standard streams ``surrogateescape``, which raises on "✓" or "…" just as
+# strict does. db clean crashed after it had deleted; db update --force and an
+# analyze that refreshes a stale cache crashed before refreshing. The refresh
+# is local: the GWAS source reports a changed remote signal and its setup
+# writes a marker file. Sockets are refused.
+
+_C_LOCALE_CHILD = """
+import socket, sys
+from pathlib import Path
+from allelix.annotators.gwas import GWASCatalogAnnotator
+from allelix.cli import main
+
+def deny(*args, **kwargs):
+    raise RuntimeError("network forbidden")
+
+socket.create_connection = deny
+socket.socket.connect = deny
+marker = Path(sys.argv[1])
+GWASCatalogAnnotator.fetch_remote_signal = lambda self: "etag:new"
+GWASCatalogAnnotator.cached_remote_signal = lambda self: "etag:old"
+GWASCatalogAnnotator.setup = lambda self, **kwargs: marker.write_text("local")
+if sys.argv[2:4] == ["db", "update"]:
+    import allelix.cli.db as db
+    db.get_annotators = lambda folder, **kwargs: [GWASCatalogAnnotator(folder)]
+print(f"streams: {sys.stdout.encoding}/{sys.stdout.errors}", file=sys.stderr)
+sys.argv = ["allelix", *sys.argv[2:]]
+main()
+"""
+
+_C_LOCALE = {"LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+
+_GWAS_ONLY = "[sources]\n" + "".join(
+    f"{name} = {'true' if name == 'gwas' else 'false'}\n"
+    for name in (
+        "clinvar",
+        "pharmgkb",
+        "snpedia",
+        "gwas",
+        "gnomad",
+        "cadd",
+        "alphamissense",
+        "rsid_identity",
+    )
+)
+
+
+def _in_c_locale(marker: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "PYTHONIO"))}
+    env.update(_C_LOCALE, PYTHONPATH=str(_REPO))
+    return subprocess.run(
+        [sys.executable, "-c", _C_LOCALE_CHILD, str(marker), *args],
+        capture_output=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+
+
+def _ok(result: subprocess.CompletedProcess[bytes]) -> None:
+    stderr = result.stderr.decode("ascii", "replace")
+    assert "streams: ascii/surrogateescape" in stderr  # the locale really is ASCII
+    assert result.returncode == 0, stderr
+    assert "UnicodeEncodeError" not in stderr
+
+
+@pytest.fixture
+def gwas_data(tmp_path):
+    from tests.test_annotation_parity_and_named_disclosures import _mthfr, _vcf
+
+    data = tmp_path / "data"
+    pos = _mthfr(data, "GRCh37")
+    (data / "config.toml").write_text(_GWAS_ONLY)
+    vcf = _vcf(tmp_path / "input.vcf", [("rs1801133", "1", pos, "G", "A", "0/1", ".")])
+    return data, vcf
+
+
+def test_db_clean_in_an_ascii_locale_reports_what_it_removed(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "gwas.sqlite").write_text("synthetic")
+
+    result = _in_c_locale(tmp_path / "marker", "db", "clean", "--yes", "--data-dir", str(data))
+
+    _ok(result)
+    assert not (data / "gwas.sqlite").exists()
+    assert b"? Removed 1 item(s)" in result.stdout
+
+
+def _undecodable_argument_printed_as_its_bytes(tmp_path: Path) -> None:
+    """A command-line value the locale cannot decode is printed back as its bytes.
+
+    No file of that name is needed: ``extract`` prints each requested ID it
+    does not find, so the value only travels from argv to the console.
+    """
+    chip = tmp_path / "chip.txt"
+    chip.write_text(
+        "# This data file generated by 23andMe at: synthetic\n"
+        "# Reference human assembly GRCh37\n"
+        "# rsid\tchromosome\tposition\tgenotype\n"
+        "rs1801133\t1\t11856378\tAG\n"
+    )
+    data = tmp_path / "data"
+    data.mkdir()
+
+    result = _in_c_locale(
+        tmp_path / "marker",
+        "extract",
+        str(chip),
+        "--snps",
+        os.fsdecode(b"rs1801133,caf\xe9"),
+        "--data-dir",
+        str(data),
+    )
+
+    _ok(result)
+    assert b"caf\xe9" in result.stdout
+
+
+def test_db_clean_in_an_ascii_locale_prints_an_undecodable_path_as_its_bytes(tmp_path):
+    data = Path(os.fsdecode(bytes(tmp_path) + b"/caf\xe9"))
+    try:
+        data.mkdir()
+    except OSError as exc:
+        # macOS (APFS) refuses a file name that is not valid UTF-8 (EILSEQ): no
+        # such path can exist there, so the same bytes come in on the command line.
+        if exc.errno != errno.EILSEQ:
+            raise
+        _undecodable_argument_printed_as_its_bytes(tmp_path)
+        return
+    (data / "gwas.sqlite").write_text("synthetic")
+
+    result = _in_c_locale(
+        tmp_path / "marker", "db", "clean", "--dry-run", "--data-dir", os.fsdecode(data)
+    )
+
+    _ok(result)
+    assert b"caf\xe9" in result.stdout.replace(b"\n", b"")
+
+
+def test_an_undecodable_command_line_value_in_an_ascii_locale_prints_as_its_bytes(tmp_path):
+    _undecodable_argument_printed_as_its_bytes(tmp_path)
+
+
+def test_db_update_force_in_an_ascii_locale_refreshes(tmp_path, gwas_data):
+    data, _ = gwas_data
+    marker = tmp_path / "marker"
+
+    result = _in_c_locale(marker, "db", "update", "--force", "--data-dir", str(data))
+
+    _ok(result)
+    assert marker.read_text() == "local"
+
+
+def test_analyze_that_refreshes_a_stale_cache_in_an_ascii_locale(tmp_path, gwas_data):
+    data, vcf = gwas_data
+    os.utime(data / "gwas.sqlite", (1, 1))
+    marker = tmp_path / "marker"
+
+    result = _in_c_locale(
+        marker, "analyze", str(vcf), "--build", "grch37", "--data-dir", str(data)
+    )
+
+    _ok(result)
+    assert marker.read_text() == "local"
+    assert b"Updating GWAS" in result.stdout

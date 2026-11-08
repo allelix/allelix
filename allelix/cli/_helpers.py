@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 import click
 from rich.console import Console
-from rich.markup import escape
 
 from allelix.annotators import get_annotators
 from allelix.annotators.clinvar import (
@@ -65,12 +64,14 @@ from allelix.reports.high_value import (
     format_warnings,
     load_high_value_snps,
     scan_no_calls,
+    unchecked_rollup,
     unchecked_sites,
 )
 from allelix.reports.html import render_html
 from allelix.reports.json_report import render_json
 from allelix.reports.terminal import render_terminal, render_terminal_diff
 from allelix.utils.build_detect import BuildDecisionError, needs_late_seeds
+from allelix.utils.markup import literal
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterator
@@ -89,7 +90,8 @@ if TYPE_CHECKING:
     from allelix.reports._pipeline import BuildDiagnostics, StreamBuild
     from allelix.utils.build_detect import BuildDecision
 
-console = Console()
+# No :name: emoji codes: database and input text is printed as it is.
+console = Console(emoji=False)
 
 # Sort 1-22 numerically, then X, Y, MT, then anything else alphabetically.
 _NAMED_CHROM_ORDER = {"X": 0, "Y": 1, "MT": 2}
@@ -213,8 +215,8 @@ def note_imputed_input(
     prefix = f"{which}: " if which else ""
     tail = f" {extra}" if extra else ""
     console.print(
-        f"[yellow]Note:[/yellow] {escape(prefix)}input method: "
-        f"{escape(input_method_label(method))}.{escape(tail)}"
+        f"[yellow]Note:[/yellow] {literal(prefix)}input method: "
+        f"{literal(input_method_label(method))}.{literal(tail)}"
     )
 
 
@@ -311,7 +313,7 @@ def _forced_format_warning(file_path: Path, parser: GenotypeParser) -> str | Non
 def _mark_forced(parser: GenotypeParser, warning: str | None) -> GenotypeParser:
     """Print the forced-format warning and keep it on the parser for the reports."""
     if warning is not None:
-        console.print(f"[bold yellow]Warning:[/bold yellow] {escape(warning)}")
+        console.print(f"[bold yellow]Warning:[/bold yellow] {literal(warning)}")
         parser.forced_warning = warning
     return parser
 
@@ -654,10 +656,10 @@ def _run_setup(annotator: Annotator, *, force: bool = False) -> bool:
     except Exception as exc:
         if hasattr(exc, "close"):
             exc.close()
-        console.print(f"  [red]{annotator.name}: {exc}[/red]")
+        console.print(f"  [red]{annotator.name}: {literal(str(exc))}[/red]")
         return False
     for note in getattr(annotator, "shrink_notes", ()):
-        console.print(f"  [yellow]{escape(note)}[/yellow]")
+        console.print(f"  [yellow]{literal(note)}[/yellow]")
     sig = getattr(annotator, "cached_remote_signal", lambda: None)()
     # No freshness signal stored: none at all, or (ClinPGx) only the CPIC mark.
     no_pgkb_part = isinstance(annotator, PharmGKBAnnotator) and not (sig or "").startswith("pgkb:")
@@ -693,7 +695,9 @@ def _prepare_caches(
         if db_path.name in untouched:
             continue
         if convert_to_rollback_journal(db_path):
-            console.print(f"  [dim]{db_path.name}: converted to rollback-journal mode[/dim]")
+            console.print(
+                f"  [dim]{literal(db_path.name)}: converted to rollback-journal mode[/dim]"
+            )
     for annotator in annotators:
         with annotator:
             if annotator.cache_status().state is CacheState.OUTDATED:
@@ -748,7 +752,7 @@ def _maybe_refresh_databases(
             if _run_setup(annotator):
                 console.print(
                     f"[green]✓ {annotator.display_name} updated[/green] "
-                    f"(version {annotator.version() or '(unknown)'})"
+                    f"(version {literal(annotator.version() or '(unknown)')})"
                 )
 
 
@@ -894,9 +898,12 @@ def _emit_build_notices(
 
     prefix = f"{heading}: " if heading else ""
     if banner:
-        console.print(f"[dim]{prefix}Build: {diag.effective_build} ({source_text(diag)})[/dim]")
+        console.print(
+            f"[dim]{literal(prefix)}Build: {diag.effective_build} "
+            f"({literal(source_text(diag))})[/dim]"
+        )
     for notice in build_notices(diag):
-        console.print(f"[yellow]{prefix}{notice.text}[/yellow]")
+        console.print(f"[yellow]{literal(prefix + notice.text)}[/yellow]")
 
 
 def _emit_runtime_nudges(result: object, missing_resolvers: tuple[str, ...] = ()) -> None:
@@ -932,7 +939,7 @@ def _emit_runtime_nudges(result: object, missing_resolvers: tuple[str, ...] = ()
     if scored_down:
         console.print(f"[dim]{scored_down}[/dim]")
         for ann in getattr(result, "clinvar_scored_down_variants", []):
-            console.print(f"[dim]  {escape(scored_down_variant_text(ann))}[/dim]")
+            console.print(f"[dim]  {literal(scored_down_variant_text(ann))}[/dim]")
     common_allele = common_allele_line(getattr(result, "clinvar_common_allele", 0))
     if common_allele:
         console.print(f"[dim]{common_allele}[/dim]")
@@ -943,7 +950,7 @@ def _emit_runtime_nudges(result: object, missing_resolvers: tuple[str, ...] = ()
             "is not one Allelix scores yet.[/yellow]"
         )
     for line in strand_abstention_lines(getattr(result, "strand_abstentions", {})):
-        console.print(f"[dim]{escape(line)}[/dim]")
+        console.print(f"[dim]{literal(line)}[/dim]")
 
     no_ref = getattr(result, "no_ref_variant_count", 0)
     rsidless = getattr(result, "rsidless_variant_count", 0)
@@ -1011,6 +1018,7 @@ def _run_analysis_command(
     keep_filtered: bool = False,
     min_gq: int | None = None,
     filter_path: Path | None = None,
+    show_unchecked: bool = False,
 ) -> None:
     from allelix.reports import check_writable, same_destination, validate_output_path
 
@@ -1107,7 +1115,7 @@ def _run_analysis_command(
     # A source the user turned off is not reported as unusable.
     unready = [(a, a.cache_status()) for a in not_ready if a.name not in choices]
     for annotator, status in unready:
-        console.print(f"[yellow]Skipping {escape(unready_line(annotator, status))}[/yellow]")
+        console.print(f"[yellow]Skipping {literal(unready_line(annotator, status))}[/yellow]")
 
     all_active: list[Annotator] = list(ready)
     if gnomad_annotator is not None and gnomad_annotator.is_ready():
@@ -1119,7 +1127,7 @@ def _run_analysis_command(
     if identity_annotator is not None and identity_annotator.is_ready():
         all_active.append(identity_annotator)
     versions = ", ".join(f"{a.display_name} ({a.version() or 'unknown'})" for a in all_active)
-    console.print(f"[dim]Analyzing against: {versions}[/dim]")
+    console.print(f"[dim]Analyzing against: {literal(versions)}[/dim]")
 
     high_value = load_high_value_snps()
     hv_rsids = set(high_value)
@@ -1162,8 +1170,8 @@ def _run_analysis_command(
             status = other.cache_status()
             failures[annotator.name] = (status.state.value, unready_line(other, status))
             console.print(
-                f"[yellow]Skipping {escape(unready_line(other, status))}"
-                f" (input is {escape(result.build)})[/yellow]"
+                f"[yellow]Skipping {literal(unready_line(other, status))}"
+                f" (input is {literal(result.build)})[/yellow]"
             )
         else:
             not_applicable.append(annotator.name)
@@ -1236,8 +1244,8 @@ def _run_analysis_command(
         ):
             continue  # already printed: a "warning:" line, or the build notice
         if report_warning.code == DI_CALLS_NOT_CHECKED:
-            continue  # named in the high-value block below
-        console.print(f"[bold yellow]Warning:[/bold yellow] {escape(report_warning.message)}")
+            continue  # in the unchecked block below: counted there, named in JSON (2.6.2)
+        console.print(f"[bold yellow]Warning:[/bold yellow] {literal(report_warning.message)}")
 
     missing_resolvers = tuple(
         label
@@ -1257,14 +1265,30 @@ def _run_analysis_command(
             f"[bold red]Warning:[/bold red] {len(hv_warnings)} high-value SNP(s) returned no-call:"
         )
         for line in format_warnings(hv_warnings):
-            console.print(f"  [red]⚠[/red] {line}")
-    if unchecked:
+            console.print(f"  [red]⚠[/red] {literal(line)}")
+    # 2.6.2: only the high-value sites and the non-D/I calls at P/LP rsIDs
+    # are named; the rest are counted by kind, unless --show-unchecked.
+    inline, counted = unchecked_rollup(unchecked)
+    if unchecked and (show_unchecked or not counted):
         console.print(
             f"[bold red]Warning:[/bold red] {len(unchecked)} high-value or Pathogenic "
             "site(s) could not be checked:"
         )
         for site in unchecked:
-            console.print(f"  [red]⚠[/red] {escape(site.text)}")
+            console.print(f"  [red]⚠[/red] {literal(site.text)}")
+    elif unchecked:
+        console.print(
+            f"[bold red]Warning:[/bold red] {len(unchecked):,} high-value or Pathogenic "
+            f"site(s) could not be checked: {len(inline):,} named here, "
+            f"{len(unchecked) - len(inline):,} counted by reason."
+        )
+        for site in inline:
+            console.print(f"  [red]⚠[/red] {literal(site.text)}")
+        for line in counted:
+            console.print(f"  [red]⚠[/red] {literal(line)}")
+        console.print(
+            "  Run again with --show-unchecked to list every site; a JSON report lists them all."
+        )
 
     if counter.count:
         console.print(
@@ -1276,10 +1300,11 @@ def _run_analysis_command(
         + array_quality_lines(result.array_quality, result.probe_classes)
         + placement_lines(result.placement)
     ):
-        console.print(f"[yellow]Note:[/yellow] {line}")
+        console.print(f"[yellow]Note:[/yellow] {literal(line)}")
     if result.input_method:
         console.print(
-            f"[yellow]Note:[/yellow] input method: {input_method_label(result.input_method)}."
+            "[yellow]Note:[/yellow] input method: "
+            f"{literal(input_method_label(result.input_method))}."
             + (
                 " Rare variants are the least reliable imputed calls; confirm any finding"
                 " by direct genotyping."
@@ -1331,7 +1356,7 @@ def _run_analysis_command(
         if previous_input and previous_input != file_path.name:
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] the --diff baseline was made from "
-                f"{escape(previous_input)}, not {escape(file_path.name)}; the comparison "
+                f"{literal(previous_input)}, not {literal(file_path.name)}; the comparison "
                 "may be between two different people or files."
             )
 
@@ -1388,8 +1413,10 @@ def _run_analysis_command(
                 diff=diff_result,
                 high_value_no_calls=hv_warning_lines,
                 high_value_unchecked=[site.text for site in unchecked] or None,
+                high_value_unchecked_named=[site.text for site in inline],
+                high_value_unchecked_counts=counted,
             )
-        console.print(f"[green]Wrote {rendered:,} annotation(s) to {output}[/green]")
+        console.print(f"[green]Wrote {rendered:,} annotation(s) to {literal(str(output))}[/green]")
 
     if vcf_out is not None:
         from allelix.reports.vcf import render_vcf
@@ -1420,7 +1447,8 @@ def _run_analysis_command(
             record_recovered=result.vcf_write_inputs.record_recovered,
         )
         console.print(
-            f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to {vcf_out}[/green]"
+            f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to "
+            f"{literal(str(vcf_out))}[/green]"
         )
 
     console.print(

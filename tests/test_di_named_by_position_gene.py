@@ -13,8 +13,13 @@ and says the same. A P/LP rsID's own D/I call keeps its text. Which calls
 are named, and every count, are unchanged.
 """
 
+import json
+
 import pytest
+from click.testing import CliRunner
 from test_outside_review_rc1_b import BUILDS, _analyze, _chip, _clinvar, _config, _identity
+
+from allelix.cli import main
 
 POS = 2_489_000
 PLP = "rs3999489001"
@@ -26,13 +31,33 @@ AT = "named because a Pathogenic or Likely pathogenic variant in GENEP is at its
 NOT_ITSELF = "ClinVar does not classify this rsID itself as Pathogenic or Likely pathogenic"
 
 
-def _entries(tmp_path, build, rows, calls):
+def _entries(tmp_path, build, rows, calls, *, show_unchecked=False):
     data = tmp_path / "data"
     _config(data)
     _identity(data, [])
     _clinvar(data, build, rows)
     source = _chip(tmp_path / "chip.txt", calls, build=build)
-    report, console = _analyze(tmp_path, data, source, build)
+    if show_unchecked:
+        out = tmp_path / "report.json"
+        result = CliRunner(env={"COLUMNS": "500"}).invoke(
+            main,
+            [
+                "analyze",
+                str(source),
+                "--data-dir",
+                str(data),
+                "--no-update",
+                "--output",
+                str(out),
+                "--build",
+                build.lower(),
+                "--show-unchecked",
+            ],
+        )
+        assert result.exit_code == 0, (result.output, result.exception)
+        report, console = json.loads(out.read_text()), result.output
+    else:
+        report, console = _analyze(tmp_path, data, source, build)
     return {e["rsid"]: e for e in report["high_value_unchecked"]}, report, console
 
 
@@ -43,7 +68,9 @@ def test_held_rsid_keeps_its_own_gene_and_says_why(tmp_path, build, own_gene):
         (PLP, "13", POS, "GAT", "G", "GENEP", "Pathogenic", "Pathogenic"),
         (HELD, "13", POS + 1, "AT", "A", own_gene, "Benign", "Benign"),
     ]
-    named, report, console = _entries(tmp_path, build, rows, [(HELD, "13", POS + 1, "II")])
+    named, report, console = _entries(
+        tmp_path, build, rows, [(HELD, "13", POS + 1, "II")], show_unchecked=True
+    )
     entry = named[HELD]
     assert (entry["reason"], entry["gene"]) == ("di_call", own_gene)
     assert COVERS in entry["message"] and NOT_ITSELF in entry["message"]

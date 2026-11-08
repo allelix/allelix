@@ -23,7 +23,6 @@ from __future__ import annotations
 import textwrap
 from typing import TYPE_CHECKING
 
-from rich.markup import escape
 from rich.table import Table
 
 from allelix.models import annotation_label, public_dict_label
@@ -38,7 +37,8 @@ from allelix.reports._pipeline import (
 )
 from allelix.reports.association_text import effect_note
 from allelix.reports.clinvar_text import terminal_note
-from allelix.utils.plausibility import IMPLAUSIBLE, NOT_ASSESSED, SUSPICIOUS
+from allelix.utils.markup import literal
+from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -120,13 +120,14 @@ def _print_panel_coverage_warning(
         if rsids:
             sample = ", ".join(rsids[:3]) + (", …" if len(rsids) > 3 else "")
             console.print(
-                f"[yellow]⚠[/yellow] {len(rsids)} {panel_state_label(state, vcf=vcf)}: {sample}"
+                f"[yellow]⚠[/yellow] {len(rsids)} {panel_state_label(state, vcf=vcf)}: "
+                + literal(sample)
             )
     if vcf:
         for variant in coverage["variants"]:
             if variant["genotype"] or variant["reason"]:
                 console.print(
-                    escape(
+                    literal(
                         f"{variant['rsid']}: {variant['genotype'] or '—'}"
                         + (
                             f" ({panel_reason_label(variant['reason'])})"
@@ -149,10 +150,10 @@ def render_terminal_diff(
 
     summary = summarize_diff(diff)
     if not diff.has_changes:
-        console.print(f"[green]{summary}[/green]")
+        console.print(f"[green]{literal(summary)}[/green]")
         return 0
 
-    console.print(f"[bold]{summary}[/bold]")
+    console.print(f"[bold]{literal(summary)}[/bold]")
     total = 0
 
     if diff.new:
@@ -171,19 +172,18 @@ def render_terminal_diff(
         for a in diff.new:
             row = [_label_cell(annotation_label(a))]
             if has_gene:
-                row.append(a.gene or "—")
+                row.append(literal(a.gene or "—"))
             row.extend(
                 [
                     _compact_source(a.attribution),
                     _compact_significance(a.significance, a.source)
-                    + terminal_note(a)
-                    + escape(effect_note(a)),
+                    + literal(terminal_note(a) + effect_note(a)),
                     f"{a.magnitude:.1f}",
-                    a.genotype_match,
+                    literal(a.genotype_match),
                 ]
             )
             if has_condition:
-                row.append(a.condition or "—")
+                row.append(literal(a.condition or "—"))
             table.add_row(*row)
         console.print(table)
         total += len(diff.new)
@@ -217,7 +217,7 @@ def render_terminal_diff(
                 genotype = f"{c.previous_genotype_match} -> {genotype}"
             row = [_label_cell(annotation_label(c.current))]
             if has_gene:
-                row.append(c.current.gene or "—")
+                row.append(literal(c.current.gene or "—"))
             old_sig = _compact_significance(c.previous_significance, c.current.source)
             new_sig = _compact_significance(c.current.significance, c.current.source)
             new_mag = f"{c.current.magnitude:.1f}" + (
@@ -228,9 +228,9 @@ def render_terminal_diff(
                 row.extend([f"{old_sig} -> {new_sig}", f"{prev_mag_str} -> {new_mag}"])
             else:
                 row.extend([old_sig, new_sig, prev_mag_str, new_mag])
-            row.append(genotype)
+            row.append(literal(genotype))
             if has_condition:
-                row.append(c.current.condition or "—")
+                row.append(literal(c.current.condition or "—"))
             table.add_row(*row)
         console.print(table)
         total += len(diff.changed)
@@ -252,17 +252,17 @@ def render_terminal_diff(
             source = d.get("source", "")
             row = [_label_cell(public_dict_label(d))]
             if has_gene:
-                row.append(d.get("gene", "") or "—")
+                row.append(literal(d.get("gene", "") or "—"))
             row.extend(
                 [
                     _compact_source(d.get("attribution", "")),
                     _compact_significance(d.get("significance", ""), source),
                     f"{d.get('magnitude', 0.0):.1f}",
-                    d.get("genotype_match", ""),
+                    literal(d.get("genotype_match", "")),
                 ]
             )
             if has_condition:
-                row.append(d.get("condition", "") or "—")
+                row.append(literal(d.get("condition", "") or "—"))
             table.add_row(*row)
         console.print(table)
         total += len(diff.removed)
@@ -279,11 +279,11 @@ _NARROW_WIDTH = 80
 
 
 def _label_cell(label: str) -> str:
-    """The label as shown in the rsID column: an rsID whole, a locus in lines."""
+    """The label as shown in the rsID column: an rsID whole, a locus in lines (escaped)."""
     if " " not in label:
-        return label
-    return "\n".join(
-        textwrap.wrap(label, _LABEL_LINE, break_long_words=True, break_on_hyphens=False)
+        return literal(label)
+    return literal(
+        "\n".join(textwrap.wrap(label, _LABEL_LINE, break_long_words=True, break_on_hyphens=False))
     )
 
 
@@ -293,30 +293,31 @@ def _compact_significance(significance: str, source: str) -> str:
     The Source column already shows the database, so
     ``clinvar_pathogenic`` shown next to ``ClinVar`` is wasteful — show
     just ``pathogenic``. Falls back to the raw value if the prefix
-    doesn't match.
+    doesn't match. The result is escaped for Rich: it is database text.
     """
     prefix = f"{source}_"
     if source and significance.startswith(prefix):
-        return significance[len(prefix) :]
-    return significance
+        return literal(significance[len(prefix) :])
+    return literal(significance)
 
 
 def _compact_source(attribution: str) -> str:
     """Shorten multi-word source names that reliably get truncated.
 
     ``GWAS Catalog`` renders as ``GWAS Ca…`` in narrow terminals; show
-    ``GWAS`` instead. Other attributions pass through unchanged.
+    ``GWAS`` instead. Other attributions pass through unchanged, escaped
+    for Rich (a baseline report's removed row carries its own).
     """
     if attribution == "GWAS Catalog":
         return "GWAS"
-    return attribution
+    return literal(attribution)
 
 
-# ADR-0041: marker appended to a flagged genotype.
+# ADR-0041: marker appended to a flagged genotype. Only a warning is marked;
+# a call that was not assessed is not (ADR-0050, amendment 2.6.2).
 _PLAUSIBILITY_MARKERS: dict[str, str] = {
     IMPLAUSIBLE: " [yellow]⚠[/yellow]",
     SUSPICIOUS: " [yellow]?[/yellow]",
-    NOT_ASSESSED: " [dim]○[/dim]",
 }
 
 
@@ -342,30 +343,27 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
     for a in filtered:
         row = [_label_cell(annotation_label(a))]
         if has_gene:
-            row.append(a.gene or "—")
+            row.append(literal(a.gene or "—"))
         row.extend(
             [
                 _compact_source(a.attribution),
                 _compact_significance(a.significance, a.source)
-                + terminal_note(a)
-                + escape(effect_note(a)),
+                + literal(terminal_note(a) + effect_note(a)),
                 f"{a.magnitude:.1f}",
-                escape(a.genotype_match) + _PLAUSIBILITY_MARKERS.get(a.plausibility, ""),
+                literal(a.genotype_match) + _PLAUSIBILITY_MARKERS.get(a.plausibility, ""),
             ]
         )
         if has_condition:
-            row.append(a.condition or "—")
+            row.append(literal(a.condition or "—"))
         table.add_row(*row)
     console.print(table)
-    seen = {a.plausibility for a in filtered}
-    flagged = seen & {IMPLAUSIBLE, SUSPICIOUS}
-    if NOT_ASSESSED in seen:
+    if {a.plausibility for a in filtered} & {IMPLAUSIBLE, SUSPICIOUS}:
         console.print(
-            "[dim]○ plausibility not assessed; the JSON and HTML reports give the reason.[/dim]"
-        )
-    if flagged:
-        console.print(
-            "[yellow]⚠[/yellow] [dim]implausible: homozygous for an allele very rare in "
-            "gnomAD; [/dim][yellow]?[/yellow] [dim]suspicious: gnomAD reports no carriers. "
-            "Confirm flagged calls before relying on them.[/dim]"
+            "[yellow]⚠[/yellow] [dim]or[/dim] [yellow]?[/yellow] [dim]means the call looks "
+            "doubtful because the variant's gnomAD frequency is at or under Allelix's "
+            "limit (under it for two copies). With the default limits: ⚠, two copies of an "
+            "allele below 0.01% in gnomAD; ?, one copy of an allele that gnomAD lists with no "
+            "carriers. A call this rare can be a genotyping or sequencing error; confirm it "
+            "before relying on it. Allelix can only check variants with population counts in "
+            "gnomAD, so no mark is not a guarantee.[/dim]"
         )

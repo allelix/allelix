@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
-from rich.markup import escape
 from rich.table import Table
 
 from allelix.annotators import configured_source
@@ -35,6 +34,7 @@ from allelix.utils.build_detect import (
     BuildDecisionError,
     detect_build,
 )
+from allelix.utils.markup import literal
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -102,11 +102,11 @@ def stats(
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
 
-    summary = Table(title=f"Genotype File Stats: {file_path.name}")
+    summary = Table(title=f"Genotype File Stats: {literal(file_path.name)}")
     summary.add_column("Metric", style="cyan", no_wrap=True)
     summary.add_column("Value", style="green")
     summary.add_row("Format", parser.display_name)
-    summary.add_row("Sample ID", metadata["sample_id"] or "(unknown)")
+    summary.add_row("Sample ID", literal(metadata["sample_id"] or "(unknown)"))
     decision = resolved.decision
     diag = resolved.build_diagnostics()
     # The same decision as ``analyze`` (ADR-0044), with where it came from.
@@ -145,13 +145,13 @@ def stats(
 
     if hv_warnings:
         for line in format_warnings(hv_warnings):
-            console.print(f"  [red]⚠[/red] {line}")
+            console.print(f"  [red]⚠[/red] {literal(line)}")
 
     chrom_table = Table(title="Variants per Chromosome")
     chrom_table.add_column("Chromosome", style="cyan", no_wrap=True)
     chrom_table.add_column("Count", style="green", justify="right")
     for chrom in sorted(chrom_counts, key=_helpers._chrom_sort_key):
-        chrom_table.add_row(chrom, f"{chrom_counts[chrom]:,}")
+        chrom_table.add_row(literal(chrom), f"{chrom_counts[chrom]:,}")
     console.print(chrom_table)
 
 
@@ -485,8 +485,8 @@ def _try_tabix_extract(
         except _IndexReadError as exc:
             problem = str(exc)
     console.print(
-        f"[yellow]Warning: the index {escape(str(tbi_path))} cannot be used "
-        f"({escape(problem)}); reading {escape(file_path.name)} sequentially.[/yellow]"
+        f"[yellow]Warning: the index {literal(str(tbi_path))} cannot be used "
+        f"({literal(problem)}); reading {literal(file_path.name)} sequentially.[/yellow]"
     )
     return None
 
@@ -874,7 +874,7 @@ def _maybe_print_vcf_index_hint(file_path: Path) -> None:
 
 def _render_extract_table(file_path: Path, wanted: set[str], found: dict[str, Variant]) -> None:
     """Render the extract result as a Rich table."""
-    table = Table(title=f"Genotypes from {file_path.name}")
+    table = Table(title=f"Genotypes from {literal(file_path.name)}")
     table.add_column("rsID", style="cyan", no_wrap=True)
     table.add_column("Chr", no_wrap=True)
     table.add_column("Position", justify="right", no_wrap=True)
@@ -884,13 +884,13 @@ def _render_extract_table(file_path: Path, wanted: set[str], found: dict[str, Va
     for rsid in sorted(wanted):
         variant = found.get(rsid)
         if variant is None:
-            table.add_row(rsid, "—", "—", "[red]not in file[/red]", "—", "—")
+            table.add_row(literal(rsid), "—", "—", "[red]not in file[/red]", "—", "—")
             continue
         table.add_row(
-            variant.rsid,
-            variant.chromosome,
+            literal(variant.rsid),
+            literal(variant.chromosome),
             f"{variant.position:,}",
-            variant.genotype,
+            literal(variant.genotype),
             "yes" if variant.is_heterozygous else "no",
             "[red]yes[/red]" if variant.is_no_call else "no",
         )
@@ -1027,8 +1027,8 @@ def compare(
     table = Table(title="Coverage Summary")
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
-    table.add_row("File 1", f"{file1.name} ({result.file1_total:,} eligible variants)")
-    table.add_row("File 2", f"{file2.name} ({result.file2_total:,} eligible variants)")
+    table.add_row("File 1", f"{literal(file1.name)} ({result.file1_total:,} eligible variants)")
+    table.add_row("File 2", f"{literal(file2.name)} ({result.file2_total:,} eligible variants)")
     for number in (1, 2):
         table.add_row(
             f"Input named / unnamed (file {number})",
@@ -1091,7 +1091,7 @@ def compare(
         for chrom in sorted(result.chromosome_counts, key=_helpers._chrom_sort_key):
             c = result.chromosome_counts[chrom]
             chrom_table.add_row(
-                chrom,
+                literal(chrom),
                 str(c.get("concordant", 0)),
                 str(c.get("strand_flip_match", 0)),
                 str(c.get("discordant", 0)),
@@ -1282,7 +1282,7 @@ def export_plink_cmd(
     if indel_skip:
         skip_parts.append(f"{indel_skip:,} indels")
     skip_msg = f" ({', '.join(skip_parts)} skipped)" if skip_parts else ""
-    console.print(f"Wrote {written:,} variants to {prefix}.bed/.bim/.fam{skip_msg}")
+    console.print(f"Wrote {written:,} variants to {literal(str(prefix))}.bed/.bim/.fam{skip_msg}")
     if mono > 0:
         pct = mono / written * 100 if written else 0
         console.print(

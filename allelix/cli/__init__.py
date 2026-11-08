@@ -68,27 +68,60 @@ def _signals_end_normally() -> Iterator[None]:
             signal.signal(ending, handler)
 
 
+# A character no encoding can lose: the stream's error mode is tried on it.
+_UNENCODABLE_PROBE = "\U0010fffd"
+_ESCAPE_OR_REPLACE = "allelix.surrogateescape-or-replace"
+
+
+def _escape_or_replace(exc: UnicodeError) -> tuple[bytes, int]:
+    """Write back a byte a file name was decoded from; replace anything else with "?".
+
+    A POSIX ASCII locale's stdout is ``surrogateescape``: a path holding
+    bytes the locale cannot decode prints those bytes back unchanged. Other
+    characters it cannot encode, such as "✓" or "…", become "?" (2.6.2).
+    """
+    if not isinstance(exc, UnicodeEncodeError):
+        raise exc
+    out = bytearray()
+    for char in exc.object[exc.start : exc.end]:
+        if 0xDC80 <= ord(char) <= 0xDCFF:
+            out.append(ord(char) - 0xDC00)
+        else:
+            out += "?".encode(exc.encoding)
+    return bytes(out), exc.end
+
+
+codecs.register_error(_ESCAPE_OR_REPLACE, _escape_or_replace)
+
+
 def _replace_unencodable_output(stream: object) -> None:
-    """Make ``stream`` replace a character its encoding cannot hold, instead of raising (2.6.1).
+    """Make ``stream`` replace a character its encoding cannot hold, instead of raising.
 
     For a console, pipe or redirect that is not UTF-8 (Windows' cp1252, an
     ASCII locale): `analyze` crashed with UnicodeEncodeError on a character
-    such as the plausibility marker "○". A UTF-8 stream, one with a
-    non-strict error mode (``PYTHONIOENCODING=cp1252:ignore`` or
-    ``:backslashreplace``), and one that cannot be reconfigured are left as
-    they are; a strict one, given (``cp1252:strict``) or by default, is
-    switched. Files are written as UTF-8.
+    such as the plausibility marker "○" (2.6.1). Any stream whose error mode
+    raises on such a character is switched: a strict one, given
+    (``cp1252:strict``) or by default, and a POSIX ASCII locale's
+    ``surrogateescape``, which still writes back the bytes of an undecodable
+    file name (2.6.2). A stream whose error mode does not raise
+    (``PYTHONIOENCODING=cp1252:ignore`` or ``:backslashreplace``), one whose
+    encoding holds every character (UTF-8), and one that cannot be
+    reconfigured are left as they are. Files are written as UTF-8.
     """
     encoding = getattr(stream, "encoding", None)
+    errors = getattr(stream, "errors", None) or "strict"
     reconfigure = getattr(stream, "reconfigure", None)
-    if not encoding or reconfigure is None or getattr(stream, "errors", None) != "strict":
+    if not encoding or reconfigure is None:
         return
     try:
-        if codecs.lookup(encoding).name == "utf-8":
-            return
+        _UNENCODABLE_PROBE.encode(encoding, errors)
+    except UnicodeEncodeError:
+        pass
     except LookupError:
         return
-    reconfigure(errors="replace")
+    else:
+        return
+    reconfigure(errors=_ESCAPE_OR_REPLACE if errors == "surrogateescape" else "replace")
 
 
 class _Group(click.Group):

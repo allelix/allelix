@@ -2,6 +2,82 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-11-08
+
+### Changed
+- The HTML report and the terminal show plausibility only when it warns.
+  The muted "○" beside a call that was not assessed, its "Not assessed" row
+  in the HTML detail panel and the terminal's "○" legend line are gone; the
+  "⚠" (and the terminal's "?") for an implausible or suspicious call stay,
+  with their panel row. The warning is explained once, in plain words, in
+  the HTML "Reading This Report" section, the terminal's legend line and
+  the README: the call looks doubtful because the variant's frequency in
+  gnomAD is at or under Allelix's limit for it (under it for two copies; by
+  default, two copies of an allele below 0.01%, or one copy of an allele
+  that gnomAD lists with no carriers), and since Allelix can only check
+  variants with population counts in gnomAD, no warning is not a guarantee.
+  The suspicious hover text and detail-panel row give the zero-carrier case
+  as the default too. JSON reports are unchanged: `plausibility` and
+  `plausibility_reason` stay on every annotation (ADR-0050).
+
+### Fixed
+- `db clean`, `db update` and an `analyze`, `methylation` or
+  `pharmacogenomics` run that refreshes a cache no longer crash with
+  `UnicodeEncodeError` printing to the console in a POSIX ASCII locale
+  (`LC_ALL=C` and `PYTHONUTF8=0`, with `PYTHONIOENCODING` unset; on Python
+  3.12 and later `LC_ALL=C` alone turns on UTF-8 mode, which did not crash),
+  where the console's error mode is `surrogateescape`, not strict. `db
+  clean` used to crash after it had deleted the caches, and `db update
+  --force` and the refresh before they started. A character the console
+  cannot hold, such as "✓" or "…", is printed as "?"; the bytes of a file
+  name the locale cannot decode are printed as they are. A UTF-8 console and
+  a non-raising error mode set with `PYTHONIOENCODING` are unchanged. This
+  fixes console output only: in that locale, writing an HTML report for an
+  input file whose name is not ASCII still fails, as in 2.6.1.
+- The terminal shows database and input text as it is written. Text in
+  square brackets that looked like a style tag was taken as one: a GWAS
+  trait or ClinVar condition lost words such as "[bold]", and a closing tag
+  that matched nothing, such as "[/x]", ended `analyze` with a `MarkupError`
+  (exit 1) after the analysis had run. A `:name:` code became an emoji. The
+  same applied to genes, classifications, database versions, a `--diff`
+  baseline's rows, file and path names, sample IDs, the build line read
+  from a file, chromosome names and genotypes, in `analyze`, `stats`,
+  `extract`, `compare`, `export plink`, `config` and `db`. A high-value
+  no-call line now keeps its reason, such as "[no genotype called]", which
+  the terminal used to drop. JSON, HTML and VCF output were not affected.
+- The HTML report frames a CADD score as a prediction. A finding's panel
+  said "10.4 (top 10% most deleterious)", which next to a ClinVar protective
+  finding marked Good read as "bad for you"; it now says "10.4 (top 10%
+  predicted deleterious)". The legend adds that CADD predicts how disruptive
+  a change is, not whether its effect is good or bad for you: ClinVar and
+  the other sources say that, and a protective variant can score high. The
+  tiers (10, 20, 30) and the scores are unchanged; the README says the same.
+- The console and the HTML report no longer list every call they could not
+  check at a high-value site or where ClinVar classifies the variant as
+  Pathogenic or Likely pathogenic. 2.6.1 listed them all ahead of the
+  findings: 6,625 sites and 14,117 terminal lines on a real 23andMe v5
+  file, most of them base calls at 23andMe `i` probes. They now name a site
+  whose rsID is on the high-value list, for any reason, and a call other than
+  `D`/`I` whose own rsID ClinVar classifies Pathogenic or Likely pathogenic.
+  Each other kind of site is one line with its count and why, `D`/`I` calls
+  at such rsIDs among them. On that v5 file 9 sites are named and the
+  terminal report has 553 lines; on a `D`/`I`-rich AncestryDNA file, 26 and
+  701 lines (2.6.1: 6,609 and 15,228). `--show-unchecked` (`analyze`,
+  `methylation`, `pharmacogenomics`) lists every site on the console as
+  before; the HTML report keeps the full list in a collapsed section under
+  its banner. The JSON report is unchanged and lists every site
+  (ADR-0051).
+- The 2.6.1 entry on naming unchecked calls says "the existing counts are
+  unchanged". One count did change: the `report_warnings` entry
+  `di_calls_not_checked` counts the `D`/`I` calls the JSON report lists in
+  `high_value_unchecked` (reason `di_call`), so in 2.6.1 it also counts
+  those 2.6.1 began to name, at vendor probes and by a Pathogenic or Likely
+  pathogenic row at or near their position (on a real
+  23andMe v5 file 376 in 2.6.0, 719 in 2.6.1). The counts that are unchanged
+  are `input.probe_classes` (`di_calls_at_plp_rsids` among them, 376 on
+  that file in both), `array_quality`, `placement` and the
+  `identity_locus_conflict` warning (ADR-0051, ADR-0070).
+
 ## [2.6.1] - 2026-11-07
 
 ### Changed
@@ -4897,6 +4973,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.6.2]: https://github.com/allelix/allelix/compare/v2.6.1...v2.6.2
 [2.6.1]: https://github.com/allelix/allelix/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/allelix/allelix/compare/v2.5.2...v2.6.0
 [2.5.2]: https://github.com/allelix/allelix/compare/v2.5.1...v2.5.2

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "allelix"
-version = "2.6.1"
+version = "2.6.2"
 description = "Open-source genotype analysis toolkit. Format-agnostic ingestion, database-agnostic annotation, offline-first."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -94,10 +94,15 @@ ignore = ["D203", "D213"]
 "tests/test_outside_review_rc3_b.py" = ["TC003"]
 # The outside review of 2.6.1 RC3b (reviewer B), committed unchanged.
 "tests/test_outside_review_rc3b_b.py" = ["TC003"]
+# The outside review of 2.6.2 RC1 (reviewers A and B): the tests for the RC2
+# fixes, each with its file's shared helpers. Reviewer A's file keeps only its
+# A-01 and A-03 tests, each unchanged; reviewer B's keeps its B-02 test.
+"tests/test_outside_review_262rc1_a.py" = ["I001", "F401", "E501"]
+"tests/test_outside_review_262rc1_b.py" = ["F401", "E501"]
 
 [tool.ruff.format]
-# Committed unchanged from the outside review of 2.6.1 RC2.
-exclude = ["tests/test_outside_review_rc2_b.py"]
+# Tests from the outside reviews of 2.6.1 RC2 and 2.6.2 RC1, kept in their reviewers' format.
+exclude = ["tests/test_outside_review_rc2_b.py", "tests/test_outside_review_262rc1_a.py"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

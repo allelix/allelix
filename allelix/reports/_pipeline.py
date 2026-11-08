@@ -1713,17 +1713,36 @@ def _unchecked_calls(
     row at the locus or None; identity conflicts and unplaced rsID-list rows
     never reach it, so their rsIDs are looked up there (``plp_genes``). An
     unplaced D/I row is left to the D/I naming, which already names it.
+    ``own_plp`` (2.6.2) says ClinVar classifies the call's own rsID P/LP: the
+    lookup's answer for those, and one lookup for the foreign- and
+    unknown-allele calls, whose gene is a row's at the locus. A vendor probe
+    has no rsID, and a D/I call named by position has no P/LP row of its own.
     """
     from allelix.annotators._placement import DI_CALL, UNPLACED_WORDS
     from allelix.reports.high_value import (
+        UNCHECKED_FOREIGN_ALLELES,
         UNCHECKED_IDENTITY_CONFLICT,
+        UNCHECKED_UNKNOWN_ALLELES,
         UNCHECKED_UNPLACED,
         UncheckedCall,
     )
 
     kept = clinvar.unchecked() if clinvar is not None else {}
+    allele_reasons = {UNCHECKED_FOREIGN_ALLELES, UNCHECKED_UNKNOWN_ALLELES}
+    own_plp = (
+        clinvar.plp_genes({site for site, reason in kept if reason in allele_reasons}, build)
+        if clinvar is not None
+        else {}
+    )
     calls = [
-        UncheckedCall(site, call, reason, detail=detail, plp_gene=gene)
+        UncheckedCall(
+            site,
+            call,
+            reason,
+            detail=detail,
+            plp_gene=gene,
+            own_plp=reason in allele_reasons and site in own_plp,
+        )
         for (site, reason), (call, gene, detail) in kept.items()
     ]
     conflicts = [v for v in variants if id(v) in conflict_ids]
@@ -1741,6 +1760,7 @@ def _unchecked_calls(
             UNCHECKED_IDENTITY_CONFLICT,
             detail=f"{v.chromosome}:{v.position} on {build}",
             plp_gene=genes.get(v.rsid),
+            own_plp=v.rsid in genes,
         )
         for v in conflicts
     )
@@ -1751,6 +1771,7 @@ def _unchecked_calls(
             UNCHECKED_UNPLACED,
             detail=UNPLACED_WORDS[reason],
             plp_gene=unplaced_genes.get(rsid),
+            own_plp=rsid in unplaced_genes,
         )
         for rsid, (call, reason) in unplaced.items()
         if reason != DI_CALL

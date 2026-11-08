@@ -51,13 +51,15 @@ def _data(tmp_path, clinvar_rows, identity_rows):
     return data
 
 
-def _run(tmp_path, data, source, build, surface):
+def _run(tmp_path, data, source, build, surface, *, show_unchecked=False):
     out = tmp_path / f"report.{surface}"
     args = ["analyze", str(source), "--data-dir", str(data), "--no-update"]
     if build is not None:
         args += ["--build", build.lower()]
     if surface != "terminal":
         args += ["--output", str(out)]
+    if show_unchecked:
+        args.append("--show-unchecked")
     result = CliRunner(env={"COLUMNS": "500"}).invoke(main, args)
     assert result.exit_code == 0, (result.output, result.exception)
     if surface == "json":
@@ -191,7 +193,12 @@ def test_foreign_allele_call_at_a_plp_locus_is_named(tmp_path, build, surface):
     ]
     data = _data(tmp_path, clinvar, identity)
     report, output = _run(
-        tmp_path, data, _chip(tmp_path, [(OTHER, POS, "CC")], build), build, surface
+        tmp_path,
+        data,
+        _chip(tmp_path, [(OTHER, POS, "CC")], build),
+        build,
+        surface,
+        show_unchecked=surface == "terminal",
     )
     if surface == "json":
         assert _named(report) == {(OTHER, "foreign_alleles", "C/C")}, output
@@ -212,7 +219,9 @@ def test_di_call_at_an_i_probe_on_a_plp_locus_is_named(tmp_path, build, surface)
     identity = [(PLP, "1", POS, "CTT", "C", POS, "CTT", "C", 0)]
     data = _data(tmp_path, clinvar, identity)
     source = _chip(tmp_path, [("i3999980703", POS, "DI"), ("i3999980704", POS + 90, "DI")], build)
-    report, output = _run(tmp_path, data, source, build, surface)
+    report, output = _run(
+        tmp_path, data, source, build, surface, show_unchecked=surface == "terminal"
+    )
     if surface == "json":
         assert _named(report) == {("i3999980703", "di_call", "D/I")}, output
         (entry,) = report["high_value_unchecked"]

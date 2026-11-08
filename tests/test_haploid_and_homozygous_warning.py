@@ -349,23 +349,33 @@ def test_pathogenic_aggregate(aggregate: str, expected: bool) -> None:
     assert is_pathogenic_aggregate(aggregate) is expected
 
 
-class TestNotAssessedShown:
-    def test_html_and_terminal(self, tmp_path: Path, data: Path) -> None:
+class TestNotAssessedNotShown:
+    """2.6.2: HTML and terminal show plausibility only when it warns; JSON keeps it."""
+
+    def test_html_terminal_and_json(self, tmp_path: Path, data: Path) -> None:
         _clinvar(data, [("rs900950010", "2", 4000, "C", "T", "Pathogenic")])
         array = _array(tmp_path / "a.txt", [("rs900950010", "2", 4000, "TT")])
         html = tmp_path / "r.html"
+        report = tmp_path / "r.json"
         args = ["analyze", str(array), "--format", "23andme", "--build", "grch37"]
         args += ["--no-update", "--data-dir", str(data)]
         result = CliRunner().invoke(main, [*args, "--output", str(html)])
         assert result.exit_code == 0, result.output
         page = html.read_text()
-        assert 'class="plaus plaus-not_assessed"' in page
-        assert "Plausibility not assessed: gnomAD was not used in this run" in page
-        assert '"plausibility_reason": "gnomAD was not used in this run"' in page
+        assert "plaus-not_assessed" not in page
+        assert "Plausibility not assessed" not in page
+        assert "gnomAD was not used in this run" not in page
+        assert "○" not in page
         result = CliRunner(env={"COLUMNS": "200"}).invoke(main, args)
         assert result.exit_code == 0, result.output
-        assert (
-            "plausibility not assessed; the JSON and HTML reports give the reason" in result.output
+        assert "○" not in result.output
+        assert "plausibility not assessed" not in result.output
+        result = CliRunner().invoke(main, [*args, "--output", str(report)])
+        assert result.exit_code == 0, result.output
+        (row,) = json.loads(report.read_text())["annotations"]
+        assert (row["plausibility"], row["plausibility_reason"]) == (
+            "not_assessed",
+            "gnomad_not_run",
         )
 
 

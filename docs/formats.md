@@ -427,7 +427,12 @@ and says which indel the call names (ADR-0070, 2.6.1). A `D`/`I` call at a
 high-value rsID, or at one ClinVar classifies Pathogenic or Likely
 pathogenic, is named in the report as not checked: gene, variant name,
 rsID and call, in JSON `high_value_unchecked` (reason `di_call`), and
-counted under the `report_warnings` code `di_calls_not_checked`. So is a
+counted under the `report_warnings` code `di_calls_not_checked`, whose
+count is the number of `D`/`I` calls listed in JSON `high_value_unchecked`
+(reason `di_call`), those named at vendor probes and by position below
+included (since 2.6.1); `input.probe_classes`
+`di_calls_at_plp_rsids` counts only the calls at Pathogenic or Likely
+pathogenic rsIDs. So is a
 call at a vendor probe without an rsID (23andMe `i…`), `D`/`I` or bases,
 where ClinVar classifies the variant at the probe's position as Pathogenic
 or Likely pathogenic, named by its probe ID and ClinVar's gene (reason
@@ -449,6 +454,18 @@ as Pathogenic or Likely pathogenic. A vendor probe's call, or one under an
 rsID ClinVar does not hold, is named under the naming row's gene. Other `D`/`I` calls are only
 counted. Allelix neither confirms nor rules out carrier status for
 these variants; that needs clinical testing.
+
+Since 2.6.2 the console and the HTML report name only part of this list,
+which on a 23andMe v5 file runs to thousands of sites: a site whose rsID
+is on the high-value list, for any reason, and a call that is not `D`/`I`
+where ClinVar classifies the call's own rsID as Pathogenic or Likely
+pathogenic. Each other kind of site is one line with its count and why:
+`D`/`I` calls at Pathogenic or Likely pathogenic rsIDs, `D`/`I` calls
+named by a row at or near their position, `D`/`I` and base calls at vendor
+probes, and calls whose alleles no source knows or that name a base their
+rsID does not have. `--show-unchecked` lists every site on the console; the
+HTML report keeps the full list in a collapsed section under the banner, and
+the JSON report lists every site in `high_value_unchecked` (ADR-0051).
 
 ## Genes for Good
 
@@ -662,7 +679,8 @@ counted and never interpreted (ADR-0070).
 An unplaced row at a high-value rsID, or at an rsID ClinVar classifies as
 Pathogenic or Likely pathogenic on GRCh38, is also named in the report as
 not checked by ClinVar, with the reason it was not placed: in JSON
-`high_value_unchecked` (reason `unplaced`), on the console and in HTML. The
+`high_value_unchecked` (reason `unplaced`), on the console and in HTML (since
+2.6.2 the console and HTML name only some sites; see D and I calls). The
 name says only that ClinVar could not check the row; it does not claim the
 rsID-keyed sources read it, since they may be switched off. The counts
 above are unchanged.

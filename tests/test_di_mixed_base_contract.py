@@ -111,6 +111,7 @@ def test_mixed_code_reports_are_unchecked_not_a_finding(tmp_path, data, build, g
             str(data),
             "--min-magnitude",
             "0",
+            "--show-unchecked",
             "--output",
             str(output),
         ],

@@ -106,7 +106,9 @@ def test_call_outside_its_own_rsids_alleles_gets_no_clinvar_finding(tmp_path, bu
 @pytest.mark.parametrize("build", BUILDS)
 def test_terminal_says_the_call_was_not_matched(tmp_path, build):
     data = _data(tmp_path)
-    _report, output = _analyze(tmp_path, data, _chip(tmp_path, "CC", build=build), build)
+    _report, output = _analyze(
+        tmp_path, data, _chip(tmp_path, "CC", build=build), build, "--show-unchecked"
+    )
     assert "not one of its own rsID" in output, output
 
 

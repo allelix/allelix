@@ -61,17 +61,7 @@ from allelix.reports.clinvar_text import (
     scored_down_variant_text,
 )
 from allelix.reports.high_value import DI_CALLS_NOT_CHECKED
-from allelix.utils.plausibility import (
-    CHROMOSOME,
-    GNOMAD_NOT_RUN,
-    IMPLAUSIBLE,
-    NO_ALLELE,
-    NO_FREQUENCY,
-    NOT_ASSESSED,
-    SUSPICIOUS,
-    most_severe,
-)
-from allelix.utils.plausibility import HALF_CALL as REASON_HALF_CALL
+from allelix.utils.plausibility import IMPLAUSIBLE, SUSPICIOUS, most_severe
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -229,6 +219,7 @@ a { color: var(--link); }
 .details-summary { margin: .5rem 0; }
 .tech-details { margin: 0 0 1.5rem; }
 .tech-details > summary { cursor: pointer; font-weight: 600; }
+.unchecked-all > summary { cursor: pointer; font-weight: 600; }
 .notice-warn {
   background: var(--notice-warn-bg, #fff3e0);
   border-left: 4px solid var(--notice-warn-border, #e65100);
@@ -332,7 +323,6 @@ tbody tr.selected {
 .plaus { margin-left: 6px; cursor: help; font-family: sans-serif; }
 .plaus-implausible { color: var(--notice-warn-border); }
 .plaus-suspicious  { color: var(--notice-border); }
-.plaus-not_assessed { color: var(--text-muted); }
 .sum-cell {
   overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 0;
@@ -513,6 +503,16 @@ copy, such as an X chromosome call in a male. For an X-linked recessive
 condition, one copy of a pathogenic allele on a male's single X can cause the
 condition; it does not make him a carrier in the sense above.</p>
 
+<h3>The &#x26A0; warning</h3>
+<p>&#x26A0; beside a genotype means the call looks doubtful because the
+variant&rsquo;s frequency in gnomAD is at or under Allelix&rsquo;s limit for that
+call (under it for two copies). With the default limits, that is two copies
+of an allele below 0.01% in gnomAD, or one copy of an allele that gnomAD
+lists with no carriers. A call this rare can be a genotyping or sequencing
+error; confirm it before relying on it.
+Allelix can only check variants with population counts in gnomAD, so no
+&#x26A0; is not a guarantee.</p>
+
 <h3>Confirmatory testing</h3>
 <p>No genotyping platform is 100% accurate. Clinically significant findings
 should be confirmed with an independent method before making medical
@@ -536,14 +536,16 @@ Higher scores indicate greater clinical or personal relevance as judged by
 contributors. See <a href="https://www.snpedia.com/index.php/Magnitude">\
 SNPedia&rsquo;s magnitude documentation</a> for details.</p>
 
-<h3>CADD (variant deleteriousness)</h3>
-<p>CADD PHRED scores rank how deleterious a variant is relative to all
-possible human SNVs. Higher scores = more likely to be deleterious.</p>
+<h3>CADD (predicted deleteriousness)</h3>
+<p>CADD PHRED scores rank how deleterious a variant is predicted to be,
+relative to all possible human SNVs. CADD predicts how disruptive a change
+is, not whether its effect is good or bad for you: ClinVar and the other
+sources say that, and a protective variant can score high.</p>
 <table style="width:auto; font-size:.85rem; margin:.5rem 0;">
-<tr><td><strong>&ge; 30</strong></td><td>Top 0.1% most deleterious</td></tr>
-<tr><td><strong>&ge; 20</strong></td><td>Top 1% most deleterious</td></tr>
-<tr><td><strong>&ge; 10</strong></td><td>Top 10% most deleterious</td></tr>
-<tr><td><strong>&lt; 10</strong></td><td>Below top 10%</td></tr>
+<tr><td><strong>&ge; 30</strong></td><td>Top 0.1% predicted deleterious</td></tr>
+<tr><td><strong>&ge; 20</strong></td><td>Top 1% predicted deleterious</td></tr>
+<tr><td><strong>&ge; 10</strong></td><td>Top 10% predicted deleterious</td></tr>
+<tr><td><strong>&lt; 10</strong></td><td>Below the top 10%</td></tr>
 </table>
 
 <h3>AlphaMissense (missense pathogenicity)</h3>
@@ -706,7 +708,9 @@ def _vcf_quality_banner(lines: list[str]) -> str:
 def _report_warnings_banner(warnings: list[ReportWarning]) -> str:
     """Report-level warnings (``report_warnings``), one ``notice-warn`` each.
 
-    D/I calls at high-value sites are named in the high-value section instead.
+    ``di_calls_not_checked`` is left to the high-value section: since 2.6.2 it
+    names the D/I calls at high-value rsIDs and counts the rest by reason; the
+    JSON report names each.
     """
     return "".join(
         f'<div class="notice-warn"><strong>Warning.</strong> {_escape(w.message)}</div>'
@@ -837,15 +841,47 @@ def _hv_nocall_banner(warnings: list[str] | None) -> str:
     )
 
 
-def _hv_unchecked_banner(sites: list[str] | None) -> str:
-    """High-value and Pathogenic sites the run could not check, each named."""
+def _hv_unchecked_banner(
+    sites: list[str] | None,
+    named: list[str] | None = None,
+    counts: list[str] | None = None,
+) -> str:
+    """High-value and Pathogenic sites the run could not check.
+
+    2.6.2: with ``counts`` (one line per kind of site not named), the banner
+    names only ``named`` and gives the counts; every site is in a collapsed
+    list below them. Without, each site is named, as before.
+    """
     if not sites:
         return ""
     items = "".join(f"<li>{_escape(s)}</li>" for s in sites)
+    if not counts:
+        return (
+            '<div class="notice-warn"><strong>High-value sites not checked.</strong> '
+            "These clinically important sites could not be fully checked; each line says "
+            f"what was not checked:<ul>{items}</ul></div>"
+        )
+    shown = "".join(f"<li>{_escape(s)}</li>" for s in [*(named or []), *counts])
+    total, n_named = len(sites), len(named or [])
+    subject = (
+        "1 clinically important site could not be fully checked"
+        if total == 1
+        else f"{total:,} clinically important sites could not be fully checked"
+    )
+    if n_named == 0:
+        clause = "none is named here and " + (
+            "it is counted by reason:" if total == 1 else "all are counted by reason:"
+        )
+    elif n_named == 1:
+        clause = "1 is named here and the rest are counted by reason:"
+    else:
+        clause = f"{n_named:,} are named here and the rest are counted by reason:"
+    summary = "The 1 site not checked" if total == 1 else f"All {total:,} sites not checked"
     return (
         '<div class="notice-warn"><strong>High-value sites not checked.</strong> '
-        "These clinically important sites could not be fully checked; each line says "
-        f"what was not checked:<ul>{items}</ul></div>"
+        f"{subject}; {clause}"
+        f'<ul>{shown}</ul><details class="unchecked-all"><summary>{summary}'
+        f"</summary><ul>{items}</ul></details></div>"
     )
 
 
@@ -965,6 +1001,18 @@ def _group_annotations(
 # ---------------------------------------------------------------------------
 
 
+def _cadd_label(phred: float) -> str:
+    """The panel's CADD value: the score, and its tier as a prediction (2.6.2).
+
+    CADD's own term, framed as a prediction: shown next to a Good finding,
+    "most deleterious" read as a verdict on the person's health.
+    """
+    for floor, tier in ((30, "top 0.1%"), (20, "top 1%"), (10, "top 10%")):
+        if phred >= floor:
+            return f"{phred:.1f} ({tier} predicted deleterious)"
+    return f"{phred:.1f}"
+
+
 def _add_metrics(target: dict, ann: Annotation) -> None:
     """Copy the annotation's enrichment values into ``target`` where it has none yet."""
     if ann.allele_frequency is not None and "allele_frequency" not in target:
@@ -975,6 +1023,7 @@ def _add_metrics(target: dict, ann: Annotation) -> None:
         target["am_class"] = ann.am_class
     if ann.cadd_phred is not None and "cadd_phred" not in target:
         target["cadd_phred"] = round(ann.cadd_phred, 1)
+        target["cadd_label"] = _cadd_label(target["cadd_phred"])
 
 
 def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
@@ -988,7 +1037,6 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             "genotype": display.genotype_match,
             "zygosity": display.zygosity,
             "plausibility": most_severe([a.plausibility for a in group]),
-            "plausibility_reason": _not_assessed_reason(group),
             "annotations": [],
         }
         ordered = sorted(group, key=lambda a: -a.magnitude)
@@ -1084,36 +1132,18 @@ _PLAUSIBILITY_TITLES: dict[str, str] = {
         "Often a genotyping artifact; confirm before relying on it."
     ),
     SUSPICIOUS: (
-        "Suspicious call: gnomAD reports no carriers of this allele. Confirm before relying on it."
+        "Suspicious call: gnomAD's frequency of this allele is at or below the limit for one "
+        "copy (by default, gnomAD reports no carriers). Confirm before relying on it."
     ),
 }
 
 
-# ADR-0050: why a call's plausibility was not assessed.
-_NOT_ASSESSED_TEXT: dict[str, str] = {
-    NO_FREQUENCY: "gnomAD has no frequency for this allele",
-    GNOMAD_NOT_RUN: "gnomAD was not used in this run",
-    CHROMOSOME: "no rule for this call's copy count on this chromosome",
-    REASON_HALF_CALL: "one allele is missing, so the copy count is unknown",
-    NO_ALLELE: "the annotation names no carried allele to look up",
-}
+def _plausibility_icon(plausibility: str) -> str:
+    """The warning mark beside a flagged genotype, or "" (2.6.2).
 
-
-def _not_assessed_reason(group: list[Annotation]) -> str:
-    """The display reason of the group's first not-assessed annotation."""
-    for a in group:
-        if a.plausibility == NOT_ASSESSED:
-            return _NOT_ASSESSED_TEXT.get(a.plausibility_reason, a.plausibility_reason)
-    return ""
-
-
-def _plausibility_icon(plausibility: str, reason: str = "") -> str:
-    if plausibility == NOT_ASSESSED:
-        title = f"Plausibility not assessed: {reason}" if reason else "Plausibility not assessed"
-        return (
-            f'<span class="plaus plaus-not_assessed" title="{_escape(title)}"'
-            f' aria-label="{_escape(title)}">○</span>'
-        )
+    Only a warning is shown. A call that was not assessed gets no mark: the
+    JSON report keeps its value and reason (ADR-0050, amendment 2.6.2).
+    """
     warning = _PLAUSIBILITY_TITLES.get(plausibility)
     if warning is None:
         return ""
@@ -1143,7 +1173,7 @@ def _row_html(group: list[Annotation], row_id: int) -> str:
         f'<span class="badge badge-{repute}">{int(mag)}</span></td>'
         f'<td class="gene-cell">{_escape(display.gene) or "—"}</td>'
         f'<td class="gt-cell">{_escape(display.genotype_match)}'
-        f"{_plausibility_icon(plausibility, _not_assessed_reason(group))}</td>"
+        f"{_plausibility_icon(plausibility)}</td>"
         f'<td class="repute-cell">'
         f'<span class="pill pill-{repute}">{repute.capitalize()}</span></td>'
         f'<td class="sum-cell">{_summary_text(group)}</td>'
@@ -1277,9 +1307,8 @@ document.addEventListener("DOMContentLoaded", function() {
         "in gnomAD; often a genotyping artifact");
     else if (v.plausibility === "suspicious")
       h += fieldRow("Plausibility",
-        "\u26a0 Suspicious: gnomAD reports no carriers of this allele");
-    else if (v.plausibility === "not_assessed")
-      h += fieldRow("Plausibility", "Not assessed: " + v.plausibility_reason);
+        "\u26a0 Suspicious: gnomAD's frequency of this allele is at or below " +
+        "the limit for one copy (by default, gnomAD reports no carriers)");
 
     var hasMetrics = v.allele_frequency != null ||
                      v.am_pathogenicity != null || v.cadd_phred != null;
@@ -1338,15 +1367,7 @@ document.addEventListener("DOMContentLoaded", function() {
       if (m.am_class) amText += " (" + m.am_class + ")";
       rows += fieldRow("AlphaMissense", prefix + amText);
     }
-    if (m.cadd_phred != null) {
-      var cs = m.cadd_phred;
-      var tier = cs >= 30 ? "top 0.1%"
-               : cs >= 20 ? "top 1%"
-               : cs >= 10 ? "top 10%" : "";
-      var label = cs.toFixed(1) +
-        (tier ? " (" + tier + " most deleterious)" : "");
-      rows += fieldRow("CADD PHRED", prefix + label);
-    }
+    if (m.cadd_phred != null) rows += fieldRow("CADD PHRED", prefix + m.cadd_label);
     return rows;
   }
 
@@ -1472,8 +1493,15 @@ def render_html(
     diff: DiffResult | None = None,
     high_value_no_calls: list[str] | None = None,
     high_value_unchecked: list[str] | None = None,
+    high_value_unchecked_named: list[str] | None = None,
+    high_value_unchecked_counts: list[str] | None = None,
 ) -> int:
-    """Write a self-contained HTML report. Returns the number of annotations rendered."""
+    """Write a self-contained HTML report. Returns the number of annotations rendered.
+
+    ``high_value_unchecked`` lists every unchecked site; with
+    ``high_value_unchecked_counts`` the banner names only
+    ``high_value_unchecked_named`` and counts the rest (2.6.2).
+    """
     filtered = result.filter(
         min_magnitude=min_magnitude,
         category=category,
@@ -1495,6 +1523,9 @@ def render_html(
         f"{_display(name)} ({version or 'unknown'})" for name, version in result.annotators_used
     )
 
+    unchecked_banner = _hv_unchecked_banner(
+        high_value_unchecked, high_value_unchecked_named, high_value_unchecked_counts
+    )
     build_warn = ""
     diag = result.build_diagnostics
     if diag is not None:
@@ -1713,7 +1744,7 @@ def render_html(
         f"{_report_warnings_banner(result.report_warnings)}"
         f"{_sources_failed_banner(result.sources, result.report_warnings)}"
         f"{_hv_nocall_banner(high_value_no_calls)}"
-        f"{_hv_unchecked_banner(high_value_unchecked)}"
+        f"{unchecked_banner}"
         f"{_input_method_banner(result.input_method) if imputed else ''}"
         f"{details}"
         f"{_panel_coverage_section(result.panel_coverage(filtered), result.parser_name)}"

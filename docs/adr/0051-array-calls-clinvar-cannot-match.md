@@ -211,3 +211,51 @@ unplaced rsID-list D/I row is named once, as `di_call`. A
 foreign-allele name mentions another rsID's row only where one stands at
 the position, and the HTML banner says each line states what was not
 checked.
+
+## Amendment 2.6.2 (2026-11-07): the console and HTML name only some unchecked sites
+
+The 2.6.1 naming above has no cap. On a real 23andMe v5 file it named
+6,625 sites ahead of the findings, 5,757 of them base calls at vendor
+probes; a `D`/`I`-rich AncestryDNA file named 6,609, most of them `D`/`I`
+calls at rsIDs ClinVar classifies Pathogenic or Likely pathogenic.
+Owner decision: the console and the HTML report name a site only when
+
+- its rsID is on the high-value list, whatever the reason, a `D`/`I` call
+  included; or
+- the call is not a `D`/`I` call and ClinVar classifies the call's own
+  rsID, not only a row at its locus, as Pathogenic or Likely pathogenic.
+
+Every other site is counted, one line per kind with why: `D`/`I` calls at
+Pathogenic or Likely pathogenic rsIDs; `D`/`I` calls at rsIDs with no such
+row of their own, named by a row at or near their position; `D`/`I` calls
+and base calls at vendor probes; calls whose rsID's alleles no source
+knows; calls naming a base their rsID does not have. A foreign- or
+unknown-allele call's gene is that of a P/LP row at its locus, so the run
+asks ClinVar once whether each such rsID has a P/LP row of its own
+(`plp_genes`). Identity locus conflicts, unplaced rows and
+reference-carried sites are named only where they are high-value or P/LP
+by their own rsID, so they are always named.
+
+The console says how many sites are named and how many counted, and that
+`--show-unchecked` lists every site, as 2.6.1 did. The HTML banner stays
+ahead of the findings with the names and counts, and holds the full list
+in a collapsed section. When nothing is counted, both are as in 2.6.1.
+JSON is unchanged (schema 13): `high_value_unchecked` and the
+`di_calls_not_checked` warning list every site. Which sites are named
+changes no count in `probe_classes`, `array_quality`, `placement` or the
+report warnings.
+
+## Amendment 2.6.2 (2026-11-07): the count the 2.6.1 naming changed
+
+The 2.6.1 amendment above lists the counts that naming leaves unchanged:
+`probe_classes`, `array_quality`, `placement` and the
+`identity_locus_conflict` warning. The `di_calls_not_checked` report
+warning is not among them, and its count did change. It is the number of
+`high_value_unchecked` entries with reason `di_call`, so since 2.6.1 it
+also counts the `D`/`I` calls named at vendor probes and those named by a
+P/LP row at or near their position. On a real 23andMe v5 file it went from
+376 (2.6.0) to 719 (2.6.1): 175 vendor-probe calls and 168 rsID calls named
+by position were added, and every call named before stayed.
+`input.probe_classes.di_calls_at_plp_rsids` counts only the calls at
+rsIDs ClinVar classifies P/LP and stayed 376. The 2.6.1 CHANGELOG
+sentence "the existing counts are unchanged" is corrected in 2.6.2.

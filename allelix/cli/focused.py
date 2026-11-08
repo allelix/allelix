@@ -26,6 +26,7 @@ from allelix.cli._options import (
     _OUTPUT_OPT,
     _REPORT_FORMAT_OPT,
     _SAMPLE_OPT,
+    _SHOW_UNCHECKED_OPT,
     _SNPEDIA_MIN_MAG_OPT,
 )
 from allelix.reports.methylation import METHYLATION_PANEL_GENES
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 @_NO_ALPHAMISSENSE_OPT
 @_NO_CADD_OPT
 @_SAMPLE_OPT
+@_SHOW_UNCHECKED_OPT
 def methylation(
     file_path: Path,
     fmt: str | None,
@@ -74,6 +76,7 @@ def methylation(
     no_alphamissense: bool,
     no_cadd: bool,
     sample: str | None,
+    show_unchecked: bool,
 ) -> None:
     """Methylation-pathway-focused report (MTHFR, MTR, MTRR, COMT, CBS, …)."""
     excluded: set[str] = set()
@@ -102,6 +105,7 @@ def methylation(
         no_alphamissense=no_alphamissense,
         no_cadd=no_cadd,
         sample=sample,
+        show_unchecked=show_unchecked,
     )
 
 
@@ -125,6 +129,7 @@ def methylation(
 @_NO_ALPHAMISSENSE_OPT
 @_NO_CADD_OPT
 @_SAMPLE_OPT
+@_SHOW_UNCHECKED_OPT
 def pharmacogenomics(
     file_path: Path,
     fmt: str | None,
@@ -145,6 +150,7 @@ def pharmacogenomics(
     no_alphamissense: bool,
     no_cadd: bool,
     sample: str | None,
+    show_unchecked: bool,
 ) -> None:
     """Pharmacogenomics-focused report (annotations from ClinPGx-style sources)."""
     excluded: set[str] = set()
@@ -173,4 +179,5 @@ def pharmacogenomics(
         no_alphamissense=no_alphamissense,
         no_cadd=no_cadd,
         sample=sample,
+        show_unchecked=show_unchecked,
     )

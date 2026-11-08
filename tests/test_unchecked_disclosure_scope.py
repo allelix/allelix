@@ -73,7 +73,7 @@ def test_counted_base_valued_vendor_probe_is_named(tmp_path, build, surface):
     )
     probe, outside = "i3999980713", "i3999980714"
     source = _chip(tmp_path, [(probe, POS, "AG"), (outside, POS + 90, "AG")], build)
-    report, _ = _run(tmp_path, data, source, build, surface)
+    report, _ = _run(tmp_path, data, source, build, surface, show_unchecked=surface == "terminal")
     if surface == "json":
         assert report["input"]["probe_classes"]["i_probes_at_plp_loci"] == 1
         entries = report.get("high_value_unchecked") or []

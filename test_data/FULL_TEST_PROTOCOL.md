@@ -117,6 +117,7 @@ Test-count floor by release:
 - v2.5.2: at least 6,946 collected
 - v2.6.0: at least 12,643 collected
 - v2.6.1: at least 13,487 collected
+- v2.6.2: at least 13,579 collected
 
 Check lint:
 

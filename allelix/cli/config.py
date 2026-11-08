@@ -14,6 +14,7 @@ from allelix.cli import main
 from allelix.cli._helpers import console
 from allelix.cli._options import _DATA_DIR_OPT
 from allelix.databases import resolve_data_dir
+from allelix.utils.markup import literal
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -64,7 +65,7 @@ def config_show(data_dir: Path | None) -> None:
     resolved = resolve_data_dir(data_dir)
     cfg = load_config(resolved)
 
-    table = Table(title=f"Configuration ({resolved / 'config.toml'})")
+    table = Table(title=f"Configuration ({literal(str(resolved / 'config.toml'))})")
     table.add_column("Source", style="cyan", no_wrap=True)
     table.add_column("Enabled", justify="center")
     table.add_column("Note", style="dim")
@@ -84,7 +85,7 @@ def config_show(data_dir: Path | None) -> None:
             marker = "[green]yes[/green]"
         else:
             marker = "[red]no[/red]"
-        table.add_row(name, marker, note)
+        table.add_row(literal(name), marker, note)
     console.print(table)
     mode = "[yellow]commercial[/yellow]" if cfg.commercial else "[green]personal[/green]"
     console.print(f"License mode: {mode}")
@@ -123,7 +124,7 @@ def config_get(data_dir: Path | None, key: str | None) -> None:
     cfg = load_config(resolved)
 
     if key is None:
-        console.print(f"[dim]Config: {resolved / 'config.toml'}[/dim]")
+        console.print(f"[dim]Config: {literal(str(resolved / 'config.toml'))}[/dim]")
         click.echo(_serialize(cfg))
         return
 
@@ -180,8 +181,8 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
             )
         cfg.plausibility = replace(cfg.plausibility, **{name: number})
         save_config(resolved, cfg)
-        console.print(f"[dim]Config: {resolved / 'config.toml'}[/dim]")
-        console.print(f"[green]Set {key} = {number!r}[/green]")
+        console.print(f"[dim]Config: {literal(str(resolved / 'config.toml'))}[/dim]")
+        console.print(f"[green]Set {literal(key)} = {number!r}[/green]")
         return
 
     val_lower = value.strip().lower()
@@ -213,5 +214,5 @@ def config_set(data_dir: Path | None, key: str, value: str) -> None:
         raise click.ClickException(_UNKNOWN_KEY.format(key=key))
 
     save_config(resolved, cfg)
-    console.print(f"[dim]Config: {resolved / 'config.toml'}[/dim]")
-    console.print(f"[green]Set {key} = {val_lower}[/green]")
+    console.print(f"[dim]Config: {literal(str(resolved / 'config.toml'))}[/dim]")
+    console.print(f"[green]Set {literal(key)} = {val_lower}[/green]")

@@ -269,6 +269,20 @@ _KEEP_FILTERED_OPT = click.option(
         "skipped and counted."
     ),
 )
+# 2.6.2: the terminal names only the unchecked sites that are high-value or
+# P/LP by their own rsID, and counts the rest by kind, unless asked for all.
+_SHOW_UNCHECKED_OPT = click.option(
+    "--show-unchecked",
+    is_flag=True,
+    default=False,
+    help=(
+        "On the terminal, list every high-value or Pathogenic site that could "
+        "not be checked. By default the terminal names only high-value sites "
+        "and non-D/I calls at rsIDs ClinVar classifies Pathogenic or Likely "
+        "pathogenic, and counts the rest by kind. The HTML report keeps the full "
+        "list in a collapsed section and the JSON report lists every site."
+    ),
+)
 _MIN_GQ_OPT = click.option(
     "--min-gq",
     type=click.IntRange(min=0),

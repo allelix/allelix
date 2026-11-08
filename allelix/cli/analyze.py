@@ -30,6 +30,7 @@ from allelix.cli._options import (
     _OUTPUT_OPT,
     _REPORT_FORMAT_OPT,
     _SAMPLE_OPT,
+    _SHOW_UNCHECKED_OPT,
     _SNPEDIA_MIN_MAG_OPT,
     _VCF_OUT_OPT,
 )
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
 @_KEEP_FILTERED_OPT
 @_MIN_GQ_OPT
 @_VCF_OUT_OPT
+@_SHOW_UNCHECKED_OPT
 def analyze(
     file_path: Path,
     fmt: str | None,
@@ -91,6 +93,7 @@ def analyze(
     keep_filtered: bool,
     min_gq: int,
     vcf_out: Path | None,
+    show_unchecked: bool,
 ) -> None:
     """Annotate a genotype file against all ready reference databases."""
     filter_genes: frozenset[str] | None = None
@@ -126,4 +129,5 @@ def analyze(
         min_gq=min_gq,
         vcf_out=vcf_out,
         filter_path=filter_file,
+        show_unchecked=show_unchecked,
     )

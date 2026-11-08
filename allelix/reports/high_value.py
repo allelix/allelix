@@ -190,7 +190,8 @@ class UncheckedCall:
     conflict's position, the row that names a D/I call by position).
     ``plp_gene`` is ClinVar's gene where ClinVar classifies the site
     Pathogenic or Likely pathogenic, None where it does not; a call is named
-    when it is P/LP or its rsID is high-value.
+    when it is P/LP or its rsID is high-value. ``own_plp`` (2.6.2) says
+    whether the call's own rsID has a P/LP row, not only a row at its locus.
     """
 
     site: str
@@ -198,6 +199,7 @@ class UncheckedCall:
     reason: str
     detail: str = ""
     plp_gene: str | None = None
+    own_plp: bool = False
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,9 @@ class UncheckedSite:
     ``unknown_alleles`` (an rsID call whose alleles at its position no source
     knows).
     ``rsid`` is the probe ID (``i…``) for a call at a vendor probe.
+    ``high_value`` (2.6.2) says the rsID is on the high-value list and
+    ``own_plp`` that ClinVar classifies the rsID itself P/LP; they decide
+    whether the reports name the site or count it (``named_inline``).
     """
 
     rsid: str
@@ -226,6 +231,33 @@ class UncheckedSite:
     reason: str
     call: str = ""
     detail: str = ""
+    high_value: bool = False
+    own_plp: bool = False
+
+    @property
+    def named_inline(self) -> bool:
+        """Whether the terminal and HTML reports name the site (2.6.2).
+
+        A high-value site always is; any other site when ClinVar classifies
+        its own rsID P/LP and the call is not a D or I code. The rest are
+        counted by kind (``unchecked_rollup``).
+        """
+        return self.high_value or (self.own_plp and self.reason != UNCHECKED_DI_CALL)
+
+    @property
+    def rollup_group(self) -> str:
+        """The count a site not named inline goes into (``_ROLLUP``)."""
+        if self.reason == UNCHECKED_DI_CALL:
+            if not self.rsid.startswith("rs"):
+                return "probe_di"
+            return "di_plp" if self.own_plp else "di_near"
+        if self.reason == UNCHECKED_VENDOR_PROBE:
+            return "probe_base"
+        if self.reason == UNCHECKED_UNKNOWN_ALLELES:
+            return "unknown"
+        if self.reason == UNCHECKED_FOREIGN_ALLELES:
+            return "foreign"
+        return self.reason
 
     @property
     def text(self) -> str:
@@ -320,6 +352,64 @@ class UncheckedSite:
         }
 
 
+# 2.6.2: the counts of the sites the reports do not name, in this order, each
+# with why the run could not check them. A count is of sites (one per ID and
+# reason, as the header counts them), not of calls: an ID on two rows is one.
+_ROLLUP: dict[str, str] = {
+    "di_plp": (
+        "site(s) at rsIDs ClinVar classifies Pathogenic or Likely pathogenic with a call "
+        "written as D or I, a deletion or insertion code Allelix cannot check against its "
+        "sources. Not assessed: neither a finding nor a normal result."
+    ),
+    "di_near": (
+        "site(s) at rsIDs with no Pathogenic or Likely pathogenic row of their own with a "
+        "call written as D or I, at or near a Pathogenic or Likely pathogenic variant. "
+        "Allelix cannot check a deletion or insertion code against its sources."
+    ),
+    "probe_di": (
+        "site(s) at vendor probes without an rsID with a call written as D or I, at or "
+        "near a Pathogenic or Likely pathogenic variant. ClinVar does not match a probe to "
+        "a variant, so ClinVar did not check them."
+    ),
+    "probe_base": (
+        "site(s) at vendor probes without an rsID with a base call, at a Pathogenic or "
+        "Likely pathogenic position. ClinVar does not match a probe to the variant there, "
+        "so ClinVar did not check them."
+    ),
+    "unknown": (
+        "site(s) at a Pathogenic or Likely pathogenic position with a call whose alleles "
+        "no source knows for its rsID, so ClinVar did not check them against the variant "
+        "there."
+    ),
+    "foreign": (
+        "site(s) at a Pathogenic or Likely pathogenic position with a call naming a base "
+        "that is not one of its own rsID's alleles, so ClinVar did not check them against "
+        "that variant."
+    ),
+}
+
+
+def unchecked_rollup(sites: list[UncheckedSite]) -> tuple[list[UncheckedSite], list[str]]:
+    """The sites the reports name, and one count line for each kind of the rest.
+
+    2.6.2: a list of every unchecked call can run to thousands of lines ahead
+    of the findings, so the terminal and HTML reports name only the sites
+    ``named_inline`` keeps; the JSON report and ``--show-unchecked`` keep
+    every site.
+    """
+    inline = [site for site in sites if site.named_inline]
+    counts: dict[str, int] = {}
+    for site in sites:
+        if not site.named_inline:
+            counts[site.rollup_group] = counts.get(site.rollup_group, 0) + 1
+    order = list(_ROLLUP)
+    lines = [
+        f"{counts[key]:,} {_ROLLUP.get(key, f'call(s) not checked ({key}).')}"
+        for key in sorted(counts, key=lambda k: (order.index(k) if k in order else len(order), k))
+    ]
+    return inline, lines
+
+
 def unchecked_sites(
     high_value: dict[str, HighValueSNP],
     variants: list[Variant],
@@ -352,12 +442,20 @@ def unchecked_sites(
                 name=snp.name if snp is not None else "",
                 reason=UNCHECKED_DI_CALL,
                 call=call,
+                high_value=snp is not None,
+                own_plp=rsid in di_calls_at_plp,
             )
         )
     for rsid in sorted(set(not_in_file) & set(high_value)):
         snp = high_value[rsid]
         sites.append(
-            UncheckedSite(rsid=rsid, gene=snp.gene, name=snp.name, reason=UNCHECKED_NOT_IN_FILE)
+            UncheckedSite(
+                rsid=rsid,
+                gene=snp.gene,
+                name=snp.name,
+                reason=UNCHECKED_NOT_IN_FILE,
+                high_value=True,
+            )
         )
     named = {(site.rsid, site.reason) for site in sites}
     for c in sorted(other_calls, key=lambda c: (c.site, c.reason)):
@@ -373,6 +471,8 @@ def unchecked_sites(
                 reason=c.reason,
                 call=c.call,
                 detail=c.detail,
+                high_value=snp is not None,
+                own_plp=c.own_plp,
             )
         )
     return sites

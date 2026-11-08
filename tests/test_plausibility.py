@@ -410,13 +410,16 @@ class TestReports:
         assert "AA ⚠" in lines["rs900580001"]
         assert "AA ?" in lines["rs900580002"]
         assert "⚠" not in lines["rs900580003"] and "?" not in lines["rs900580003"]
-        assert "implausible: homozygous for an allele very rare in gnomAD" in text
+        assert (
+            "means the call looks doubtful because the variant's gnomAD frequency is at or under"
+            in text
+        )
 
     def test_terminal_has_no_legend_without_flags(self, tmp_path: Path) -> None:
         buf = io.StringIO()
         console = Console(file=buf, width=200, color_system=None)
         render_terminal(_result(tmp_path, [_ann("rs900580003", PLAUSIBLE)]), console)
-        assert "implausible:" not in buf.getvalue()
+        assert "means the call looks doubtful" not in buf.getvalue()
 
 
 _RSIDS = ("rs900580001", "rs900580002", "rs900580003")
