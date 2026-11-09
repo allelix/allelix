@@ -119,6 +119,7 @@ class AncestryDNAParser(GenotypeParser):
                 yield Variant(
                     rsid=rsid,
                     chromosome=chrom,
+                    par=chrom_raw == "25",
                     position=position,
                     allele1=allele1,
                     allele2=allele2,

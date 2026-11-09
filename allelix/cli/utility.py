@@ -24,7 +24,7 @@ from allelix.cli._options import (
 )
 from allelix.databases import resolve_data_dir
 from allelix.models import NO_CALL_MARKER
-from allelix.parsers._helpers import normalize_chromosome
+from allelix.parsers._helpers import normalize_chromosome, summary_chromosome
 from allelix.reports._pipeline import BuildDiagnostics, UnusableInputError
 from allelix.reports.build_text import short_source
 from allelix.utils.build_detect import (
@@ -98,7 +98,10 @@ def stats(
                     het += 1
                 else:
                     hom += 1
-                chrom_counts[variant.chromosome] = chrom_counts.get(variant.chromosome, 0) + 1
+                # A standard chromosome under its lookup name (23 and X are one
+                # row); any other contig as the reader gave it.
+                chrom = summary_chromosome(variant.chromosome)
+                chrom_counts[chrom] = chrom_counts.get(chrom, 0) + 1
     finally:
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
 
@@ -396,7 +399,9 @@ def _settled(
     best = min(places, key=lambda locus: (rank.get(locus[0], len(rank)), locus[1]))
     # A later call standing at ``best`` ties on position and loses on line.
     return any(
-        best[1] in _stands_at(v) and v.chromosome == best[0] and not v.is_no_call
+        best[1] in _stands_at(v)
+        and normalize_chromosome(v.chromosome) == best[0]
+        and not v.is_no_call
         for v in candidates
     )
 
@@ -429,12 +434,14 @@ def _extract_choice(
         # A call stands at its POS and, padded, at its trimmed site (ADR-0061);
         # at a placement it ranks by that placement, so a padded call and the
         # same call written trimmed tie and the earlier record wins.
-        standing = [(v.chromosome, at) for at in _stands_at(v) if (v.chromosome, at) in places]
+        # Placements and the contig rank use the lookup name (23 is X).
+        name = normalize_chromosome(v.chromosome)
+        standing = [(name, at) for at in _stands_at(v) if (name, at) in places]
         mapped = bool(standing)
         chrom, pos = (
             min(standing, key=lambda locus: (rank.get(locus[0], len(rank)), locus[1]))
             if mapped
-            else (v.chromosome, v.position)
+            else (name, v.position)
         )
         line = v.record_index if v.record_index is not None else 0
         if not rank:
@@ -1156,6 +1163,7 @@ def export_plink_cmd(
         coded_against,
         default_plink_prefix,
         export_plink,
+        plink_chromosome,
         plink_paths,
         plink_record_key,
         plink_writable,
@@ -1206,13 +1214,14 @@ def export_plink_cmd(
         diagnostics = resolved_stream.build_diagnostics()
         _helpers._emit_build_notices(diagnostics)
 
-    # Sort by chromosome then position so the .bim has contiguous
-    # chromosome blocks — PLINK1.9 rejects split chromosomes.
-    chrom_order = {str(i): i for i in range(1, 23)}
-    chrom_order.update({"X": 23, "Y": 24, "XY": 25, "MT": 26})
-    variants.sort(
-        key=lambda v: (chrom_order.get(v.chromosome, 99), v.chromosome, v.position),
-    )
+    # Sort by the chromosome code the .bim gets, then position, so the .bim
+    # has contiguous chromosome blocks — PLINK1.9 rejects split chromosomes.
+    def bim_order(v: Variant) -> tuple[int, str, int]:
+        code = plink_chromosome(v)
+        rank = int(code) if code.isdigit() and 1 <= int(code) <= 26 else 99
+        return rank, code, v.position
+
+    variants.sort(key=bim_order)
 
     # Coordinates, REF/ALT and genotype coding all come from one build.
     grch38 = effective_build == "GRCh38"

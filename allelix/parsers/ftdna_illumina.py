@@ -40,7 +40,9 @@ from allelix.models import DEFAULT_BUILD, Variant
 from allelix.parsers._helpers import (
     DamagedFileError,
     is_haploid_call,
+    is_par_code,
     normalize_chromosome,
+    numeric_chromosome_code,
     open_genotype_text,
     split_genotype,
 )
@@ -142,6 +144,8 @@ class FTDNAIlluminaParser(GenotypeParser):
                 yield Variant(
                     rsid=rsid,
                     chromosome=normalize_chromosome(chrom),
+                    par=is_par_code(chrom),
+                    chromosome_as_read=numeric_chromosome_code(chrom),
                     position=position,
                     allele1=allele1,
                     allele2=allele2,

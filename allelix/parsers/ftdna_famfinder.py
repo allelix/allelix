@@ -65,7 +65,9 @@ from allelix.models import DEFAULT_BUILD, NO_CALL_MARKER, Variant
 from allelix.parsers._helpers import (
     NO_CALL_CODES,
     DamagedFileError,
+    is_par_code,
     normalize_chromosome,
+    numeric_chromosome_code,
     open_genotype_text,
 )
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
@@ -239,6 +241,8 @@ class FTDNAFamFinderParser(GenotypeParser):
                 yield Variant(
                     rsid=rsid,
                     chromosome=normalized_chrom,
+                    par=is_par_code(chrom),
+                    chromosome_as_read=numeric_chromosome_code(chrom),
                     position=position,
                     allele1=allele1,
                     allele2=allele2,

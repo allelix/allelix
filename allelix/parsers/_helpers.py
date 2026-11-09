@@ -638,6 +638,40 @@ def is_haploid_call(genotype: str) -> bool:
     return len(genotype) == 1 and genotype.upper() not in NO_CALL_CODES
 
 
+# PLINK's and Illumina's codes for X, Y, the pseudo-autosomal region (on X
+# coordinates) and MT; AncestryDNA writes the same numbers.
+_NUMERIC_CHROMOSOMES = {"23": "X", "24": "Y", "25": "X", "XY": "X", "26": "MT"}
+
+
+_STANDARD_CHROMOSOMES = frozenset([*(str(n) for n in range(1, 23)), "X", "Y", "MT"])
+
+
+def summary_chromosome(chrom: str) -> str:
+    """The name a per-chromosome count lists for a call's chromosome.
+
+    A standard chromosome (1-22, X, Y, MT, under any spelling or numeric
+    code) by its lookup name; any other contig exactly as the reader gave it.
+    """
+    name = normalize_chromosome(chrom)
+    return name if name in _STANDARD_CHROMOSOMES else chrom
+
+
+def numeric_chromosome_code(chrom: str) -> str | None:
+    """A numeric or XY chromosome code as written, ``chr`` dropped; None for any other name."""
+    stripped = chrom[3:] if chrom[:3].lower() == "chr" else chrom
+    return stripped if stripped.upper() in _NUMERIC_CHROMOSOMES else None
+
+
+def is_par_code(chrom: str) -> bool:
+    """Whether the file names the call's chromosome ``25`` or ``XY``: the pseudo-autosomal region.
+
+    Lookups read it as X (:func:`normalize_chromosome`); PLINK output keeps
+    the file's own designation.
+    """
+    stripped = chrom[3:] if chrom[:3].lower() == "chr" else chrom
+    return stripped.upper() in ("25", "XY")
+
+
 def normalize_chromosome(chrom: str) -> str:
     """Normalize a chromosome identifier to Allelix's canonical bare form.
 
@@ -650,6 +684,10 @@ def normalize_chromosome(chrom: str) -> str:
       - ``chrX`` / ``chrx`` / ``X`` / ``x`` -> ``X`` (same for Y)
       - ``chrM`` / ``chrm`` / ``chrMT`` / ``chrmt`` / ``M`` / ``MT`` /
         ``m`` / ``mt`` -> ``MT``
+      - Numeric sex and mitochondrial codes (PLINK, Illumina GenomeStudio,
+        AncestryDNA): ``23`` -> ``X``, ``24`` -> ``Y``, ``25`` / ``XY`` (the
+        pseudo-autosomal region, on X coordinates) -> ``X``, ``26`` -> ``MT``.
+        ``0`` (unplaced) is an unknown contig.
       - Unknown contigs (``chrUn_*``, ``GL00*``, etc.) pass through unchanged
         after the optional ``chr`` strip — downstream code decides whether
         to skip them. Case is preserved for unknown contigs.
@@ -674,6 +712,10 @@ def normalize_chromosome(chrom: str) -> str:
     # Standard sex chromosomes normalize to uppercase
     if upper in ("X", "Y"):
         return upper
+    # Numeric and PAR codes name the same chromosomes
+    numeric = _NUMERIC_CHROMOSOMES.get(upper)
+    if numeric is not None:
+        return numeric
     # Autosomes (digits) are unchanged by upper(); return as-is
     if stripped.isdigit():
         return stripped

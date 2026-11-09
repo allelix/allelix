@@ -55,7 +55,13 @@ from typing import TYPE_CHECKING, ClassVar, TextIO
 
 from allelix.attribution import Placements, attributed_rsids, placement_index
 from allelix.models import NO_CALL_MARKER, Variant
-from allelix.parsers._helpers import DamagedFileError, normalize_chromosome, open_genotype_text
+from allelix.parsers._helpers import (
+    DamagedFileError,
+    is_par_code,
+    normalize_chromosome,
+    numeric_chromosome_code,
+    open_genotype_text,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
 from allelix.parsers.genesforgood import METHOD_ARRAY_IMPUTED
 from allelix.utils.allele import trim_allele_pair
@@ -378,6 +384,8 @@ def extract_reference_candidates(
         return []
     record_id = _canonical_rsid(cols[2])
     chrom = normalize_chromosome(cols[0])
+    par = is_par_code(cols[0])
+    as_read = numeric_chromosome_code(cols[0])
     end = _info_end(cols) if _reference_block_alts(cols[4]) else None
     other_rsid = record_id.startswith("rs") and record_id not in rsids
     stands_at = record_positions(pos, cols[3], cols[4]) if end is None else {}
@@ -392,6 +400,8 @@ def extract_reference_candidates(
             allele2=a2,
             ref=base,
             ref_from_input=True,
+            par=par,
+            chromosome_as_read=as_read,
             input_alt=cols[4],
         )
         variant.record_index = index
@@ -1657,6 +1667,8 @@ def _parse_record(
         ref=ref,
         ref_from_input=True,
         haploid=haploid,
+        par=is_par_code(chrom),
+        chromosome_as_read=numeric_chromosome_code(chrom),
         input_alt=alt,
     )
     return variant, state

@@ -7,6 +7,8 @@ from __future__ import annotations
 import contextlib
 from typing import TYPE_CHECKING, NamedTuple
 
+from allelix.annotators.base import variant_locus
+from allelix.parsers._helpers import is_par_code, normalize_chromosome
 from allelix.utils.allele import (
     STRAND_COMPLEMENT,
     STRAND_DIRECT,
@@ -58,11 +60,30 @@ class EmptyPlinkSetError(ValueError):
 # PLINK1 .bim alleles: single nucleotides only.
 _NUCLEOTIDES = frozenset("ACGT")
 
+PLINK_PAR_CODE = "25"
+
+_AUTOSOMES = frozenset(str(n) for n in range(1, 23))
+
 _CHROM_CODES = {
     "X": "23",
     "Y": "24",
     "MT": "26",
 }
+
+
+def plink_chromosome(v: Variant) -> str:
+    """The call's PLINK chromosome code: 23, 24 and 26 for X, Y and MT.
+
+    A call the file names ``25`` or ``XY`` (the pseudo-autosomal region) is
+    25, as PLINK names it, although every lookup reads it as X (2.6.3).
+    """
+    if v.par or is_par_code(v.chromosome):
+        return PLINK_PAR_CODE
+    chrom = normalize_chromosome(v.chromosome)
+    if chrom in _CHROM_CODES:
+        return _CHROM_CODES[chrom]
+    # An autosome by its number; any other contig as the reader gave it.
+    return chrom if chrom in _AUTOSOMES else v.chromosome
 
 
 # PLINK1 .bed genotype code for a missing call.
@@ -164,8 +185,12 @@ def plink_record_key(v: Variant) -> RecordKey:
 
 
 def _generated_id(v: Variant, emitted: set[str]) -> str:
-    """``chr:pos:ref:alt`` for a variant without an ID; ``:2``, ``:3``… if already written."""
-    base = f"{v.chromosome}:{v.position}:{v.ref or '.'}:{v.input_alt or '.'}"
+    """``chr:pos:ref:alt`` for a variant without an ID; ``:2``, ``:3``… if already written.
+
+    ``chr`` is a numeric code as the file wrote it (``23:…``), as in 2.6.2.
+    """
+    chrom = v.chromosome_as_read or v.chromosome
+    base = f"{chrom}:{v.position}:{v.ref or '.'}:{v.input_alt or '.'}"
     candidate, n = base, 1
     while candidate in emitted:
         n += 1
@@ -292,7 +317,7 @@ def _write_plink(
             indels += 1
             continue
 
-        chrom_code = _CHROM_CODES.get(v.chromosome, v.chromosome)
+        chrom_code = plink_chromosome(v)
         a1: str
         a2: str
         bed_code: int
@@ -425,9 +450,7 @@ def resolve_ref_alt_via_gnomad_records(
         pairs = [
             (ref, alt)
             for chrom, pos, ref, alt in coords.get(v.rsid, [])
-            if (chrom, pos) == (v.chromosome, v.position)
-            and ref in _NUCLEOTIDES
-            and alt in _NUCLEOTIDES
+            if (chrom, pos) == variant_locus(v) and ref in _NUCLEOTIDES and alt in _NUCLEOTIDES
         ]
         if not pairs:
             continue
@@ -464,12 +487,12 @@ def resolve_ref_alt_via_identity(
         if not identity.is_ready():
             return None
         named = [v for v in variants if v.rsid and plink_writable(v)]
-        rows = identity.alleles_at_loci("GRCh37", {(v.chromosome, v.position) for v in named})
+        rows = identity.alleles_at_loci("GRCh37", {variant_locus(v) for v in named})
     result: dict[RecordKey, tuple[str, str]] = {}
     for v in named:
         pairs = {
             (ref, alt)
-            for ref, alt, rsid in rows.get((v.chromosome, v.position), [])
+            for ref, alt, rsid in rows.get(variant_locus(v), [])
             if rsid == v.rsid and ref in _NUCLEOTIDES and alt in _NUCLEOTIDES
         }
         if len(pairs) > 1:

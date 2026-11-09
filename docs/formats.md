@@ -66,6 +66,41 @@ A few characters typed before the `#` of a file's first line (for example
 still has to be the vendor's banner, so this never makes Allelix read a
 file it would not otherwise recognise.
 
+## Chromosome names
+
+Allelix reads each chromosome under one name, whatever the file calls it:
+`1`-`22`, `X`, `Y` and `MT`. A `chr` prefix in any case is dropped, `M`,
+`chrM` and `chrMT` are `MT`, and the numeric codes that PLINK, Illumina
+GenomeStudio and AncestryDNA write are read as the chromosomes they stand
+for: `23` is `X`, `24` is `Y`, `26` is `MT`, and `25` and `XY` (the
+pseudo-autosomal region, given in X coordinates) are `X`. Every source
+lookup, the plausibility check, the build check from VCF contig lengths
+and the per-chromosome counts of `stats` and `compare` use that name, so a
+file that writes `23` gets the same findings as one that writes `X`.
+
+Outputs keep the file's own spelling: `--vcf-out` copies the CHROM column
+and the contig lines as they are, and `export plink` writes 23, 24 and 26
+for X, Y and MT and keeps 25 for a call the file names `25` or `XY`. The
+ID `export plink` makes for a call without an rsID names the chromosome as
+2.6.2 did for that format: a VCF record on `23` or `chr23` gets
+`23:3000001:G:A`, and AncestryDNA's 23 to 26, which its reader has always
+read as X, Y and MT, get `X:…`, `Y:…` and `MT:…` IDs (a 25 call's `.bim`
+row is still coded 25). A VCF contig declared as `25`
+or `XY` is part of X, so its length does not take part in the build
+check.
+
+`0` (PLINK's and GenomeStudio's code for an unplaced call) and other
+contigs (`GL…`, `chrUn_…`, alt and decoy contigs) are not mapped. Lookups
+drop a `chr` prefix from them as from every name (`chrUn_x` is looked up
+as `Un_x`), so a lookup by position finds nothing there, but a source that
+matches by rsID (ClinPGx, for one) can still report a call on them.
+`--vcf-out` keeps their spelling; `export plink` writes them as the reader
+gives them, as in 2.6.2: the VCF, deCODEme, FTDNA Illumina and FamFinder
+readers drop a `chr` prefix (`chrUn_x` as `Un_x`), and the other readers
+keep the name as the file writes it.
+Their calls count in the report's input total; there is no separate count
+of them, and `stats` and `compare` list them as the reader gives them.
+
 ## Forcing a format
 
 Allelix reads a file only when it recognises its source: each reader checks
@@ -697,11 +732,13 @@ Two other layouts without positions (`SNP,Chr,Allele1,Allele2`, and
 `<prefix>.fam`, adding the endings to the whole prefix: `-o release.v1`
 gives `release.v1.bed`. Without `-o`, the prefix is the input name minus one
 genotype-file ending (`.vcf.gz`, `.vcf.bgz`, `.txt`, `.csv`, `.tsv`, `.vcf`,
-`.zip` or `.gz`), so `my.genome.txt` gives `my.genome`. A default
-destination never replaces a file: when `my.genome.bed`, `.bim` or `.fam`
-already exists (a link included), the export stops before any work, names
-the file and writes nothing; pass `-o` to choose the prefix. With `-o`, the
-three files are replaced.
+`.zip` or `.gz`), so `my.genome.txt` gives `my.genome`. Chromosomes are
+written as PLINK codes: 23, 24 and 26 for X, Y and MT, and 25 for a call
+the input names `25` or `XY` (see [Chromosome names](#chromosome-names)).
+A default destination never replaces a file: when `my.genome.bed`, `.bim`
+or `.fam` already exists (a link included), the export stops before any
+work, names the file and writes nothing; pass `-o` to choose the prefix.
+With `-o`, the three files are replaced.
 
 A1/A2 come from the export's own build where it has a pair (on GRCh37, the
 gnomAD fallback below can supply one), chosen for each record on its own:
@@ -739,10 +776,11 @@ A third allele the pair does not list (for example G>C at a G/A site, called
 on the minus strand) would be coded as its complement in a chip file; that
 is the accepted risk of reading minus-strand probes.
 
-A variant without an rsID gets the ID `chr:pos:ref:alt` from the input, with
-`.` for an unknown part and `:2`, `:3` and so on when that ID is already
-taken by an ID the input supplies or an earlier generated one; the console
-says how many. IDs the
+A variant without an rsID gets the ID `chr:pos:ref:alt` from the input (the
+chromosome named as 2.6.2 named it for that format; see
+[Chromosome names](#chromosome-names)), with `.` for an unknown part and
+`:2`, `:3` and so on when that ID is already taken by an ID the input
+supplies or an earlier generated one; the console says how many. IDs the
 input supplies are not changed.
 
 ## Output file safety

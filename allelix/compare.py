@@ -15,7 +15,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from allelix.parsers._helpers import normalize_chromosome
+from allelix.parsers._helpers import normalize_chromosome, summary_chromosome
 from allelix.parsers.vcf import _REFERENCE_BLOCK_ALTS
 from allelix.utils.allele import complement, is_strand_ambiguous
 from allelix.utils.build_detect import SUPPORTED_OVERRIDES
@@ -279,7 +279,9 @@ def compare_variants(
         o1 = map1[key1]
         o2 = map2[key2]
 
-        chrom = o1.variant.chromosome
+        # A standard chromosome under its lookup name, so 23 in one file and X
+        # in the other count together; any other contig as the reader gave it.
+        chrom = summary_chromosome(o1.variant.chromosome)
         if chrom not in chrom_counts:
             chrom_counts[chrom] = Counter()
 

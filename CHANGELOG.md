@@ -2,6 +2,38 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.3] - 2026-11-09
+
+### Fixed
+- The HTML report's controls work whatever text a source holds. The data
+  for the detail panel is embedded in the page in a script element, and
+  only "</" was escaped in it. Source text holding "<!--<script" (a ClinVar
+  condition, a GWAS trait or SNPedia text, for example) kept the browser
+  from finding the end of that element: the detail panel, the search, the
+  filter counts and the licence attributions in the footer were lost, with
+  no error shown. Every "<" in that data is now written as "\u003c", which
+  the page reads back as "<". The report's content is unchanged.
+- Numeric chromosome codes are read as the chromosomes they stand for:
+  `23` is X, `24` is Y, `25` and `XY` (the pseudo-autosomal region) are X
+  and `26` is MT, with or without a `chr` prefix. Before, only the
+  AncestryDNA reader mapped them: a VCF written by PLINK 1.9, whose default
+  writes X as 23 and MT as 26, or a deCODEme, Family Tree DNA or
+  MyHappyGenes file using these codes, could miss the findings on X, Y and
+  MT that a source looks up by chromosome and position (ClinVar among them),
+  with no warning, and the VCF build check from contig lengths ignored those
+  contigs. Lookups, the plausibility check, the build check and the
+  per-chromosome counts of `stats` and `compare` now use the one name; a
+  contig declared as `25` or `XY` is part of X, so its declared length is
+  left out of the VCF build check.
+  `--vcf-out` keeps the file's chromosome spelling, and `export plink`
+  keeps 25 for a call the file names `25` or `XY` (AncestryDNA's 25
+  included, which 2.6.2 wrote as 23), and takes the alleles of such a call
+  from the X rows of the identity table and gnomAD. For the formats read
+  with the file's own chromosome names (23andMe, MyHappyGenes and others),
+  other spellings of standard names (`chr1`, `chrX`, `y`, `M`) now get
+  their PLINK codes too. `0` and other contigs are unchanged, in lookups
+  and in outputs. See docs/formats.md.
+
 ## [2.6.2] - 2026-11-08
 
 ### Changed
@@ -4973,6 +5005,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.6.3]: https://github.com/allelix/allelix/compare/v2.6.2...v2.6.3
 [2.6.2]: https://github.com/allelix/allelix/compare/v2.6.1...v2.6.2
 [2.6.1]: https://github.com/allelix/allelix/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/allelix/allelix/compare/v2.5.2...v2.6.0

@@ -377,9 +377,11 @@ class LengthVerdict(NamedTuple):
 
 
 def _bare_contig(name: str) -> str:
-    """``chr1`` -> ``1``, ``chrX`` -> ``X``, ``chrM`` / ``M`` -> ``MT``."""
-    bare = (name[3:] if name.lower().startswith("chr") else name).upper()
-    return "MT" if bare in ("M", "MT") else bare
+    """``chr1`` -> ``1``, ``chrX`` / ``23`` -> ``X``, ``chrM`` / ``26`` -> ``MT``."""
+    # Imported here: allelix.parsers imports this module.
+    from allelix.parsers._helpers import normalize_chromosome
+
+    return normalize_chromosome(name)
 
 
 def contig_length_verdict(lengths: dict[str, int]) -> LengthVerdict:
@@ -387,7 +389,11 @@ def contig_length_verdict(lengths: dict[str, int]) -> LengthVerdict:
     seen: dict[str, set[str]] = {}
     unsupported: list[str] = []
     skip_mt = False
+    from allelix.parsers._helpers import is_par_code
+
     for name, length in lengths.items():
+        if is_par_code(name):
+            continue  # a PAR contig (25, XY) is part of X, not its full length
         bare = _bare_contig(name)
         if bare == "MT":
             skip_mt = skip_mt or length == HG19_CHRM_LENGTH

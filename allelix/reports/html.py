@@ -1078,8 +1078,11 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             entry["annotations"].append(a)
         variant_data.append(entry)
 
+    # Every "<" is written as \u003c: in a script element, "<!--" and
+    # "<script" change how the browser finds the closing tag, not only "</".
+    # JSON.parse reads it back as "<".
     json_str = json.dumps(variant_data, ensure_ascii=False)
-    return json_str.replace("</", "<\\/")
+    return json_str.replace("<", "\\u003c")
 
 
 # ---------------------------------------------------------------------------

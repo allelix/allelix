@@ -99,6 +99,15 @@ class Variant:
     # call. The parsers still give both alleles (the called one twice), so
     # matching is unchanged; reports show the call as hemizygous.
     haploid: bool = False
+    # The file names the chromosome ``25`` or ``XY`` (the pseudo-autosomal
+    # region, on X coordinates). ``chromosome`` is ``X`` for every lookup;
+    # only PLINK output keeps the file's 25 (2.6.3).
+    par: bool = field(default=False, compare=False, repr=False)
+    # A numeric or XY chromosome code as the file wrote it (``chr`` dropped,
+    # case kept), set only by the readers that map it at parse time (VCF,
+    # deCODEme, FTDNA Illumina, FamFinder): the generated PLINK ID of a call
+    # without an rsID keeps it, as 2.6.2 wrote it (2.6.3).
+    chromosome_as_read: str | None = field(default=None, compare=False, repr=False)
     # Complete literal input ALT field, independent of GT and quality masking.
     # Internal comparison identity; existing model equality remains unchanged.
     input_alt: str | None = field(default=None, compare=False)
