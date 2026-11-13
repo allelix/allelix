@@ -16,6 +16,7 @@ from click.testing import CliRunner
 from test_readonly_caches import _data_dir, _denied_permissions, _flat, _read_only
 
 from allelix.cli import main
+from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.reports._sources import (
     READY_NOT_USED,
     SKIPPED,
@@ -119,7 +120,10 @@ class TestSourcesBlock:
         warnings = json.loads(out.read_text())["report_warnings"]
         assert [w["code"] for w in warnings] == ["clinvar_skipped"]
         assert "ClinVar was not used" in warnings[0]["message"]
-        assert "out of date (built for iv:4, needs iv:9)" in warnings[0]["message"]
+        assert (
+            f"out of date (built for iv:4, needs iv:{CLINVAR_INTERPRETER_VERSION})"
+            in warnings[0]["message"]
+        )
         assert _flat("Warning: ClinVar was not used") in _flat(output)
 
         html = tmp_path / "r.html"
@@ -128,7 +132,10 @@ class TestSourcesBlock:
         page = html.read_text()
         assert '<div class="notice-warn"><strong>Warning.</strong> ClinVar was not used' in page
         assert "<strong>Sources not used.</strong>" in page
-        assert "ClinVar: out of date (built for iv:4, needs iv:9)" in page
+        assert (
+            f"ClinVar: out of date (built for iv:4, needs iv:{CLINVAR_INTERPRETER_VERSION})"
+            in page
+        )
         assert "Not run by choice: CADD (turned off in config)" in page
 
     @pytest.mark.parametrize(

@@ -7,16 +7,21 @@ new, removed, and changed annotations. Primary use cases: regression
 detection after code changes, QA after database refreshes, and user
 version-to-version comparison.
 
-A finding's identity is ``(source, variant label, condition, allele)``
-(2.5.2): the source, the rsID or, without one, the locus (ADR-0046), the
-condition, and the allele. Its classification and the prose generated from
-it (``significance``, ``description``, ``magnitude``) are content, so a
+A finding's identity is ``(source, variant label, condition, allele,
+site)`` (2.5.2; the site 2.7.0): the source, the rsID or, without one, the
+locus (ADR-0046), the condition, the allele, and the chromosome and
+position the report publishes. One rsID at two sites is two findings, so a
+finding that moved is removed and new, never paired across sites. Its
+classification and the prose generated from it (``significance``,
+``description``, ``magnitude``) are content, so a
 reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
 finding, not a removal and a new one. Two alleles at one variant, or two
 conditions, stay apart. Under one identity, findings pair by identical
 content first, then by ``genotype_match``, then in a fixed order; one left
 on each side is changed. Row order never matters. A previous entry without
-``alt`` (an older report) is matched on the identity without it.
+``alt``, or without a position (an older report), is matched on the
+identity without it, by a current finding whose exact identity no previous
+entry has.
 
 A previous finding is removed only when the current run has no finding with
 its identity at all, before any display floor: a finding still there but
@@ -40,7 +45,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 14)}
+_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 15)}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -107,7 +112,19 @@ def _baseline_condition(d: dict) -> str:
     return condition
 
 
-_DiffKey = tuple[str, str, str] | tuple[str, str, str, str]
+# The identity, then the allele and the site. None stands for a baseline
+# entry that does not record them (an older report), or for a current
+# finding whose position is not known.
+_Site = tuple[str, int] | None
+_DiffKey = tuple[str, str, str, str | None, _Site]
+
+
+def _site(d: dict) -> _Site:
+    """The chromosome and position a report entry publishes, or None."""
+    position = d.get("position")
+    if position is None:
+        return None
+    return (d.get("chromosome") or "", position)
 
 
 def _content(d: dict) -> tuple[str, str, str]:
@@ -264,25 +281,28 @@ def compute_diff(
     """
     shown = {id(a) for a in current}
     pool = current if unfiltered is None else unfiltered
-    # A previous entry with ``alt`` is keyed with it; one without (an older
-    # schema) on the identity without the allele. Every finding under a key
+    # A previous entry is keyed with its allele and site; one without either
+    # (an older schema) on the identity without it. Every finding under a key
     # is kept: one report can hold the same identity with two genotypes, or
     # (several GWAS studies) two texts.
     prev_groups: dict[_DiffKey, list[dict]] = defaultdict(list)
-    legacy_keys: set[_DiffKey] = set()
     for p in previous_annotations:
-        old_key = _diff_key_from_dict(p)
-        if "alt" in p:
-            prev_groups[(*old_key, p["alt"])].append(p)
-        else:
-            prev_groups[old_key].append(p)
-            legacy_keys.add(old_key)
+        prev_groups[(*_diff_key_from_dict(p), p.get("alt"), _site(p))].append(p)
 
+    # A current finding takes the exact key when the baseline has it, else
+    # the key of an older entry without the allele, the site or both. The
+    # site is the published (trimmed) locus, as the baseline wrote it.
     curr_groups: dict[_DiffKey, list[Annotation]] = defaultdict(list)
     for c in pool:
-        key: _DiffKey = (*_diff_key_from_annotation(c), c.alt)
-        if key not in prev_groups and key[:3] in legacy_keys:
-            key = key[:3]
+        identity = _diff_key_from_annotation(c)
+        site = _site(annotation_to_public_dict(c))
+        candidates: list[_DiffKey] = [
+            (*identity, c.alt, site),
+            (*identity, None, site),
+            (*identity, c.alt, None),
+            (*identity, None, None),
+        ]
+        key = next((k for k in candidates if k in prev_groups), candidates[0])
         curr_groups[key].append(c)
 
     # Identical content first, then the same genotype, then the rest in a
@@ -350,6 +370,39 @@ def compute_diff(
         changed=changed,
         previous_generated_at=previous_generated_at,
     )
+
+
+def diff_sites(diff: DiffResult) -> dict[str, set[tuple[str, int]]]:
+    """The published sites of each rsID across the diff's new, changed and removed findings.
+
+    The site is what the diff pairs on (``_site``): the chromosome and
+    position each report publishes. A finding without one adds nothing.
+    """
+    sites: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    entries = [
+        *(annotation_to_public_dict(a) for a in diff.new),
+        *(annotation_to_public_dict(c.current) for c in diff.changed),
+        *diff.removed,
+    ]
+    for d in entries:
+        site = _site(d)
+        rsid = d.get("rsid")
+        if rsid and site is not None and site[0]:
+            sites[rsid].add(site)
+    return sites
+
+
+def diff_site_label(d: dict, sites: dict[str, set[tuple[str, int]]]) -> str | None:
+    """``chrom:pos`` of a diff entry whose rsID is at two or more sites in the diff, else None.
+
+    Only then can two rows of one rsID be told apart by their site: a
+    finding that moved shows where it left and where it arrived (2.7.0).
+    """
+    site = _site(d)
+    rsid = d.get("rsid")
+    if not rsid or site is None or not site[0] or len(sites.get(rsid, ())) < 2:
+        return None
+    return f"{site[0]}:{site[1]}"
 
 
 def summarize_diff(diff: DiffResult) -> str:

@@ -183,7 +183,8 @@ def save_config(data_dir: Path, config: AllelixConfig) -> None:
     path = _config_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     check_writable(path)
-    atomic_write_text(path, _serialize(config))
+    # Config is not personal data: a new file gets the umask's mode.
+    atomic_write_text(path, _serialize(config), private=False)
 
 
 def load_config(data_dir: Path, *, create: bool = True) -> AllelixConfig:

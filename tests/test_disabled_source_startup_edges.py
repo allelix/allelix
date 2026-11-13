@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 from click.testing import CliRunner
-from test_disabled_source_reports import CHOICES, FLOORS, _configure, _prepare
+from test_disabled_source_reports import CHOICES, _configure, _floors, _prepare
 
 from allelix.annotators import get_annotators
 from allelix.cli import main
@@ -32,7 +32,7 @@ def _args(command, path, data, output, options, *, no_update=False):
         "grch38",
         "--output",
         str(output),
-        *FLOORS,
+        *_floors(command),
         *options,
         *(["--no-update"] if no_update else []),
     ]
@@ -44,7 +44,7 @@ def test_report_startup_leaves_switched_off_wal_caches_untouched(
     tmp_path, monkeypatch, command, source, method
 ):
     data, path = _prepare(tmp_path, "GRCh38")
-    options = _configure(data, source, method)
+    options = _configure(data, source, method, command=command)
     caches = _caches(data, source)
     assert caches
     for cache in caches:
@@ -67,7 +67,7 @@ def test_only_a_switched_off_cache_cannot_make_the_report_runnable(
     tmp_path, command, source, method
 ):
     data, path = _prepare(tmp_path, "GRCh38")
-    options = _configure(data, source, method)
+    options = _configure(data, source, method, command=command)
     kept = _caches(data, source)
     assert kept
     for cache in data.glob("*.sqlite"):

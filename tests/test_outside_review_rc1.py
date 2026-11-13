@@ -43,6 +43,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline review test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 def _flat(text: str) -> str:
@@ -209,9 +210,7 @@ def test_cpic_table_of_non_objects_takes_the_cpic_unavailable_path(monkeypatch):
     from allelix.databases import cpic_loader
 
     monkeypatch.setattr(cpic_loader, "CPIC_RETRY_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
-    monkeypatch.setattr(
-        urllib.request, "urlopen", lambda request, timeout=None: _Reply(["x"], "0-0/1")
-    )
+    monkeypatch.setattr(manager, "open_url", lambda request, timeout=None: _Reply(["x"], "0-0/1"))
     probe_errors = getattr(manager, "PROBE_ERRORS", (OSError, ValueError))
 
     try:

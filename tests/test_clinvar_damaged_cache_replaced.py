@@ -18,7 +18,6 @@ from __future__ import annotations
 import contextlib
 import gzip
 import hashlib
-import os
 import sqlite3
 import urllib.request
 from typing import TYPE_CHECKING
@@ -48,6 +47,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline regression test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 def _clinvar_cache(path: Path, build: str, signal: str) -> None:
@@ -205,7 +205,7 @@ def test_a_readable_cache_with_no_count_is_still_refused(offline_sources):
     assert path.read_bytes() == before
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.usefixtures("require_unreadable_files")
 def test_an_unreadable_cache_is_still_refused(offline_sources):
     data = offline_sources
     path = data / "clinvar.GRCh37.sqlite"

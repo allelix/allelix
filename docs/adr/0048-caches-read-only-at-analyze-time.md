@@ -178,3 +178,21 @@ own value, `COMMIT`): SQLite takes the lock and removes a stale journal on
 commit. If the lock is busy, the old cache is in use and nothing is
 replaced. A journal still left after the commit refuses, as above. No
 journal is removed by hand while the database could be in use.
+
+## Amendment 2.7.0 (2026-11-10): every staged cache replacement goes through `publish_cache`
+
+The installs the 2.6.1 amendment left on a bare `os.replace` now go through
+`publish_cache` too: the ClinVar (both builds), GWAS Catalog and ClinPGx
+loaders, the rsID identity table's writer, and the offline builders
+`scripts/build_gnomad_cache.py`, `build_alphamissense_cache.py` and
+`build_cadd_cache.py`. The rule above applies to each of them. An old hot
+journal or committed WAL is settled into the old file before the new one
+moves in, or the install stops with `UnrecoveredJournalError` and the old
+cache keeps its committed rows. ClinVar settles every selected build's old
+cache before it replaces any (`settle_for_publication`), a recovery
+preflight: a refusal found then changes nothing. Each build's move after it
+is atomic on its own, not the two together; a later failure can leave an
+earlier build updated, and the error names the builds already updated.
+Downloaded archives and the retained GWAS table are not SQLite caches and
+are moved as before. The in-place writers (`stamp_existing_*`,
+`update_remote_signal`, `convert_to_rollback_journal`) are unchanged.

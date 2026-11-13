@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import html
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -29,7 +29,7 @@ from allelix.annotators.clinvar import (
 from allelix.annotators.gwas import _UNKNOWN_RISK_ALLELE_MAG_CAP
 from allelix.annotators.gwas import _magnitude as _gwas_magnitude
 from allelix.annotators.pharmgkb import _LOE_MAGNITUDE
-from allelix.models import annotation_label
+from allelix.models import annotation_label, annotation_site
 from allelix.reports import (
     REGULATORY_NOTICE,
     array_quality_lines,
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     from allelix.models import Annotation
     from allelix.reports._pipeline import AnalysisResult, PanelCoverage
     from allelix.reports._sources import ReportWarning, SourceRecord
-    from allelix.reports.diff import DiffResult
+    from allelix.reports.diff import ChangedAnnotation, DiffResult
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +321,27 @@ tbody tr.selected {
   font-size: 12px;
 }
 .plaus { margin-left: 6px; cursor: help; font-family: sans-serif; }
+/* The warning's explanation, shown at once on hover or keyboard focus
+   (2.7.0). The browser's title tooltip waits about a second, and some
+   viewers never show it. It is fixed, so the table's rounded-corner
+   clipping does not cut it; the page script sets --tip-left, --tip-top and
+   --tip-width beside the mark and inside the window. It takes no clicks,
+   so the row still opens its panel. Touch screens have no hover: the
+   panel's Plausibility line explains the warning there. */
+.plaus::after {
+  content: attr(aria-label); position: fixed; z-index: 900;
+  left: var(--tip-left, auto); top: var(--tip-top, auto);
+  visibility: hidden; pointer-events: none; box-sizing: border-box;
+  width: max-content; max-width: var(--tip-width, min(22rem, calc(100vw - 16px)));
+  padding: 6px 8px; border-radius: 4px;
+  background: var(--panel-bg); color: var(--text);
+  border: 1px solid var(--border); box-shadow: 0 2px 8px var(--panel-shadow);
+  font: 12px/1.4 sans-serif; white-space: normal; text-align: left;
+}
+@media (hover: hover) {
+  .plaus:hover::after { visibility: visible; }
+}
+.plaus:focus-visible::after { visibility: visible; }
 .plaus-implausible { color: var(--notice-warn-border); }
 .plaus-suspicious  { color: var(--notice-border); }
 .sum-cell {
@@ -981,13 +1002,25 @@ def _review_stars(status: int | str | None) -> str:
 def _group_annotations(
     annotations: list[Annotation],
 ) -> list[list[Annotation]]:
-    """Group annotations by variant and ``genotype_match``; sort by max magnitude.
+    """Group annotations by variant, ``genotype_match`` and site; sort by max magnitude.
 
-    The variant is its rsID, or its locus when it has none (ADR-0046).
+    The variant is its rsID, or its locus when it has none (ADR-0046). The
+    site keeps one rsID read at two places apart: the VCF record, else the
+    locus. The record comes first, so a trimmed ClinVar allele (ADR-0047)
+    stays with its record's other findings. The record is the call's own,
+    so a split site's call, whose alleles come from two records (ADR-0062),
+    is one row like the merged record. An rsID list has no site.
     """
-    groups: dict[tuple[str, str], list[Annotation]] = defaultdict(list)
+    groups: dict[tuple, list[Annotation]] = defaultdict(list)
     for ann in annotations:
-        key = (annotation_label(ann), ann.genotype_match)
+        record = ann.call_index if ann.call_index is not None else ann.record_index
+        if record is not None:
+            site: tuple | None = ("record", record)
+        elif ann.locus is not None:
+            site = ("locus", ann.locus)
+        else:
+            site = None
+        key = (annotation_label(ann), ann.genotype_match, site)
         groups[key].append(ann)
     return sorted(
         groups.values(),
@@ -1029,6 +1062,8 @@ def _add_metrics(target: dict, ann: Annotation) -> None:
 def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
     """Serialize grouped annotations to JSON for the detail sidebar."""
     variant_data = []
+    # A label shared by more than one group shows each group's position.
+    shared = Counter(annotation_label(group[0]) for group in sorted_groups)
     for group in sorted_groups:
         display = max(group, key=lambda a: a.magnitude)
         entry: dict = {
@@ -1039,6 +1074,11 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
             "plausibility": most_severe([a.plausibility for a in group]),
             "annotations": [],
         }
+        # Empty, and no Position row, unless another group has this label.
+        site = annotation_site(display)
+        entry["locus"] = ""
+        if site is not None and shared[entry["rsid"]] > 1:
+            entry["locus"] = f"{site[0]}:{site[1]}"
         ordered = sorted(group, key=lambda a: -a.magnitude)
         # gnomAD, AlphaMissense and CADD describe one allele each. A variant
         # with more than one allele lists them per allele, never on one line.
@@ -1151,7 +1191,7 @@ def _plausibility_icon(plausibility: str) -> str:
     if warning is None:
         return ""
     return (
-        f'<span class="plaus plaus-{plausibility}" title="{_escape(warning)}"'
+        f'<span class="plaus plaus-{plausibility}" tabindex="0" role="img"'
         f' aria-label="{_escape(warning)}">⚠</span>'
     )
 
@@ -1191,12 +1231,13 @@ def _row_html(group: list[Annotation], row_id: int) -> str:
 _SCRIPT = """\
 <script>
 document.addEventListener("DOMContentLoaded", function() {
+  /* A page without findings has no table and no page data. */
+  var tbody = document.querySelector("#variant-table tbody");
+  if (!tbody) return;
   var variantData = JSON.parse(
     document.getElementById("variant-data").textContent
   );
   var searchInput = document.getElementById("search");
-  var tbody = document.querySelector("#variant-table tbody");
-  if (!tbody) return;
   var panel = document.getElementById("detail-panel");
   var backdrop = document.getElementById("backdrop");
   var panelBody = document.getElementById("panel-body");
@@ -1304,6 +1345,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
     h += fieldRow("Genotype", v.genotype);
     h += fieldRow("Zygosity", v.zygosity);
+    // Set only when another row has the same rsID (one rsID at two sites).
+    if (v.locus) h += fieldRow("Position", v.locus);
     if (v.plausibility === "implausible")
       h += fieldRow("Plausibility",
         "\u26a0 Implausible: homozygous for an allele that is very rare " +
@@ -1436,6 +1479,35 @@ document.addEventListener("DOMContentLoaded", function() {
     }
   });
 
+  /* --- Warning tooltip: beside its mark, inside the window --- */
+  function placeTip(mark) {
+    var box = mark.getBoundingClientRect();
+    var view = document.documentElement;
+    var gap = 8;
+    var width = Math.min(352, view.clientWidth - 2 * gap);
+    var left = Math.min(box.left - gap, view.clientWidth - gap - width);
+    mark.style.setProperty("--tip-width", width + "px");
+    mark.style.setProperty("--tip-left", Math.max(gap, left) + "px");
+    mark.style.setProperty("--tip-top", (box.bottom + 6) + "px");
+    var height = parseFloat(getComputedStyle(mark, "::after").height) || 0;
+    var top = box.bottom + 6;
+    if (top + height > view.clientHeight - gap) top = box.top - 6 - height;
+    top = Math.max(gap, Math.min(top, view.clientHeight - gap - height));
+    mark.style.setProperty("--tip-top", top + "px");
+  }
+  function tipTarget(e) {
+    var mark = e.target.closest && e.target.closest(".plaus");
+    if (mark) placeTip(mark);
+  }
+  document.addEventListener("pointerover", tipTarget);
+  document.addEventListener("focusin", tipTarget);
+  function replaceShownTip() {
+    var mark = document.querySelector(".plaus:hover, .plaus:focus-visible");
+    if (mark) placeTip(mark);
+  }
+  window.addEventListener("scroll", replaceShownTip, { passive: true });
+  window.addEventListener("resize", replaceShownTip);
+
   /* Keyboard */
   document.addEventListener("keydown", function(e) {
     if (document.activeElement === searchInput) return;
@@ -1547,11 +1619,21 @@ def render_html(
 
     diff_banner = ""
     if diff is not None:
-        from allelix.reports.diff import summarize_diff
+        from allelix.models import annotation_to_public_dict
+        from allelix.reports.diff import diff_site_label, diff_sites, summarize_diff
+
+        # A changed finding names its site when its rsID is at two or more
+        # sites in the diff, as the terminal tables do.
+        sites = diff_sites(diff)
+
+        def at_site(c: ChangedAnnotation) -> str:
+            site = diff_site_label(annotation_to_public_dict(c.current), sites)
+            return "" if site is None else f" at {_escape(site)}"
 
         changed_items = "".join(
             "<li>"
-            f"{_escape(annotation_label(c.current))} ({_escape(c.current.attribution)}): "
+            f"{_escape(annotation_label(c.current))}{at_site(c)} "
+            f"({_escape(c.current.attribution)}): "
             f"{_escape(c.previous_significance)} "
             + ("" if c.previous_magnitude is None else f"(magnitude {c.previous_magnitude:.1f}) ")
             + f"&rarr; {_escape(c.current.significance)} (magnitude {c.current.magnitude:.1f})"

@@ -11,6 +11,7 @@ from allelix.annotators.clinvar import ClinVarAnnotator
 @pytest.mark.parametrize("report_format", ["json", "html"])
 @pytest.mark.parametrize("blocked", ["file", "directory"])
 def test_report_permission_failure_precedes_analysis(
+    require_readonly_filesystem,
     rc_case,
     rc_snapshot,
     rc_clean_error,
@@ -35,6 +36,7 @@ def test_report_permission_failure_precedes_analysis(
 
 @pytest.mark.parametrize("suffix", [".vcf", ".vcf.gz"])
 def test_vcf_permission_failure_precedes_report_write(
+    require_readonly_filesystem,
     rc_case,
     rc_snapshot,
     rc_clean_error,
@@ -57,6 +59,7 @@ def test_vcf_permission_failure_precedes_report_write(
 
 @pytest.mark.parametrize("blocked", ["directory", ".bed", ".bim", ".fam"])
 def test_plink_permission_failure_precedes_reading_calls(
+    require_readonly_filesystem,
     rc_case,
     rc_snapshot,
     rc_clean_error,
@@ -90,6 +93,7 @@ def test_plink_permission_failure_precedes_reading_calls(
 
 @pytest.mark.parametrize("blocked", ["file", "directory"])
 def test_config_set_permission_error_preserves_config(
+    require_readonly_filesystem,
     rc_case,
     rc_snapshot,
     rc_clean_error,
@@ -104,7 +108,9 @@ def test_config_set_permission_error_preserves_config(
     assert rc_snapshot(case.root) == before
 
 
-def test_db_clean_unwritable_directory_is_a_clean_error(rc_case, rc_snapshot, rc_clean_error):
+def test_db_clean_unwritable_directory_is_a_clean_error(
+    require_readonly_filesystem, rc_case, rc_snapshot, rc_clean_error
+):
     case = rc_case
     case.data.chmod(0o555)
     before = rc_snapshot(case.root)
@@ -123,6 +129,7 @@ def test_db_clean_unwritable_directory_is_a_clean_error(rc_case, rc_snapshot, rc
     ],
 )
 def test_db_update_unwritable_destination_precedes_download(
+    require_readonly_filesystem,
     rc_case,
     rc_snapshot,
     rc_clean_error,

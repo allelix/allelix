@@ -160,3 +160,52 @@ that does not fit the pair as written is exported as missing and counted,
 not coded as its complement. In 2.6.0 a `T/T` call at an A/G site was
 written as `A/A`. Chip calls keep the reading above, and the A/T and C/G
 rule is unchanged.
+
+## Amendment 2.7.0 (2026-11-09): ClinPGx's complement match reads the site
+
+ClinPGx stays outside the rule for its exact match: a genotype that equals
+the call as written matches, whatever the site reads. Its complement match
+now also uses this reading, once per call: all the rsID's ClinPGx
+genotypes together, read against the identity alleles at the call's locus
+(for a call without a position, the rsID's one site).
+Where only their complement fits, a single-base call (single-base carried
+alleles, REF one base or not known) matches a row by its complement,
+homozygotes included; an indel call's anchor letter is not evidence of a
+sequence allele. Every other reading, and every other call, leaves the
+complement match to the call's REF, as before (ADR-0035, amendment 2.7.0). No row abstains that
+matched before, and no abstention is counted.
+
+## Amendment 2.7.0 (2026-11-10): padded identity rows are read trimmed
+
+The identity table stores a few single-base variants padded with a shared
+base: `CG>CA` one position before `G>A`, or `GT>AT` at its own position
+(20 such rows on GRCh37 and 70 on GRCh38 in the dbSNP b157 table, all
+padded at the end). Read as stored, such a site had a multi-base allele
+set at another position, so a GWAS risk allele or a SNPedia genotype
+there found no forward alleles (`not_in_identity_table`) and an unnamed
+call there recovered no rsID. Every identity lookup now reads such a row
+as its trimmed single-base variant (`snv_form` in
+`allelix/annotators/rsid_identity.py`, trimmed as the input is,
+ADR-0047): the forward alleles above, the rows at a locus, each rsID's
+placements and loci, the GRCh37-to-GRCh38 key translation, the sites
+whose two builds' REFs differ and the normal allele on the other build
+(so a padded reference-carried site gets the same normal-allele decision
+as its trimmed form). A row padded before its variant is stored where a
+lookup by the variant's position does not find it; such rows are found
+once per run from the table's multi-base rows, whatever the padding
+length (the b157 table has none). A genuine indel or MNV is read as
+stored, and the strand readings and their abstentions are unchanged. The
+reading happens when the table is read, so an installed cache needs no
+rebuild.
+
+## Amendment 2.7.0 RC2 (2026-11-10): ClinPGx reads a decided site one way
+
+The ClinPGx amendment above says ClinPGx's exact match holds "whatever the
+site reads", and that no row abstains that matched before. Both are
+replaced for 2.7.0 (ADR-0035, amendment 2.7.0 RC2). Where this reading of
+the rsID's ClinPGx genotypes at the call's site is `direct`, only the
+exact match counts; where it is `complement`, only the complement does.
+Elsewhere, a call that one genotype meets as written and another as its
+complement meets neither, and is counted (`clinpgx_ambiguous_strand`).
+SNPedia, the GWAS Catalog and placement keep the reading this ADR gives
+them.

@@ -47,6 +47,9 @@ def test_disabled_dependency_cache_presence_cannot_change_answers(
     tmp_path, source, method, command
 ):
     data, path, build, extra = prepare(tmp_path, source, method)
+    if command == "pharmacogenomics":
+        # Per-source GWAS/SNPedia floors cannot apply to this focused report.
+        extra = ("--min-magnitude", "0") + (("--no-gnomad",) if method == "flag" else ())
     reports = []
     for present in (True, False):
         if not present:

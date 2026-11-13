@@ -533,3 +533,18 @@ ADR-0028 it writes `cv:N` to `database_versions.local_version_tag`, and
 a legacy `|cv:N` marker out of `remote_signal` into the tag, only when N
 is the current `_CATEGORIZER_VERSION`; it runs in the update step
 (ADR-0048).
+
+## Amendment 2.7.0 (2026-11-10): pharmacogenomics refuses the GWAS options
+
+The focused-report passages above (Per-source magnitude floor, and the
+2.5.2 corrections in it and in Trait-category filtering) say a focused
+report opts in to GWAS with `--include-gwas`. That now holds for
+methylation only. Since 2.7.0 pharmacogenomics refuses `--include-gwas`,
+`--gwas-all` and `--gwas-min-magnitude`, as it does `--exclude-snpedia` and
+`--snpedia-min-magnitude`, with a usage error, even at their default
+values: its report keeps ClinPGx findings only, so they could never add or
+remove one of its findings. The options stay hidden there, and a mistyped
+option is not answered with a suggestion of one of them. The complete GWAS
+recipe, `--min-magnitude 0 --gwas-min-magnitude 0 --gwas-all`, applies to
+analyze, and to methylation with `--include-gwas`. analyze still has no
+`--include-gwas`: it reports GWAS findings by default.

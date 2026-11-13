@@ -64,3 +64,18 @@ that the probe measured the same variant, or on which strand.
 - Array users see no change. A probe that measures such a variant still
   gets nothing from ClinVar until ClinVar or dbSNP links an rsID to it.
 - JSON annotations are slightly larger: three fields more per row.
+
+## Amendment 2.7.0 (2026-11-09): the diff keys on the site
+
+The Decision says the diff keys on the variant's name. With an rsID that
+name is the rsID alone, so findings of one rsID at two sites shared an
+identity and paired across them: two sites that swapped classifications
+showed no change, and a finding that moved showed as changed. The diff's
+identity now adds the site, the `chromosome` and `position` the JSON
+annotation carries (the published locus, trimmed as ADR-0047 trims it; not
+the input record). One rsID at two sites is two findings; a finding whose
+position changed is removed and new. A baseline entry whose `position` is
+missing or null (a report before schema 9, or a call that was not placed)
+is paired without the site, as an entry without `alt` is paired without
+the allele, and only by a current finding whose exact identity the
+baseline does not have. No schema change.

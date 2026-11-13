@@ -1,6 +1,6 @@
 #!/bin/bash
 # Block tag pushes where version doesn't match pyproject.toml.
-# CI version-tag-guard is the backup; this is the actual gate.
+# CI's version-tag-guard and the publish workflow's verify job check it again.
 
 while read local_ref local_sha remote_ref remote_sha; do
     if [[ "$local_ref" =~ ^refs/tags/v ]]; then

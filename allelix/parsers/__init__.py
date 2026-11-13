@@ -31,6 +31,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 PARSERS: list[GenotypeParser] = [
+    # First: a VCF says so in its own header (``##fileformat=VCF``), while
+    # the vendor sniffers look for a company name, which a VCF header can
+    # mention (``##source=bcftools convert MyHeritage_raw_dna_data.csv``).
+    VcfParser(),
     MyHappyGenesParser(),
     GenesForGoodParser(),
     TwentyThreeAndMeParser(),
@@ -41,7 +45,6 @@ PARSERS: list[GenotypeParser] = [
     FTDNAParser(),
     FTDNAFamFinderParser(),  # 5-col tab; must precede FTDNAIlluminaParser
     FTDNAIlluminaParser(),
-    VcfParser(),
     # No positions: placed from the rsID identity table. Last, as the
     # plainest shape (an ID and a call).
     RsidGenotypeListParser(),

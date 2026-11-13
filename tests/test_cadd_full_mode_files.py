@@ -29,6 +29,7 @@ from allelix.annotators.cadd import CaddAnnotator
 from allelix.annotators.gnomad import GnomadAnnotator
 from allelix.cli import _helpers, main
 from allelix.cli import db as db_cli
+from allelix.databases import manager
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,6 +43,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline regression test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 def _flat(text: str) -> str:

@@ -116,7 +116,7 @@ class TestFetchCpicAlleleFunctions:
             {"definitionid": 200, "clinicalfunctionalstatus": "Normal function"},
         ]
         monkeypatch.setattr(
-            cpic_loader.urllib.request, "urlopen", _stub_responses(seq_locs, loc_values, alleles)
+            cpic_loader.manager, "open_url", _stub_responses(seq_locs, loc_values, alleles)
         )
 
         result = fetch_cpic_allele_functions()
@@ -145,7 +145,7 @@ class TestFetchCpicAlleleFunctions:
             for d in (100, 101, 102, 103, 104)
         ]
         monkeypatch.setattr(
-            cpic_loader.urllib.request, "urlopen", _stub_responses(seq_locs, loc_values, alleles)
+            cpic_loader.manager, "open_url", _stub_responses(seq_locs, loc_values, alleles)
         )
 
         result = fetch_cpic_allele_functions()
@@ -167,7 +167,7 @@ class TestFetchCpicAlleleFunctions:
             {"definitionid": 101, "clinicalfunctionalstatus": "Malignant Hyperthermia associated"},
         ]
         monkeypatch.setattr(
-            cpic_loader.urllib.request, "urlopen", _stub_responses(seq_locs, loc_values, alleles)
+            cpic_loader.manager, "open_url", _stub_responses(seq_locs, loc_values, alleles)
         )
 
         result = fetch_cpic_allele_functions()
@@ -192,7 +192,7 @@ class TestFetchCpicAlleleFunctions:
             {"definitionid": 101, "clinicalfunctionalstatus": "Normal function"},
         ]
         monkeypatch.setattr(
-            cpic_loader.urllib.request, "urlopen", _stub_responses(seq_locs, loc_values, alleles)
+            cpic_loader.manager, "open_url", _stub_responses(seq_locs, loc_values, alleles)
         )
 
         result = fetch_cpic_allele_functions()
@@ -215,7 +215,7 @@ class TestFetchCpicAlleleFunctions:
             {"definitionid": 101, "clinicalfunctionalstatus": "Decreased function"},
         ]
         monkeypatch.setattr(
-            cpic_loader.urllib.request, "urlopen", _stub_responses(seq_locs, loc_values, alleles)
+            cpic_loader.manager, "open_url", _stub_responses(seq_locs, loc_values, alleles)
         )
 
         result = fetch_cpic_allele_functions()
@@ -236,7 +236,7 @@ class TestFetchCpicAlleleFunctions:
             raise urllib.error.URLError("simulated transport failure")
             yield  # pragma: no cover - generator contract
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", boom)
         # Speed up the test — no real sleeping.
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
 
@@ -253,7 +253,7 @@ class TestFetchCpicRemoteSignal:
         def fake(request, timeout=None):
             yield io.BytesIO(b'[{"date": "2026-05-11"}]')
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", fake)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", fake)
         assert fetch_cpic_remote_signal() == "lastchange:2026-05-11"
 
     def test_network_failure_returns_none(self, monkeypatch):
@@ -264,7 +264,7 @@ class TestFetchCpicRemoteSignal:
             raise urllib.error.URLError("simulated")
             yield  # pragma: no cover
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", boom)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", boom)
         assert fetch_cpic_remote_signal() is None
 
     def test_timeout_returns_none(self, monkeypatch):
@@ -273,7 +273,7 @@ class TestFetchCpicRemoteSignal:
             raise TimeoutError("timed out")
             yield  # pragma: no cover
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", slow)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", slow)
         assert fetch_cpic_remote_signal() is None
 
     def test_malformed_json_returns_none(self, monkeypatch):
@@ -281,7 +281,7 @@ class TestFetchCpicRemoteSignal:
         def garbage(request, timeout=None):
             yield io.BytesIO(b"not json {")
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", garbage)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", garbage)
         assert fetch_cpic_remote_signal() is None
 
     def test_empty_result_returns_none(self, monkeypatch):
@@ -289,7 +289,7 @@ class TestFetchCpicRemoteSignal:
         def empty(request, timeout=None):
             yield io.BytesIO(b"[]")
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", empty)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", empty)
         assert fetch_cpic_remote_signal() is None
 
     def test_missing_date_field_returns_none(self, monkeypatch):
@@ -297,7 +297,7 @@ class TestFetchCpicRemoteSignal:
         def no_date(request, timeout=None):
             yield io.BytesIO(b'[{"version": 1}]')
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", no_date)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", no_date)
         assert fetch_cpic_remote_signal() is None
 
 
@@ -316,7 +316,7 @@ class TestHttpRetryBehavior:
                 raise urllib.error.URLError(f"transient error #{attempts['n']}")
             yield _Response(b'[{"id": 1, "dbsnpid": "rs1"}]')
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", flaky)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", flaky)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
 
         result = cpic_loader._http_get_json("https://example/test")
@@ -333,7 +333,7 @@ class TestHttpRetryBehavior:
                 raise TimeoutError("first call timed out")
             yield _Response(b"[]")
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", slow)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", slow)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
 
         result = cpic_loader._http_get_json("https://example/test")
@@ -351,7 +351,7 @@ class TestHttpRetryBehavior:
             else:
                 yield _Response(b'[{"ok": true}]')
 
-        monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", garbage_then_good)
+        monkeypatch.setattr(cpic_loader.manager, "open_url", garbage_then_good)
         monkeypatch.setattr(cpic_loader.time, "sleep", lambda _s: None)
 
         result = cpic_loader._http_get_json("https://example/test")

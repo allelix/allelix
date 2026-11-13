@@ -231,7 +231,7 @@ def test_sidecar_http_read_is_bounded(monkeypatch, tmp_path):
             assert 0 < size <= 4097
             return b"a" * size
 
-    monkeypatch.setattr(manager.urllib.request, "urlopen", lambda *_a, **_k: Response())
+    monkeypatch.setattr(manager, "open_url", lambda *_a, **_k: Response())
     assert clinvar.ClinVarAnnotator(tmp_path).fetch_remote_signal() is None
     assert reads == [4097]
 
@@ -516,11 +516,11 @@ def _rows(data: Path) -> list[tuple]:
         ]
 
 
-def test_cache_built_by_2_5_0_stays_ready_without_rebuild(tmp_path, monkeypatch):
-    """The integrity checks change nothing stored, so iv:9 caches stay current.
+def test_current_cache_stays_ready_without_rebuild(tmp_path, monkeypatch):
+    """A compatible cache needs no network, rebuild or read-time mutation.
 
-    ``_old_caches`` stamps the way 2.5.0 did: a ``clinvar`` row renamed to the
-    per-build name after the load.
+    ``_old_caches`` uses the current loader and interpreter tag. It is not
+    an iv:9 cache, which must rebuild to retain every placement.
     """
     snapshots = _old_caches(tmp_path / "old", dict.fromkeys(BUILDS, 2))
     for build in BUILDS:
@@ -528,8 +528,9 @@ def test_cache_built_by_2_5_0_stays_ready_without_rebuild(tmp_path, monkeypatch)
             tmp_path / "old" / clinvar.clinvar_db_filename(build),
             clinvar.clinvar_record_name(build),
         )
-        assert info is not None and info["local_version_tag"] == "iv:9"
-    assert CLINVAR_INTERPRETER_VERSION == 9
+        assert (
+            info is not None and info["local_version_tag"] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        )
     with monkeypatch.context() as patcher:
         _no_network(patcher)
         with clinvar.ClinVarAnnotator(tmp_path / "old") as ann:
@@ -564,7 +565,7 @@ def _update(data: Path, monkeypatch):
     return CliRunner().invoke(main, ["db", "update", "--data-dir", str(data)])
 
 
-def test_ordinary_update_keeps_2_5_0_cache_with_equal_freshness(tmp_path, monkeypatch):
+def test_ordinary_update_keeps_current_cache_with_equal_freshness(tmp_path, monkeypatch):
     _old_caches(tmp_path, dict.fromkeys(BUILDS, 2))
     payloads, _, downloads = _network(monkeypatch, dict.fromkeys(BUILDS, 3))
     _stamp_signal(tmp_path, f"md5:{_digest(payloads[SS])}")
@@ -578,10 +579,41 @@ def test_ordinary_update_keeps_2_5_0_cache_with_equal_freshness(tmp_path, monkey
     _assert_old(tmp_path, snapshots)
 
 
-def test_changed_freshness_rebuilds_2_5_0_cache_through_integrity_checks(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("stored_tag", "same_signal"),
+    [(None, False), ("iv:9", False), ("iv:9", True)],
+    ids=["current-changed-source", "iv9-changed-source", "iv9-equal-source"],
+)
+def test_update_rebuilds_outdated_source_or_interpreter_through_integrity_checks(
+    tmp_path, monkeypatch, stored_tag, same_signal
+):
     _old_caches(tmp_path, dict.fromkeys(BUILDS, 2))
-    payloads, _, downloads = _network(monkeypatch, dict.fromkeys(BUILDS, 3))
+    if stored_tag is not None:
+        for build in BUILDS:
+            with (
+                contextlib.closing(
+                    sqlite3.connect(tmp_path / clinvar.clinvar_db_filename(build))
+                ) as conn,
+                conn,
+            ):
+                conn.execute("UPDATE database_versions SET local_version_tag = ?", (stored_tag,))
+        snapshots = {
+            build: (tmp_path / clinvar.clinvar_db_filename(build)).read_bytes() for build in BUILDS
+        }
+        with monkeypatch.context() as patcher:
+            _no_network(patcher)
+            for build in BUILDS:
+                with clinvar.ClinVarAnnotator(tmp_path, builds=(build,)) as ann:
+                    assert not ann.is_ready(), "iv:9 lacks the multiple-placement rebuild"
+                    assert not ann.prepare_cache(), "iv:9 cannot be upgraded by stamping"
+                    assert not ann.is_ready()
+        _assert_old(tmp_path, snapshots)
+
+    expected_count = 2 if same_signal else 3
+    payloads, _, downloads = _network(monkeypatch, dict.fromkeys(BUILDS, expected_count))
     signal = f"md5:{_digest(payloads[SS])}"
+    if same_signal:
+        _stamp_signal(tmp_path, signal)
     verified = []
     original_verify = clinvar.verify_file_hash
 
@@ -598,8 +630,10 @@ def test_changed_freshness_rebuilds_2_5_0_cache_through_integrity_checks(tmp_pat
         info = manager.get_database_info(
             tmp_path / clinvar.clinvar_db_filename(build), clinvar.clinvar_record_name(build)
         )
-        assert info is not None and info["local_version_tag"] == "iv:9"
-        assert info["record_count"] == 3 and info["remote_signal"] == signal
+        assert (
+            info is not None and info["local_version_tag"] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        )
+        assert info["record_count"] == expected_count and info["remote_signal"] == signal
     second = _update(tmp_path, monkeypatch)
     assert second.exit_code == 0, second.output
     assert "already current" in second.output
@@ -641,7 +675,10 @@ def test_force_retries_a_transient_checksum_failure_and_stores_it(tmp_path, monk
             tmp_path / clinvar.clinvar_db_filename(build), clinvar.clinvar_record_name(build)
         )
         assert info is not None and info["remote_signal"] == signal
-        assert info["record_count"] == 3 and info["local_version_tag"] == "iv:9"
+        assert (
+            info["record_count"] == 3
+            and info["local_version_tag"] == f"iv:{CLINVAR_INTERPRETER_VERSION}"
+        )
 
 
 def test_force_never_refreshes_without_the_checksum(tmp_path, monkeypatch):

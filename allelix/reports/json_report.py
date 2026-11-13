@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "13",
+      "schema_version": "14",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -77,7 +77,17 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
+# v13 -> v14 (2.7.0, one bump for every 2.7.0 report field): the
+# ``report_warnings`` codes ``split_site_calls`` (records of a split site that
+# is not one exact complementary pair, left uncalled; ADR-0062) and
+# ``clinvar_rsid_placed_elsewhere`` (a call carrying the exact allele of a
+# ClinVar row whose rsID ClinVar places only elsewhere; ADR-0051), and the
+# ``high_value_unchecked`` reason ``placed_elsewhere`` for such a call at a
+# high-value or own-P/LP rsID; and the ``report_warnings`` code
+# ``clinpgx_ambiguous_strand`` (calls ClinPGx withheld because one row meets
+# them as written and another as their complement, its
+# ``ambiguous_strand_calls``; ADR-0035).
 # v12 -> v13 (2.6.1, one bump for every 2.6.1 report field):
 # ``input.probe_classes.foreign_allele_calls_at_plp_loci`` and
 # ``unknown_allele_calls_at_plp_loci``; ``high_value_unchecked``
@@ -147,9 +157,10 @@ SCHEMA_VERSION = "13"
 # ``found`` / ``missing`` / ``no_findings``.
 # ``input.vcf_quality.clinvar_ref_mismatches`` counts one-base records at a
 # ClinVar position whose REF is none of ClinVar's one-base REFs there.
-# ``reference_carried_calls`` counts hom-ref calls at a site where the
-# build's reference carries a ClinVar variant allele, assessed as homozygous
-# for it; ``reference_carried_not_in_file`` the sites of that kind a plain VCF has
+# ``reference_carried_calls`` counts hom-ref calls made at a site where the
+# build's reference carries a ClinVar variant allele, as homozygous for it
+# (ClinVar's placement guard can still withhold one, counted on its own);
+# ``reference_carried_not_in_file`` the sites of that kind a plain VCF has
 # no record at.
 # ADR-0051: ``input.array_quality`` counts what the parse of an array file
 # saw (``di_calls``, ``unreadable_genotypes``, ``not_genotyped``,

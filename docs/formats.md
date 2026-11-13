@@ -78,6 +78,11 @@ lookup, the plausibility check, the build check from VCF contig lengths
 and the per-chromosome counts of `stats` and `compare` use that name, so a
 file that writes `23` gets the same findings as one that writes `X`.
 
+ClinVar lists a variant in a pseudo-autosomal region once on X and once on
+Y, under one VariationID. Both placements are kept, each with the variant's
+submissions, so a call written on Y coordinates (a male's PAR call, as some
+callers write it) is matched as well as one on X.
+
 Outputs keep the file's own spelling: `--vcf-out` copies the CHROM column
 and the contig lines as they are, and `export plink` writes 23, 24 and 26
 for X, Y and MT and keeps 25 for a call the file names `25` or `XY`. The
@@ -92,8 +97,10 @@ check.
 `0` (PLINK's and GenomeStudio's code for an unplaced call) and other
 contigs (`GL…`, `chrUn_…`, alt and decoy contigs) are not mapped. Lookups
 drop a `chr` prefix from them as from every name (`chrUn_x` is looked up
-as `Un_x`), so a lookup by position finds nothing there, but a source that
-matches by rsID (ClinPGx, for one) can still report a call on them.
+as `Un_x`). A call there is not placed on a standard chromosome: a source
+that looks up by position matches it only where its cache holds a row on
+that same contig (ClinVar can), and a source that matches by rsID (ClinPGx,
+for one) can still report a call on them.
 `--vcf-out` keeps their spelling; `export plink` writes them as the reader
 gives them, as in 2.6.2: the VCF, deCODEme, FTDNA Illumina and FamFinder
 readers drop a `chr` prefix (`chrUn_x` as `Un_x`), and the other readers
@@ -200,24 +207,41 @@ that base is checked only at positions explicitly written in REF, not
 against a different base inside the block. Structural-variant alleles
 such as `<DEL>`, `<DUP>` and breakends never provide reference coverage
 over their `END` span. Their unassessed-record counts are still reported.
+A symbolic deletion (`<DEL>`, `<DEL:...>`) does say something about its
+span when the selected sample's genotype carries it: the bases after POS
+through `END` are removed on that haplotype. When the genotype may carry
+it, because an allele is unknown (`./.`, `0/.`) or the quality gate
+rejects the call (FILTER or FT unless `--keep-filtered`, GQ below
+`--min-gq`, DP 0), those bases may be removed. Either way a `0/0` call at
+a position inside that span, ClinVar's reference-carried calls included,
+is not read as a reference call, as for a literal deletion whose REF
+spans it. A deletion the genotype confidently does not carry (a passing
+call of REF, or of another ALT of the record, symbolic or `*` included),
+another sample's deletion, other symbolic ALTs and a missing or earlier
+`END` change nothing.
 
 A VCF containing only reference calls is analysed and says
-"This file has no non-reference calls." A VCF with no genotype records
-still stops. `allelix stats` displays genotype-record, reference-call and
+"This file has no non-reference calls." So is a VCF whose only calls
+are split-site records left uncalled and counted as `split_site_calls`.
+A VCF with no genotype records still stops. `allelix stats` displays genotype-record, reference-call and
 non-reference-call counts, before filtering. JSON schema 10 adds the same
 counts as `genotype_records`, `hom_ref_calls` and `non_reference_calls`
 under `input.vcf_quality`. Reference blocks count as records, not as one
 record for every base they span. Non-reference counts include symbolic
 ALT genotypes; they do not imply those structural calls were assessed.
 Schema 10 also adds a nullable `reason` to panel coverage entries.
-Reports in schemas 1–13 can be used as `--diff` baselines; versions 14
+Reports in schemas 1–14 can be used as `--diff` baselines; versions 15
 and later are rejected. `--diff` identifies a finding by its source, variant
-(rsID, or locus without one), condition and allele, whatever the order of
-either report. Its classification, magnitude, genotype and the text
+(rsID, or locus without one), condition, allele and site (the chromosome
+and position the report gives it), whatever the order of either report.
+Since 2.7.0, one rsID at two sites is two findings: two sites that swap
+classifications are two changed findings, and a finding whose position
+changed is removed and new, not changed. Its classification, magnitude, genotype and the text
 generated from them are compared, not used to identify it: a ClinVar
 reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
 finding, not a removed and a new one. An entry from an older report without
-an allele is matched without the allele.
+an allele, or without a position, is matched without it, by a finding that
+has no exact counterpart in the baseline.
 
 A baseline finding is removed only when the current run has no finding with
 its identity at all, before the display floors. A finding still there but
@@ -231,6 +255,45 @@ it differs. A SNPedia finding on a sequence allele from a report before
 2.6.0 shows as changed here once (`GACGAC -> GAC/GAC`): its genotype now
 keeps a slash between the alleles, as every source writes it. When the baseline was made from a different input file, the run
 says so with a warning.
+
+## One site written over several records
+
+A two-ALT call can be written as one record (`G` `A,T` `1/2`) or split
+over two (`G` `A` `1/0` and `G` `T` `0/1`, as `bcftools norm -m-` writes
+it). `analyze`, `methylation` and `pharmacogenomics` read the
+single-base records at one position together, as one person's genotype:
+
+- Records that all name one ALT (one record, repeats, or calls of one
+  allele that disagree, such as `0/1` and `1/1`, which `contradictory_calls`
+  counts when their ploidy differs) give their calls as before, and so do
+  records that disagree on REF.
+- An exact complementary pair gives the call the merged record gives
+  (`A/T`): two records with the same ID and REF and one different ALT
+  each, both called, each with one copy of its ALT and one of REF, the
+  two ALTs on different haplotypes. That is `1/0` and `0/1` unphased, or
+  `1|0` and `0|1` phased in one phase set: the same `PS`, or no `PS` on
+  either (a phased call without `PS` is in the file's one default phase
+  set). In `--vcf-out` each allele's findings are stamped on that
+  allele's own record.
+- Any other mix of records of one REF that name different ALTs gives no
+  call: the same unphased GT twice (`0/1` and `0/1`: the haplotypes are
+  not known, and it is not the exact complementary pair), both ALTs on one
+  phased haplotype (`0|1` and `0|1`), phase sets that differ, a phased
+  call with an unphased one, a homozygote with a heterozygote, a half call
+  or a no-call, a record the quality gate rejects (FILTER or FT unless
+  `--keep-filtered`, low GQ, DP 0), a haploid with a diploid call, a
+  third ALT, or two different IDs. The person's genotype cannot be told
+  from them, so none is assessed. The report counts their records in
+  `report_warnings` (`split_site_calls`).
+
+Only single-base records (one REF base, single-base ALTs) whose genotype
+names an ALT are read this way. An insertion, deletion, padded or
+symbolic record at the same position keeps its own call, and a reference
+`0/0` record is read as in the section above. The records must follow
+one another in the file: any record at another position between them, a
+reference record included, ends the site, so records of one position
+apart in an unsorted file are each read on their own. `compare`,
+`extract`, `stats` and `export plink` read every record on its own.
 
 ## Annotated VCF: reference findings and re-annotation
 
@@ -571,6 +634,21 @@ another rsID's finding on GRCh38 and is named `unknown_alleles` on
 GRCh37. When gnomAD was asked only for these alleles, it is still listed
 among the sources used (ADR-0051).
 
+A call, chip or VCF, whose rsID ClinVar holds only at another position
+on the build is not matched to the rows at its own position either (an
+explicit reference call, `0/0` or haploid `0`, keeps the rsID its record
+names for this; a reference block, or a record whose REF is longer than
+one base, names none):
+they belong to another variant. Where the call carries the exact allele
+of such a row (the reference base included, for a row whose allele the
+reference carries), the report counts it in `report_warnings`
+(`clinvar_rsid_placed_elsewhere`), as ClinVar's decision whatever the
+identity table says, and names it in `high_value_unchecked`
+(`placed_elsewhere`) at a high-value rsID or one ClinVar classifies
+Pathogenic or Likely pathogenic itself. The decision is ClinVar's only:
+it does not change how ClinPGx, SNPedia or the GWAS Catalog match the
+call, and says nothing about whether they ran.
+
 ## Comparing and extracting VCF calls
 
 `allelix compare first.vcf second.vcf` matches each record by its allele
@@ -694,8 +772,20 @@ by reason:
 
 A row that is not placed has no chromosome or position (null in JSON). ClinVar,
 gnomAD, AlphaMissense and CADD, which need a position, skip it. ClinPGx,
-SNPedia and the GWAS Catalog still look it up by rsID. ClinPGx reads its
-call as written, and so do SNPedia's indel and i-ID rows. SNPedia's
+SNPedia and the GWAS Catalog still look it up by rsID. ClinPGx matches
+the call by one reading: as written where all the rsID's ClinPGx
+genotypes fit the identity table's alleles at the rsID's one site only as
+written, by its complement where they fit only as their complement
+(ADR-0035). Where that site evidence is missing or uncertain and one
+ClinPGx row meets the call as written and another as its complement,
+ClinPGx cannot tell which reading is the person's and reports neither: the
+report counts such calls (ClinPGx's `ambiguous_strand_calls`) in
+`report_warnings` under the code `clinpgx_ambiguous_strand` (JSON schema
+14). That reads the source's alleles, not
+the call that placement checked: an AA call at a G/A/T site is not placed
+(`both_fit`), yet ClinPGx genotypes CC, CT and TT fit there only as their
+complement, so the call matches the TT row as AA and keeps no chromosome
+or position. SNPedia's indel and i-ID rows read the call as written. SNPedia's
 single-base genotypes and the GWAS Catalog's risk alleles keep their own
 strand checks against the identity table's alleles (ADR-0066), and these
 check the page or the risk allele, not the whole call that placement
@@ -798,9 +888,14 @@ covers the same path spelled two ways, a symlink (even a dangling one), a
 linked parent folder and a hardlink. The check runs before any work starts,
 and nothing is written.
 
-A new output file gets the mode your umask gives any new file (`0644` under
-the usual `022`); an existing report or PLINK file keeps its mode. `--vcf-out`
-never replaces an existing file: the run stops instead.
+A new report, annotated VCF or PLINK file is created `0600`, whatever the
+umask (2.7.0); an existing report or PLINK file keeps its mode. `--vcf-out`
+never replaces an existing file or link, a dangling one included: the run
+stops instead, and since 2.7.0 that holds for a name created at any time
+during the run too (the annotated VCF is committed with a hard link, which
+fails if the name is taken). On a file system without hard links (FAT,
+exFAT, some network shares) `--vcf-out` stops with an error instead of
+risking another program's file; write to a local disk and move the file.
 
 Output content and format are unchanged. VCF remains streamed with UTF-8/LF;
 PLINK retains its existing bytes and order. Publication is atomic per file,

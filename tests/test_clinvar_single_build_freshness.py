@@ -27,6 +27,7 @@ from rich.console import Console
 from allelix.annotators import clinvar as clinvar_mod
 from allelix.annotators.clinvar import ClinVarAnnotator
 from allelix.cli import _helpers, main
+from allelix.databases import manager
 from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.schema import CLINVAR_SCHEMA
 
@@ -42,6 +43,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline regression test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 def _clinvar_cache(path: Path, build: str, signal: str) -> None:

@@ -120,3 +120,24 @@ a finding: on one 1000 Genomes chr22 sample, the confident `0/0` records
 gave about 900 GWAS and 20 ClinPGx rows, the same rows the chip form of the
 same calls gets. The default display floors still apply. gVCF reference blocks
 stay a separate question.
+
+## Amendment 2.7.0 (2026-11-09): a symbolic deletion's END span
+
+A symbolic ALT changed only the bases of its REF, its padding base, so a
+carried `<DEL>` with `END` beyond a `0/0` SNV left the SNV's reference call
+standing, where a literal deletion spanning it removed it. A symbolic
+deletion (`<DEL>` or `<DEL:...>`) the selected sample's genotype carries
+now also changes POS + 1 through its INFO `END`, and so does one it may
+carry: an allele is unknown, or the quality gate rejects the call (FILTER
+or FT unless `--keep-filtered`, GQ below `--min-gq`, DP 0), whatever its
+genotype, as above. The decision reads the selected sample's own genotype
+and gate (`_deletion_span_for`): a passing call of another ALT of the
+record, symbolic or `*`, says nothing about the deletion's bases. Those spans are
+kept as intervals, not one entry per base, so a long deletion costs no
+more than a short one. The same span counts for ClinVar's
+reference-carried calls (ADR-0039), through the parser's covering-record
+watch: there, past its REF, a deletion covers a position only for a
+sample that carries it or may carry it, by the same decision. Other symbolic ALTs (`<DUP>`, `<INV>`, `<CNV>`,
+`<NON_REF>`), a deletion the genotype confidently does not carry, and an
+`END` that is missing, unreadable or not after POS change nothing more than
+before.

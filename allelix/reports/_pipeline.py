@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from allelix.parsers.vcf import (
         Locus,
         LocusState,
+        ReferenceCall,
         ReferenceTargetCall,
         VcfParser,
         VcfQualityStats,
@@ -917,16 +918,21 @@ def reference_carried_calls(
     sites: dict[Locus, tuple[str, str, bool]],
     build: str,
     identity: RsidIdentityAnnotator | None = None,
+    clinvar_loci: Callable[[set[str]], dict[str, set[Locus]]] | None = None,
 ) -> list[Variant]:
     """Hom-ref calls at ClinVar's reference-carried sites, as that homozygous genotype.
 
     At a site where ``build``'s reference carries a ClinVar row's allele (T
     at F5 rs6025 on GRCh37; the normal G at CASP12 rs497116), a ``0/0`` call
     or a reference block that passes the GQ gate is homozygous for it, which
-    no record states. Each becomes a REF/REF call for the annotators. Sets
-    the two counts on ``stats``: those calls, and on a plain VCF the
-    variant sites (not normal-allele ones) no record covers: a homozygous
-    carrier cannot be told from no coverage there.
+    no record states. Each becomes a REF/REF call for the annotators, under
+    the site's rsID, except an explicit record naming an rsID ClinVar
+    (``clinvar_loci``) places only at other positions: its call keeps that
+    rsID, so ClinVar's placement guard and the identity check judge it as
+    they judge the record's other calls (ADR-0051). Sets the two counts on
+    ``stats``: the calls made (ClinVar may still withhold one), and on a
+    plain VCF the variant sites (not normal-allele ones) no record covers:
+    a homozygous carrier cannot be told from no coverage there.
     """
     from allelix.parsers.vcf import REFERENCE
 
@@ -940,6 +946,13 @@ def reference_carried_calls(
         if identity is not None and identity.is_ready()
         else {}
     )
+    named = {
+        source.rsid
+        for locus in sites
+        for source in stats.reference_calls.get(locus, ())
+        if source.rsid and source.rsid != sites[locus][1]
+    }
+    named_loci = clinvar_loci(named) if clinvar_loci is not None and named else {}
     for (chrom, pos), (allele, rsid, normal_allele) in sorted(sites.items()):
         state = stats.locus_states.get((chrom, pos))
         if state is not None and state[0] == REFERENCE:
@@ -962,22 +975,29 @@ def reference_carried_calls(
             if len({source.haploid for source in matching}) > 1:
                 stats.reference_ploidy_conflicts += matching_count
                 continue
-            if matching:
+            # One call per rsID the records stand for: the site's, or a named
+            # rsID ClinVar places only elsewhere, kept for its guard.
+            by_rsid: dict[str, list[ReferenceCall]] = {}
+            for source in matching:
+                loci = named_loci.get(source.rsid)
+                owner = source.rsid if loci and (chrom, pos) not in loci else rsid
+                by_rsid.setdefault(owner, []).append(source)
+            for owner, sources in by_rsid.items():
                 call = Variant(
-                    rsid,
+                    owner,
                     chrom,
                     pos,
                     allele,
                     allele,
                     build=build,
                     ref=allele,
-                    ref_from_input=any(source.ref is not None for source in matching),
-                    haploid=matching[0].haploid,
+                    ref_from_input=any(source.ref is not None for source in sources),
+                    haploid=sources[0].haploid,
                 )
                 # An explicit record's call keeps that record (ADR-0062).
                 numbers = [
                     stats.reference_record_index[key]
-                    for key in (((chrom, pos), source) for source in matching)
+                    for key in (((chrom, pos), source) for source in sources)
                     if key in stats.reference_record_index
                 ]
                 call.record_index = min(numbers) if numbers else None
@@ -1093,7 +1113,8 @@ def _mark_haploid(annotations: list[Annotation], variants: list[Variant]) -> Non
             origin = variants[0]
         if origin is None:
             continue
-        a.record_index = origin.record_index
+        a.record_index = _allele_record(origin, a.alt)
+        a.call_index = origin.record_index
         if origin.haploid:
             a.haploid = True
             gm = a.genotype_match
@@ -1212,6 +1233,54 @@ def _contradictory_calls_warning(count: int) -> ReportWarning | None:
         f"{count} call(s) share a position with a call of a different ploidy: one record "
         "gives one copy, another gives two. Each finding keeps its own record's genotype "
         "and zygosity; check how the file was made or merged.",
+        count,
+    )
+
+
+SPLIT_SITE_CALLS = "split_site_calls"
+
+
+def _split_site_calls_warning(count: int) -> ReportWarning | None:
+    if not count:
+        return None
+    return ReportWarning(
+        SPLIT_SITE_CALLS,
+        f"{count} call(s) were not assessed: they are one site's alleles written over "
+        "several VCF records that are not one exact complementary pair (one record 1/0, "
+        "the other 0/1), so the person's genotype there cannot be told from them.",
+        count,
+    )
+
+
+PLACED_ELSEWHERE = "clinvar_rsid_placed_elsewhere"
+
+
+def _placed_elsewhere_warning(count: int) -> ReportWarning | None:
+    if not count:
+        return None
+    return ReportWarning(
+        PLACED_ELSEWHERE,
+        f"{count} call(s) carry the exact allele of a ClinVar row at their position, but "
+        "ClinVar places the call's own rsID elsewhere on this build, so ClinVar did not "
+        "report that row, which belongs to another variant, under the call's rsID. This is "
+        "ClinVar's decision only; it does not change how other sources match the call.",
+        count,
+    )
+
+
+CLINPGX_AMBIGUOUS_STRAND = "clinpgx_ambiguous_strand"
+
+
+def _clinpgx_ambiguous_warning(count: int) -> ReportWarning | None:
+    if not count:
+        return None
+    return ReportWarning(
+        CLINPGX_AMBIGUOUS_STRAND,
+        f"{count} call(s) match one ClinPGx genotype as written and another on the other "
+        "strand. The strand of ClinPGx's genotypes at the site is ambiguous: nothing there "
+        "can decide which reading is right, so ClinPGx reported neither for these calls. "
+        "This is ClinPGx abstaining, not a finding; other sources match these calls by "
+        "their own rules.",
         count,
     )
 
@@ -1722,13 +1791,18 @@ def _unchecked_calls(
     from allelix.reports.high_value import (
         UNCHECKED_FOREIGN_ALLELES,
         UNCHECKED_IDENTITY_CONFLICT,
+        UNCHECKED_PLACED_ELSEWHERE,
         UNCHECKED_UNKNOWN_ALLELES,
         UNCHECKED_UNPLACED,
         UncheckedCall,
     )
 
     kept = clinvar.unchecked() if clinvar is not None else {}
-    allele_reasons = {UNCHECKED_FOREIGN_ALLELES, UNCHECKED_UNKNOWN_ALLELES}
+    allele_reasons = {
+        UNCHECKED_FOREIGN_ALLELES,
+        UNCHECKED_UNKNOWN_ALLELES,
+        UNCHECKED_PLACED_ELSEWHERE,
+    }
     own_plp = (
         clinvar.plp_genes({site for site, reason in kept if reason in allele_reasons}, build)
         if clinvar is not None
@@ -1740,7 +1814,9 @@ def _unchecked_calls(
             call,
             reason,
             detail=detail,
-            plp_gene=gene,
+            # The row at a placed-elsewhere call's locus is another variant's:
+            # only the call's own rsID's P/LP gene counts.
+            plp_gene=own_plp.get(site) if reason == UNCHECKED_PLACED_ELSEWHERE else gene,
             own_plp=reason in allele_reasons and site in own_plp,
         )
         for (site, reason), (call, gene, detail) in kept.items()
@@ -1820,10 +1896,18 @@ def _record_rows(
         for allele in {v.allele1, v.allele2} - {NO_CALL_MARKER}:
             key = (v.chromosome, v.position, cast("str", v.ref), allele)
             if key in annotations_by_key:
-                rows.setdefault(key, set()).add(v.record_index)
+                rows.setdefault(key, set()).add(cast("int", _allele_record(v, allele)))
     for v in recovered:
         if v.record_index is not None and {v.allele1, v.allele2} - {NO_CALL_MARKER}:
             record_recovered[v.record_index] = v.rsid
+
+
+def _allele_record(v: Variant, allele: str | None) -> int | None:
+    """The record of ``v`` that carries ``allele``: its own, or a split site's (ADR-0062)."""
+    for carried, record in v.allele_records or ():
+        if carried == allele:
+            return record
+    return v.record_index
 
 
 def _record_for(
@@ -2123,6 +2207,10 @@ def run_analysis(
                     by_locus.setdefault(variant_locus(v), []).append(v)
                 by_rsid = {v.rsid: v for v in with_ref if v.rsid}
                 by_index = {v.record_index: v for v in with_ref if v.record_index is not None}
+                # A split site's call stands for each of its two records.
+                by_index.update(
+                    (record, v) for v in with_ref for _allele, record in v.allele_records or ()
+                )
                 for a in batch_new:
                     if not a.alt:
                         continue
@@ -2208,6 +2296,9 @@ def run_analysis(
                 )
                 # Explicit reference records at target sites count for ploidy
                 # (ADR-0062 amendment, ADR-0064).
+                # One site's single-base records are one genotype.
+                cleanup.callback(setattr, parser, "combine_split_sites", False)
+                parser.combine_split_sites = True
                 cleanup.callback(setattr, parser, "on_reference_record", None)
                 parser.on_reference_record = (
                     ploidy_contradictions.add_reference
@@ -2238,8 +2329,21 @@ def run_analysis(
                     late_seeds.append(variant)
                 _accept(replace(variant, build=effective_build))
         rc_keys: set[tuple[str, Locus]] = set()
+        rc_split: set[tuple[Locus, str]] = set()
         for call in reference_carried_calls(
-            getattr(parser, "quality_stats", None), rc_sites, effective_build, identity
+            getattr(parser, "quality_stats", None),
+            rc_sites,
+            effective_build,
+            identity,
+            clinvar_loci=(
+                (
+                    lambda rsids: cast("ClinVarAnnotator", clinvar_resolver).loci_of_rsids(
+                        rsids, build=effective_build
+                    )
+                )
+                if rc_sites
+                else None
+            ),
         ):
             if decision.skip_mt and call.chromosome == "MT":
                 mt_skipped += 1
@@ -2249,6 +2353,9 @@ def run_analysis(
             if call.record_index is not None:
                 rebuilt_records.add(call.record_index)
             rc_keys.add((call.rsid, variant_locus(call)))
+            if call.rsid != rc_sites[variant_locus(call)][1]:
+                # A record's own rsID, kept for ClinVar's guard (ADR-0051).
+                rc_split.add((variant_locus(call), call.rsid))
             _accept(call)
         _flush()
         if ref_index is not None:
@@ -2335,6 +2442,7 @@ def run_analysis(
             for w in [
                 _multiple_homozygous_plp(annotations, plausibility),
                 _contradictory_calls_warning(ploidy_contradictions.count),
+                _split_site_calls_warning(getattr(parser, "split_site_calls", 0)),
                 _identity_conflict_warning(identity_conflict_total, effective_build),
             ]
             if w
@@ -2385,9 +2493,24 @@ def run_analysis(
                 record_recovered=vcf_record_recovered,
                 reference_rows=vcf_stats.reference_rows if vcf_stats is not None else {},
                 reference_records=frozenset(rebuilt_records),
+                reference_split=frozenset(rc_split),
             )
 
         clinvar_counts = clinvar_resolver.run_counts() if clinvar_resolver is not None else {}
+        placed_elsewhere = _placed_elsewhere_warning(
+            clinvar_counts.get("placed_elsewhere_calls", 0)
+        )
+        if placed_elsewhere is not None:
+            warnings.append(placed_elsewhere)
+        ambiguous = _clinpgx_ambiguous_warning(
+            sum(
+                a.run_counts().get("ambiguous_strand_calls", 0)
+                for a in annotators
+                if a.name == "pharmgkb"
+            )
+        )
+        if ambiguous is not None:
+            warnings.append(ambiguous)
         # GWAS association rows and SNPedia sites whose strand was not settled.
         strand_abstentions = {
             a.name: a.run_counts()
@@ -2510,11 +2633,15 @@ def reject_unusable_input(parser: GenotypeParser, file_path: Path, records: int)
 
     That is a VCF of structural-variant / copy-number records only, or a
     file with no genotype records. A VCF whose records were all dropped by
-    the quality gate is not empty and passes. Used before the build
-    decision (pre-scan) and after a read the build did not need.
+    the quality gate, or all left uncalled as a split site the parser
+    counts (``split_site_calls``, ADR-0062), is not empty and passes. Used
+    before the build decision (pre-scan) and after a read the build did
+    not need.
     """
     if records:
         return
+    if getattr(parser, "split_site_calls", 0):
+        return  # valid records counted as split-site abstentions, before the structural-only test
     stats = getattr(parser, "quality_stats", None)
     if stats is not None and stats.hom_ref_calls:
         return

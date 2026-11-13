@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import stat
 import sys
@@ -113,12 +114,29 @@ def validate_output_path(input_path: Path, output_path: Path, *, legacy_temp: bo
             )
 
 
+# ``os.link`` errors meaning the file system has no hard links.
+_NO_HARD_LINKS = {
+    errno.EPERM,
+    errno.EOPNOTSUPP,
+    getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+    errno.ENOSYS,
+    errno.EMLINK,
+}
+
+
 class StagedOutput:
     """One invocation's allocated file and descriptor, published only after close."""
 
-    def __init__(self, destination: Path) -> None:
-        """Allocate a private same-directory temp and remember ordinary destination mode."""
+    def __init__(self, destination: Path, *, private: bool = True) -> None:
+        """Allocate a private same-directory temp and remember ordinary destination mode.
+
+        ``private``: a new destination is published ``0600`` (a report holds
+        personal data); otherwise it gets the mode the umask gives a new file.
+        """
         self.destination = destination
+        self.private = private
+        # Whether the name was taken (a link included) when staging began.
+        self.existed = destination.is_symlink() or destination.exists()
         try:
             existing = destination.stat()
         except FileNotFoundError:
@@ -155,20 +173,61 @@ class StagedOutput:
         self.descriptor = None
         return stream
 
-    def publish(self) -> None:
+    def publish(self, *, replace_new: bool = True, replace_existing: bool = True) -> None:
         """Replace the destination with complete, closed content.
 
-        An existing destination keeps its mode. A new one gets the mode the
-        user's umask gives a new file (0644 under umask 022), not the private
-        0600 of the staging temp (2.5.2).
+        An existing destination keeps its mode. A new one is 0600 when
+        private (2.7.0: reports, annotated VCFs and PLINK files), else the
+        mode the user's umask gives a new file (0644 under umask 022).
+
+        ``replace_new`` False: a destination that was free when staging began
+        must still be free when the content is committed. ``replace_existing``
+        False: the destination must be free whatever it was at the start (the
+        caller promised a new file for its whole run). Where replacing is not
+        allowed, the content is committed with a hard link, which fails if the
+        name is taken, so there is no gap between a check and the write; a
+        name another program holds (a file, a link, a dangling link) is left
+        as it is and ``UnwritableDestinationError`` says so (2.7.0). A file
+        system without hard links cannot do that safely, so the write is
+        refused there and nothing is left at the destination.
         """
         if self.published:
             raise RuntimeError("Staged output already published")
         if self.stream is None or not self.stream.closed:
             raise RuntimeError("Staged output must close successfully before publication")
-        self.temporary.chmod(self.mode if self.mode is not None else 0o666 & ~current_umask())
-        os.replace(self.temporary, self.destination)
+        mode = self.mode
+        if mode is None:
+            mode = 0o600 if self.private else 0o666 & ~current_umask()
+        self.temporary.chmod(mode)
+        if replace_existing if self.existed else replace_new:
+            os.replace(self.temporary, self.destination)
+        else:
+            self._link_without_replacing()
         self.published = True
+
+    def _link_without_replacing(self) -> None:
+        """Commit the temp under the destination's name only if that name is free."""
+        try:
+            os.link(self.temporary, self.destination)
+        except FileExistsError as exc:
+            msg = (
+                f"Cannot write {self.destination}: another program created it while this "
+                "run was writing, and it is left as it is. Choose a different path."
+            )
+            raise UnwritableDestinationError(msg) from exc
+        except OSError as exc:
+            if exc.errno not in _NO_HARD_LINKS:
+                raise
+            # No hard links (FAT, exFAT, some network shares): there is no
+            # portable way to write a name only if it is free, and a claim
+            # followed by a rename could replace another program's file.
+            msg = (
+                f"Cannot write {self.destination}: this file system has no hard links, "
+                "so the file cannot be written without risking another program's file "
+                "of the same name. Write it to a local disk and move it afterwards."
+            )
+            raise UnwritableDestinationError(msg) from exc
+        self.temporary.unlink()
 
     def cleanup(self) -> None:
         """Close and remove only resources allocated by this invocation."""
@@ -200,9 +259,9 @@ class StagedOutput:
 
 
 @contextlib.contextmanager
-def staged_output(destination: Path) -> Iterator[StagedOutput]:
+def staged_output(destination: Path, *, private: bool = True) -> Iterator[StagedOutput]:
     """Own one staged output through failures and interrupts; never delete final files."""
-    staged = StagedOutput(destination)
+    staged = StagedOutput(destination, private=private)
     try:
         yield staged
     finally:
@@ -215,18 +274,24 @@ def staged_output(destination: Path) -> Iterator[StagedOutput]:
 
 
 def atomic_write_text(
-    path: Path, content: str, encoding: str = "utf-8", *, input_path: Path | None = None
+    path: Path,
+    content: str,
+    encoding: str = "utf-8",
+    *,
+    input_path: Path | None = None,
+    private: bool = True,
 ) -> None:
     """Publish complete text through a private owned temp in the target directory.
 
-    Preserve an allowed ordinary destination's mode. Failures before publication
+    Preserve an allowed ordinary destination's mode; a new file is 0600
+    unless ``private`` is False (see ``StagedOutput``). Failures before publication
     keep prior output; cleanup never touches unrelated old fixed temp paths.
     Ownership, ACLs, xattrs, crash durability and concurrent path swaps are not
     guaranteed.
     """
     if input_path is not None:
         validate_output_path(input_path, path)
-    with staged_output(path) as staged:
+    with staged_output(path, private=private) as staged:
         with staged.open_text(encoding=encoding) as stream:
             stream.write(content)
         staged.publish()
@@ -288,7 +353,8 @@ def vcf_quality_lines(stats: VcfQualityStats | None) -> list[str]:
         lines.append(
             f"{stats.reference_carried_calls:,} homozygous-reference call(s) at sites where "
             "a ClinVar record describes the allele the reference genome itself carries "
-            "were assessed with the ploidy declared by the file."
+            "were made for ClinVar with the ploidy declared by the file; one whose record "
+            "names an rsID ClinVar places elsewhere is then withheld and counted on its own."
         )
     if stats.reference_source_conflicts:
         lines.append(
@@ -429,7 +495,7 @@ def input_left_unchecked(
     for the HTML summary line: rows excluded, no-calls, and calls not
     assessed by every source count. The notes that only describe the
     file (no reference blocks, kept filtered rows, trimmed matches,
-    reference-carried calls assessed) do not.
+    reference-carried calls made) do not.
     """
     if stats is not None and (
         (stats.filtered_rows and not stats.kept_filtered)

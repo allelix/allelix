@@ -142,6 +142,7 @@ class TestClinVarCounts:
             "foreign_allele_calls_at_plp_loci": 0,
             "unknown_allele_calls_at_plp_loci": 0,
             "ref_mismatches": 0,
+            "placed_elsewhere_calls": 0,
         }
 
     def test_the_single_call_path_counts_too(self, tmp_path: Path, data: Path) -> None:

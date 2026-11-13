@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +55,7 @@ jobs:
         run: mypy allelix/
 
       - name: Pytest
-        timeout-minutes: 10
+        timeout-minutes: 18
         run: |
           set -o pipefail
           pytest -n auto -v -rs --tb=short -m "not slow and not integration" | tee pytest.log

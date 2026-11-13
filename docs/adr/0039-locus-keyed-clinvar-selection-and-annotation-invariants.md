@@ -210,3 +210,19 @@ strand as before (`_normal_at`). A locus without ClinVar's row of the rsID
 gives no REF and no normal allele. A caller that has no locus keeps the
 rsID's single answer, as before. An outdated cache (before iv:9) keeps its
 locus REF until `db update`, the 2.4.1 behaviour.
+
+## Amendment 2.7.0 (2026-11-09): every placement of a VariationID
+
+ClinVar's variant_summary can place one VariationID more than once on a
+build: a pseudo-autosomal variant is listed on X and on Y. The loader's
+temporary index was keyed on the VariationID alone and kept the first row,
+so the other chromosome's placement had no row and a call there no match.
+It is now keyed on (VariationID, chromosome, position): every distinct
+placement is stored, each with its own copy of the variant's submissions
+and the same per-submission submitter split; an identical repeated row is
+kept once. Selection stays locus-keyed as above, so each placement is
+matched, and its REF and normal allele are answered, at its own locus. The
+cross-build normal-allele lookup reads the same VariationID's rows on the
+other build, and abstains where its placements disagree. The cache's
+record count counts the stored placement rows. CLINVAR_INTERPRETER_VERSION
+is 10, so an iv:9 cache is rebuilt.

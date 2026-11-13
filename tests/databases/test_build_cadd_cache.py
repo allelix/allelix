@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import gzip
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -488,7 +489,7 @@ def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
     def fail(src, dst):
         raise OSError("synthetic publication failure")
 
-    monkeypatch.setattr(module.os, "replace", fail)
+    monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError, match="synthetic"):
         build()
     assert output.read_bytes() == before

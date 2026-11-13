@@ -14,7 +14,6 @@ Synthetic data only.
 from __future__ import annotations
 
 import contextlib
-import os
 import sqlite3
 import urllib.request
 from typing import TYPE_CHECKING
@@ -23,6 +22,7 @@ import pytest
 from click.testing import CliRunner
 
 from allelix.cli import _helpers, main
+from allelix.databases import manager
 from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.schema import CLINVAR_SCHEMA
 
@@ -40,6 +40,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline regression test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 def _clinvar_cache(path: Path, build: str, signal: str) -> None:
@@ -145,7 +146,7 @@ def test_focused_commands_refuse_an_unusable_diff_baseline_first(
     assert calls == []
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+@pytest.mark.usefixtures("require_unreadable_files")
 def test_an_unreadable_diff_baseline_is_refused_by_the_option_check(tmp_path, analyze_inputs):
     """Control: click's own --diff check refuses an unreadable file as a usage
     error, before any of the command runs."""

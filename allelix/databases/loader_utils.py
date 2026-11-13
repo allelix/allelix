@@ -14,11 +14,13 @@ import gzip
 import os
 import shutil
 import sqlite3
+import zipfile
 from typing import TYPE_CHECKING
 
 from allelix.databases.staging import owned_staging
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
 DISK_SPACE_MULTIPLIER = 6
@@ -106,6 +108,54 @@ def publish_cache(staged: Path, db_path: Path) -> None:
     _settle(db_path)
     os.replace(staged, db_path)
     remove_side_files(db_path)
+
+
+# The most a downloaded cache archive may expand to, summed over the members
+# it is unpacked to: 4 GiB. The largest today are the GWAS Catalog's one TSV
+# (about 710 MB) and ClinPGx's clinical annotations (about 11 MB in all), so
+# this leaves room for years of growth while a crafted archive cannot fill
+# the disk. The sizes come from the archive's own index, before anything is
+# read. Reads of a stored or deflated member are clipped to that size as
+# they are decompressed; zipfile's BZIP2 and LZMA decoders decompress a
+# whole block first and clip only after, so those members are refused.
+ZIP_EXTRACT_LIMIT_BYTES = 4 * 1024**3
+_BOUNDED_ZIP_METHODS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+
+
+def check_zip_expansion(
+    archive: zipfile.ZipFile, members: Iterable[zipfile.ZipInfo], label: str
+) -> None:
+    """Raise ValueError unless ``members`` are stored or deflated and fit the size limit.
+
+    The whole set is checked before any member is opened, so nothing is
+    decompressed first: each member's compression method, then their sizes
+    summed.
+    """
+    members = list(members)
+    for info in members:
+        if info.compress_type not in _BOUNDED_ZIP_METHODS:
+            raise ValueError(
+                f"{label}: member {info.filename} uses compression method "
+                f"{info.compress_type}; only stored and deflated members are "
+                "unpacked, so its size can be limited; nothing was unpacked"
+            )
+    total = sum(info.file_size for info in members)
+    if total > ZIP_EXTRACT_LIMIT_BYTES:
+        raise ValueError(
+            f"{label}: the archive would expand to {total:,} bytes, over the "
+            f"{ZIP_EXTRACT_LIMIT_BYTES:,}-byte size limit; nothing was unpacked"
+        )
+
+
+def settle_for_publication(db_path: Path) -> None:
+    """Settle the old cache at ``db_path`` (``_settle``), or raise UnrecoveredJournalError.
+
+    A recovery preflight for a caller that publishes several caches (ClinVar's
+    builds): every one is settled before any is replaced, so a refusal found
+    then changes nothing. The publications after it are each atomic on their
+    own, not together: a later failure can leave an earlier one done.
+    """
+    _settle(db_path)
 
 
 def _side_files(db_path: Path) -> list[Path]:

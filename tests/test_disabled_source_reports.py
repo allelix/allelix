@@ -66,7 +66,14 @@ def _park(data, source):
         path.rename(path.with_suffix(".parked"))
 
 
-def _configure(data, source=None, method="config"):
+def _floors(command):
+    return ("--min-magnitude", "0") if command == "pharmacogenomics" else FLOORS
+
+
+def _configure(data, source=None, method="config", *, command="analyze"):
+    # Pharma refuses --exclude-snpedia; its supported source switch is config.
+    if command == "pharmacogenomics" and source == "snpedia":
+        method = "config"
     config = load_config(data, create=False)
     config.sources.update(dict.fromkeys(SOURCES, True))
     if source is not None and method == "config":
@@ -144,8 +151,8 @@ def _bytes(root, data, path, build, command, extra, label):
 
 
 def _pair(root, data, path, build, command, source, method, extra=()):
-    options = FLOORS + _configure(data, source, method) + extra
-    if command != "analyze":
+    options = _floors(command) + _configure(data, source, method, command=command) + extra
+    if command == "methylation":
         options += ("--include-gwas",)
     before, first = _bytes(root, data, path, build, command, options, "present")
     _park(data, source)
@@ -267,7 +274,7 @@ def test_common_allele_cap_uses_only_enabled_evidence(tmp_path, build, source):
 @pytest.mark.parametrize("command", ["pharmacogenomics", "methylation"])
 def test_focused_default_gwas_exclusion_has_complete_report_parity(tmp_path, build, command):
     data, path = _prepare(tmp_path, build)
-    options = FLOORS + _configure(data)
+    options = _floors(command) + _configure(data)
     before, first = _bytes(tmp_path, data, path, build, command, options, "present")
     _park(data, "gwas")
     after, second = _bytes(tmp_path, data, path, build, command, options, "absent")

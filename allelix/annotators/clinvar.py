@@ -32,6 +32,11 @@ from allelix.databases.cache_state import (
     cache_state,
     connect_readonly,
 )
+from allelix.databases.loader_utils import (
+    UnrecoveredJournalError,
+    publish_cache,
+    settle_for_publication,
+)
 from allelix.databases.manager import (
     CLINVAR_BUILD_LOG,
     CONTRIBUTES_TO_AGGREGATE,
@@ -368,6 +373,9 @@ class ClinVarAnnotator(Annotator):
         # rsID calls at an aggregate-P/LP locus whose rsID's alleles
         # nothing knows, not matched to another rsID's row there.
         self._unknown_allele_calls_at_plp_loci = 0
+        # calls whose exact allele a row at their locus carries, not matched
+        # because ClinVar places the call's own rsID elsewhere.
+        self._placed_elsewhere_calls = 0
         # gnomAD's alleles of an rsID at a locus, asked only for a call
         # the identity table and ClinVar's own rows do not settle. None when
         # gnomAD is off or not ready (the pipeline wires it per run).
@@ -435,6 +443,7 @@ class ClinVarAnnotator(Annotator):
             "foreign_allele_calls_at_plp_loci": self._foreign_allele_calls_at_plp_loci,
             "unknown_allele_calls_at_plp_loci": self._unknown_allele_calls_at_plp_loci,
             "ref_mismatches": self._ref_mismatches,
+            "placed_elsewhere_calls": self._placed_elsewhere_calls,
         }
 
     def _connection(self, build: str) -> sqlite3.Connection | None:
@@ -513,11 +522,18 @@ class ClinVarAnnotator(Annotator):
                 )
                 candidates[build] = candidate
             self.close()
+            # A recovery preflight: every selected build's old cache is settled
+            # before any is replaced, so a refusal found then changes nothing.
+            # Each move after it is atomic on its own; a later failure (a side
+            # file that appears meanwhile, a failed rename) can leave an
+            # earlier build updated, and the error says which.
+            for build in candidates:
+                settle_for_publication(self._db_paths[build])
             published: list[str] = []
             for build, candidate in candidates.items():
                 try:
-                    os.replace(candidate, self._db_paths[build])
-                except OSError as exc:
+                    publish_cache(candidate, self._db_paths[build])
+                except (OSError, UnrecoveredJournalError) as exc:
                     kept = (
                         "old cache kept"
                         if self._db_paths[build].exists()
@@ -1489,11 +1505,27 @@ class ClinVarAnnotator(Annotator):
         """The D/I calls ``di_calls_at_plp_rsids`` counts: rsID -> (call, gene)."""
         return dict(self._di_calls_at_plp)
 
+    def loci_of_rsids(self, rsids: set[str], *, build: str) -> dict[str, set[tuple[str, int]]]:
+        """Where ClinVar places each of ``rsids`` on ``build``; empty without a current cache.
+
+        For the pipeline's reference-carried calls: an explicit record naming
+        an rsID held only elsewhere keeps that rsID for the placement guard.
+        """
+        conn = self._connection(build)
+        if conn is None or not self._cache_is_current(build):
+            return {}
+        return self._loci_of(conn, rsids)
+
     def _loci_of_rsids(
         self, conn: sqlite3.Connection, variants: Iterable[Variant]
     ) -> dict[str, set[tuple[str, int]]]:
         """Where ClinVar places each input rsID on this build, keyed by rsID."""
-        rsids = sorted({v.rsid for v in variants if v.rsid.startswith("rs")})
+        return self._loci_of(conn, {v.rsid for v in variants})
+
+    @staticmethod
+    def _loci_of(conn: sqlite3.Connection, wanted: set[str]) -> dict[str, set[tuple[str, int]]]:
+        """Where ClinVar places each of the ``wanted`` rsIDs, keyed by rsID."""
+        rsids = sorted(r for r in wanted if r.startswith("rs"))
         out: dict[str, set[tuple[str, int]]] = {}
         for start in range(0, len(rsids), _BATCH_CHUNK):
             chunk = rsids[start : start + _BATCH_CHUNK]
@@ -1598,6 +1630,11 @@ class ClinVarAnnotator(Annotator):
         if rsid_loci and not rsid_loci & (
             {record_locus} | {(record_locus[0], t[0]) for t in trimmed}
         ):
+            if _carries_a_row_allele(variant, rows, trimmed):
+                # The exact allele of another variant's row, not reported
+                # under this rsID; counted, and named where it matters.
+                self._placed_elsewhere_calls += 1
+                self._note_unchecked(variant, "placed_elsewhere", None)
             return []
         allele1, allele2 = variant.carried_pair
         user_is_multibase = len(allele1) > 1 or len(allele2) > 1
@@ -1800,6 +1837,26 @@ def _in_trimmed_frame(allele: str, variant: Variant, position: int, ref: str) ->
         return ref
     trimmed = trim_allele_pair(variant.position, variant.ref or "", allele)
     return trimmed[2] if trimmed[:2] == (position, ref) else _OTHER_SHAPE
+
+
+def _carries_a_row_allele(
+    variant: Variant, rows: list[tuple], trimmed: dict[tuple[int, str, str], str]
+) -> bool:
+    """Whether the call carries a row's exact ALT at that row's position and REF.
+
+    As written (the call's POS and REF), or trimmed (ADR-0047). A row whose
+    ALT is the REF (the reference base carries ClinVar's allele) counts when
+    the call carries that base.
+    """
+    pos = variant_locus(variant)[1]
+    carried = {a for a in variant.carried_pair if a != NO_CALL_MARKER}
+    for row in rows:
+        ref, alt, at = row[_R_REF], row[_R_ALT], row[_R_POS]
+        if at == pos and alt in carried and (variant.ref is None or ref == variant.ref):
+            return True
+        if (at, ref, alt) in trimmed:
+            return True
+    return False
 
 
 def _trimmed_alleles(variant: Variant) -> dict[tuple[int, str, str], str]:

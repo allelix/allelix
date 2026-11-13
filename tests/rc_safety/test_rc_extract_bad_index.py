@@ -13,6 +13,7 @@ import pytest
 @pytest.mark.parametrize("index_state", ["corrupt", "unreadable"])
 @pytest.mark.parametrize("call,genotype", [("0/1", "A/G"), ("0/0", "A/A")])
 def test_bad_index_warns_and_returns_the_sequential_selected_sample(
+    request,
     rc_case,
     build,
     compression,
@@ -20,6 +21,9 @@ def test_bad_index_warns_and_returns_the_sequential_selected_sample(
     call,
     genotype,
 ):
+    # Only the unreadable index relies on chmod; the corrupt one always runs.
+    if index_state == "unreadable":
+        request.getfixturevalue("require_readonly_filesystem")
     case = rc_case
     header = case.header.replace("\tSAMPLE\n", "\tFIRST\tSECOND\n")
     if build == "grch38":
@@ -83,7 +87,7 @@ def test_valid_index_stays_quiet_and_preserves_the_call(rc_case, build):
 
 
 @pytest.mark.parametrize("compression", ["gzip", "bgzf"])
-def test_unreadable_vcf_is_a_clean_path_error(rc_case, compression):
+def test_unreadable_vcf_is_a_clean_path_error(require_readonly_filesystem, rc_case, compression):
     case = rc_case
     source = case.root / "unreadable.vcf.gz"
     if compression == "bgzf":

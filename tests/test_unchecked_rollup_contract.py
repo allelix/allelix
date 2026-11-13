@@ -224,7 +224,7 @@ def test_json_and_warning_are_unchanged_by_the_terminal_flag(tmp_path, build, co
     before.pop("generated_at", None)
     after.pop("generated_at", None)
     assert before == after
-    assert before["schema_version"] == "13"
+    assert before["schema_version"] == "14"
     assert all(
         set(s) == {"rsid", "gene", "name", "reason", "call", "message"}
         for s in before["high_value_unchecked"]

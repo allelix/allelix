@@ -483,10 +483,15 @@ class TestRealDataGwasSanity:
             # are offline-fast.
             import urllib.request
 
+            from allelix.databases import manager
+
             _REAL_GWAS_ZIP.parent.mkdir(parents=True, exist_ok=True)
             tmp_download = _REAL_GWAS_ZIP.with_suffix(".zip.part")
             try:
-                urllib.request.urlretrieve(_REAL_GWAS_URL, tmp_download)
+                # Allelix's own opener: a redirect to anything but HTTPS is refused.
+                request = urllib.request.Request(_REAL_GWAS_URL)
+                with manager.open_url(request, timeout=600) as resp, tmp_download.open("wb") as fh:
+                    shutil.copyfileobj(resp, fh, 1 << 20)
                 tmp_download.replace(_REAL_GWAS_ZIP)
             except OSError as exc:
                 tmp_download.unlink(missing_ok=True)

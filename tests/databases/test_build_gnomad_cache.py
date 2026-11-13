@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import io
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -257,7 +258,7 @@ class TestBuildCacheMultiAllelic:
         ]
         gz_data = _make_gzipped_vcf(vcf_lines)
 
-        import urllib.request
+        from allelix.databases import manager
 
         class FakeResponse(io.BytesIO):
             """Simulates an HTTP response returning gzipped VCF data."""
@@ -271,7 +272,7 @@ class TestBuildCacheMultiAllelic:
         def fake_urlopen(_req, **_kw):
             return FakeResponse(gz_data)
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(manager, "open_url", fake_urlopen)
 
         output = tmp_path / "gnomad.sqlite"
         build_cache(output, full=True, chromosomes=["1"])
@@ -315,7 +316,7 @@ class TestBuildCacheIntegration:
         manifest = tmp_path / "manifest.txt"
         manifest.write_text("rs100\nrs300\n")
 
-        import urllib.request
+        from allelix.databases import manager
 
         class FakeResponse(io.BytesIO):
             """Simulates an HTTP response returning gzipped VCF data."""
@@ -329,7 +330,7 @@ class TestBuildCacheIntegration:
         def fake_urlopen(_req, **_kw):
             return FakeResponse(gz_data)
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(manager, "open_url", fake_urlopen)
 
         output = tmp_path / "gnomad.sqlite"
         build_cache(
@@ -371,7 +372,7 @@ class TestBuildCacheIntegration:
         ]
         gz_data = _make_gzipped_vcf(vcf_lines)
 
-        import urllib.request
+        from allelix.databases import manager
 
         class FakeResponse(io.BytesIO):
             """Simulates an HTTP response returning gzipped VCF data."""
@@ -385,7 +386,7 @@ class TestBuildCacheIntegration:
         def fake_urlopen(_req, **_kw):
             return FakeResponse(gz_data)
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(manager, "open_url", fake_urlopen)
 
         output = tmp_path / "gnomad.sqlite"
         build_cache(
@@ -616,7 +617,7 @@ def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
     def fail(src, dst):
         raise OSError("synthetic publication failure")
 
-    monkeypatch.setattr(module.os, "replace", fail)
+    monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError, match="synthetic"):
         build()
     assert output.read_bytes() == before
@@ -625,9 +626,9 @@ def _owned_staging_contract(tmp_path, monkeypatch, module, output, build):
 
 
 def test_build_owns_its_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import urllib.request
-
     import build_gnomad_cache
+
+    from allelix.databases import manager
 
     gz_data = _make_gzipped_vcf(
         [
@@ -644,7 +645,7 @@ def test_build_owns_its_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         def __exit__(self, *_args):
             pass
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda _req, **_kw: FakeResponse(gz_data))
+    monkeypatch.setattr(manager, "open_url", lambda _req, **_kw: FakeResponse(gz_data))
     output = tmp_path / "gnomad.sqlite"
     _owned_staging_contract(
         tmp_path,

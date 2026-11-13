@@ -23,7 +23,7 @@ from allelix.reports import _pipeline
 @pytest.mark.parametrize("same_alt", [False, True])
 @pytest.mark.parametrize("shape", ["plain", "suffix"])
 @pytest.mark.parametrize("named", [False, True])
-def test_diploid_record_retains_its_own_ploidy(
+def test_diploid_record_retains_ploidy_unless_distinct_alts_require_abstention(
     tmp_path, monkeypatch, build, reverse, batch_size, same_alt, shape, named
 ):
     monkeypatch.setattr(_pipeline, "_BATCH_SIZE", batch_size)
@@ -39,7 +39,15 @@ def test_diploid_record_retains_its_own_ploidy(
     result = analyze(data, _vcf(tmp_path / "input.vcf", rows), build)
     expected = Counter((a.source, a.genotype_match, a.zygosity_code) for a in control.annotations)
     found = Counter((a.source, a.genotype_match, a.zygosity_code) for a in result.annotations)
-    assert expected and not (expected - found)
+    assert expected, "The isolated diploid control must produce findings"
+    if shape == "plain" and not same_alt:
+        # The two different SNV ALTs share one REF, but mixed ploidy cannot
+        # form the exact complementary diploid pair required in 2.7.0.
+        assert not result.annotations
+        assert warning_count(result, "split_site_calls") == 2
+    else:
+        assert not (expected - found)
+        assert warning_count(result, "split_site_calls") == 0
 
 
 @pytest.mark.parametrize("build", BUILDS)

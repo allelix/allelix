@@ -42,10 +42,6 @@ from allelix.databases.schema import (
 )
 from allelix.databases.snpedia_parser import _PARSER_VERSION
 
-pytestmark = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions"
-)
-
 _VERSIONS = (
     "CREATE TABLE IF NOT EXISTS database_versions (name TEXT PRIMARY KEY, "
     "source_url TEXT NOT NULL, version TEXT, downloaded_at TEXT NOT NULL, "
@@ -245,9 +241,12 @@ def _restored_acl_matches(original: str, restored: str) -> bool:
 
 @contextlib.contextmanager
 def _denied_permissions(path: Path, *, read: bool = False):
-    """Prove denial and restore original access rules, ownership and inheritance."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        pytest.skip("root ignores file permissions")
+    """Prove denial and restore original access rules, ownership and inheritance.
+
+    The denial is proved by trying the operation, on POSIX by mode and on
+    Windows by ACL. Where it still succeeds (root, or a file system without
+    permission checks) the test is skipped, after access is restored.
+    """
     probe = path / ".permission-denial-probe" if not read else None
 
     def allowed():
@@ -273,12 +272,23 @@ def _denied_permissions(path: Path, *, read: bool = False):
             assert result.returncode == 0, result.stdout + result.stderr
         else:
             path.chmod(mode & ~(0o444 if read else 0o222))
-        if probe is None:
-            with pytest.raises(PermissionError):
+        try:
+            if probe is None:
                 allowed()
-        else:
-            with pytest.raises(PermissionError):
+            else:
                 probe.write_bytes(b"synthetic permission probe")
+        except PermissionError:
+            pass
+        else:
+            pytest.skip(
+                (
+                    "a file without read permission can be read here"
+                    if read
+                    else "a read-only folder accepts writes here"
+                )
+                + " (root or no permission checks)"
+            )
+        if probe is not None:
             assert not probe.exists(), "Directory denial must refuse file creation"
         yield
     finally:
@@ -505,7 +515,9 @@ class TestClinVarConnection:
                 conn.execute("CREATE TABLE probe (x)")
         assert _snapshot(tmp_path) == before
 
-    def test_read_only_file(self, tmp_path: Path, build_synthetic_clinvar_cache) -> None:
+    def test_read_only_file(
+        self, require_readonly_filesystem: None, tmp_path: Path, build_synthetic_clinvar_cache
+    ) -> None:
         db = tmp_path / clinvar_db_filename("GRCh37")
         build_synthetic_clinvar_cache(db, "GRCh37")
         db.chmod(stat.S_IRUSR)

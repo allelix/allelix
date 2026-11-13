@@ -16,7 +16,6 @@ import os
 import subprocess
 import sys
 import textwrap
-import urllib.request
 from email.message import Message
 from typing import TYPE_CHECKING
 
@@ -213,9 +212,7 @@ def test_cpic_row_with_a_wrong_typed_value_takes_the_cpic_unavailable_path(monke
     from allelix.databases import cpic_loader
 
     monkeypatch.setattr(cpic_loader, "CPIC_RETRY_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
-    monkeypatch.setattr(
-        urllib.request, "urlopen", lambda request, timeout=None: _Reply([row], "0-0/1")
-    )
+    monkeypatch.setattr(manager, "open_url", lambda request, timeout=None: _Reply([row], "0-0/1"))
 
     try:
         cpic_loader.fetch_cpic_allele_functions()

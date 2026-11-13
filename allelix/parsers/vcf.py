@@ -45,11 +45,12 @@ threads the user's ``--sample`` flag through to the constructor.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, ClassVar, TextIO
 
@@ -190,10 +191,14 @@ class ReferenceCall:
     ``ref`` is None inside a block beyond the bases written in its REF:
     the block's anchor base says nothing about that interior position.
     An unusable explicit base is stored as "", never as an unknown base.
+    ``rsid`` is the rsID a single-base explicit record names for its own
+    position, else "": a block's or a longer record's ID does not name
+    the positions it covers.
     """
 
     ref: str | None
     haploid: bool
+    rsid: str = ""
 
 
 @dataclass(frozen=True)
@@ -575,6 +580,17 @@ class VcfParser(GenotypeParser):
         self._ploidy_loci: frozenset[Locus] = frozenset()
         self.reference_target_calls: list[ReferenceTargetCall] = []
         self.reference_target_blocked: set[Locus] = set()
+        # The (first, last) positions a symbolic deletion the selected sample
+        # carries or may carry would remove, by chromosome: kept as spans, not
+        # one entry per base.
+        self._deleted_spans: dict[str, list[tuple[int, int]]] = {}
+        # Read a site's single-base records as one genotype: set by the
+        # analysis pipeline only. Off, every record gives its own call, as
+        # ``compare``, ``extract``, ``stats`` and ``export plink`` read them.
+        self.combine_split_sites = False
+        # The calls of split sites that were not one exact complementary
+        # pair, so none of them was given (the last parse).
+        self.split_site_calls = 0
         # Called with ``(chrom, pos, haploid)`` for every explicit reference
         # record at a target site that passes the quality gate (ADR-0062,
         # ADR-0064).
@@ -755,6 +771,7 @@ class VcfParser(GenotypeParser):
             extract_rsids, extract_loci = self._extract_rsids, self._extract_loci
             self.reference_target_calls = []
             self.reference_target_blocked = set()
+            self._deleted_spans = {}
             targets = self._reference_targets
             reference_rsids = self._reference_rsids
             watch_references = bool(targets or len(reference_rsids))
@@ -778,6 +795,13 @@ class VcfParser(GenotypeParser):
                     # The state above means POS parsed; compare it as a number
                     # (``01000`` is position 1000).
                     start = int(row[1])
+                    if not block and _has_deletion_symbol(row[4]):
+                        # Past its REF, a symbolic deletion covers a position
+                        # only where the selected sample carries it or may
+                        # carry it (``_deletion_span_for``).
+                        last = start + max(len(row[3]), 1) - 1
+                        if _deletion_span_for(row, start, sample_idx, scratch) is None:
+                            loci = [locus for locus in loci if locus[1] <= last]
                     for locus in loci:
                         merged = strongest_state(stats.locus_states.get(locus), state)
                         stats.locus_states[locus] = merged or state
@@ -797,7 +821,11 @@ class VcfParser(GenotypeParser):
                             if base is not None and base not in {"A", "C", "G", "T"}:
                                 base = ""
                             gt = _sample_fields(row, sample_idx)["GT"]
-                            source = ReferenceCall(base, "/" not in gt and "|" not in gt)
+                            named = ""
+                            if not block and offset == 0 and len(row[3]) == 1:
+                                record_id = _canonical_rsid(row[2])
+                                named = record_id if record_id.startswith("rs") else ""
+                            source = ReferenceCall(base, "/" not in gt and "|" not in gt, named)
                             stats.reference_calls.setdefault(locus, Counter())[source] += 1
                             number = watcher.record_number(row) if watcher is not None else -1
                             if not block and number >= 0:
@@ -808,6 +836,11 @@ class VcfParser(GenotypeParser):
                                 stats.reference_rows.setdefault(key, set()).add(locus)
 
             index = -1
+            # The calls of single-base records at the current site, held until
+            # the site ends: a split multi-allelic call is decided as a whole.
+            site: list[tuple[Variant | None, int, list[str]]] = []
+            combine = self.combine_split_sites
+            self.split_site_calls = 0
             for line in handle:
                 stripped = line.rstrip("\n").rstrip("\r")
                 if not is_data_line(stripped):
@@ -914,6 +947,34 @@ class VcfParser(GenotypeParser):
                         variant,
                         state,
                     )
+                if combine:
+                    # A split site is the consecutive records at one position
+                    # in the file as written: any record elsewhere ends it,
+                    # whether or not it gives a call; so does a malformed row,
+                    # which then takes its usual skip and count below.
+                    malformed = len(cols) < 8
+                    if site and (
+                        malformed or (site[0][2][0], site[0][2][1]) != (cols[0], cols[1])
+                    ):
+                        yield from self._split_site_calls(site, sample_idx)
+                        site = []
+                    excluded = (
+                        drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito
+                    )
+                    if (
+                        not malformed
+                        # A record the mitochondrial exclusion drops is never a
+                        # component; it is dropped and counted below, as before.
+                        and not excluded
+                        and _single_base_record(cols)
+                        and _carries_an_alt(cols, sample_idx)
+                    ):
+                        # A component, even one the gate rejects (no call):
+                        # it still says this site has that ALT (``None``).
+                        if variant is not None:
+                            variant.record_index = index
+                        site.append((variant, index, cols))
+                        continue
                 if variant is None:
                     continue
                 if drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito:
@@ -921,10 +982,78 @@ class VcfParser(GenotypeParser):
                     continue
                 variant.record_index = index
                 yield variant
+            if site:
+                yield from self._split_site_calls(site, sample_idx)
             if watcher is not None:
                 record(watcher.finish())
-            if self.reference_target_calls and changed:
+            if self.reference_target_calls and (changed or self._deleted_spans):
                 self._block_changed_sites(changed)
+
+    def _split_site_calls(
+        self, site: list[tuple[Variant | None, int, list[str]]], sample_idx: int
+    ) -> Iterator[Variant]:
+        """The calls of one site's single-base records, as one person's genotype.
+
+        The components are the site's single-base records whose genotype
+        carries an ALT, with their call, or None where the quality gate
+        rejected the record. Components that all have one ALT field (one
+        record, repeats, or calls that disagree, which ADR-0062 keeps and
+        counts), or that disagree on REF, give their calls as before. Where
+        components of one REF name different ALTs, an exact complementary pair
+        gives one two-ALT call, as the merged record would: two components with
+        the same ID and REF and one different ALT each, both called, each with
+        one ALT copy and one REF copy on different haplotypes: ``1/0`` and
+        ``0/1`` unphased, or ``1|0`` and ``0|1`` in one phase set (``PS``, both
+        the same or both absent). Each allele keeps its own record
+        (``Variant.allele_records``). Any other mix (the same GT twice, both
+        ALTs on one haplotype, phase sets that differ or one phased call with
+        an unphased one, a homozygote with a heterozygote, a half or no-call, a
+        rejected component, other ploidy, a third ALT, two IDs) is not one
+        person's genotype that can be told, so none of its calls is given;
+        they are counted in ``split_site_calls``.
+        """
+        if len({cols[3].upper() for _v, _i, cols in site}) > 1 or (
+            len({cols[4].upper() for _v, _i, cols in site}) == 1
+        ):
+            # One record, records of one ALT (repeats, or calls that disagree,
+            # which ADR-0062 keeps and counts), or records that disagree on REF:
+            # each gives its call, as before.
+            yield from (variant for variant, _i, _cols in site if variant is not None)
+            return
+        if len(site) == 2:
+            (v1, i1, c1), (v2, i2, c2) = site
+            f1, f2 = _sample_fields(c1, sample_idx), _sample_fields(c2, sample_idx)
+            g1, g2 = f1.get("GT", ""), f2.get("GT", "")
+            pair = sorted((g1, g2))
+            one_haplotype_each = pair == ["0/1", "1/0"] or (
+                pair == ["0|1", "1|0"] and f1.get("PS") == f2.get("PS")
+            )
+            if (
+                one_haplotype_each
+                and v1 is not None
+                and v2 is not None
+                and not v1.is_no_call
+                and not v2.is_no_call
+                and c1[2] == c2[2]
+                and c1[3].upper() == c2[3].upper()
+                and len(c1[4]) == len(c2[4]) == 1
+                and c1[4].upper() != c2[4].upper()
+            ):
+                # The first haplotype's ALT first, as the merged record has it.
+                (first, at1), (second, at2) = (
+                    ((c1, i1), (c2, i2)) if g1[0] == "1" else ((c2, i2), (c1, i1))
+                )
+                a1, a2 = first[4].upper(), second[4].upper()
+                yield replace(
+                    v1,
+                    allele1=a1,
+                    allele2=a2,
+                    input_alt=f"{a1},{a2}",
+                    record_index=min(i1, i2),
+                    allele_records=((a1, at1), (a2, at2)),
+                )
+                return
+        self.split_site_calls += len(site)
 
     def _note_record(
         self,
@@ -960,6 +1089,10 @@ class VcfParser(GenotypeParser):
             pos = int(cols[1])
         except ValueError:
             return
+        if changed is not None:
+            span = _deletion_span_for(cols, pos, sample_idx, scratch)
+            if span is not None:
+                self._deleted_spans.setdefault(chrom, []).append(span)
         if (
             variant is None
             and state is not None
@@ -1063,7 +1196,13 @@ class VcfParser(GenotypeParser):
         return any((chrom, site) in self._ploidy_loci for site in range(pos, pos + size))
 
     def _block_changed_sites(self, changed: dict[str, array[int] | list[int]]) -> None:
-        """Block each position of a reference call's record that another record changes."""
+        """Block each position of a reference call's record that another record changes.
+
+        A position changes when a record's genotype changes its base
+        (``changed``), or when it lies in the span a symbolic deletion the
+        sample carries or may carry would remove, through its INFO ``END``
+        (``_deleted_spans``).
+        """
         wanted: dict[str, set[int]] = {}
         for call in self.reference_target_calls:
             at = wanted.setdefault(call.locus[0], set())
@@ -1076,6 +1215,11 @@ class VcfParser(GenotypeParser):
             if sites:
                 hit = positions.intersection(sites)
                 self.reference_target_blocked.update((chrom, pos) for pos in hit)
+            spans = self._deleted_spans.get(chrom)
+            if spans:
+                self.reference_target_blocked.update(
+                    (chrom, pos) for pos in _within_spans(positions, spans)
+                )
 
     def _panel_observation(
         self, cols: list[str], variant: Variant | None, state: LocusState | None
@@ -1446,6 +1590,77 @@ def _add_changed(changed: dict[str, array[int] | list[int]], chrom: str, sites: 
         changed[chrom] = [*store, *sites]
 
 
+def _deletion_span_for(
+    cols: list[str], pos: int, sample_idx: int, gate: VcfQualityStats
+) -> tuple[int, int] | None:
+    """POS + 1 through INFO ``END``, where the selected sample may lack those bases.
+
+    For a record with a symbolic deletion ALT (``<DEL>``, ``<DEL:...>``) and
+    a valid ``END`` after POS, when the selected sample's genotype carries
+    the deletion, or may carry it: an allele is unknown (``.``), or the
+    quality gate rejects the call (FILTER or FT unless ``--keep-filtered``,
+    GQ below ``--min-gq``, DP 0; ``gate`` holds those settings), so any of
+    its ALTs is possible (ADR-0064). Otherwise None: a deletion the
+    genotype confidently does not carry, beside a symbolic or ``*`` allele
+    it does carry, says nothing about these bases. POS is the padding base,
+    which ``_changed_positions`` already counts.
+    """
+    alts = cols[4].upper().split(",")
+    if not any(a == "<DEL>" or a.startswith("<DEL:") for a in alts):
+        return None
+    end = _info_end(cols)
+    if end is None or end <= pos:
+        return None
+    fields = _sample_fields(cols, sample_idx)
+    gt = fields.get("GT")
+    if not gt:
+        return None
+    alleles = gt.replace("|", "/").split("/")
+    filtered = cols[6].strip() not in _UNFILTERED or bool(_sample_filter_labels(fields))
+    rejected = (filtered and not gate.kept_filtered) or _low_confidence(fields, gate.min_gq)
+    if rejected or "." in alleles:
+        carried = alts
+    else:
+        carried = [alts[int(a) - 1] for a in alleles if a.isdigit() and 0 < int(a) <= len(alts)]
+    if not any(a == "<DEL>" or a.startswith("<DEL:") for a in carried):
+        return None
+    return pos + 1, end
+
+
+def _within_spans(positions: set[int], spans: list[tuple[int, int]]) -> list[int]:
+    """The ``positions`` inside any (first, last) span, both ends included."""
+    ordered = sorted(spans)
+    starts = [first for first, _last in ordered]
+    reach: list[int] = []
+    furthest = 0
+    for _first, last in ordered:
+        furthest = max(furthest, last)
+        reach.append(furthest)
+    out = []
+    for pos in positions:
+        i = bisect_right(starts, pos)
+        if i and reach[i - 1] >= pos:
+            out.append(pos)
+    return out
+
+
+_SINGLE_BASES = frozenset("ACGT")
+
+
+def _carries_an_alt(cols: list[str], sample_idx: int) -> bool:
+    """Whether the selected sample's GT names anything but REF (an ALT or ``.``)."""
+    gt = _sample_fields(cols, sample_idx).get("GT", "")
+    alleles = gt.replace("|", "/").split("/")
+    return bool(gt) and any(allele != "0" for allele in alleles)
+
+
+def _single_base_record(cols: list[str]) -> bool:
+    """A record of one REF base and only single-base ALTs (no symbolic, ``*`` or indel)."""
+    if len(cols[3]) != 1 or cols[3].upper() not in _SINGLE_BASES:
+        return False
+    return all(len(alt) == 1 and alt.upper() in _SINGLE_BASES for alt in cols[4].split(","))
+
+
 def _ploidy_site(pos: int, ref: str, alt_field: str) -> int:
     """A reference record's ploidy site: where a call of it would stand (ADR-0062).
 
@@ -1732,9 +1947,26 @@ def _info_end(cols: list[str]) -> int | None:
 
 
 def _row_stop(cols: list[str], start: int) -> int:
-    """Reference-block END, otherwise the end of the explicit REF sequence."""
-    end = _info_end(cols) if _reference_block_alts(cols[4]) else None
+    """Reference-block or symbolic-deletion END, otherwise the end of the explicit REF.
+
+    A symbolic deletion's END is held whichever sample carries it; the
+    positions after its REF count only for a sample that carries it or may
+    carry it (``_deletion_span_for``).
+    """
+    if _reference_block_alts(cols[4]):
+        end = _info_end(cols)
+    elif _has_deletion_symbol(cols[4]):
+        end = _info_end(cols)
+        if end is not None and end < start:
+            end = None
+    else:
+        end = None
     return end if end is not None else start + max(len(cols[3]), 1) - 1
+
+
+def _has_deletion_symbol(alt_field: str) -> bool:
+    """Whether a record's ALTs include a symbolic deletion (``<DEL>``, ``<DEL:...>``)."""
+    return any(a == "<DEL>" or a.startswith("<DEL:") for a in alt_field.upper().split(","))
 
 
 def _is_reference_block(cols: list[str], sample_idx: int) -> bool:
@@ -1954,12 +2186,17 @@ def _sample_filter_labels(fields: dict[str, str]) -> list[str]:
 
 
 def _int_field(fields: dict[str, str], key: str) -> int | None:
-    """An integer FORMAT value, or None when absent, ``.`` or not a number."""
+    """An integer FORMAT value, or None when absent, ``.`` or not a number.
+
+    A non-finite value (``inf``, ``nan``, an exponent too large for a float)
+    is unusable like an absent one: neither zero nor a high quality (2.7.0).
+    """
     raw = fields.get(key, ".")
     try:
-        return int(float(raw))
+        value = float(raw)
     except ValueError:
         return None
+    return int(value) if math.isfinite(value) else None
 
 
 def _low_confidence(fields: dict[str, str], min_gq: int) -> bool:

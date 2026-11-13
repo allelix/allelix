@@ -163,7 +163,16 @@ def test_interrupted_new_vcf_leaves_no_destination_or_stage(rc_case, rc_snapshot
     output = case.out / ("annotated" + suffix)
     before = rc_snapshot(case.out)
     result = _interrupted(case, [*case.report_args("analyze"), "--vcf-out", output], case.out)
-    assert "INTERRUPT_REACHED" in result.stderr, (result.stdout, result.stderr)
-    assert result.returncode != 0
+    if suffix == ".vcf.gz":
+        # Compressed names are refused before analysis or any output write.
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "INTERRUPT_REACHED" not in result.stderr
+        error = " ".join(result.stderr.split())
+        assert "--vcf-out:" in error
+        assert "annotated VCF is written uncompressed" in error
+        assert "a .gz name says it is gzip-compressed" in error
+    else:
+        assert "INTERRUPT_REACHED" in result.stderr, (result.stdout, result.stderr)
+        assert result.returncode != 0
     assert rc_snapshot(case.out) == before
     assert not output.exists()

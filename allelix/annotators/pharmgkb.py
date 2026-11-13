@@ -13,6 +13,7 @@ from allelix.annotators.base import (
     Annotator,
     LicenseDescriptor,
     carried_alt,
+    forward_alleles_at_call,
     is_clinvar_homref,
     variant_locus,
 )
@@ -44,13 +45,20 @@ from allelix.databases.pharmgkb_loader import (
 )
 from allelix.databases.staging import owned_directory
 from allelix.models import Annotation, diploid_label
-from allelix.utils.allele import strand_aware_genotype_match
+from allelix.utils.allele import (
+    STRAND_COMPLEMENT,
+    STRAND_DIRECT,
+    forward_strand_reading,
+    is_single_base,
+    strand_aware_genotype_match,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
-    from allelix.annotators.base import NormalAlleleProvider
+    from allelix.annotators.base import ForwardSiteProvider, NormalAlleleProvider
+    from allelix.annotators.rsid_identity import ForwardSite
     from allelix.models import Variant
 
 logger = logging.getLogger(__name__)
@@ -137,6 +145,7 @@ class PharmGKBAnnotator(Annotator):
         palindromic_provider: Callable[[set[str]], set[str]] | None = None,
         normal_allele_provider: NormalAlleleProvider | None = None,
         reference_prefetch: Callable[[list[Variant]], None] | None = None,
+        forward_site_provider: ForwardSiteProvider | None = None,
     ) -> None:
         """Resolve the ClinPGx SQLite cache path within `data_dir`.
 
@@ -162,6 +171,13 @@ class PharmGKBAnnotator(Annotator):
         `reference_prefetch` is given each batch before the two providers
         above are asked about it, so they can answer from one bulk lookup
         (`ReferenceCarriedFallback.prefetch`). None asks them per call.
+
+        `forward_site_provider` gives each rsID's locus and forward alleles
+        on a build (`RsidIdentityAnnotator.forward_sites`). Where all of an
+        rsID's source genotypes, non-findings included, read only as their
+        complement at the call's locus, any genotype there matches by its
+        complement, homozygotes included (ADR-0035). None leaves the
+        complement match to the call's REF alone.
         """
         super().__init__(data_dir)
         self._db_path = data_dir / PHARMGKB_DB_FILENAME
@@ -170,6 +186,10 @@ class PharmGKBAnnotator(Annotator):
         self._palindromic_provider = palindromic_provider
         self._normal_allele_provider = normal_allele_provider
         self._reference_prefetch = reference_prefetch
+        self._forward_site_provider = forward_site_provider
+        # Calls one row met as written and another as its complement, with
+        # no site evidence to choose: withheld, counted once each (ADR-0035).
+        self._ambiguous_strand_calls = 0
         # Set by setup(): the download held the content of the last build,
         # so the cache was kept and only its signal stored (ADR-0068).
         self.content_unchanged = False
@@ -178,6 +198,51 @@ class PharmGKBAnnotator(Annotator):
         if self._conn is None:
             self._conn = connect_readonly(self._db_path)
         return self._conn
+
+    def _site_genotypes(self, rsids: list[str]) -> dict[str, list[str]]:
+        """Every source genotype of each rsID, non-findings included.
+
+        The site's orientation evidence: a non-finding row is not reported,
+        but its alleles are still the source's alleles at the site.
+        """
+        conn = self._connection()
+        out: dict[str, list[str]] = {}
+        for start in range(0, len(rsids), _BATCH_CHUNK):
+            chunk = rsids[start : start + _BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for rsid, genotype in conn.execute(
+                f"SELECT rsid, genotype FROM pharmgkb_annotations WHERE rsid IN ({placeholders})",
+                chunk,
+            ):
+                out.setdefault(rsid, []).append(genotype)
+        return out
+
+    def run_counts(self) -> dict[str, int]:
+        """``ambiguous_strand_calls``: the calls withheld from two readings (ADR-0035)."""
+        return (
+            {"ambiguous_strand_calls": self._ambiguous_strand_calls}
+            if self._ambiguous_strand_calls
+            else {}
+        )
+
+    def _site_readings(self, variants: list[Variant]) -> list[str | None]:
+        """For each call, in order: how its site reads the rsID's genotypes (``_site_reading``).
+
+        Decided per call, never per rsID: the identity table's site on the
+        call's build must be at the call's own locus (a call without a
+        position takes the rsID's one site). All None when no identity
+        table is wired (ADR-0035).
+        """
+        if self._forward_site_provider is None or not variants:
+            return [None] * len(variants)
+        genotypes = self._site_genotypes(sorted({v.rsid for v in variants}))
+        sites_by_build: dict[str, dict[str, ForwardSite]] = {}
+        for build in sorted({v.build for v in variants}):
+            wanted = {v.rsid for v in variants if v.build == build and v.rsid in genotypes}
+            sites_by_build[build] = self._forward_site_provider(wanted, build) if wanted else {}
+        return [
+            _site_reading(v, genotypes.get(v.rsid, []), sites_by_build[v.build]) for v in variants
+        ]
 
     def setup(self, *, force: bool = False) -> None:
         """Download ClinPGx clinical annotations + CPIC allele functions, ingest atomically.
@@ -422,7 +487,9 @@ class PharmGKBAnnotator(Annotator):
         # ADR-0035: fetch all rows for the rsid (typically <5) and apply
         # strand-aware genotype match in Python. Forward-stranded users hit
         # the same set of rows as the v0.7-era ``WHERE genotype = ?`` SQL;
-        # reverse-stranded users now also match when Variant.ref confirms
+        # reverse-stranded users also match when the rsID's source alleles
+        # read only as their complement at the call's identity site (any
+        # genotype, homozygotes included), or else when Variant.ref confirms
         # orientation AND the source genotype is non-palindromic.
         sql = (
             "SELECT genotype, gene, drugs, phenotype, phenotype_category, "
@@ -439,6 +506,20 @@ class PharmGKBAnnotator(Annotator):
             self._palindromic_provider is not None
             and variant.rsid in self._palindromic_provider({variant.rsid})
         )
+        reading = self._site_readings([variant])[0] if rows else None
+        met = (
+            _genotypes_met(
+                variant,
+                self._site_genotypes([variant.rsid]).get(variant.rsid, []),
+                site_palindromic=palindromic,
+                site_reading=reading,
+            )
+            if rows
+            else set()
+        )
+        if met is None:
+            self._ambiguous_strand_calls += 1
+            return []
         for row in rows:
             (
                 geno,
@@ -451,13 +532,7 @@ class PharmGKBAnnotator(Annotator):
                 _score,
                 pgkb_annotation_id,
             ) = row
-            if not strand_aware_genotype_match(
-                variant.allele1,
-                variant.allele2,
-                geno,
-                variant.ref,
-                site_palindromic=palindromic,
-            ):
+            if geno.upper() not in met:
                 continue
             sig_label = level_of_evidence.strip().lower() or "unknown"
             description_parts = [f"ClinPGx: {drugs}"] if drugs else ["ClinPGx"]
@@ -526,6 +601,7 @@ class PharmGKBAnnotator(Annotator):
         palindromic_set: set[str] = set()
         if self._palindromic_provider is not None:
             palindromic_set = self._palindromic_provider(set(rsids))
+        readings = self._site_readings([v for v, _ in candidates])
 
         conn = self._connection()
         rows_by_rsid: dict[str, list[tuple]] = {}
@@ -542,9 +618,19 @@ class PharmGKBAnnotator(Annotator):
             for row in cursor:
                 rows_by_rsid.setdefault(row[0], []).append(row[1:])
 
-        for variant, _user_geno in candidates:
+        site_genotypes = self._site_genotypes(sorted(rows_by_rsid))
+        for (variant, _user_geno), reading in zip(candidates, readings, strict=True):
             rows = rows_by_rsid.get(variant.rsid)
             if not rows:
+                continue
+            met = _genotypes_met(
+                variant,
+                site_genotypes.get(variant.rsid, []),
+                site_palindromic=variant.rsid in palindromic_set,
+                site_reading=reading,
+            )
+            if met is None:
+                self._ambiguous_strand_calls += 1
                 continue
             user_diploid = diploid_label(variant)
             for row in rows:
@@ -559,15 +645,9 @@ class PharmGKBAnnotator(Annotator):
                     _score,
                     pgkb_annotation_id,
                 ) = row
-                # ADR-0035: strand-aware genotype match. See annotate() for
-                # the safety rationale (palindrome guard + variant.ref orientation).
-                if not strand_aware_genotype_match(
-                    variant.allele1,
-                    variant.allele2,
-                    geno,
-                    variant.ref,
-                    site_palindromic=variant.rsid in palindromic_set,
-                ):
+                # ADR-0035: the genotypes this call meets by its one reading
+                # (``_genotypes_met``; see annotate()).
+                if geno.upper() not in met:
                     continue
                 sig_label = level_of_evidence.strip().lower() or "unknown"
                 description_parts = [f"ClinPGx: {drugs}"] if drugs else ["ClinPGx"]
@@ -646,3 +726,77 @@ def _stamp_existing_pharmgkb_cache(db_path: Path) -> bool:
         return True
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
         return False
+
+
+def _genotypes_met(
+    variant: Variant,
+    genotypes: list[str],
+    *,
+    site_palindromic: bool,
+    site_reading: str | None,
+) -> set[str] | None:
+    """The rsID's genotypes the call meets, by one reading; None when two disagree.
+
+    Every genotype of the rsID counts, non-finding rows included: they are
+    evidence of the rows' strand even where they are never reported. Where
+    the site decides the reading (``_site_reading``), that is the one
+    reading: as written for ``direct``, the complement for ``complement``.
+    With no such evidence, a call one genotype meets as written and another
+    as its complement (by its REF, ``strand_aware_genotype_match``) cannot be
+    read either way, and meets neither (ADR-0035).
+    """
+    exact = "".join(sorted((variant.allele1.upper(), variant.allele2.upper())))
+    if site_reading == STRAND_DIRECT:
+        return {g.upper() for g in genotypes if g.upper() == exact}
+    site_reads_complement = site_reading == STRAND_COMPLEMENT
+    met = {
+        g.upper()
+        for g in genotypes
+        if strand_aware_genotype_match(
+            variant.allele1,
+            variant.allele2,
+            g,
+            variant.ref,
+            site_palindromic=site_palindromic,
+            site_reads_complement=site_reads_complement,
+        )
+    }
+    if site_reads_complement:
+        return met
+    if exact in met and met - {exact}:
+        return None
+    return met
+
+
+def _site_reading(
+    variant: Variant, genotypes: list[str], sites: dict[str, ForwardSite]
+) -> str | None:
+    """How the rsID's source alleles read at the call: ``direct``, ``complement`` or None.
+
+    All the rsID's genotypes together are read against the identity table's
+    forward alleles at the call's locus (ADR-0035, ADR-0066's reading):
+    ``direct`` where only the alleles as written fit, ``complement`` where
+    only their complements do. None (undecided) at a site the table does not
+    place at the call, where both readings or neither fit, and where any
+    genotype is not two single bases.
+
+    Only for a single-base call: its alleles single bases and its REF one
+    base (or not known). A trimmed or padded indel's remaining letters are
+    not a sequence allele the source genotype can name, even where they
+    spell one of the site's identity alleles (another indel's ALT).
+    """
+    if not (is_single_base(variant.allele1) and is_single_base(variant.allele2)):
+        return None
+    if variant.ref is not None and not is_single_base(variant.ref.upper()):
+        return None
+    forward = forward_alleles_at_call(variant, sites)
+    if forward is None or not genotypes:
+        return None
+    alleles: set[str] = set()
+    for genotype in genotypes:
+        bases = genotype.upper()
+        if len(bases) != 2 or not all(is_single_base(b) for b in bases):
+            return None
+        alleles.update(bases)
+    reading = forward_strand_reading(alleles, forward)
+    return reading if reading in (STRAND_DIRECT, STRAND_COMPLEMENT) else None

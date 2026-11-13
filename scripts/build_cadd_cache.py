@@ -41,7 +41,6 @@ import argparse
 import contextlib
 import gzip
 import logging
-import os
 import sqlite3
 import sys
 import time
@@ -50,6 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from allelix.databases._versions import CADD_SCHEMA_VERSION
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.schema import CADD_SCHEMA
 from allelix.databases.staging import owned_staging
 
@@ -302,7 +302,7 @@ def build_cache(
             print("Compacting database...")
             conn.execute("VACUUM")
 
-        os.replace(tmp_path, output_path)
+        publish_cache(tmp_path, output_path)
 
     elapsed_total = time.monotonic() - t0
     total_scanned = snv_scanned + indel_scanned

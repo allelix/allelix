@@ -41,7 +41,6 @@ import contextlib
 import gzip
 import io
 import logging
-import os
 import sqlite3
 import sys
 import time
@@ -55,6 +54,8 @@ if TYPE_CHECKING:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from allelix.databases import manager
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.schema import GNOMAD_SCHEMA
 from allelix.databases.staging import owned_staging
 
@@ -167,7 +168,8 @@ def _stream_vcf_gz_filtered(
     """Stream a bgzipped VCF and yield filtered frequency records."""
     logger.info("Streaming %s", url)
     req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=600) as resp:
+    # Allelix's own opener: a redirect to anything but HTTPS is refused.
+    with manager.open_url(req, timeout=600) as resp:
         decompressor = gzip.GzipFile(fileobj=resp)
         text_stream = io.TextIOWrapper(decompressor, encoding="utf-8")
         yield from _iter_vcf_records(text_stream, rsid_filter=rsid_filter)
@@ -300,7 +302,7 @@ def build_cache(
             print("Compacting database...")
             conn.execute("VACUUM")
 
-        os.replace(tmp_path, output_path)
+        publish_cache(tmp_path, output_path)
 
     elapsed_total = time.monotonic() - t0
     mode = "--full" if full else "--manifest"

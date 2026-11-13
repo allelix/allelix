@@ -40,6 +40,7 @@ import urllib.error
 import urllib.request
 
 from allelix import __version__
+from allelix.databases import manager
 from allelix.databases.manager import PROBE_ERRORS
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ def fetch_cpic_remote_signal(api_base: str = CPIC_API_BASE) -> str | None:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=CPIC_TIMEOUT_SECONDS) as response:
+        with manager.open_url(request, timeout=CPIC_TIMEOUT_SECONDS) as response:
             rows = json.loads(response.read().decode("utf-8"))
     except PROBE_ERRORS as exc:
         if hasattr(exc, "close"):
@@ -216,7 +217,7 @@ def _http_get_json(url: str, timeout: float = CPIC_TIMEOUT_SECONDS) -> list[dict
     last_error: Exception | None = None
     for attempt in range(CPIC_RETRY_ATTEMPTS):
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with manager.open_url(request, timeout=timeout) as response:
                 rows = json.loads(response.read().decode("utf-8"))
                 _check_whole_table(url, rows, response.headers.get("Content-Range"))
                 return rows

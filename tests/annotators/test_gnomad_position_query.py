@@ -10,7 +10,6 @@ ref, alt)`` must serve the lookup on its own. All rows are synthetic.
 from __future__ import annotations
 
 import contextlib
-import os
 import re
 import sqlite3
 import stat
@@ -108,7 +107,7 @@ class TestPositionQuery:
         assert all("(chrom=? AND pos=?)" in plan for plan in plans)
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes")
+@pytest.mark.usefixtures("require_readonly_filesystem")
 class TestReadOnlyCache:
     def test_resolver_runs_on_a_read_only_cache(self, tmp_path: Path) -> None:
         """No write on connect: a rollback-journal cache with file mode

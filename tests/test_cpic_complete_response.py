@@ -72,7 +72,7 @@ def cpic(monkeypatch):
                 return override(rows) if callable(override) else _whole(rows)
         raise AssertionError(request.full_url)
 
-    monkeypatch.setattr(cpic_loader.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(cpic_loader.manager, "open_url", urlopen)
     monkeypatch.setattr(cpic_loader, "CPIC_RETRY_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
     return replies, requests
 

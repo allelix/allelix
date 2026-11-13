@@ -21,6 +21,7 @@ Position data is normative; headers are not.
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -188,7 +189,9 @@ def known_snp_seed(variant: Variant) -> str | None:
         return variant.rsid
     if variant.rsid.startswith("rs"):
         return None
-    hit = _SEED_AT_LOCUS.get((variant.chromosome, variant.position))
+    # The seed table names chromosomes bare (``1``, ``X``); a chip reader
+    # keeps the file's own spelling (``chr1``), so compare the bare name.
+    hit = _SEED_AT_LOCUS.get((_bare_contig(variant.chromosome), variant.position))
     return hit[0] if hit is not None else None
 
 
@@ -213,8 +216,9 @@ def detect_build(variants: Iterable[Variant]) -> BuildDetectionResult:
         entry = KNOWN_SNP_POSITIONS[seed]
         remaining.discard(seed)
         inspected += 1
+        chromosome = _bare_contig(variant.chromosome)
         for build, (chrom, pos) in entry.items():
-            if variant.chromosome == chrom and variant.position == pos:
+            if chromosome == chrom and variant.position == pos:
                 votes[build] += 1
                 break
         if not remaining:
@@ -376,6 +380,8 @@ class LengthVerdict(NamedTuple):
     skip_mt: bool = False
 
 
+# Cached: the seed vote asks once per rsID-less record, and a file has few names.
+@functools.lru_cache(maxsize=1024)
 def _bare_contig(name: str) -> str:
     """``chr1`` -> ``1``, ``chrX`` / ``23`` -> ``X``, ``chrM`` / ``26`` -> ``MT``."""
     # Imported here: allelix.parsers imports this module.

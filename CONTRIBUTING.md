@@ -93,6 +93,8 @@ Either:
 present" is also forbidden — convert to `assert` so a real regression
 is caught instead of hidden.
 
+One skip is by design: a test that needs permissions enforced tries the operation and skips only when it succeeds anyway (as root, or on a file system without permission checks), so such a run reports the skip instead of failing. A test that needs chmod enforced asks for the shared `require_readonly_filesystem` fixture, which tries to write into a read-only folder, or for `require_unreadable_files`, which tries to read a file without read permission. The read-only cache tests use `_denied_permissions` in `tests/test_readonly_caches.py`, which denies by mode on POSIX and by ACL on Windows, tries the operation, and skips after restoring access when it is not refused.
+
 ### Run the full suite locally
 
     pytest                      # runs everything: fast + slow
@@ -129,6 +131,17 @@ development work before dispatching another hosted matrix. CI and the
 slow workflow each cancel a superseded run of the same workflow and ref; a
 canceled run never supplies release evidence. Publication and version
 checks remain enabled.
+
+Publishing a GitHub release starts `.github/workflows/publish.yml`. Its
+`verify` job stops the upload unless the release tag is the released
+commit and `v` plus the `pyproject.toml` version, the CI workflow's run
+for that tag push passed on that commit (every job, `version-tag-guard`
+and both test jobs included), and the built wheel installs in a clean
+virtual environment and reports that version. It runs no tests itself,
+so push the tag and let CI finish before creating the release; a failed
+`verify` is re-run from the Actions page once CI has passed. The `publish`
+job uploads the files `verify` built, and is the only job with the PyPI
+id-token.
 
 Lint and format:
 

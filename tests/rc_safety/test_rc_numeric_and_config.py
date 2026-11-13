@@ -58,17 +58,29 @@ def test_nonfinite_threshold_is_a_usage_error_before_analysis(
 @pytest.mark.parametrize("command", REPORTS)
 @pytest.mark.parametrize("option", FLOORS)
 @pytest.mark.parametrize("value", ["-1", "0", "2.5"])
-def test_finite_thresholds_still_produce_standard_json(rc_case, command, option, value):
+def test_finite_thresholds_still_produce_standard_json(
+    rc_case, rc_snapshot, command, option, value
+):
     case = rc_case
     output = case.out / "report.json"
+    # These two source floors never apply to the ClinPGx-only report.
+    refused = command == "pharmacogenomics" and option != "--min-magnitude"
+    before = rc_snapshot(case.root) if refused else None
     result = case.invoke([*case.report_args(command), option, value, "--output", output])
+    if refused:
+        assert result.exit_code == 2, (result.output, repr(result.exception))
+        assert isinstance(result.exception, SystemExit), repr(result.exception)
+        assert f"{option} never applies to pharmacogenomics" in " ".join(result.output.split())
+        assert not output.exists()
+        assert rc_snapshot(case.root) == before
+        return
     assert result.exit_code == 0, (result.output, repr(result.exception))
 
     def reject(token):
         raise AssertionError(f"nonstandard JSON number {token}")
 
     report = json.loads(output.read_text(), parse_constant=reject)
-    assert report["schema_version"] == "13"
+    assert report["schema_version"] == "14"
 
 
 @pytest.mark.parametrize("command", CONFIG_CONSUMERS)

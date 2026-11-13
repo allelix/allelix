@@ -38,7 +38,7 @@ from allelix.databases.rsid_identity_loader import (
     install_prebuilt_cache,
 )
 from allelix.databases.staging import owned_directory
-from allelix.utils.allele import complement
+from allelix.utils.allele import complement, trim_allele_pair
 
 if TYPE_CHECKING:
     import sqlite3
@@ -49,6 +49,28 @@ if TYPE_CHECKING:
 
 
 _CHUNK = 450  # two parameters per locus; stays under SQLite's 999 limit
+_BASES = frozenset("ACGT")
+# Every column of a row, with its rowid, for the lookups that trim it.
+_ROW = "rowid, rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic"
+_BUILD_FIELDS = {"GRCh37": (3, 4, 5), "GRCh38": (6, 7, 8)}
+
+
+def snv_form(pos: int, ref: str, alt: str) -> tuple[int, str, str]:
+    """A row as its single-base variant where padding is all that makes it longer.
+
+    ``CG>CA`` at POS-1 and ``GT>AT`` at POS both read as ``G>A`` at POS
+    (trimmed as the input is, ADR-0047). A genuine indel or MNV, and a row
+    that is already single-base, is returned as stored.
+    """
+    if len(ref) == 1 and len(alt) == 1:
+        return pos, ref, alt
+    if not ref or not alt:
+        return pos, ref, alt
+    at, trimmed_ref, trimmed_alt = trim_allele_pair(pos, ref, alt)
+    if trimmed_ref in _BASES and trimmed_alt in _BASES:
+        return at, trimmed_ref, trimmed_alt
+    return pos, ref, alt
+
 
 # Build -> (position, ref, alt) column names. Fixed mapping, never user input.
 _COLUMNS: dict[str, tuple[str, str, str]] = {
@@ -108,6 +130,9 @@ class RsidIdentityAnnotator(Annotator):
         super().__init__(data_dir)
         self._db_path = data_dir / RSID_IDENTITY_DB_FILENAME
         self._conn: sqlite3.Connection | None = None
+        # Per build, the rows padded before their variant (``_moved_rows``).
+        self._moved: dict[str, dict[Locus, list[tuple]]] = {}
+        self._ref_differs: set[str] = set()
 
     def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
@@ -159,6 +184,8 @@ class RsidIdentityAnnotator(Annotator):
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+        self._moved = {}
+        self._ref_differs = set()
 
     def fetch_remote_signal(self) -> str | None:
         """Pinned prebuilt cache: no remote freshness signal."""
@@ -172,24 +199,66 @@ class RsidIdentityAnnotator(Annotator):
         """Not used — the identity table never annotates. Always returns []."""
         return []
 
-    def _rows_at_loci(self, build: str, loci: set[Locus], columns: str) -> list[tuple]:
+    def _moved_rows(self, build: str) -> dict[Locus, list[tuple]]:
+        """The rows whose trimmed single-base variant stands at another position on ``build``.
+
+        A row padded before its variant (``CG>CA`` at POS-1 for ``G>A`` at
+        POS) is stored where a lookup by the variant's position does not
+        find it. Found once, from the multi-base rows, by trimmed locus.
+        """
+        self._scan_multi_base_rows()
+        return self._moved[build]
+
+    def _trimmed_ref_differs(self) -> set[str]:
+        """The rsIDs with a padded row whose two builds' REFs, trimmed, are different bases."""
+        self._scan_multi_base_rows()
+        return self._ref_differs
+
+    def _scan_multi_base_rows(self) -> None:
+        """One pass over the multi-base rows: the moved rows and the trimmed-REF changes."""
+        if self._moved:
+            return
+        self._moved = {b: {} for b in _BUILD_FIELDS}
+        self._ref_differs = set()
+        for row in self._connection().execute(
+            f"SELECT {_ROW} FROM rsid_identity WHERE length(ref37) > 1 "
+            "OR length(alt37) > 1 OR length(ref38) > 1 OR length(alt38) > 1"
+        ):
+            trimmed = {}
+            for b, (pos_i, ref_i, alt_i) in _BUILD_FIELDS.items():
+                at, ref, alt = snv_form(row[pos_i], row[ref_i], row[alt_i])
+                trimmed[b] = ref
+                if at != row[pos_i] and len(ref) == 1 and len(alt) == 1:
+                    self._moved[b].setdefault((row[2], at), []).append(row)
+            r37, r38 = trimmed["GRCh37"], trimmed["GRCh38"]
+            if len(r37) == 1 and len(r38) == 1 and r37 != r38:
+                self._ref_differs.add(row[1])
+
+    def _rows_at_loci(self, build: str, loci: set[Locus]) -> list[tuple]:
+        """Every row (``_ROW``) whose variant, read trimmed (``snv_form``), stands at a locus.
+
+        The rows stored at each locus whose trimmed form stays there, and
+        the rows padded before it (``_moved_rows``), whatever the padding.
+        """
         if build not in _COLUMNS or not loci:
             return []
         pos_col = _COLUMNS[build][0]
+        pos_i, ref_i, alt_i = _BUILD_FIELDS[build]
         conn = self._connection()
         locus_list = sorted(loci)
-        out: list[tuple] = []
+        out: dict[int, tuple] = {}
         for start in range(0, len(locus_list), _CHUNK):
             chunk = locus_list[start : start + _CHUNK]
             clauses = " OR ".join(f"(chrom = ? AND {pos_col} = ?)" for _ in chunk)
             params = [value for locus in chunk for value in locus]
-            out.extend(
-                conn.execute(
-                    f"SELECT chrom, {pos_col}, {columns} FROM rsid_identity WHERE {clauses}",
-                    params,
-                )
-            )
-        return out
+            for row in conn.execute(f"SELECT {_ROW} FROM rsid_identity WHERE {clauses}", params):
+                if snv_form(row[pos_i], row[ref_i], row[alt_i])[0] == row[pos_i]:
+                    out[row[0]] = row
+        moved = self._moved_rows(build)
+        for locus in locus_list:
+            for row in moved.get(locus, ()):
+                out[row[0]] = row
+        return list(out.values())
 
     def alleles_at_loci(
         self, build: str, loci: set[Locus]
@@ -197,12 +266,12 @@ class RsidIdentityAnnotator(Annotator):
         """``(ref, alt, rsid)`` rows at each locus on ``build`` (resolver input)."""
         if build not in _COLUMNS:
             return {}
-        _, ref_col, alt_col = _COLUMNS[build]
+        pos_i, ref_i, alt_i = _BUILD_FIELDS[build]
         out: dict[Locus, list[tuple[str, str, str]]] = {}
-        for chrom, pos, ref, alt, rsid in self._rows_at_loci(
-            build, loci, f"{ref_col}, {alt_col}, rsid"
-        ):
-            out.setdefault((chrom, pos), []).append((ref, alt, rsid))
+        for row in self._rows_at_loci(build, loci):
+            # A padded single-base row stands at its trimmed position.
+            at, ref, alt = snv_form(row[pos_i], row[ref_i], row[alt_i])
+            out.setdefault((row[2], at), []).append((ref, alt, row[1]))
         return out
 
     def palindromic_rsids(self, rsids: set[str]) -> set[str]:
@@ -241,12 +310,33 @@ class RsidIdentityAnnotator(Annotator):
         found: dict[str, set[tuple[str, int, str, int, str]]] = {}
         alleles: dict[str, tuple[set[str], set[str]]] = {}
         palindromic: set[str] = set()
-        rows = self._connection().execute(
-            "SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic "
-            "FROM rsid_identity WHERE rsid IN (SELECT rsid FROM rsid_identity "
-            "WHERE length(ref37) = 1 AND length(ref38) = 1 AND ref37 <> ref38)"
+        # Candidates: an rsID with a row whose stored REFs differ, and one
+        # whose padded row trims to different REFs though the stored ones are
+        # equal (``_trimmed_ref_differs``). Every row of a candidate is read,
+        # trimmed (``snv_form``), so the checks below see them all.
+        conn = self._connection()
+        rows = list(
+            conn.execute(
+                "SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic "
+                "FROM rsid_identity WHERE rsid IN (SELECT rsid FROM rsid_identity "
+                "WHERE ref37 <> ref38)"
+            )
         )
+        stored = {row[0] for row in rows}
+        extra = sorted(self._trimmed_ref_differs() - stored)
+        for start in range(0, len(extra), _CHUNK):
+            chunk = extra[start : start + _CHUNK]
+            marks = ",".join("?" * len(chunk))
+            rows.extend(
+                conn.execute(
+                    "SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, "
+                    f"palindromic FROM rsid_identity WHERE rsid IN ({marks})",
+                    chunk,
+                )
+            )
         for rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38, flag in rows:
+            pos37, ref37, alt37 = snv_form(pos37, ref37, alt37)
+            pos38, ref38, alt38 = snv_form(pos38, ref38, alt38)
             found.setdefault(rsid, set()).add((chrom, pos37, ref37, pos38, ref38))
             sets = alleles.setdefault(rsid, (set(), set()))
             sets[0].update((ref37, alt37))
@@ -289,11 +379,13 @@ class RsidIdentityAnnotator(Annotator):
         for start in range(0, len(wanted), _CHUNK):
             chunk = wanted[start : start + _CHUNK]
             marks = ",".join("?" * len(chunk))
-            for rsid, ref37, alt37, ref38, alt38, flag in conn.execute(
-                f"SELECT rsid, ref37, alt37, ref38, alt38, palindromic "
+            for rsid, pos37, ref37, alt37, pos38, ref38, alt38, flag in conn.execute(
+                f"SELECT rsid, pos37, ref37, alt37, pos38, ref38, alt38, palindromic "
                 f"FROM rsid_identity WHERE rsid IN ({marks})",
                 chunk,
             ):
+                _, ref37, alt37 = snv_form(pos37, ref37, alt37)
+                _, ref38, alt38 = snv_form(pos38, ref38, alt38)
                 refs.setdefault(rsid, set()).add((ref37, ref38))
                 sets = alleles.setdefault(rsid, (set(), set()))
                 sets[0].update((ref37, alt37))
@@ -338,6 +430,8 @@ class RsidIdentityAnnotator(Annotator):
                 f"FROM rsid_identity WHERE rsid IN ({marks})",
                 chunk,
             ):
+                # A padded single-base row reads as its trimmed site.
+                pos, ref, alt = snv_form(pos, ref, alt)
                 loci.setdefault(rsid, set()).add((chrom, pos))
                 alleles.setdefault(rsid, set()).update((ref, alt))
         return {
@@ -360,12 +454,15 @@ class RsidIdentityAnnotator(Annotator):
         for start in range(0, len(wanted), _CHUNK):
             chunk = wanted[start : start + _CHUNK]
             marks = ",".join("?" * len(chunk))
-            for rsid, chrom, pos37, pos38 in conn.execute(
-                f"SELECT DISTINCT rsid, chrom, pos37, pos38 FROM rsid_identity "
-                f"WHERE rsid IN ({marks})",
+            for rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 in conn.execute(
+                f"SELECT DISTINCT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 "
+                f"FROM rsid_identity WHERE rsid IN ({marks})",
                 chunk,
             ):
-                out[rsid] = {"GRCh37": (chrom, pos37), "GRCh38": (chrom, pos38)}
+                out[rsid] = {
+                    "GRCh37": (chrom, snv_form(pos37, ref37, alt37)[0]),
+                    "GRCh38": (chrom, snv_form(pos38, ref38, alt38)[0]),
+                }
         return out
 
     def placements(
@@ -384,12 +481,14 @@ class RsidIdentityAnnotator(Annotator):
         for start in range(0, len(wanted), _CHUNK):
             chunk = wanted[start : start + _CHUNK]
             marks = ",".join("?" * len(chunk))
-            for rsid, *row in conn.execute(
+            for rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 in conn.execute(
                 f"SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 "
                 f"FROM rsid_identity WHERE rsid IN ({marks})",
                 chunk,
             ):
-                out.setdefault(rsid, []).append(tuple(row))
+                out.setdefault(rsid, []).append(
+                    (chrom, *snv_form(pos37, ref37, alt37), *snv_form(pos38, ref38, alt38))
+                )
         return out
 
     def iter_placements(
@@ -417,11 +516,12 @@ class RsidIdentityAnnotator(Annotator):
         conn: sqlite3.Connection, chunk: list[str]
     ) -> Iterator[tuple[str, str, int, str, str, int, str, str]]:
         marks = ",".join("?" * len(chunk))
-        yield from conn.execute(
+        for rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 in conn.execute(
             f"SELECT rsid, chrom, pos37, ref37, alt37, pos38, ref38, alt38 "
             f"FROM rsid_identity WHERE rsid IN ({marks})",
             chunk,
-        )
+        ):
+            yield (rsid, chrom, *snv_form(pos37, ref37, alt37), *snv_form(pos38, ref38, alt38))
 
     def translate_to_grch38(self, keys37: set[Key]) -> dict[Key, Key]:
         """Map GRCh37 ``(chrom, pos, ref, alt)`` keys to their GRCh38 keys.
@@ -437,9 +537,20 @@ class RsidIdentityAnnotator(Annotator):
         """
         loci = {(chrom, pos) for chrom, pos, _ref, _alt in keys37}
         candidates: dict[Key, set[Key]] = {}
-        for chrom, pos37, ref37, alt37, pos38, ref38, alt38, palindromic in self._rows_at_loci(
-            "GRCh37", loci, "ref37, alt37, pos38, ref38, alt38, palindromic"
-        ):
+        for (
+            _rowid,
+            _rsid,
+            chrom,
+            pos37,
+            ref37,
+            alt37,
+            pos38,
+            ref38,
+            alt38,
+            palindromic,
+        ) in self._rows_at_loci("GRCh37", loci):
+            pos37, ref37, alt37 = snv_form(pos37, ref37, alt37)
+            pos38, ref38, alt38 = snv_form(pos38, ref38, alt38)
             key37 = (chrom, pos37, ref37, alt37)
             if key37 not in keys37 or alt38 == ref38 or (palindromic and ref37 != ref38):
                 continue

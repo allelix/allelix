@@ -259,3 +259,47 @@ by position were added, and every call named before stayed.
 `input.probe_classes.di_calls_at_plp_rsids` counts only the calls at
 rsIDs ClinVar classifies P/LP and stayed 376. The 2.6.1 CHANGELOG
 sentence "the existing counts are unchanged" is corrected in 2.6.2.
+
+## Amendment 2.7.0 (2026-11-09): calls whose rsID ClinVar places elsewhere
+
+ClinVar does not report the rows at a call's locus under the call's rsID
+when it places that rsID only elsewhere on the build: they describe another
+variant. That guard dropped an exact match silently, and with the rsID
+identity table off nothing else said so. It is unchanged, and the call is
+now counted where it carries the exact allele of a row at its position
+(as written, or trimmed, ADR-0047; the reference base too, for a row whose
+allele the reference carries): the run count `placed_elsewhere_calls`,
+the report warning `clinvar_rsid_placed_elsewhere`, and a
+`high_value_unchecked` entry with reason `placed_elsewhere` at a
+high-value rsID or one whose own ClinVar rows are aggregate P/LP. The row at
+the locus belongs to another variant, so its P/LP gene does not make the
+call named. The text attributes the decision to ClinVar only; it does not
+change how other sources match the call and does not say they ran.
+
+## Amendment 2.7.0 RC2 (2026-11-10): explicit reference calls keep their rsID
+
+The 2.7.0 amendment above counts a call whose rsID ClinVar places only
+elsewhere and which carries the exact allele of a row at its position. An
+explicit VCF reference call (`0/0`, haploid `0`) never reached that
+guard: at a site whose reference carries a ClinVar row's allele, the
+pipeline built it under the row's rsID (`reference_carried_calls`), so a
+record naming rs900222001 (ClinVar: another position) matched the row of
+rs900222002 at its own position, uncounted, while the same record with
+`0/1` was withheld and counted.
+
+The parser now keeps the rsID a single-base explicit reference record
+names for its own position (`ReferenceCall.rsid`; a reference block's or a
+longer record's ID names none of the positions it covers). Where ClinVar
+places that rsID only at other positions on the build
+(`ClinVarAnnotator.loci_of_rsids`), the call is made under it, with its
+own record index (ADR-0062). The identity check and ClinVar's guard then
+judge it as they judge every other call: set aside and counted once as
+`identity_locus_conflict` where the identity table places it elsewhere,
+otherwise withheld and counted as `clinvar_rsid_placed_elsewhere`, and
+named where it matters. A record naming the site's rsID, no rsID, or one
+ClinVar does not hold is called under the site's rsID, as before.
+`input.vcf_quality.reference_carried_calls` counts the calls made; the
+guard can still withhold one. In `--vcf-out`, an explicit reference record
+whose own rsID had a call of its own there carries none of the site rsID's
+rebuilt finding (`reference_split`); identical reference records the site's
+call was rebuilt from all keep it, as before.

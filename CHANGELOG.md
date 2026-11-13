@@ -2,6 +2,310 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-11-13
+
+### Changed
+- `pharmacogenomics` refuses `--include-gwas`, `--gwas-all`,
+  `--gwas-min-magnitude`, `--exclude-snpedia` and `--snpedia-min-magnitude`
+  with a usage error (exit 2), even at their default values, before it reads
+  the input or refreshes a cache. Its report keeps ClinPGx findings only, so
+  these options decided whether the GWAS Catalog and SNPedia ran but could
+  never add or remove a finding. The error names the option, for example:
+  "Error: --include-gwas never applies to pharmacogenomics: its report shows
+  only ClinPGx findings, so no GWAS Catalog or SNPedia finding can reach it.
+  Leave the option out, or use analyze for those sources." A mistyped
+  option is not answered with a suggestion of one of these five. To switch
+  SNPedia off for every command, set `sources.snpedia` to false in the
+  config. ADR-0024 is amended.
+  `analyze` and `methylation` keep these options as they were.
+- The PyPI upload now checks the release itself before it uploads. The
+  publish workflow's first job checks out the release tag and stops unless
+  the tag names the released commit and equals `v` plus the package
+  version; the CI workflow's run for that tag push on that commit has
+  completed with every job passed, the version check and both test jobs
+  among them (it waits up to 30 minutes while CI is still running); and
+  the wheel and the sdist it builds each install in a clean virtual
+  environment of their own and report that version through `allelix
+  --version` and the package metadata. It
+  runs no tests itself. The upload job then publishes exactly the files
+  that job built and installed, without a checkout or a rebuild, and only
+  that job can request the PyPI token. Every action the publish workflow
+  uses is pinned to a commit. Before, the upload built and published from
+  the release without any check of its own.
+- New report files are private: a JSON or HTML report (`--output` of
+  analyze, methylation and pharmacogenomics), an annotated VCF
+  (`--vcf-out`) and the `.bed`, `.bim` and `.fam` of `export plink` are
+  created readable and writable by their owner alone (`0600`), whatever the
+  umask. They hold personal genetic data; before, a new file got the mode
+  the umask gives (`0644` under the usual `022`, readable by every user of
+  the machine). A file that already exists keeps its mode, so a report you
+  made readable stays so. `config.toml` and the caches keep the umask's
+  mode. Terminal output redirected to a file is created by the shell, as
+  before.
+- In the HTML report, the ⚠ beside a flagged genotype explains itself as
+  soon as the pointer is on it, or when it has keyboard focus. The
+  explanation was the browser's own tooltip, which waits about a second
+  and which some viewers (embedded previews) never show; it is now drawn by
+  the page, from the same text screen readers read, beside the mark and
+  inside the window (above the mark near the bottom edge). Touch screens have no
+  hover: tapping the row opens the panel, whose Plausibility line explains
+  the warning, as before. The wording is unchanged.
+- Downloads and freshness checks follow a redirect only to an HTTPS
+  address. Every source's download, its freshness check and CPIC's
+  allele-function fetch went through urllib's default redirect handling,
+  which follows a redirect from HTTPS to plain HTTP (or FTP); a server, or
+  anyone who could alter its reply, could send Allelix to fetch the file
+  unencrypted. Such a redirect is now refused at any hop, before anything
+  is fetched from it. A download that an upstream redirects to plain HTTP
+  now fails, with "refused a redirect from <url> to a non-HTTPS URL"
+  (`db update` reports the source as failed and keeps the cache it has),
+  and a freshness check says the source cannot be verified: `db update`,
+  and the automatic check `analyze`, `methylation` and `pharmacogenomics`
+  run on a cache over 7 days old, which said "Run `allelix db update` when
+  online" whenever the signal could not be fetched and now says the
+  cache is used and `db update` retries. HTTPS redirects work as before,
+  and a redirected request keeps its method on every Python version: a
+  freshness check stays a HEAD request at every hop, where Python 3.12's
+  urllib turned it into a GET. This protects the transport only: the GWAS
+  Catalog and ClinPGx still publish no checksum for their downloads, so
+  their content is checked only by HTTPS, its size and the row floor.
+- A downloaded ClinPGx or GWAS Catalog archive is checked for what it
+  would expand to before anything is unpacked. ClinPGx's archive was
+  unpacked whole and its tables read into memory to compute its content
+  hash, and the GWAS Catalog's table was unpacked, with no limit on the
+  expanded size, so a damaged or crafted archive could fill the disk or
+  the memory. The members an update unpacks are checked: for ClinPGx
+  every member of the archive, before its content hash reads either table,
+  so also when the tables are unchanged; for the GWAS Catalog its one
+  table, the only member it reads. They may now expand to 4 GiB in all;
+  today's ClinPGx archive expands to about 11 MB and the GWAS Catalog's
+  table to about 710 MB. A larger archive is refused before any member is
+  read: "the archive would expand to N bytes, over the size limit; nothing
+  was unpacked", `db update` reports the source as failed, and the cache
+  it has is kept. Only stored and deflated members are unpacked (both
+  sources use deflate): a checked BZIP2 or LZMA member, whose decoder
+  decompresses before the size can stop it, is refused the same way,
+  before any member is read. ClinPGx's content hash now reads its two
+  tables in 1 MiB chunks; its value is unchanged, so no cache rebuilds.
+- JSON reports use schema 14 (2.6.3 wrote 13), and `--diff` reads
+  baselines in schemas 1 to 14. `report_warnings` adds the codes
+  `split_site_calls`, `clinvar_rsid_placed_elsewhere` and
+  `clinpgx_ambiguous_strand`, and `high_value_unchecked` adds the reason
+  `placed_elsewhere`.
+
+### Fixed
+- The HTML report shows an rsID read at two places as two rows. A VCF can
+  give one rsID to two records; with the same genotype at both, the report
+  put them in one row and one detail panel. The panel then showed the
+  gnomAD frequency, CADD and AlphaMissense values of only one of them, the
+  warning mark of either, and a source count, gene and summary pooled from
+  both, and the Good and Bad counts counted them once. Each VCF record (on
+  a chip file, each position) is now its own row. When rows share an rsID,
+  each panel shows the position, and so does the terminal table under the
+  rsID. Other rows, the JSON report and panel coverage are unchanged.
+- `--diff` pairs a finding only with the baseline finding at the same
+  chromosome and position. It paired findings by source, rsID, condition
+  and allele alone, so when one rsID had findings at two sites the diff
+  could pair them across sites: two sites that swapped classifications
+  showed no change, and a finding that moved from one site to the other
+  showed as changed. Each site is now its own finding, so the swap is two
+  changes, and a finding whose position changed between the reports (a
+  placement fix, for example) shows as removed and new. When one rsID is
+  at two or more sites in the diff, the terminal's New, Changed and Removed
+  tables show each row's position under the rsID, and so does the HTML
+  report's list of changed findings, so a moved finding's two rows can be
+  told apart. A baseline entry
+  without a position (from a report before 2.5.0, JSON schema 9, or a call
+  the report could not place) is paired as before.
+- `--vcf-out` never replaces a file it did not write. It refused an
+  existing file only at start-up, then moved its result into place over
+  whatever had the name by then: a file another program created during the
+  run was replaced, and a dangling symlink counted as no file, so the link
+  itself was replaced. A dangling link is now refused at start-up like a
+  file, and the annotated VCF is committed with a hard link, which fails
+  if anything has taken the name meanwhile; that file or link is left as it
+  is, and the run stops with an error naming the path. This holds from
+  start-up to the end of the run. A file system without hard links (FAT,
+  exFAT, some network shares) cannot publish the complete file atomically
+  without replacing an existing name, so `--vcf-out` there stops with an
+  error naming the path and leaves nothing at it: write the annotated VCF
+  to a local disk and move it. `--output` reports still replace an existing
+  report, as before.
+- A chip file that writes its chromosomes as `chr1`, `CHR1` or `Chr1`
+  (23andMe, AncestryDNA, Family Tree DNA, MyHeritage, Living DNA,
+  MyHappyGenes and GenomeStudio files keep the file's own names) is placed
+  on its build like one that writes `1`. Build detection compared the
+  file's name with the bare names of its known-SNP table, so such a file
+  matched none of the supported builds and was refused, and with `--build`
+  the warning said none of its known-SNP positions matched. The vote now
+  compares the standard name. The names the reports and PLINK output show
+  are unchanged.
+- A VCF or gVCF whose header names a testing company is read as a VCF. The
+  vendor formats were recognized before VCF, and the MyHeritage one by the
+  company's name in the first lines, so a VCF converted from a MyHeritage
+  file (`##source=bcftools convert MyHeritage_raw_dna_data.csv`, as
+  `bcftools convert --tsv2vcf` writes) was read as a MyHeritage file, gave
+  no records and was refused. A file whose header says `##fileformat=VCF`
+  is now recognized as VCF first, plain or gzipped, whatever its name.
+  MyHeritage's own exports, its low-pass `##fileformat=MyHeritage` files
+  included, are read as before.
+- A VCF call whose GQ or DP is not a finite number (`inf`, `-inf`,
+  `Infinity`, or an exponent too large such as `1e999`) is read as if the
+  value were missing, like `.`. Before, the run stopped with an unexplained
+  `OverflowError`. The value is not taken as zero reads or as a high
+  quality: the call's other quality field still applies (a GQ below
+  `--min-gq` or a DP of 0 still marks it low-confidence).
+- `--vcf-out` refuses a name ending in `.gz` or `.bgz` (any case) before
+  the analysis starts, and so does the annotated-VCF writer. The annotated
+  VCF is written uncompressed; before, `--vcf-out out.vcf.gz` exited 0 and
+  wrote plain text under a gzip name, which `gzip` cannot read and `tabix`
+  cannot index. Use a `.vcf` name and compress the file afterwards
+  with `bgzip`. Compressed input is read as before.
+- A GWAS Catalog association no longer takes its risk allele from another
+  SNP. The catalog's "strongest SNP-risk allele" field names a SNP and its
+  risk allele (`rs123-A`), and Allelix read only the allele after the last
+  hyphen, so a row for rs220826 whose field says `rs220818-G` was loaded as
+  rs220826 with risk allele G. A risk allele is now read only when that
+  field names the row's own rsID (in any letter case). A row whose field
+  names another rsID (`other_snp`) or something that is not an rsID
+  (`unattributed`) is skipped before the lowest p-value row is chosen for
+  its rsID and trait, so another row of the same association can be
+  chosen. Allelix has no rsID merge history, so a row that names a merged
+  rsID is skipped as well. `db update` and `db status` show how many
+  source rows the cached release skipped for each reason, apart from the
+  record count. Rows whose field has no single-base allele (`rs123-?`)
+  load without a risk allele, as before. The GWAS cache is rebuilt on the
+  next `db update`, from the retained catalog table when it matches the
+  cached release, otherwise by a new download.
+- ClinVar findings for a pseudo-autosomal variant reach a call on either X
+  or Y. ClinVar lists such a variant under one VariationID on both
+  chromosomes, and the cache kept only the first of the two rows, which in
+  practice was X: a VCF that writes a male's pseudo-autosomal calls on Y
+  coordinates got no ClinVar match there. Every placement is now kept, each
+  with the variant's submissions; a variant's submitter split still counts
+  each submission once. In the retained public variant_summary source,
+  about 2,400 X/Y VariationIDs per build have two placements, 93 of them
+  classified Pathogenic or Likely pathogenic on GRCh38 (94 on GRCh37).
+  **Both ClinVar
+  caches are rebuilt on the next `db update`**, which downloads ClinVar
+  again and can take about 20 minutes. ADR-0039 is amended.
+- ClinPGx finds a homozygous carrier of the variant allele at a site whose
+  ClinPGx genotypes are written on the other strand from the input's
+  build. A GRCh37 G/A call at such a site matched its ClinPGx row by the
+  complement, but an A/A call did not, because the complement match asked
+  for the complement of the call's REF in the row's genotype, which a
+  homozygous row of the other allele never holds. Now, where all of the
+  rsID's ClinPGx genotypes (rows not reported as findings included) fit the
+  rsID identity table's alleles at the call's locus (for an rsID-list row
+  without a position, at the rsID's one site) only as their complement, a
+  single-base call (both carried alleles single bases, REF one base or not
+  known) matches a row by its complement, homozygotes included. An indel
+  call is not matched this way: its trimmed or padded anchor letter can
+  spell another variant's allele at the site. There the complement is the
+  call's one reading: a row spelled as the call, which at a three-allele
+  site is the other homozygote's genotype, is not also matched. Where the
+  genotypes fit the site only as written, the exact match is the one
+  reading, and the call's REF no longer adds a complement match (a G/T call
+  at a G>A,C site met the AC genotype). Where that
+  site evidence is missing or uncertain (no identity table, the rsID not
+  placed at the call or placed more than once, a palindromic site, or
+  alleles that fit both ways or neither way), and for an indel
+  call, the exact match and the complement match by the call's REF apply
+  as before, except that a call one row meets as written and another as
+  its complement meets neither: ClinPGx cannot tell which reading is the
+  person's, and the report counts such calls in `report_warnings`
+  (`clinpgx_ambiguous_strand`). rs28364032 (CRHR1) is one such site on GRCh37: a
+  G/A call already met its CT row, and an A/A call now meets its TT row
+  (evidence level 3). ADR-0035 and ADR-0066 are amended.
+- GWAS Catalog and SNPedia findings no longer go missing where the rsID
+  identity table stores a single-base variant padded with a shared base
+  (`CG>CA` one position before `G>A`, or `GT>AT`). The strand check found
+  no forward alleles at such a site and counted the call as
+  `not_in_identity_table`, and an unnamed call there could not recover its
+  rsID. The table's rows are now read as their trimmed variant, as the
+  input already is, so these sites give the same findings as a table that
+  stores `G>A`. Genuine indels are unchanged. The installed table needs no
+  rebuild; the current one has 20 such rows on GRCh37 and 70 on GRCh38.
+  ADR-0066 is amended.
+- A `0/0` call inside a symbolic deletion the sample carries is no longer
+  read as a reference call. A VCF record with ALT `<DEL>` (or `<DEL:...>`)
+  and a genotype carrying it removes the bases after its POS through its
+  INFO `END`, but only a literal deletion's REF span blocked the reference
+  calls inside it: a `0/0` SNV ten bases into a called `<DEL>` still gave
+  its GWAS, SNPedia, ClinPGx and ClinVar reference-carried findings. The
+  deletion's span now blocks them as a literal deletion does, for the
+  selected sample only. It also blocks them where the genotype may carry
+  the deletion: an allele is unknown, or the quality gate rejects the call
+  (FILTER or FT, a GQ below the floor, DP 0), even with a `0/0` genotype.
+  Other symbolic ALTs, a deletion the genotype confidently does not carry
+  (a passing call of REF or of another ALT), and records without a valid
+  `END` are unchanged. ADR-0064 is amended.
+- A two-ALT VCF call split over two records gives the person's genotype.
+  `G>A 1/0` plus `G>T 0/1` (how `bcftools norm -m-` writes a `1/2` call)
+  gave the SNPedia and ClinPGx rows for `AG` and for `GT`, neither of
+  them this person's, and missed the `AT` row the merged record gets.
+  `analyze`, `methylation` and `pharmacogenomics` now read that exact
+  complementary pair as the merged call: one ALT on each haplotype,
+  unphased (`1/0` and `0/1`) or phased in one phase set (`1|0` and
+  `0|1`). Each allele's findings stay with its own record in
+  `--vcf-out`, and the HTML report shows the call as one row, with one
+  panel and one count, as it does the merged record. Any other mix of single-base records of one REF that name
+  different ALTs at one position (the same GT twice, both ALTs on one
+  haplotype, different phase sets, a homozygote with a heterozygote, a
+  half call, a record the quality gate rejects, a haploid with a diploid
+  call, a third ALT, two IDs) gives no call there, and the report counts
+  those records as `split_site_calls`, including in a file where they
+  are the only calls, which is analyzed rather than refused as empty or
+  structural-only. Before, each record gave its own genotype. Records that all name one ALT, records that disagree on REF,
+  indel or symbolic records at the same position, and records of one
+  position that are not next to each other are unchanged; `compare`,
+  `extract`, `stats` and `export plink` still read every record on its
+  own. ADR-0062 is amended.
+- The report says when ClinVar leaves out an exact match because it
+  places the call's rsID elsewhere. A call whose rsID ClinVar holds only
+  at another position is, rightly, not matched to the row of another
+  variant at its own position, but nothing said so, and with the rsID
+  identity table switched off nothing else noticed. Where the call
+  carries that row's exact allele (the reference base included, for a row
+  whose allele the reference carries), it is now counted in
+  `report_warnings` (`clinvar_rsid_placed_elsewhere`),
+  attributed to ClinVar, and named in `high_value_unchecked`
+  (`placed_elsewhere`) at a high-value rsID or one ClinVar classifies
+  Pathogenic or Likely pathogenic itself. The match itself is unchanged,
+  except for an explicit VCF reference call (`0/0`, haploid `0`) at a site
+  where the reference carries a ClinVar row's allele: it was called under
+  that row's rsID whatever rsID its record named, so it matched the row of
+  another variant, uncounted. It now keeps the rsID its record names where
+  ClinVar places that rsID only elsewhere, and is withheld and counted as
+  a `0/1` or chip call is (or set aside as `identity_locus_conflict` where
+  the identity table places it elsewhere). A reference block, or a record
+  whose REF is longer than one base, names no rsID for this, and its call
+  is made under the row's rsID as before. In `--vcf-out`, an explicit
+  single-base reference record withheld by this guard no longer carries
+  the other variant's finding. The decision is ClinVar's only: other
+  sources match the call by their own rules.
+  ADR-0051 is amended.
+- A ClinVar, GWAS Catalog or ClinPGx update no longer installs its new
+  cache beside the old cache's unrecovered journal. Those installs moved
+  the new file in with a plain rename, so a hot `-journal` or a `-wal`
+  left by an interrupted earlier write stayed beside it: the next
+  read-write open rolled the old content over the new file, read-only
+  opens failed while `db update` still said "ready", and ClinVar then
+  refused every later update. They now publish as the prebuilt caches
+  already did: the old cache settles its own side files first, or the
+  install stops with `UnrecoveredJournalError` (which names `db clean`)
+  and the old cache keeps its rows. ClinVar checks both builds' old caches
+  before replacing either; each build is then replaced on its own, and if
+  the second fails after the first was replaced, the error says which
+  build was already updated. The rsID identity table's writer and the
+  gnomAD, AlphaMissense and CADD cache builders do the same. The writers
+  that change a cache in place are not changed. ADR-0048 is amended.
+- An HTML report with no findings to show no longer stops its page script
+  with an error. The script read the page's finding data before it checked
+  for the findings table, and such a page has neither, so the browser
+  logged a `TypeError` when the page loaded. The page showed its notices
+  and empty-state text all the same, and pages with findings are unchanged.
+
 ## [2.6.3] - 2026-11-09
 
 ### Fixed
@@ -5005,6 +5309,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.7.0]: https://github.com/allelix/allelix/compare/v2.6.3...v2.7.0
 [2.6.3]: https://github.com/allelix/allelix/compare/v2.6.2...v2.6.3
 [2.6.2]: https://github.com/allelix/allelix/compare/v2.6.1...v2.6.2
 [2.6.1]: https://github.com/allelix/allelix/compare/v2.6.0...v2.6.1

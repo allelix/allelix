@@ -8,6 +8,7 @@ No network or real genomic data is used.
 from __future__ import annotations
 
 import contextlib
+import os
 import sqlite3
 import threading
 from typing import TYPE_CHECKING
@@ -24,7 +25,7 @@ def reproduce(root: Path) -> dict:
     db = root / "gwas.sqlite"
     events = {name: threading.Event() for name in ("a_ready", "b_open", "a_done")}
     results: dict[str, object] = {}
-    real_replace = gwas_loader.os.replace
+    real_replace = os.replace
     record = dict(
         rsid="rs900000001",
         risk_allele="A",
@@ -76,7 +77,7 @@ def reproduce(root: Path) -> dict:
     with patch.object(gwas_loader, "iter_gwas_records", records):
         # Start with a known-good cache; the failure must not destroy it.
         gwas_loader.load_gwas_tsv(root / "seed.tsv", db, min_rows=1)
-        with patch.object(gwas_loader.os, "replace", scheduled_replace):
+        with patch.object(os, "replace", scheduled_replace):
             a = threading.Thread(target=writer_a, name="writer-a")
             b = threading.Thread(target=writer_b, name="writer-b")
             a.start()

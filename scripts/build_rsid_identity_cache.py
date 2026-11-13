@@ -113,7 +113,8 @@ def filter_source(source: str, bloom: RsidBloom, out_path: Path) -> None:
     if bash is None:
         raise SystemExit("bash is required on PATH to stream dbSNP; install Bash and retry.")
     if source.startswith(("http://", "https://")):
-        cmd = f"curl -sSfL --retry 5 '{source}' | gzip -dc"
+        # A redirect is followed only to HTTPS, as Allelix's own downloads are.
+        cmd = f"curl -sSfL --proto-redir =https --retry 5 '{source}' | gzip -dc"
     else:
         cmd = f"gzip -dc '{source}'"
     label = source.rsplit("/", 1)[-1]

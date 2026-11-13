@@ -32,7 +32,10 @@ reject stale caches without forcing a full re-download.
 # iv:8→iv:9 (2.5): normal-allele SNV records written REF == ALT are kept
 # (CASP12 rs497116 on GRCh37), so a record reads the same on both builds,
 # and every row carries ``normal_allele``. An iv:8 cache lacks both.
-CLINVAR_INTERPRETER_VERSION = 9
+# iv:9→iv:10 (2.7): every placement of a VariationID on a build is kept
+# (a pseudo-autosomal variant on X and on Y), each with its own copy of the
+# variant's submissions. An iv:9 cache holds only the first placement.
+CLINVAR_INTERPRETER_VERSION = 10
 # Also bump for a change to how CPIC allele-function data is loaded: a bump
 # makes existing ClinPGx caches not ready, and `allelix db update` rebuilds
 # them, fetching the CPIC table again, so the change reaches them.

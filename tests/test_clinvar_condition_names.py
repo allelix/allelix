@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from allelix.annotators.clinvar import ClinVarAnnotator, clinvar_db_filename, clinvar_record_name
+from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 from allelix.databases.manager import (
     _SS_REQUIRED_COLUMNS,
     _VS_REQUIRED_COLUMNS,
@@ -185,8 +186,12 @@ def _existing_cache(tmp_path, build, stored_condition):
     load_clinvar_tsv(vs, ss, cache, build, record_name=clinvar_record_name(build))
     with contextlib.closing(sqlite3.connect(cache)) as conn:
         conn.execute("UPDATE clinvar_variants SET condition = ?", (stored_condition,))
-        # The released cache's stamp is deliberate: these reads must need neither rebuild nor bump.
-        conn.execute("UPDATE database_versions SET local_version_tag = 'iv:9'")
+        # Legacy condition text in a current cache must be cleaned at read time,
+        # without rebuilding or rewriting that cache.
+        conn.execute(
+            "UPDATE database_versions SET local_version_tag = ?",
+            (f"iv:{CLINVAR_INTERPRETER_VERSION}",),
+        )
         conn.commit()
     source = tmp_path / "input.vcf"
     pos = 1000 if build == "GRCh37" else 2000

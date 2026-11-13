@@ -228,3 +228,72 @@ ClinPGx does not use `strand_aware_carrier_match`. It matches the
 diploid call with `strand_aware_genotype_match` (ADR-0009). No annotator
 calls `strand_aware_carrier_match`; it stays in `allelix.utils.allele`
 with its tests.
+
+## Amendment 2.7.0 (2026-11-09): ClinPGx's complement match takes site evidence
+
+`strand_aware_genotype_match` accepted a ClinPGx complement match only when
+the call's REF was absent from the row's genotype and the REF's complement
+was in it. A homozygous-ALT row on the reverse strand never holds the REF's
+complement: at a GRCh37 G>A site with rows CC, CT and TT, a G/A call met CT
+but an A/A call did not meet TT.
+
+The complement reading is now also accepted on site evidence. All of the
+rsID's ClinPGx genotypes, non-finding rows included, are read together
+against the identity table's alleles at the call's locus on the call's
+build (`forward_strand_reading`, ADR-0066). Where only their complement
+fits, a single-base call there matches by its complement, homozygotes
+included (`_reads_complement` in `allelix/annotators/pharmgkb.py`). A
+single-base call is one whose two carried alleles are single bases and
+whose REF is one base or not known. The site's identity alleles include
+the letters of indel rows: some deletion ALTs are just an anchor base. An
+indel call can likewise have a single-base allele, so a letter of the call
+that fits the site's alleles need not identify the same sequence variant;
+site evidence says nothing about it. The evidence is
+decided per call: in a batch, a call at another locus does not take it from
+a call of the same rsID that is at the site. A call without a position (an
+unplaced rsID-list row, ADR-0069) is read against the rsID's one site and
+keeps no locus.
+
+- The exact match still comes first and is unchanged.
+- No new complement match is made where the identity table is unavailable
+  or switched off, does not hold the rsID, places it at another locus or at
+  more than one, or flags it palindromic, or where the source alleles fit
+  as written (`direct`), both ways (`palindromic`, `both_fit`) or neither
+  way (`no_fit`), where a genotype is not two single bases, or for a call
+  that is not single-base (an indel call, or a REF longer than one base).
+  The REF rule above still applies there, unchanged.
+- A non-finding row is still never reported; its alleles only count as
+  evidence of the site's orientation.
+- The non-finding filters (ADR-0020, ADR-0023) are unchanged.
+
+## Amendment 2.7.0 RC2 (2026-11-10): one reading per ClinPGx call
+
+The 2.7.0 amendment above kept "the exact match still comes first" beside
+the new site evidence, so one call could meet two genotypes. At a
+three-allele site whose rows read only as their complement (GRCh37 G>A,C
+with rows CC, CT, TT, GG), a G/G call met CC by the complement and GG as
+written, the genotype of the other homozygote. With no site evidence, a
+G/A call with REF G met AG as written and CT by its REF.
+
+A call now meets ClinPGx genotypes by one reading (`_genotypes_met` in
+`allelix/annotators/pharmgkb.py`):
+
+- Where the site decides the reading (`_site_reading`: all of the rsID's
+  genotypes read against the identity alleles at the call's site), that is
+  the one reading. Where they fit only as their complement (the amendment
+  above), a row spelled as the call is not matched
+  (`strand_aware_genotype_match` with `site_reads_complement`). Where they
+  fit only as written, only the exact match counts: the call's REF does
+  not add a complement match (a G>T call at a G>A,C site does not meet the
+  AC genotype).
+- Elsewhere (no identity table, the rsID not placed at the call or placed
+  more than once, both readings or neither fitting, an indel call) the
+  exact match and the REF rule apply as before, over every
+  genotype of the rsID, non-finding rows included. Where one genotype
+  meets the call as written and another as its complement, the call meets
+  neither: nothing decides which reading is the person's, and preferring
+  the exact spelling would guess. Each such call is counted once
+  (`run_counts()["ambiguous_strand_calls"]`) and the report says so in
+  `report_warnings` (`clinpgx_ambiguous_strand`).
+- A palindromic site, an indel call and the non-finding filters are
+  unchanged. Other sources keep their own readings (ADR-0066).

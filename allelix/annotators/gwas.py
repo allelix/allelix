@@ -30,7 +30,9 @@ from allelix.databases.gwas_loader import (
     gwas_source_hash,
     load_gwas_tsv,
     retained_source_stamp,
+    source_skip_counts,
 )
+from allelix.databases.loader_utils import check_zip_expansion
 from allelix.databases.manager import (
     _ensure_local_version_tag_column,
     download,
@@ -283,6 +285,9 @@ class GWASCatalogAnnotator(Annotator):
                 if not tsv_names:
                     msg = f"No .tsv file found in {zip_path.name}"
                     raise RuntimeError(msg)
+                # The one table it unpacks, within the unpack limit, before
+                # it is read.
+                check_zip_expansion(zf, [zf.getinfo(tsv_names[0])], zip_path.name)
                 extracted = Path(zf.extract(tsv_names[0], staging / "extracted"))
                 extracted.rename(tsv_path)
             load_gwas_tsv(
@@ -397,6 +402,20 @@ class GWASCatalogAnnotator(Annotator):
         """Return the number of cached GWAS association records, or None."""
         info = get_database_info(self._db_path, "gwas")
         return info["record_count"] if info else None
+
+    def source_skip_counts(self) -> dict[str, int] | None:
+        """The cached release's source rows skipped by risk-allele owner, by reason.
+
+        ``other_snp`` and ``unattributed``; None without a cache, or
+        for a cache built before 2.7.0. Read-only.
+        """
+        if not self._db_path.exists():
+            return None
+        try:
+            with contextlib.closing(connect_readonly(self._db_path)) as conn:
+                return source_skip_counts(conn)
+        except sqlite3.Error:
+            return None
 
     def close(self) -> None:
         """Close the SQLite connection if open."""

@@ -107,8 +107,8 @@ def harness(root, monkeypatch, kind):
                 return {"Content-Length": str(len(self.getvalue()))}
 
         monkeypatch.setattr(
-            manager.urllib.request,
-            "urlopen",
+            manager,
+            "open_url",
             lambda req, **kw: Response(req.full_url.rsplit("/", 1)[-1].encode()),
         )
 

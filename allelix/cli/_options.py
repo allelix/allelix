@@ -89,8 +89,9 @@ _OUTPUT_OPT = click.option(
     default=None,
     help=(
         "Write a report file (.html or .json). Refuses input aliases (and, for "
-        "analyze, the --vcf-out file) and publishes atomically; a new file gets "
-        "the umask's mode. Omit for terminal output."
+        "analyze, the annotated VCF's path) and publishes atomically; a new file is "
+        "0600 (yours alone), an existing one keeps its mode. Omit for terminal "
+        "output."
     ),
 )
 _REPORT_FORMAT_OPT = click.option(
@@ -304,7 +305,8 @@ _VCF_OUT_OPT = click.option(
     default=None,
     help=(
         "Write an annotated VCF at this path (v2.3.0+; experimental output "
-        "contract, ADR-0036). Requires VCF or gVCF input. Refuses to "
-        "overwrite an existing file or input aliases; publishes atomically."
+        "contract, ADR-0036), uncompressed: a .gz or .bgz name is refused. "
+        "Requires VCF or gVCF input. Refuses to overwrite an existing file or "
+        "link (or one created during the run) or input aliases; publishes atomically."
     ),
 )

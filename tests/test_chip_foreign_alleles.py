@@ -164,4 +164,4 @@ def test_vcf_record_keeps_its_own_ref_and_alt(tmp_path, build):
 
 
 def test_schema_records_the_new_count():
-    assert SCHEMA_VERSION == "13"
+    assert SCHEMA_VERSION == "14"

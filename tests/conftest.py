@@ -679,6 +679,65 @@ def build_synthetic_clinvar_cache():
     return _build_synthetic_clinvar_cache
 
 
+@pytest.fixture
+def require_readonly_filesystem(tmp_path: Path) -> None:
+    """Skip unless a read-only folder really refuses a write here.
+
+    For tests that rely on chmod being enforced. Root and some file systems
+    (WSL drives, network shares) let the write through; that is decided by
+    trying it, never by the user ID. Permission denied means the test runs;
+    any other error is raised. The probe folder is made writable again and
+    removed before the test runs or is skipped.
+    """
+    probe = tmp_path / ".readonly-probe"
+    probe.mkdir()
+    target = probe / "write-probe"
+    probe.chmod(0o500)
+    try:
+        with open(target, "w") as stream:
+            stream.write("probe")
+    except PermissionError:
+        writable = False
+    else:
+        writable = True
+    finally:
+        probe.chmod(0o700)
+        target.unlink(missing_ok=True)
+        probe.rmdir()
+    if writable:
+        pytest.skip("a read-only folder accepts writes here (root or no permission checks)")
+
+
+@pytest.fixture
+def require_unreadable_files(tmp_path: Path) -> None:
+    """Skip unless a file without read permission really refuses a read here.
+
+    The sibling of ``require_readonly_filesystem`` for tests that rely on a
+    chmod-unreadable file: a refused write is no evidence that a read is
+    refused. Root and some file systems read the file anyway; that is
+    decided by trying it, never by the user ID. Permission denied means the
+    test runs; any other error is raised. The probe file is made readable
+    again and removed before the test runs or is skipped.
+    """
+    target = tmp_path / ".unreadable-probe"
+    target.write_bytes(b"probe")
+    target.chmod(0)
+    try:
+        with open(target, "rb") as stream:
+            stream.read(1)
+    except PermissionError:
+        readable = False
+    else:
+        readable = True
+    finally:
+        target.chmod(0o600)
+        target.unlink(missing_ok=True)
+    if readable:
+        pytest.skip(
+            "a file without read permission can be read here (root or no permission checks)"
+        )
+
+
 @pytest.fixture(autouse=True)
 def _bypass_loader_row_floors(monkeypatch):
     """Production loaders enforce a row-count floor against truncated

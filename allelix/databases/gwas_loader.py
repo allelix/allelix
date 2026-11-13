@@ -11,12 +11,13 @@ from __future__ import annotations
 import contextlib
 import csv
 import hashlib
-import os
 import re
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.schema import GWAS_SCHEMA
 from allelix.databases.staging import owned_staging
 
@@ -33,7 +34,14 @@ GWAS_DB_FILENAME = "gwas.sqlite"
 
 INSERT_BATCH_SIZE = 5_000
 
-_CATEGORIZER_VERSION = 3
+_CATEGORIZER_VERSION = 4
+
+# Source rows skipped because their risk allele is not the row's own SNP's:
+# the risk field names another rsID, or something that is not an rsID.
+# Counted per source release, in ``gwas_source_skips``.
+RISK_OTHER_SNP = "other_snp"
+RISK_UNATTRIBUTED = "unattributed"
+RISK_SKIP_REASONS: tuple[str, ...] = (RISK_OTHER_SNP, RISK_UNATTRIBUTED)
 
 _RSID_RE = re.compile(r"^rs\d+$")
 
@@ -394,6 +402,25 @@ def _parse_risk_allele(field: str) -> str | None:
     return None
 
 
+def _risk_allele_for(snp: str, field: str) -> tuple[str | None, str | None]:
+    """``(risk allele, skip reason)`` of a row whose SNP is ``snp``.
+
+    A single-base risk allele belongs to the row only when the text before
+    the last ``-`` is the row's own rsID (trimmed, any case). Otherwise the
+    row is skipped: ``other_snp`` when that text is another rsID (no merge
+    history is available to tell an alias), ``unattributed`` when it is not
+    an rsID. A field without a single-base allele keeps no risk allele and
+    is not skipped, as before.
+    """
+    allele = _parse_risk_allele(field)
+    if allele is None:
+        return None, None
+    prefix = field.rsplit("-", 1)[0].strip().lower()
+    if prefix == snp.lower():
+        return allele, None
+    return None, RISK_OTHER_SNP if _RSID_RE.match(prefix) else RISK_UNATTRIBUTED
+
+
 def _safe_float(value: str) -> float | None:
     if not value or value.strip().upper() == "NR":
         return None
@@ -403,12 +430,40 @@ def _safe_float(value: str) -> float | None:
         return None
 
 
-def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
+class GwasRecords:
+    """The records of a GWAS Catalog TSV (``iter_gwas_records``), with its skips.
+
+    ``skipped`` counts, by reason, the source rows left out because their
+    risk allele is not their own SNP's; it is complete once iteration ends.
+    """
+
+    def __init__(self, tsv_path: Path) -> None:
+        """Read ``tsv_path`` lazily, as the records are taken."""
+        self.skipped: Counter[str] = Counter()
+        self._records = _gwas_records(tsv_path, self.skipped)
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        """The records, once."""
+        return self._records
+
+    def __next__(self) -> dict[str, object]:
+        """The next record."""
+        return next(self._records)
+
+
+def iter_gwas_records(tsv_path: Path) -> GwasRecords:
+    """One record per qualifying row from the GWAS Catalog TSV (``_gwas_records``)."""
+    return GwasRecords(tsv_path)
+
+
+def _gwas_records(tsv_path: Path, skipped: Counter[str]) -> Iterator[dict[str, object]]:
     """Yield one record per qualifying row from the GWAS Catalog TSV.
 
     Skips multi-SNP haplotypes, rows without traits, and rows where the
-    p-value is unparseable. Deduplicates by (rsid, trait), keeping the
-    row with the lowest p-value.
+    p-value is unparseable. Skips, before the selection below, rows whose
+    risk allele belongs to another SNP or to no SNP (`_risk_allele_for`),
+    counting each source row by reason in ``skipped``. Deduplicates by
+    (rsid, trait), keeping the row with the lowest p-value.
 
     Not strictly streaming: the (rsid, trait) dedup-on-min-p-value pass
     has to see every row before any (rsid, trait) is final, so the
@@ -433,7 +488,12 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
                 continue
 
             p_value = _safe_float(row.get("P-VALUE", ""))
-            risk_allele = _parse_risk_allele(row.get("STRONGEST SNP-RISK ALLELE", ""))
+            risk_allele, skip = _risk_allele_for(
+                snp_field, row.get("STRONGEST SNP-RISK ALLELE") or ""
+            )
+            if skip is not None:
+                skipped[skip] += 1
+                continue
             or_beta = _safe_float(row.get("OR or BETA", ""))
             raf = _safe_float(row.get("RISK ALLELE FREQUENCY", ""))
             gene = (row.get("MAPPED_GENE") or "").strip() or None
@@ -486,6 +546,20 @@ def iter_gwas_records(tsv_path: Path) -> Iterator[dict[str, object]]:
 # permissive against legitimate upstream drift. Set to 0 from tests so
 # synthetic fixtures of any size load cleanly.
 GWAS_MIN_ROWS = 100_000
+
+
+def source_skip_counts(conn: sqlite3.Connection) -> dict[str, int] | None:
+    """The source rows the cache's release skipped, by reason; None before 2.7.0.
+
+    Read from ``gwas_source_skips``, which ``load_gwas_tsv`` writes with
+    every load, so the counts are the cached release's, without its table.
+    """
+    try:
+        rows = conn.execute("SELECT reason, source_rows FROM gwas_source_skips").fetchall()
+    except sqlite3.DatabaseError:
+        return None
+    counts = {reason: int(n) for reason, n in rows}
+    return {reason: counts.get(reason, 0) for reason in RISK_SKIP_REASONS}
 
 
 def gwas_source_hash(tsv_path: Path) -> str:
@@ -560,7 +634,8 @@ def load_gwas_tsv(
             )
             batch: list[tuple] = []
             count = 0
-            for record in iter_gwas_records(tsv_path):
+            records = iter_gwas_records(tsv_path)
+            for record in records:
                 batch.append(
                     (
                         record["rsid"],
@@ -601,6 +676,19 @@ def load_gwas_tsv(
                     content_hash,
                 ),
             )
+            conn.execute(
+                "CREATE TABLE gwas_source_skips "
+                "(reason TEXT PRIMARY KEY, source_rows INTEGER NOT NULL)"
+            )
+            # A stand-in iterator without counts records none.
+            skipped: Counter[str] = (
+                records.skipped if isinstance(records, GwasRecords) else Counter()
+            )
+            for reason in RISK_SKIP_REASONS:
+                conn.execute(
+                    "INSERT INTO gwas_source_skips (reason, source_rows) VALUES (?, ?)",
+                    (reason, skipped[reason]),
+                )
             conn.commit()
         if count < min_rows:
             msg = (
@@ -611,5 +699,5 @@ def load_gwas_tsv(
                 f"`allelix db update --force`."
             )
             raise OSError(msg)
-        os.replace(tmp_path, db_path)
+        publish_cache(tmp_path, db_path)
         return count

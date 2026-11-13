@@ -19,7 +19,6 @@ import socket
 import sqlite3
 import threading
 import time
-import urllib.request
 from typing import TYPE_CHECKING
 
 import pytest
@@ -33,7 +32,7 @@ from allelix.databases.schema import CLINVAR_SCHEMA
 if TYPE_CHECKING:
     from pathlib import Path
 
-_REAL_URLOPEN = urllib.request.urlopen
+_REAL_OPEN_URL = manager.open_url
 
 
 def _clinvar_cache(path: Path, build: str, signal: str) -> None:
@@ -92,9 +91,9 @@ def local_server(monkeypatch):
     def local_only(request, *args, **kwargs):
         url = request.full_url if hasattr(request, "full_url") else request
         assert url.startswith("http://127.0.0.1:"), url
-        return _REAL_URLOPEN(request, *args, **kwargs)
+        return _REAL_OPEN_URL(request, *args, **kwargs)
 
-    monkeypatch.setattr(urllib.request, "urlopen", local_only)
+    monkeypatch.setattr(manager, "open_url", local_only)
     yield f"http://127.0.0.1:{server.getsockname()[1]}", replies
     server.close()
 
@@ -186,13 +185,13 @@ def test_cpic_data_fetch_retries_a_cut_reply_then_raises_it(local_server, monkey
     replies.append(_CUT_CHUNKED)
     monkeypatch.setattr(cpic_loader, "CPIC_RETRY_BACKOFF_SECONDS", (0, 0, 0, 0, 0))
     attempts = []
-    real = urllib.request.urlopen
+    real = manager.open_url
 
     def counting(*args, **kwargs):
         attempts.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(urllib.request, "urlopen", counting)
+    monkeypatch.setattr(manager, "open_url", counting)
     with pytest.raises(http.client.HTTPException):
         cpic_loader._http_get_json(base + "/allele")
     assert len(attempts) == cpic_loader.CPIC_RETRY_ATTEMPTS

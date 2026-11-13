@@ -17,12 +17,11 @@ dbSNP.
 from __future__ import annotations
 
 import contextlib
-import os
 import sqlite3
 from typing import TYPE_CHECKING, TextIO
 
 from allelix.databases._versions import RSID_IDENTITY_SCHEMA_VERSION
-from allelix.databases.loader_utils import install_prebuilt_gz_cache
+from allelix.databases.loader_utils import install_prebuilt_gz_cache, publish_cache
 from allelix.databases.schema import RSID_IDENTITY_SCHEMA
 from allelix.databases.staging import owned_staging
 from allelix.utils.allele import complement
@@ -363,7 +362,7 @@ def write_identity_db(
                 ),
             )
             conn.commit()
-        os.replace(staging, db_path)
+        publish_cache(staging, db_path)
     return count
 
 

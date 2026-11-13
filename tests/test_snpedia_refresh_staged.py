@@ -29,7 +29,7 @@ from allelix.annotators import snpedia as snpedia_mod
 from allelix.annotators.snpedia import SNPediaAnnotator
 from allelix.cli import db as db_cli
 from allelix.cli import main
-from allelix.databases import snpedia_parser
+from allelix.databases import manager, snpedia_parser
 from allelix.databases.cache_state import CacheState
 from allelix.databases.loader_utils import install_prebuilt_gz_cache
 
@@ -47,6 +47,7 @@ def _offline(monkeypatch):
         raise AssertionError("network use in an offline regression test")
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(manager, "open_url", refuse)
 
 
 _SNP_PAGE = "{{Rsnum|rsid=1801133|Gene=MTHFR|StabilizedOrientation=plus}}"

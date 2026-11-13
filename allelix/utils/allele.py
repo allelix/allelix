@@ -224,26 +224,39 @@ def strand_aware_genotype_match(
     variant_ref: str | None,
     *,
     site_palindromic: bool = False,
+    site_reads_complement: bool = False,
 ) -> bool:
     """Per-genotype carrier match with strand-flip support for ClinPGx / SNPedia.
 
     PharmGKB / ClinPGx and SNPedia store the user's full diploid (sorted SNV
-    pair like ``"AG"``) rather than per-allele rows. Direct equality remains
-    the primary match. Strand-flip fires only when ``variant_ref`` confirms
-    reverse orientation against the source diploid AND the source diploid is
-    not palindromic (A/T or C/G).
+    pair like ``"AG"``) rather than per-allele rows. Where the site's source
+    alleles read only as their complement (``site_reads_complement``), the
+    complement is the one reading: a row spelled as the call is the other
+    strand's genotype and does not match. Elsewhere direct equality remains
+    the primary match, and strand-flip fires when
+    ``variant_ref`` confirms reverse orientation against the source diploid
+    AND the source diploid is not palindromic (A/T or C/G). Never at a site
+    the identity table flags palindromic.
 
     Args:
         allele1: First user allele (upper-cased single base for SNVs).
         allele2: Second user allele.
         source_geno: Source row's sorted diploid string (e.g. ``"AG"``).
         variant_ref: User's claimed REF at this locus. ``None`` means no
-            reference context; strand-flip is skipped (direct match only).
+            reference context: strand-flip then needs
+            ``site_reads_complement``, else only the direct match counts.
         site_palindromic: The identity table flags the site palindromic
             (its full allele set equals its own complement, e.g. a
             multi-allelic site carrying all four bases). The strand cannot
             be told from sequence there, so the complement path is skipped;
             a direct match still counts.
+        site_reads_complement: The source's alleles at the site, all its
+            rows together, read only as their complement against the
+            identity table's alleles at the call's locus
+            (``forward_strand_reading`` gives ``complement``). That site
+            evidence admits the complement reading of any genotype,
+            homozygotes included, without ``variant_ref``, and is the only
+            reading there: the direct spelling does not also match.
 
     Returns:
         True when the user matches ``source_geno`` directly or via a
@@ -259,14 +272,21 @@ def strand_aware_genotype_match(
     if len(allele1) != 1 or len(allele2) != 1 or len(source_geno) != 2:
         return False
     user_normalized = "".join(sorted((allele1, allele2)))
+    user_complement = "".join(sorted((complement(allele1), complement(allele2))))
+    if site_reads_complement and not site_palindromic:
+        # One reading per site: the rows are on the other strand, so a row
+        # spelled as the call names the other genotype.
+        return user_complement == source_geno
     if user_normalized == source_geno:
         return True
-    if variant_ref is None:
-        return False
     if site_palindromic:
         return False
-    user_complement_pair = sorted((complement(allele1), complement(allele2)))
-    if "".join(user_complement_pair) != source_geno:
+    if user_complement != source_geno:
+        return False
+    # Without site evidence, the call's REF must show the reverse
+    # orientation in this genotype itself. A homozygous-ALT row never
+    # holds the REF's complement, so only site evidence admits it.
+    if variant_ref is None:
         return False
     if variant_ref in source_geno:
         return False

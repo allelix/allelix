@@ -115,6 +115,12 @@ class Variant:
     # order (``parsers.vcf.is_data_line``). The annotated-VCF writer stamps
     # only the records a call was read from (2.5.2). None for other inputs.
     record_index: int | None = field(default=None, compare=False, repr=False)
+    # A call read from a split site's two records (one ALT each, ADR-0062):
+    # each allele with the record it came from, so each finding is stamped
+    # on its own allele's record. None for a call of one record.
+    allele_records: tuple[tuple[str, int], ...] | None = field(
+        default=None, compare=False, repr=False
+    )
     # A chip call's own rsID's single-base alleles at its build and locus, as
     # the resolution step learns them while filling REF: the identity table's
     # SNV rows and gnomAD's rows of that rsID there. ClinVar adds
@@ -359,8 +365,14 @@ class Annotation:
     haploid: bool = field(default=False, compare=False, repr=False)
     # ``record_index``: the input VCF record the finding's call was read
     #   from (``Variant.record_index``; None for other inputs). Ploidy and
-    #   genotype come from that call alone (ADR-0062).
+    #   genotype come from that call alone (ADR-0062). For a split site's
+    #   call, the record that carries the finding's allele, so --vcf-out
+    #   stamps it there.
     record_index: int | None = field(default=None, compare=False, repr=False)
+    # ``call_index``: the call's own record (``Variant.record_index``), the
+    #   same as ``record_index`` except for a split site's call, whose
+    #   findings all share it: the HTML shows that call as one row (2.7.0).
+    call_index: int | None = field(default=None, compare=False, repr=False)
     # ``effect_measure``: ``odds_ratio`` or ``beta`` when the GWAS row's
     #   effect direction was read from one, for the report's plain words.
     effect_measure: str = field(default="", compare=False, repr=False)
@@ -441,6 +453,7 @@ _INTERNAL_ANNOTATION_FIELDS: frozenset[str] = frozenset(
         "record_key",
         "haploid",
         "record_index",
+        "call_index",
         "effect_measure",
     }
 )
@@ -522,6 +535,24 @@ def annotation_label(a: Annotation) -> str:
     """How reports name the variant of ``a``: its rsID, or its locus without one."""
     chromosome, position = a.locus if a.locus is not None else ("", None)
     return variant_label(a.rsid, chromosome, position, a.locus_ref or "", a.alt)
+
+
+def annotation_site(a: Annotation) -> tuple[str, int] | None:
+    """The ``(chromosome, position)`` of the input record ``a`` was read from.
+
+    A VCF record's own position (``record_key``), else the annotation's
+    locus; None when the position is not known (an rsID list, or an unplaced
+    call). A trimmed ClinVar allele (ADR-0047) keeps its record's position.
+    """
+    if a.record_key is not None:
+        chromosome, position = a.record_key[0], a.record_key[1]
+    elif a.locus is not None:
+        chromosome, position = a.locus
+    else:
+        return None
+    if not chromosome or position <= 0:
+        return None
+    return chromosome, position
 
 
 def public_dict_label(d: dict) -> str:

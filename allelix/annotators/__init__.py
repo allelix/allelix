@@ -137,6 +137,7 @@ def get_annotators(
         palindromic_provider=identity.palindromic_rsids,
         normal_allele_provider=references.normal_allele_for,
         reference_prefetch=references.prefetch,
+        forward_site_provider=identity.forward_sites,
     )
     gwas = GWASCatalogAnnotator(
         data_dir,

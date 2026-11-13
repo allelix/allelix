@@ -56,7 +56,6 @@ import contextlib
 import gzip
 import io
 import logging
-import os
 import sqlite3
 import sys
 import time
@@ -66,7 +65,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from allelix.databases import manager
 from allelix.databases._versions import ALPHAMISSENSE_SCHEMA_VERSION
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.schema import ALPHAMISSENSE_SCHEMA
 from allelix.databases.staging import owned_staging
 
@@ -147,7 +148,8 @@ def _stream_zenodo() -> contextlib.AbstractContextManager[io.IOBase]:
     """Stream AlphaMissense TSV from Zenodo over HTTPS."""
     logger.info("Streaming %s", ZENODO_TSV_URL)
     req = urllib.request.Request(ZENODO_TSV_URL)
-    with urllib.request.urlopen(req, timeout=600) as resp:
+    # Allelix's own opener: a redirect to anything but HTTPS is refused.
+    with manager.open_url(req, timeout=600) as resp:
         decompressor = gzip.GzipFile(fileobj=resp)
         text_stream = io.TextIOWrapper(decompressor, encoding="utf-8")
         yield text_stream
@@ -293,7 +295,7 @@ def build_cache(
             print("Compacting database...")
             conn.execute("VACUUM")
 
-        os.replace(tmp_path, output_path)
+        publish_cache(tmp_path, output_path)
 
     elapsed = time.monotonic() - t0
     rsid_pct = (matched_rsids / total_records * 100) if total_records else 0

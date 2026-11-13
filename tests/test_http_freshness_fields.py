@@ -101,7 +101,7 @@ class Remote:
 @pytest.fixture(params=["gwas", "pharmgkb"])
 def remote(request, monkeypatch):
     remote = Remote(request.param)
-    monkeypatch.setattr(manager.urllib.request, "urlopen", remote.open)
+    monkeypatch.setattr(manager, "open_url", remote.open)
     monkeypatch.setattr(remote.module, "download", remote.download)
     monkeypatch.setattr(gwas, "GWAS_MIN_ROWS", 1)
     monkeypatch.setattr(pharmgkb, "PHARMGKB_MIN_ROWS", 1)

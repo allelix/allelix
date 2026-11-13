@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import sys
 import time
@@ -737,9 +738,12 @@ def _maybe_refresh_databases(
             remote = annotator.fetch_remote_signal()
             if remote is None:
                 age_days = int(age / 86400)
+                # The signal can be missing for any reason (no network, a
+                # refused redirect, no signal published): say what is known.
                 console.print(
-                    f"[yellow]{annotator.display_name} database is {age_days} days old. "
-                    "Run `allelix db update` when online.[/yellow]"
+                    f"[yellow]{annotator.display_name} database is {age_days} days old, "
+                    "and its remote freshness can't be verified (network error or no "
+                    "signal). Cached data is used; run `allelix db update` to retry.[/yellow]"
                 )
                 continue
 
@@ -1069,10 +1073,18 @@ def _run_analysis_command(
                 f"({parser.name!r}). Convert to VCF first, or drop --vcf-out to "
                 "produce the default report."
             )
-        if vcf_out.exists():
+        from allelix.reports.vcf import refuse_compressed_name
+
+        try:
+            refuse_compressed_name(vcf_out)
+        except ValueError as exc:
+            raise click.ClickException(f"--vcf-out: {exc}") from exc
+        # lexists: a dangling link is a name too, and writing through it
+        # would create its target (2.7.0).
+        if os.path.lexists(vcf_out):
             raise click.ClickException(
-                f"--vcf-out refuses to overwrite an existing file: {vcf_out}. "
-                "Move or delete the existing file, or choose a different path."
+                f"--vcf-out refuses to overwrite an existing file or link: {vcf_out}. "
+                "Move or delete it, or choose a different path."
             )
 
     resolved = resolve_data_dir(data_dir)
@@ -1443,8 +1455,11 @@ def _run_analysis_command(
             keep_filtered=keep_filtered,
             reference_rows=result.vcf_write_inputs.reference_rows,
             reference_records=result.vcf_write_inputs.reference_records,
+            reference_split=result.vcf_write_inputs.reference_split,
             record_rows=result.vcf_write_inputs.record_rows,
             record_recovered=result.vcf_write_inputs.record_recovered,
+            # The preflight found the name free: anything there now is not ours.
+            replace_existing=False,
         )
         console.print(
             f"[green]Wrote annotated VCF with {stamped:,} stamped row(s) to "

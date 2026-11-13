@@ -10,7 +10,7 @@ if [ -d "$DEST/real" ] && [ -d "$DEST/transcoded" ]; then
     echo "Test data already present."
 else
     echo "Downloading test data..."
-    curl -L -o test_data.tar.gz "$RELEASE_URL"
+    curl -L --proto-redir =https -o test_data.tar.gz "$RELEASE_URL"
     tar -xzf test_data.tar.gz
     rm test_data.tar.gz
     echo "Done. $(find test_data/real -type f | wc -l) files extracted."
@@ -21,6 +21,6 @@ if [ -f "$DEST/gwas_catalog.zip" ]; then
     echo "GWAS Catalog already present."
 else
     echo "Downloading GWAS Catalog (~66 MB)..."
-    curl -L -o "$DEST/gwas_catalog.zip" "$GWAS_URL"
+    curl -L --proto-redir =https -o "$DEST/gwas_catalog.zip" "$GWAS_URL"
     echo "Done."
 fi

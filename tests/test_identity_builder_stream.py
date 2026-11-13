@@ -52,7 +52,8 @@ class _Process:
         (r"C:\synthetic files\dbsnp.vcf.gz", r"gzip -dc 'C:\synthetic files\dbsnp.vcf.gz'"),
         (
             "https://example.invalid/dbsnp.vcf.gz?x=1&y=2",
-            "curl -sSfL --retry 5 'https://example.invalid/dbsnp.vcf.gz?x=1&y=2' | gzip -dc",
+            "curl -sSfL --proto-redir =https --retry 5 'https://example.invalid/dbsnp.vcf.gz?x=1&y=2'"
+            " | gzip -dc",
         ),
     ],
 )

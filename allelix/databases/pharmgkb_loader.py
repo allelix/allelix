@@ -23,20 +23,21 @@ import contextlib
 import csv
 import hashlib
 import json
-import os
 import re
 import sqlite3
 import tempfile
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
+from allelix.databases.loader_utils import check_zip_expansion, publish_cache
 from allelix.databases.schema import PHARMGKB_SCHEMA
 from allelix.databases.staging import owned_staging
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from hashlib import _Hash
 
 
 # PharmGKB rebranded to ClinPGx in 2026 (https://www.clinpgx.org).
@@ -245,8 +246,14 @@ def _open_directory(zip_or_dir: Path) -> tuple[Path, tempfile.TemporaryDirectory
     tmp = tempfile.TemporaryDirectory(prefix="allelix-pharmgkb-")
     # Python 3.11+ zipfile.extractall sanitizes "../" and absolute paths in
     # member names. The project pins requires-python >= 3.12 (pyproject.toml).
-    with zipfile.ZipFile(zip_or_dir) as zf:
-        zf.extractall(tmp.name)
+    try:
+        with zipfile.ZipFile(zip_or_dir) as zf:
+            # Every member it unpacks, together, before any is read.
+            check_zip_expansion(zf, zf.infolist(), zip_or_dir.name)
+            zf.extractall(tmp.name)
+    except BaseException:
+        tmp.cleanup()
+        raise
     return Path(tmp.name), tmp
 
 
@@ -257,23 +264,47 @@ def pharmgkb_content_hash(
 
     The archive's packaging (timestamps, compression, member order, other
     files) and the lookup's order do not count. None when a TSV is missing;
-    the load then reports it.
+    the load then reports it. Every member of an archive is checked against
+    the unpack limit before either table is opened (``check_zip_expansion``
+    raises ValueError), so an archive a rebuild would refuse is refused here
+    too, before the unchanged-content check can keep it.
     """
     digest = hashlib.sha256()
-    for name in (CLINICAL_ANN_FILENAME, CLINICAL_ANN_ALLELES_FILENAME):
+    names = (CLINICAL_ANN_FILENAME, CLINICAL_ANN_ALLELES_FILENAME)
+    if zip_or_dir.is_dir():
+        for name in names:
+            path = zip_or_dir / name
+            try:
+                size = path.stat().st_size
+                with path.open("rb") as member:
+                    _hash_member(digest, name, size, member)
+            except OSError:
+                return None
+    else:
         try:
-            if zip_or_dir.is_dir():
-                data = (zip_or_dir / name).read_bytes()
-            else:
-                with zipfile.ZipFile(zip_or_dir) as zf:
-                    data = zf.read(name)
+            with zipfile.ZipFile(zip_or_dir) as zf:
+                # Every member, as the unpack checks them, before either table
+                # is read; then each table is read in bounded chunks.
+                check_zip_expansion(zf, zf.infolist(), zip_or_dir.name)
+                infos = [zf.getinfo(name) for name in names]
+                for info in infos:
+                    with zf.open(info) as member:
+                        _hash_member(digest, info.filename, info.file_size, member)
         except (KeyError, OSError):
             return None
-        digest.update(f"{name}\0{len(data)}\0".encode())
-        digest.update(data)
     lookup = sorted((allele_function_lookup or {}).items())
     digest.update(json.dumps(lookup).encode())
     return f"sha256:{digest.hexdigest()}"
+
+
+_HASH_CHUNK = 1 << 20
+
+
+def _hash_member(digest: _Hash, name: str, size: int, member: IO[bytes]) -> None:
+    """Add one table to the content hash: ``name``, its length, then its bytes, streamed."""
+    digest.update(f"{name}\0{size}\0".encode())
+    while chunk := member.read(_HASH_CHUNK):
+        digest.update(chunk)
 
 
 def stored_content_hash(db_path: Path) -> str | None:
@@ -498,5 +529,5 @@ def load_pharmgkb_tsv(
                 f"`allelix db update --force`."
             )
             raise OSError(msg)
-        os.replace(tmp_path, db_path)
+        publish_cache(tmp_path, db_path)
         return count

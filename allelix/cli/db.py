@@ -41,6 +41,27 @@ def _print_refreshed(annotator: Annotator) -> None:
         )
     else:
         console.print(f"  [green]✓ {annotator.name} refreshed[/green] (version {version})")
+    _print_source_skips(annotator)
+
+
+def _print_source_skips(annotator: Annotator) -> None:
+    """The saved skip counts under a source's line, where it keeps them."""
+    skip_line = _source_skip_line(annotator)
+    if skip_line:
+        console.print(f"    {skip_line}")
+
+
+def _source_skip_line(annotator: Annotator) -> str | None:
+    """The release's skipped source rows, for a source that counts them (GWAS)."""
+    counts_fn = getattr(annotator, "source_skip_counts", None)
+    counts = counts_fn() if callable(counts_fn) else None
+    if counts is None:
+        return None
+    return (
+        f"{annotator.display_name}: source rows skipped because the risk allele "
+        f"is not the row's own SNP's: other_snp {counts['other_snp']:,}, "
+        f"unattributed {counts['unattributed']:,} (not in the record count)"
+    )
 
 
 def _confirm_cadd_license(*, license_held: bool = False) -> bool:
@@ -246,6 +267,7 @@ def db_update(
                         f"  [green]✓ {annotator.name} ready[/green] "
                         f"(version {literal(annotator.version() or '(unknown)')})"
                     )
+                    _print_source_skips(annotator)
                 else:
                     failed.append(annotator.name)
                 continue
@@ -281,6 +303,7 @@ def db_update(
                     f"  [yellow]{annotator.name}: cache present, but remote "
                     f"freshness can't be verified (network error or no signal){advice}[/yellow]"
                 )
+                _print_source_skips(annotator)
                 continue
 
             cached = annotator.cached_remote_signal()
@@ -290,6 +313,7 @@ def db_update(
                     f"  [dim]{annotator.name}: already current "
                     f"(version {literal(annotator.version() or '(unknown)')})[/dim]"
                 )
+                _print_source_skips(annotator)
                 continue
             if verdict == "unknown":
                 console.print(
@@ -297,6 +321,7 @@ def db_update(
                     "freshness fields than the cache recorded, so a change cannot be "
                     "verified. Pass --force to refresh anyway.[/yellow]"
                 )
+                _print_source_skips(annotator)
                 continue
 
             if cached is None:
@@ -782,6 +807,7 @@ def db_status(data_dir: Path | None) -> None:
     table.add_column("Version")
     table.add_column("Records", justify="right")
     builds = _helpers.present_clinvar_builds(resolved)
+    skip_lines: list[str] = []
     for annotator in get_annotators(resolved, cadd_full=cfg.cadd_full, clinvar_builds=builds):
         with annotator:
             status = annotator.cache_status()
@@ -807,4 +833,9 @@ def db_status(data_dir: Path | None) -> None:
                 if count is not None:
                     records = f"{count:,}"
             table.add_row(annotator.display_name, ready_marker, literal(version), records)
+            skip_line = _source_skip_line(annotator)
+            if skip_line:
+                skip_lines.append(skip_line)
     console.print(table)
+    for line in skip_lines:
+        console.print(line)

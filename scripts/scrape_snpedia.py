@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 print = functools.partial(print, flush=True)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from allelix.databases import resolve_data_dir  # noqa: E402
+from allelix.databases import manager, resolve_data_dir  # noqa: E402
 
 API_URL = "https://bots.snpedia.com/api.php"
 USER_AGENT = "allelix-scraper/1.0 (archival; https://github.com/allelix/allelix)"
@@ -76,7 +76,8 @@ def api_get(params: dict[str, str]) -> dict[str, Any]:
     last_exc = None
     for attempt in range(MAX_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            # Allelix's own opener: a redirect to anything but HTTPS is refused.
+            with manager.open_url(req, timeout=45) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             if exc.code not in (429, 502, 503) or attempt == MAX_RETRIES:

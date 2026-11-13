@@ -59,7 +59,13 @@ def _args(case, command):
 @pytest.mark.parametrize("command", COMMANDS)
 @pytest.mark.parametrize("path_source", ["option", "environment"])
 def test_new_data_directory_below_readonly_parent_is_a_clean_error(
-    rc_case, rc_snapshot, rc_clean_error, monkeypatch, command, path_source
+    require_readonly_filesystem,
+    rc_case,
+    rc_snapshot,
+    rc_clean_error,
+    monkeypatch,
+    command,
+    path_source,
 ):
     case = rc_case
     parent = case.root / "readonly-parent"
@@ -79,7 +85,7 @@ def test_new_data_directory_below_readonly_parent_is_a_clean_error(
 
 @pytest.mark.parametrize("path_source", ["option", "environment"])
 def test_db_path_check_keeps_its_existing_readonly_directory_diagnostic(
-    rc_case, rc_snapshot, rc_clean_error, monkeypatch, path_source
+    require_readonly_filesystem, rc_case, rc_snapshot, rc_clean_error, monkeypatch, path_source
 ):
     case = rc_case
     destination = case.root / "existing-readonly"
@@ -98,7 +104,7 @@ def test_db_path_check_keeps_its_existing_readonly_directory_diagnostic(
 
 
 def test_nonclinvar_readonly_cache_stops_before_download(
-    rc_case, rc_snapshot, rc_clean_error, monkeypatch
+    require_readonly_filesystem, rc_case, rc_snapshot, rc_clean_error, monkeypatch
 ):
     case = rc_case
     cfg = AllelixConfig()

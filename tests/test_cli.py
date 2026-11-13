@@ -1277,22 +1277,8 @@ class TestDbCommands:
         assert result.exit_code == 0
 
     def test_db_path_check_fails_on_readonly_dir(self, tmp_path: Path):
-        import os
-
         from test_readonly_caches import _read_only
 
-        # chmod 0 is bypassed by root — root sees a "readonly"
-        # dir as writable (DAC override) and the test silently passes
-        # for the wrong reason. CI runners and dev containers commonly
-        # run as root; skip there with a clear message so the test
-        # isn't a false-green on those environments. Hermetic
-        # local-dev runs (non-root) keep the real assertion.
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            pytest.skip(
-                "chmod-readonly is bypassed under root (DAC override); "
-                "test is non-hermetic in that environment. Run as a "
-                "non-root user to exercise the writability check."
-            )
         with _read_only(tmp_path):
             runner = CliRunner()
             result = runner.invoke(main, ["db", "path", "--data-dir", str(tmp_path), "--check"])
@@ -2025,7 +2011,7 @@ class TestDiffOption:
 
 
 class TestExcludeSnpedia:
-    """--exclude-snpedia wires through to exclude_sources on all three commands."""
+    """SNPedia exclusion works on analyze/methylation; pharma refuses the option."""
 
     def test_analyze_passes_exclude_sources(self, mock_mhg_path, monkeypatch):
         captured: dict = {}
@@ -2051,7 +2037,7 @@ class TestExcludeSnpedia:
         assert result.exit_code == 0, result.output
         assert "snpedia" in captured["exclude_sources"]
 
-    def test_pharmacogenomics_passes_exclude_sources(self, mock_mhg_path, monkeypatch):
+    def test_pharmacogenomics_refuses_exclude_snpedia(self, mock_mhg_path, monkeypatch):
         captured: dict = {}
 
         def fake_run(**kwargs):
@@ -2060,8 +2046,9 @@ class TestExcludeSnpedia:
         monkeypatch.setattr("allelix.cli._helpers._run_analysis_command", fake_run)
         runner = CliRunner()
         result = runner.invoke(main, ["pharmacogenomics", str(mock_mhg_path), "--exclude-snpedia"])
-        assert result.exit_code == 0, result.output
-        assert "snpedia" in captured["exclude_sources"]
+        assert result.exit_code == 2, result.output
+        assert "--exclude-snpedia" in result.output
+        assert captured == {}
 
     def test_methylation_exclude_snpedia_and_gwas(self, mock_mhg_path, monkeypatch):
         """Both --exclude-snpedia and default GWAS exclusion coexist."""

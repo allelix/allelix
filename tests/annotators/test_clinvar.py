@@ -219,8 +219,10 @@ class TestTsvSetupWiring:
         (variants without an rsID; an iv:7 cache lacks those rows), then
         iv:8 -> iv:9 (normal-allele records written REF == ALT are kept,
         with a ``normal_allele`` column). 2.5.1's build-time integrity
-        checks change nothing stored, so they keep iv:9. Every cache-content change
-        requires an interpreter-version bump; runtime changes do not.
+        checks change nothing stored, so they keep iv:9. 2.7 bumps iv:9 -> iv:10:
+        every placement of a VariationID on a build is kept, including both
+        X and Y placements of a pseudo-autosomal variant. Every cache-content
+        change requires an interpreter-version bump; runtime changes do not.
 
         Pin the current value here so a future content-altering
         loader change is forced to revisit this assertion (and the
@@ -228,7 +230,7 @@ class TestTsvSetupWiring:
         whatever number is in the constant."""
         from allelix.databases._versions import CLINVAR_INTERPRETER_VERSION
 
-        assert CLINVAR_INTERPRETER_VERSION == 9
+        assert CLINVAR_INTERPRETER_VERSION == 10
 
     @pytest.mark.parametrize("stale_iv", ["iv:2", "iv:3", "iv:4", "iv:5", "iv:6", "iv:7", "iv:8"])
     def test_stale_cache_is_not_ready(self, tmp_path: Path, stale_iv: str):

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from rich.table import Table
 
-from allelix.models import annotation_label, public_dict_label
+from allelix.models import annotation_label, annotation_site, public_dict_label
 from allelix.reports._pipeline import (
     PANEL_NO_CALL,
     PANEL_NOT_ON_CHIP,
@@ -146,9 +146,22 @@ def render_terminal_diff(
 
     Uses the same bare-min column set as the main annotation table.
     """
-    from allelix.reports.diff import summarize_diff
+    from allelix.models import annotation_to_public_dict
+    from allelix.reports.diff import diff_site_label, diff_sites, summarize_diff
 
     summary = summarize_diff(diff)
+    # An rsID at two or more sites in the diff shows each row's site under it,
+    # as the main table does, so a moved finding's two rows can be told apart.
+    sites = diff_sites(diff)
+
+    def label(d: dict, fallback: str) -> str:
+        site = diff_site_label(d, sites)
+        if site is None:
+            return _label_cell(fallback)
+        width = max(_LABEL_LINE, len(d["rsid"]))
+        lines = textwrap.wrap(site, width, break_long_words=True, break_on_hyphens=False)
+        return literal("\n".join([d["rsid"], *lines]))
+
     if not diff.has_changes:
         console.print(f"[green]{literal(summary)}[/green]")
         return 0
@@ -170,7 +183,7 @@ def render_terminal_diff(
         if has_condition:
             table.add_column("Condition", overflow="fold")
         for a in diff.new:
-            row = [_label_cell(annotation_label(a))]
+            row = [label(annotation_to_public_dict(a), annotation_label(a))]
             if has_gene:
                 row.append(literal(a.gene or "—"))
             row.extend(
@@ -215,7 +228,7 @@ def render_terminal_diff(
             genotype = c.current.genotype_match
             if c.previous_genotype_match and c.previous_genotype_match != genotype:
                 genotype = f"{c.previous_genotype_match} -> {genotype}"
-            row = [_label_cell(annotation_label(c.current))]
+            row = [label(annotation_to_public_dict(c.current), annotation_label(c.current))]
             if has_gene:
                 row.append(literal(c.current.gene or "—"))
             old_sig = _compact_significance(c.previous_significance, c.current.source)
@@ -250,7 +263,7 @@ def render_terminal_diff(
             table.add_column("Condition", overflow="fold", style="dim")
         for d in diff.removed:
             source = d.get("source", "")
-            row = [_label_cell(public_dict_label(d))]
+            row = [label(d, public_dict_label(d))]
             if has_gene:
                 row.append(literal(d.get("gene", "") or "—"))
             row.extend(
@@ -340,8 +353,26 @@ def _print_table(filtered: list[Annotation], console: Console) -> None:
     if has_condition:
         table.add_column("Condition", overflow="fold")
 
+    # An rsID read at more than one position shows the position under it,
+    # wrapped to the column's width so a long contig name takes no width
+    # from the other columns.
+    sites: dict[str, set[tuple[str, int]]] = {}
     for a in filtered:
-        row = [_label_cell(annotation_label(a))]
+        site = annotation_site(a)
+        if a.rsid and site is not None:
+            sites.setdefault(a.rsid, set()).add(site)
+
+    for a in filtered:
+        site = annotation_site(a)
+        if a.rsid and site is not None and len(sites[a.rsid]) > 1:
+            width = max(_LABEL_LINE, len(a.rsid))
+            position = textwrap.wrap(
+                f"{site[0]}:{site[1]}", width, break_long_words=True, break_on_hyphens=False
+            )
+            label = literal("\n".join([a.rsid, *position]))
+        else:
+            label = _label_cell(annotation_label(a))
+        row = [label]
         if has_gene:
             row.append(literal(a.gene or "—"))
         row.extend(

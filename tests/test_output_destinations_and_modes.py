@@ -225,7 +225,7 @@ def _write(writer, source, destination):
 @pytest.mark.parametrize(
     "prior_mode", [None, 0o640, 0o664], ids=["new", "existing640", "existing664"]
 )
-def test_published_outputs_follow_umask_or_keep_existing_mode(tmp_path, writer, mask, prior_mode):
+def test_published_reports_are_private_or_keep_existing_mode(tmp_path, writer, mask, prior_mode):
     source, destination = tmp_path / "input.vcf", tmp_path / "report"
     source.write_text(VCF, encoding="utf-8")
     outputs = list(plink_paths(destination).values()) if writer == "plink" else [destination]
@@ -238,7 +238,7 @@ def test_published_outputs_follow_umask_or_keep_existing_mode(tmp_path, writer, 
         _write(writer, source, destination)
     finally:
         os.umask(previous_mask)
-    expected = prior_mode if prior_mode is not None else 0o666 & ~mask
+    expected = prior_mode if prior_mode is not None else 0o600
     assert {path.name: stat.S_IMODE(path.stat().st_mode) for path in outputs} == {
         path.name: expected for path in outputs
     }
@@ -281,9 +281,7 @@ def test_cli_report_modes(tmp_path, command, extension, mask, prior_mode):
     finally:
         os.umask(previous_mask)
     assert result.exit_code == 0, result.output
-    assert stat.S_IMODE(output.stat().st_mode) == (
-        prior_mode if prior_mode is not None else 0o666 & ~mask
-    )
+    assert stat.S_IMODE(output.stat().st_mode) == (prior_mode if prior_mode is not None else 0o600)
     assert source.read_text(encoding="utf-8") == VCF
 
 

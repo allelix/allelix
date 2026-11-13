@@ -217,3 +217,40 @@ ClinVar update, SNPedia's staged pages while they parse), a table still in
 `extracted/`, a user's backup. Marking a finished candidate
 as allelix's own, so that it too can be removed, is left for a later
 release.
+
+## Amendment 2.7.0 (2026-11-10): new reports are private
+
+The 2.5.2 amendment gives a new output the mode the umask gives any new
+file (`0644` under `022`). Reports hold personal genetic data, so that made
+them readable by every user of a shared machine. A new JSON or HTML report,
+annotated VCF, or PLINK `.bed`, `.bim` or `.fam` is now published `0600`,
+whatever the umask; the mode no longer depends on the extension or the
+command. An existing destination keeps its mode, as before, so a user who
+widened a report keeps that choice. `config.toml` is written through the
+same staging but is not a report: a new one keeps the umask's mode, and so
+do the caches (amendment 2.6.0). Terminal output redirected by the shell is
+outside this: the shell creates that file.
+
+## Amendment 2.7.0 (2026-11-10): the annotated VCF never replaces a name
+
+`--vcf-out` refused an existing destination only at start-up, with
+`exists()`, and published with `os.replace` like every other output. A name
+created during the run was replaced, and a dangling symlink, which
+`exists()` reports as absent, was replaced itself. The start-up check now
+uses `lexists`, so a link of any kind is an existing name, and the promise
+covers the whole run: `--vcf-out` tells the writer that no name there is its
+own (`replace_existing=False`), so a name that appeared during the analysis is
+refused before the VCF is written. The annotated VCF is published without
+replacing: the staged file is hard-linked to the destination, which fails if
+the name exists, and only then is the staged name removed. A name taken
+meanwhile is left as it is and the run stops with an error naming it.
+
+A file system without hard links has no portable way to publish the complete
+staged file atomically without replacing an existing name. An exclusive
+create followed by a rename would replace a file another program put there
+in between, and would leave an empty file if the rename failed, so the write
+is refused there with an error naming the path, and the staged file is
+removed. Called directly, the writer still replaces a destination that
+existed when it started and keeps its mode; a name that appears while it
+writes is refused as above. Reports and PLINK files keep the
+replace-on-publish contract above.

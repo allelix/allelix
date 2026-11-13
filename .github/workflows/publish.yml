@@ -2,17 +2,160 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
-permissions:
-  id-token: write
+# Each job states what it needs; only the upload gets the PyPI id-token.
+permissions: {}
 jobs:
-  publish:
+  # The upload's checks, without a second test run: the tag is the package
+  # version, CI passed on the tagged commit, and the built wheel and sdist each
+  # install in a clean venv of their own and report that version. Any failure
+  # stops the upload.
+  verify:
     runs-on: ubuntu-latest
-    environment: pypi
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
-      - run: pip install build
-      - run: python -m build
+
+      - name: The tag is the released commit and the package version
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse HEAD)"
+          if [ "$COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::Tag '$TAG' checks out $COMMIT, but the release is for $GITHUB_SHA"
+            exit 1
+          fi
+          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag '$TAG' does not match pyproject.toml version '$VERSION' (expected 'v$VERSION')"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Tag '$TAG' is commit $COMMIT, package version $VERSION."
+
+      # The CI workflow's run for the tag push of this exact commit, waited for
+      # while it is queued or running (CI's own timeout is 25 minutes). Every job
+      # of its latest attempt must have succeeded, the tag guard and both test
+      # legs among them.
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=100")"
+            run="$(jq -c --arg sha "$GITHUB_SHA" --arg tag "$TAG" '
+              [.workflow_runs[]
+               | select(.head_sha == $sha and .head_branch == $tag and .path == ".github/workflows/ci.yml")]
+              | max_by(.run_number) // empty' <<<"$runs")"
+            if [ -n "$run" ] && [ "$(jq -r .status <<<"$run")" = "completed" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::No completed CI run for tag '$TAG' at $GITHUB_SHA; re-run this workflow once CI has finished"
+              exit 1
+            fi
+            echo "Waiting for CI on '$TAG' (${run:+run status $(jq -r .status <<<"$run")}${run:+, }checked $(date -u +%H:%M:%S))"
+            sleep 30
+          done
+          run_id="$(jq -r .id <<<"$run")"
+          conclusion="$(jq -r .conclusion <<<"$run")"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI run $run_id for '$TAG' concluded '$conclusion', not success"
+            exit 1
+          fi
+          jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?filter=latest&per_page=100")"
+          not_green="$(jq -r '[.jobs[] | select(.conclusion != "success") | "\(.name): \(.conclusion)"] | join(", ")' <<<"$jobs")"
+          if [ -n "$not_green" ]; then
+            echo "::error::CI run $run_id has jobs that did not succeed: $not_green"
+            exit 1
+          fi
+          for required in "version-tag-guard" "lint-and-test (3.12)" "lint-and-test (3.14)"; do
+            if [ "$(jq --arg n "$required" '[.jobs[] | select(.name == $n)] | length' <<<"$jobs")" != "1" ]; then
+              echo "::error::CI run $run_id has no single '$required' job"
+              exit 1
+            fi
+          done
+          echo "CI run $run_id passed on '$TAG' at $GITHUB_SHA."
+
+      - name: Build the sdist and wheel once
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: The built wheel installs in a clean venv and reports the version
+        run: |
+          set -euo pipefail
+          WHEEL="dist/allelix-$VERSION-py3-none-any.whl"
+          if [ ! -f "$WHEEL" ] || [ ! -f "dist/allelix-$VERSION.tar.gz" ] || [ "$(ls dist | wc -l)" != "2" ]; then
+            echo "::error::dist/ holds $(ls dist | tr '\n' ' '), not just the wheel and sdist of $VERSION"
+            exit 1
+          fi
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/python" -m pip install --quiet "$PWD/$WHEEL"
+          # Outside the checkout, so only the installed wheel can be imported.
+          cd "$RUNNER_TEMP"
+          REPORTED="$("$RUNNER_TEMP/wheel-venv/bin/allelix" --version)"
+          if [ "$REPORTED" != "allelix, version $VERSION" ]; then
+            echo "::error::The installed wheel reports '$REPORTED', not 'allelix, version $VERSION'"
+            exit 1
+          fi
+          METADATA="$("$RUNNER_TEMP/wheel-venv/bin/python" -c 'import importlib.metadata as m; print(m.version("allelix"))')"
+          if [ "$METADATA" != "$VERSION" ]; then
+            echo "::error::The installed wheel's metadata says '$METADATA', not '$VERSION'"
+            exit 1
+          fi
+          echo "The installed wheel reports $REPORTED."
+
+      - name: The built sdist installs in its own clean venv and reports the version
+        run: |
+          set -euo pipefail
+          SDIST="dist/allelix-$VERSION.tar.gz"
+          python -m venv "$RUNNER_TEMP/sdist-venv"
+          # Builds from the sdist itself: the file the upload publishes.
+          "$RUNNER_TEMP/sdist-venv/bin/python" -m pip install --quiet "$PWD/$SDIST"
+          # Outside the checkout, so only the installed sdist can be imported.
+          cd "$RUNNER_TEMP"
+          REPORTED="$("$RUNNER_TEMP/sdist-venv/bin/allelix" --version)"
+          if [ "$REPORTED" != "allelix, version $VERSION" ]; then
+            echo "::error::The installed sdist reports '$REPORTED', not 'allelix, version $VERSION'"
+            exit 1
+          fi
+          METADATA="$("$RUNNER_TEMP/sdist-venv/bin/python" -c 'import importlib.metadata as m; print(m.version("allelix"))')"
+          if [ "$METADATA" != "$VERSION" ]; then
+            echo "::error::The installed sdist's metadata says '$METADATA', not '$VERSION'"
+            exit 1
+          fi
+          echo "The installed sdist reports $REPORTED."
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Uploads the files verify installed, without a checkout or a rebuild.
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

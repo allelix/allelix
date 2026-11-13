@@ -12,13 +12,17 @@ import logging
 import os
 import re
 import sqlite3
+import urllib.error
+import urllib.parse
 import urllib.request
+import urllib.response
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple, TypedDict
+from typing import IO, TYPE_CHECKING, NamedTuple, TypedDict
 
 from allelix import __version__
 from allelix.databases.cache_state import connect_readonly, is_wal
+from allelix.databases.loader_utils import publish_cache
 from allelix.databases.schema import CLINVAR_SCHEMA
 from allelix.databases.staging import owned_staging
 
@@ -68,6 +72,56 @@ class DatabaseInfo(TypedDict):
 PROBE_ERRORS: tuple[type[Exception], ...] = (OSError, ValueError, http.client.HTTPException)
 
 
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to an HTTPS URL; refuse any other target before contacting it.
+
+    Every hop is checked: an HTTPS redirect that leads on to plain HTTP (or
+    FTP, ``file:``, ``data:``) is refused at that hop. The refusal is a
+    ``URLError``, an OSError, so each caller's existing failure path applies:
+    a freshness probe returns None and a download or CPIC fetch raises.
+    The followed request keeps the original method: a HEAD freshness probe
+    stays HEAD at every hop and a GET stays GET, whatever the Python version's
+    urllib would choose (3.12 turns a redirected HEAD into GET).
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        """The next request, only when ``newurl`` (resolved against the request) is HTTPS."""
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        if urllib.parse.urlsplit(target).scheme.lower() != "https":
+            # The refused reply is closed here: raising skips urllib's own
+            # close of it, and a URLError carries no response to close.
+            fp.close()
+            raise urllib.error.URLError(
+                f"refused a redirect from {req.full_url} to a non-HTTPS URL ({target})"
+            )
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and req.get_method() in ("HEAD", "GET"):
+            new.method = req.get_method()
+        return new
+
+
+_HTTPS_OPENER = urllib.request.build_opener(HttpsOnlyRedirectHandler)
+
+
+def open_url(
+    request: urllib.request.Request, timeout: float
+) -> http.client.HTTPResponse | urllib.response.addinfourl:
+    """Open ``request`` under the HTTPS-only redirect policy: every download and probe uses this.
+
+    Through Allelix's own opener, never urllib's process-wide one, which is
+    left as it is: a redirect to any scheme but HTTPS is refused before contact.
+    """
+    return _HTTPS_OPENER.open(request, timeout=timeout)
+
+
 def _probe_failed(url: str, exc: Exception) -> None:
     """Close an HTTP error's response and log why the probe failed, keeping its type."""
     if hasattr(exc, "close"):
@@ -86,7 +140,7 @@ def fetch_remote_text(
     """
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             body = response.read() if max_bytes is None else response.read(max_bytes + 1)
             if max_bytes is not None and len(body) > max_bytes:
                 return None
@@ -107,7 +161,7 @@ def head_request_headers(
     """
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="HEAD")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             return {name.lower(): value for name, value in response.headers.items()}
     except PROBE_ERRORS as exc:
         _probe_failed(url, exc)
@@ -222,7 +276,7 @@ def download(url: str, dest: Path) -> None:
     with owned_staging(dest, ".part") as part_path:
         try:
             with (
-                urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
+                open_url(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
                 part_path.open("wb") as out,
             ):
                 expected_size = response.headers.get("Content-Length")
@@ -893,14 +947,16 @@ def iter_clinvar_tsv_records(
 
     # Stream variant_summary into a temp SQLite indexed by VariationID
     # for the requested build only. Roughly halves the row count vs.
-    # keeping both builds.
+    # keeping both builds. A VariationID can have more than one placement
+    # on a build (a pseudo-autosomal variant on X and on Y): each distinct
+    # (chromosome, position) is kept, and an identical repeat once.
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
         tmp_path = Path(tmp.name)
     try:
         with contextlib.closing(sqlite3.connect(tmp_path)) as tmp_conn:
             tmp_conn.executescript(
                 "CREATE TABLE vs ("
-                "  variation_id INTEGER PRIMARY KEY, "
+                "  variation_id INTEGER NOT NULL, "
                 "  rsid TEXT, "
                 "  chromosome TEXT, "
                 "  position INTEGER, "
@@ -909,8 +965,9 @@ def iter_clinvar_tsv_records(
                 "  gene TEXT, "
                 "  review_status TEXT, "
                 "  normal_allele INTEGER, "
-                "  aggregate TEXT"
-                ");"
+                "  aggregate TEXT, "
+                "  PRIMARY KEY (variation_id, chromosome, position)"
+                ") WITHOUT ROWID;"
             )
             # Variants whose aggregate is not a disease classification: their
             # outranked P/LP submissions may still be reported (ADR-0045).
@@ -1003,28 +1060,31 @@ def iter_clinvar_tsv_records(
                     and (variation_id not in non_disease)
                 ):
                     continue
-                row = cursor.execute(
+                placements = cursor.execute(
                     "SELECT rsid, chromosome, position, ref, alt, gene, review_status, "
-                    "normal_allele, aggregate FROM vs WHERE variation_id = ?",
+                    "normal_allele, aggregate FROM vs WHERE variation_id = ? "
+                    "ORDER BY chromosome, position",
                     (variation_id,),
-                ).fetchone()
+                ).fetchall()
                 if counts is not None:
-                    if row is None:
+                    if not placements:
                         counts.join_misses += 1
                     else:
                         counts.join_hits += 1
-                if row is None:
-                    continue
-                for record in _group_records(
-                    variation_id,
-                    group,
-                    row,
-                    outranked=_decide_outranked(group) if variation_id in non_disease else None,
-                    aggregate_only=aggregate_only,
-                ):
-                    if counts is not None:
-                        counts.yielded += 1
-                    yield record
+                outranked = _decide_outranked(group) if variation_id in non_disease else None
+                # Each placement gets its own copy of the variant's
+                # submissions; the submitter split stays per submission.
+                for row in placements:
+                    for record in _group_records(
+                        variation_id,
+                        group,
+                        row,
+                        outranked=outranked,
+                        aggregate_only=aggregate_only,
+                    ):
+                        if counts is not None:
+                            counts.yielded += 1
+                        yield record
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1078,7 +1138,7 @@ def load_clinvar_tsv(
             build_log=build_log,
             allow_shrink=allow_shrink,
         )
-        os.replace(partial, db_path)
+        publish_cache(partial, db_path)
     return note
 
 

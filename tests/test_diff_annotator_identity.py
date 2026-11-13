@@ -266,7 +266,7 @@ def _input(path, build="GRCh37"):
 
 
 def _args(command, source, data, build="GRCh37"):
-    return [
+    args = [
         command,
         str(source),
         "--data-dir",
@@ -276,11 +276,11 @@ def _args(command, source, data, build="GRCh37"):
         build.lower(),
         "--min-magnitude",
         "0",
-        "--gwas-min-magnitude",
-        "0",
-        "--snpedia-min-magnitude",
-        "0",
     ]
+    # Keep the diff coverage on pharmacogenomics using only its supported options.
+    if command != "pharmacogenomics":
+        args += ["--gwas-min-magnitude", "0", "--snpedia-min-magnitude", "0"]
+    return args
 
 
 @pytest.mark.parametrize("command", ["analyze", "methylation", "pharmacogenomics"])

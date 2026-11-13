@@ -36,6 +36,7 @@ for a fourth call site.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -45,6 +46,7 @@ from allelix.annotators import get_annotator_class
 from allelix.models import report_rank_key
 from allelix.parsers._helpers import normalize_chromosome
 from allelix.parsers.vcf import (
+    _canonical_rsid,
     _info_end,
     _is_symbolic,
     _open_vcf,
@@ -128,6 +130,10 @@ class VcfWriteInputs:
     # from: only a finding of theirs is stamped on a ``reference_rows``
     # record (2.6.1). None: no such filter (a caller that keeps no numbers).
     reference_records: frozenset[int] | None = None
+    # The (position, rsID) of explicit reference records whose own rsID had a
+    # reference call of its own (``reference_carried_calls``): such a record
+    # carries none of the site rsID's rebuilt findings.
+    reference_split: frozenset[tuple[Locus, str]] = frozenset()
 
 
 _logger = logging.getLogger(__name__)
@@ -515,6 +521,22 @@ def _sources_used(
     return used
 
 
+# Output names that promise a compressed file. The annotated VCF is plain
+# text, so such a name would hold bytes no gzip or BGZF reader accepts (2.7.0).
+COMPRESSED_SUFFIXES = (".gz", ".bgz")
+
+
+def refuse_compressed_name(output_path: Path) -> None:
+    """Raise ``ValueError`` for a ``.gz`` or ``.bgz`` annotated-VCF name (any case)."""
+    if output_path.suffix.lower() in COMPRESSED_SUFFIXES:
+        msg = (
+            f"Cannot write {output_path}: the annotated VCF is written uncompressed "
+            f"(plain-text VCF), and a {output_path.suffix} name says it is gzip-compressed. "
+            "Use a name ending in .vcf; compress it afterwards with bgzip if you need to."
+        )
+        raise ValueError(msg)
+
+
 def render_vcf(
     *,
     input_path: Path,
@@ -532,8 +554,16 @@ def render_vcf(
     record_recovered: Mapping[int, str] | None = None,
     input_method: str = "",
     reference_records: frozenset[int] | None = None,
+    replace_existing: bool = True,
+    reference_split: frozenset[tuple[Locus, str]] = frozenset(),
 ) -> int:
     """Write an annotated VCF from ``input_path`` to ``output_path``.
+
+    A name that appears at ``output_path`` while the VCF is written is never
+    replaced. ``replace_existing`` False extends that to a name already there
+    when the writer starts: ``--vcf-out`` checked for none at start-up, so one
+    there now came from another program during the run (2.7.0). A file system
+    without hard links refuses the write (``StagedOutput.publish``).
 
     Pass 2 of the two-pass architecture. ``annotations_by_key`` and
     ``recovered_rsids`` are produced by ``run_analysis`` when called
@@ -579,9 +609,18 @@ def render_vcf(
     Returns the number of data lines stamped with at least one Allelix
     INFO field (either an annotation source or ``ALLELIX_ORIGINAL_ID``).
     """
-    from allelix.reports import staged_output, validate_output_path
+    from allelix.reports import UnwritableDestinationError, staged_output, validate_output_path
 
+    refuse_compressed_name(output_path)
     validate_output_path(input_path, output_path, legacy_temp=False)
+    if not replace_existing and os.path.lexists(output_path):
+        # Refused before the VCF is written; the commit refuses it again
+        # if the name is taken later.
+        msg = (
+            f"Cannot write {output_path}: another program created it during this run, "
+            "and it is left as it is. Choose a different path."
+        )
+        raise UnwritableDestinationError(msg)
     if run_date is None:
         run_date = datetime.now(UTC)
     if recovered_rsids is None:
@@ -659,12 +698,16 @@ def render_vcf(
                     record_index=record_index,
                     record_recovered=record_recovered,
                     reference_records=reference_records,
+                    reference_split=reference_split,
                 )
                 fout.write(new_line)
                 if row_stamped:
                     stamped += 1
 
-        staged.publish()
+        # A name created while this was written is another program's: it is
+        # never replaced (2.7.0). With ``replace_existing`` False (--vcf-out),
+        # neither is one that appeared before writing began.
+        staged.publish(replace_new=False, replace_existing=replace_existing)
 
     return stamped
 
@@ -681,6 +724,7 @@ def _stamp_data_line(
     record_index: int = -1,
     record_recovered: Mapping[int, str] | None = None,
     reference_records: frozenset[int] | None = None,
+    reference_split: frozenset[tuple[Locus, str]] = frozenset(),
 ) -> tuple[str, bool]:
     """Rewrite one VCF data line with Allelix INFO fields.
 
@@ -758,6 +802,7 @@ def _stamp_data_line(
         carries_reference,
         produced_here,
         reference_records,
+        reference_split,
     )
 
     for i, alt in enumerate(alts):
@@ -819,6 +864,20 @@ def _stamp_data_line(
     return "\t".join(new_cols) + "\n", row_stamped or recovered is not None
 
 
+def _split_off(
+    cols: list[str],
+    ref: str,
+    locus: Locus,
+    annotation: Annotation,
+    reference_split: frozenset[tuple[Locus, str]],
+) -> bool:
+    """Whether this record's own rsID had its own call at ``locus``, not ``annotation``'s."""
+    if not reference_split or len(ref) != 1:
+        return False
+    record_id = _canonical_rsid(cols[2])
+    return (locus, record_id) in reference_split and record_id != annotation.rsid
+
+
 def _rebuilt_from(annotation: Annotation, reference_records: frozenset[int] | None) -> bool:
     """Whether ``annotation`` came from a reference call rebuilt from explicit records.
 
@@ -839,6 +898,7 @@ def _reference_value(
     carries_reference: Callable[[_VariantKey], bool],
     produced_here: Callable[[Annotation], bool],
     reference_records: frozenset[int] | None = None,
+    reference_split: frozenset[tuple[Locus, str]] = frozenset(),
 ) -> str:
     """The ``ALLELIX_CLINVAR_REF`` value of one record, or "".
 
@@ -846,7 +906,10 @@ def _reference_value(
     carries, from a call read off this record: a call carrying REF (het,
     half call; keyed ``(chrom, pos, REF, REF)``), or an explicit reference
     record the analysis used (``reference_rows``), at the base of REF that
-    covers the finding's position.
+    covers the finding's position. A single-base explicit record whose own
+    rsID had a reference call of its own there (``reference_split``: ClinVar
+    places that rsID only elsewhere) is not stamped with the site rsID's
+    finding (ADR-0051, ADR-0062).
     """
     # Each candidate locus says whether a finding there must come from this
     # record's own call (a call carrying REF), or from the explicit reference
@@ -866,7 +929,10 @@ def _reference_value(
         for locus, base, own_call in loci
         for annotation in annotations_by_key.get((*locus, base, base), [])
         if (
-            produced_here(annotation) if own_call else _rebuilt_from(annotation, reference_records)
+            produced_here(annotation)
+            if own_call
+            else _rebuilt_from(annotation, reference_records)
+            and not _split_off(cols, upper, locus, annotation, reference_split)
         )
         and annotation.source == "clinvar"
         and annotation.reference_carries_alt

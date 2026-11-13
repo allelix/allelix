@@ -175,6 +175,9 @@ UNCHECKED_IDENTITY_CONFLICT = "identity_locus_conflict"
 UNCHECKED_FOREIGN_ALLELES = "foreign_alleles"
 UNCHECKED_VENDOR_PROBE = "vendor_probe"
 UNCHECKED_UNKNOWN_ALLELES = "unknown_alleles"
+# 2.7.0: a call carrying the exact allele of a ClinVar row at its position,
+# not matched because ClinVar places the call's own rsID elsewhere.
+UNCHECKED_PLACED_ELSEWHERE = "placed_elsewhere"
 # ``detail`` of a foreign- or unknown-allele call when another rsID's ClinVar
 # row stands at its position.
 OTHER_RSID_AT_LOCUS = "other_rsid"
@@ -310,6 +313,13 @@ class UncheckedSite:
                 f"{site}: called {self.call} at {self.detail}, a position the rsID "
                 "identity table does not give for this rsID, so no source read it. "
                 f"{not_assessed}"
+            )
+        if self.reason == UNCHECKED_PLACED_ELSEWHERE:
+            return (
+                f"{site}: called {self.call}. ClinVar places this rsID elsewhere on this "
+                "build, so ClinVar did not report the row at this position, which belongs "
+                "to another variant, under it. This is ClinVar's decision only; it does not "
+                "change how other sources match the call."
             )
         other = self.detail == OTHER_RSID_AT_LOCUS
         if self.reason == UNCHECKED_FOREIGN_ALLELES:

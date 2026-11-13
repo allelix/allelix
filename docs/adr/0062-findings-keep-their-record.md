@@ -83,3 +83,33 @@ position is unknown (an unplaced rsID-list row, ADR-0069) and is shared
 with no other call. So a negative POS is not kept as a plain integer. The
 plain-integer fallback is only for a position past the 64-bit range of
 the compact array.
+
+## Amendment 2.7.0 (2026-11-09): one site's split records are one genotype
+
+A two-ALT call split over two records (`G>A 1/0` and `G>T 0/1`) gave each
+record's own genotype (`AG` and `GT`) for an `A/T` person, so SNPedia and
+ClinPGx rows for `AG` and `GT` were reported and the `AT` row missed. The
+owner ruled (D4) that only the exact complementary pair is combined, and
+anything else abstains, counted.
+
+The analysis pipeline now reads the consecutive single-base records at one
+CHROM and POS together (`VcfParser.combine_split_sites`, set only by the
+analysis; `compare`, `extract`, `stats` and `export plink` are unchanged):
+records that all name one ALT (repeats, or disagreeing calls of one allele,
+counted as above) and records that disagree on REF give their calls as
+before; among records of one REF that name different ALTs, exactly two
+records with the same ID and REF, one different ALT each, both called,
+with the two ALTs on different haplotypes (`1/0` and `0/1` unphased, or
+`1|0` and `0|1` in one phase set: equal `PS`, or none on either, the
+default phase set; SUP's ruling within D4), give one call with the two
+ALTs, the merged record's call. Each allele keeps its own record
+(`Variant.allele_records`): a finding is traced to, and stamped in
+`--vcf-out` on, the record of its own allele, and the call's
+`record_index` is the first of the two. Any other mix gives no call, its
+records counted in `report_warnings` as `split_site_calls`: both ALTs on
+one haplotype, differing or unrelatable phase sets, different IDs, half
+calls, no-calls and records the quality gate rejects (which still count
+as part of the site, though they give no call). A site is the records
+that follow one another at one position as written: any record at
+another position ends it. Indel, padded and symbolic records and
+reference records are not grouped.
