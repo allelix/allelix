@@ -27,11 +27,11 @@ def test_written_report_is_schema14_and_can_be_read_back(tmp_path: Path) -> None
     output = tmp_path / "report.json"
     render_json(result, output_path=output)
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == "14"
+    assert payload["schema_version"] == "15"
     assert load_previous_report(output) == payload
 
 
-@pytest.mark.parametrize("version", [str(n) for n in range(1, 15)])
+@pytest.mark.parametrize("version", [str(n) for n in range(1, 16)])
 def test_diff_accepts_each_released_or_current_schema(tmp_path: Path, version: str) -> None:
     payload = {"schema_version": version, "annotations": []}
     baseline = tmp_path / "baseline.json"
@@ -39,7 +39,7 @@ def test_diff_accepts_each_released_or_current_schema(tmp_path: Path, version: s
     assert load_previous_report(baseline) == payload
 
 
-@pytest.mark.parametrize("version", ["15", "99"])
+@pytest.mark.parametrize("version", ["16", "99"])
 def test_diff_refuses_future_schemas(tmp_path: Path, version: str) -> None:
     baseline = tmp_path / "future.json"
     baseline.write_text(json.dumps({"schema_version": version, "annotations": []}))

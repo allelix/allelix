@@ -30,7 +30,12 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from allelix.models import DEFAULT_BUILD, Variant
-from allelix.parsers._helpers import DamagedFileError, no_call_allele, open_genotype_text
+from allelix.parsers._helpers import (
+    DamagedFileError,
+    no_call_allele,
+    open_genotype_text,
+    parse_array_position,
+)
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
 
 if TYPE_CHECKING:
@@ -100,7 +105,7 @@ class MyHappyGenesParser(GenotypeParser):
 
                 rsid, chrom, pos_str, allele1, allele2 = parts
                 try:
-                    position = int(pos_str)
+                    position = parse_array_position(pos_str)
                 except ValueError:
                     logger.warning("Line %d: invalid position %r — skipping", lineno, pos_str)
                     continue

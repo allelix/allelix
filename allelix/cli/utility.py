@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,7 +24,7 @@ from allelix.cli._options import (
     _SAMPLE_OPT,
 )
 from allelix.databases import resolve_data_dir
-from allelix.models import NO_CALL_MARKER
+from allelix.models import NO_CALL_MARKER, Variant
 from allelix.parsers._helpers import normalize_chromosome, summary_chromosome
 from allelix.reports._pipeline import BuildDiagnostics, UnusableInputError
 from allelix.reports.build_text import short_source
@@ -40,8 +41,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from allelix.exporters.plink import RecordKey
-    from allelix.models import Variant
     from allelix.parsers.base import GenotypeParser
+    from allelix.parsers.vcf import SplitSiteWithheld
     from allelix.utils.build_detect import BuildDecision
 
 
@@ -200,16 +201,34 @@ def extract(
         raise click.ClickException("--snps cannot be empty.")
 
     build_override = _helpers._normalize_cli_build(build)
+    # Why a requested rsID's call is a no-call where the reason is not in the
+    # table (2.7.1: a split site whose records contradict each other).
+    notes: dict[str, set[tuple[str, int]]] = {}
+    token = _EXTRACT_NOTES.set(notes)
     try:
-        found = _try_tabix_extract(file_path, wanted, sample, data_dir, build_override)
-    except BuildDecisionError as exc:
-        raise click.ClickException(str(exc)) from exc
-    if found is None:
-        # Sequential fallback — works for any parser.
-        found = _sequential_extract(parser, file_path, wanted, data_dir, build_override)
-        _maybe_print_vcf_index_hint(file_path)
+        try:
+            found = _try_tabix_extract(file_path, wanted, sample, data_dir, build_override)
+        except BuildDecisionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if found is None:
+            # Sequential fallback — works for any parser.
+            found = _sequential_extract(parser, file_path, wanted, data_dir, build_override)
+            _maybe_print_vcf_index_hint(file_path)
+    finally:
+        _EXTRACT_NOTES.reset(token)
 
     _render_extract_table(file_path, wanted, found)
+    # Only for the call shown: a full no-call at the withheld site itself,
+    # never another position's call of the same rsID, nor a call with a known
+    # allele (a half call) that another group at the same locus left.
+    for rsid in sorted(notes):
+        chosen = found.get(rsid)
+        if (
+            chosen is not None
+            and not _known_allele(chosen)
+            and (normalize_chromosome(chosen.chromosome), chosen.position) in notes[rsid]
+        ):
+            console.print(f"{literal(rsid)}: {literal(WITHHELD_SPLIT_SITE_NOTE)}")
 
 
 def _sequential_extract(
@@ -248,6 +267,9 @@ def _sequential_extract(
     counter, stderr_handler, snapshot = _helpers._wire_parser_logging()
     streamed: dict[str, list[Variant]] = {}
     sequence = 0
+    if isinstance(parser, VcfParser):
+        # A split site is read as the analysis reads it (ADR-0062, 2.7.1).
+        parser.combine_split_sites = True
     try:
         with _helpers._resolved_variants(
             parser, file_path, data_dir=data_dir, build_override=build_override
@@ -298,7 +320,16 @@ def _sequential_extract(
         _helpers._unwire_parser_logging(counter, stderr_handler, snapshot)
         if isinstance(parser, VcfParser):
             parser.watch_extract(frozenset())
+            parser.combine_split_sites = False
     rank = _contig_rank(getattr(parser, "contig_order", []))
+    # A split site withheld because its records contradict each other is in
+    # the file: it is a no-call for the rsIDs its records name or that are
+    # placed there, never absent and never a genotype (2.7.1).
+    for site in getattr(parser, "split_site_withheld", []):
+        for rsid in wanted:
+            if rsid in site.rsids or (site.chromosome, site.position) in placements.get(rsid, {}):
+                streamed.setdefault(rsid, []).append(_withheld_no_call(rsid, site))
+                _note_withheld(rsid, site)
     found: dict[str, Variant] = {}
     for rsid in wanted:
         candidates = _candidates(rsid, streamed, parser, placements)
@@ -414,6 +445,15 @@ def _contig_rank(contig_order: list[str]) -> dict[str, int]:
     return rank
 
 
+def _known_allele(v: Variant) -> bool:
+    """Whether a call names at least one allele: a full call or a half call (C/-).
+
+    ``is_no_call`` is true for a half call too; only a call missing both
+    alleles (a full no-call or a rejected record) has none.
+    """
+    return any(a and a != NO_CALL_MARKER for a in (v.allele1, v.allele2))
+
+
 def _extract_choice(
     candidates: list[Variant], places: dict[tuple[str, int], str], rank: dict[str, int]
 ) -> Variant:
@@ -422,8 +462,9 @@ def _extract_choice(
     1. A call at one of its placements beats one elsewhere; a no-call at a
        placement still beats a usable call elsewhere. A padded record is at
        a placement when it trims to it (ADR-0061).
-    2. Among calls at a placement, a usable call beats a no-call or a
-       rejected record.
+    2. Among calls at a placement, a call with a known allele (a full call
+       or a half call) beats a full no-call or a rejected record, so a
+       rejected sibling never hides a split site's passing half call.
     3. Then file order: the header's contig order, then POS, then line.
        A call at a placement takes that placement's position, so a padded
        call ties with the same call written trimmed (ADR-0061).
@@ -444,9 +485,10 @@ def _extract_choice(
             else (name, v.position)
         )
         line = v.record_index if v.record_index is not None else 0
+        no_allele = mapped and not _known_allele(v)
         if not rank:
-            return (not mapped, mapped and v.is_no_call, 0, 0, line)
-        return (not mapped, mapped and v.is_no_call, rank.get(chrom, len(rank)), pos, line)
+            return (not mapped, no_allele, 0, 0, line)
+        return (not mapped, no_allele, rank.get(chrom, len(rank)), pos, line)
 
     return min(candidates, key=key)
 
@@ -650,7 +692,11 @@ def _execute_tabix_extract(
         # The pending set excludes indexed no-calls and all other accepted hits.
         found.update(
             _sequential_extract(
-                VcfParser(sample=sample), file_path, pending, resolved_data_dir, build_override
+                VcfParser(sample=sample),
+                file_path,
+                pending,
+                resolved_data_dir,
+                build_override,
             )
         )
     else:
@@ -699,7 +745,7 @@ def _indexed_candidates(
     pos: int,
     ref: str,
     sample_idx: int,
-    resolve: Callable[[list[Variant]], None],
+    resolve: Callable[[list[Variant]], object],
     contig_aliases: dict[str, tuple[str, ...]],
     raw_cache: dict[tuple[str, int], list[str]] | None = None,
 ) -> list[Variant]:
@@ -713,7 +759,13 @@ def _indexed_candidates(
     among the fetched records as ``record_index``. ``raw_cache`` keeps each
     interval's rows for the extraction, so an interval is fetched once.
     """
-    from allelix.parsers.vcf import VcfQualityStats, _parse_record, extract_reference_candidates
+    from allelix.parsers.vcf import (
+        VcfQualityStats,
+        _parse_record,
+        extract_reference_candidates,
+        split_site_calls,
+        split_site_component,
+    )
 
     stats = VcfQualityStats()
     streamed: list[Variant] = []
@@ -730,25 +782,86 @@ def _indexed_candidates(
             lines.extend(_read_index_rows(rows))
         if raw_cache is not None:
             raw_cache[(chrom, pos)] = lines
+
+    def take(variant: Variant, order: int) -> None:
+        if pos in _stands_at(variant):
+            variant = replace(variant, build=BUILD_GRCH38)
+            variant.record_index = order
+            streamed.append(variant)
+
+    # One site's single-base records are read together, as the analysis
+    # reads them (ADR-0062, 2.7.1): consecutive records at one CHROM and POS.
+    site: list[tuple[Variant | None, int, list[str]]] = []
+
+    def end_site() -> None:
+        withheld: list[SplitSiteWithheld] = []
+        for call in split_site_calls(site, sample_idx, stats, withheld):
+            take(call, call.record_index if call.record_index is not None else 0)
+        for held in withheld:
+            if rsid in held.rsids or (held.chromosome, held.position) == (chrom, pos):
+                out.append(_withheld_no_call(rsid, held))
+                _note_withheld(rsid, held)
+        site.clear()
+
     for order, line in enumerate(lines, start=1):
         cols = line.split("\t")
+        if site and (len(cols) < 8 or (site[0][2][0], site[0][2][1]) != (cols[0], cols[1])):
+            end_site()
         variant, state = _parse_record(cols, line, sample_idx, stats, want_state=True)
-        if variant is not None:
-            if pos in _stands_at(variant):
-                variant = replace(variant, build=BUILD_GRCH38)
-                variant.record_index = order
-                streamed.append(variant)
-        elif state is not None:
+        if variant is None and state is not None:
             for named, locus, call in extract_reference_candidates(
                 cols, state, order, rsids=frozenset({rsid}), loci=loci
             ):
                 if named == rsid or locus == (chrom, pos):
                     out.append(call if call.rsid == rsid else replace(call, rsid=rsid))
+        if split_site_component(cols, sample_idx):
+            if variant is not None:
+                variant.record_index = order
+            site.append((variant, order, cols))
+        elif variant is not None:
+            take(variant, order)
+    if site:
+        end_site()
     resolve(streamed)
     out.extend(v for v in streamed if v.rsid == rsid)
     # A call recovery could not name is the call at this placement too.
     out.extend(replace(v, rsid=rsid) for v in streamed if _unnamed(v))
     return out
+
+
+# Why a requested rsID's call is a no-call where the table does not say
+# (2.7.1: a split site whose records contradict each other). Set by
+# ``extract`` for its run, so no reader's signature carries it.
+# Keyed by rsID, then by the withheld site's locus, so the note is printed
+# only when the call shown is the no-call at that site.
+_EXTRACT_NOTES: ContextVar[dict[str, set[tuple[str, int]]] | None] = ContextVar(
+    "_EXTRACT_NOTES", default=None
+)
+
+
+def _note_withheld(rsid: str, site: SplitSiteWithheld) -> None:
+    notes = _EXTRACT_NOTES.get()
+    if notes is not None:
+        notes.setdefault(rsid, set()).add((normalize_chromosome(site.chromosome), site.position))
+
+
+WITHHELD_SPLIT_SITE_NOTE = (
+    "its records at this position contradict each other, so no genotype is given "
+    "there (analyze withholds the site too)."
+)
+
+
+def _withheld_no_call(rsid: str, site: SplitSiteWithheld) -> Variant:
+    """A no-call for ``rsid`` at a split site withheld because its records contradict."""
+    return Variant(
+        rsid=rsid,
+        chromosome=site.chromosome,
+        position=site.position,
+        allele1=NO_CALL_MARKER,
+        allele2=NO_CALL_MARKER,
+        ref=site.ref or None,
+        ref_from_input=True,
+    )
 
 
 def _stands_at(variant: Variant) -> set[int]:
@@ -779,7 +892,7 @@ def _fetch_resolved(
     pos: int,
     rsid: str,
     sample_idx: int,
-    resolve: Callable[[list[Variant]], None],
+    resolve: Callable[[list[Variant]], object],
     *,
     parse_row: Callable[[str, int], Variant | None],
     build: str,

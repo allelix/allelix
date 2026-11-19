@@ -113,3 +113,85 @@ as part of the site, though they give no call). A site is the records
 that follow one another at one position as written: any record at
 another position ends it. Indel, padded and symbolic records and
 reference records are not grouped.
+
+## Amendment 2.7.1 (2026-11-13): split records give their alleles unless they contradict
+
+The 2.7.0 rule withheld every mix that was not the exact pair, so a carried
+Pathogenic allele on a passing record went unreported where 2.6.3 reported
+it, and the 1000 Genomes files, which write one positional ID per allele
+(`22:11924846:G:C`), never paired at all: their raw IDs differed. The owner
+amended D4 (2.7.1 decision D1; the outside review's Addendum 1, section 2).
+
+Among records of one REF that name different ALTs:
+
+- The exact pair is two records, both called, one different single-base
+  ALT each, on different haplotypes: `1/0` and `0/1`, or `1/.` and `./1`
+  (as `vt decompose` writes `1/2`), unphased, or the same phased in one
+  phase set. The records' IDs are compared as canonical rsIDs: only two
+  different rsIDs block the pair; a missing, positional or other ID never
+  does. The call takes the one rsID, or none, and is then resolved by
+  position. It is one call for every source, as before.
+- Records that contradict each other give no call to any source: more
+  than two ALT copies across the passing records (a homozygote with a
+  heterozygote, a third ALT), a haploid call beside another call, or an
+  ALT on the same haplotype of one phase set twice. The site is named in
+  `high_value_unchecked` (reason `split_site`) at a high-value rsID, or
+  where ClinVar holds a Pathogenic or Likely pathogenic row at its
+  position for an ALT its records carry, whatever rsIDs they name (SUP's
+  ruling); it is named under its records' rsIDs or, with none, under that
+  row's rsID. A P/LP row for an ALT the records do not carry does not
+  count.
+- Any other mix agrees but is not one genotype (`0/1` and `0/1`
+  unphased, phase sets that differ, phased with unphased, a half call
+  beside a heterozygote, two different rsIDs, a passing call beside a
+  rejected or `./.` record). Each passing record gives each ALT it
+  carries as a half call `ALT/.` (ADR-0047), given only to the sources
+  that read one allele (ClinVar and the GWAS Catalog, where they run);
+  ClinPGx and SNPedia, which need the genotype, get nothing. A rejected
+  record gives nothing and cancels nothing.
+
+`split_site_calls` still counts every record of every site that is not the
+exact pair. Half calls are counted after the decision: JSON schema 15
+(decision D5) counts the split-site alleles given as `ALT/.` in
+`input.vcf_quality.split_site_half_calls`, and `half_calls` keeps counting
+standalone half calls only. In `--vcf-out`, both records of a merged pair
+carry its rsID and their own `ALLELIX_ORIGINAL_ID` where their ID columns
+did not both name it, so the annotated file pairs again when it is read.
+
+## Amendment 2.7.1 RC2 (2026-11-14): two rsIDs found by position are no pair
+
+An exact pair whose records name no rsID is one call resolved by position.
+Where that lookup finds the two ALTs under two different rsIDs, the call
+had no rsID at all (resolution needs one rsID to explain every carried
+allele), so the sources that look a call up by rsID never saw it; 2.6.3
+gave the GWAS Catalog finding (the outside review's A-01). SUP ruled, for
+2.7.1, that two rsIDs found by position are point 1's two different rsIDs:
+the pair is replaced by one half call per record, `ALT/.` under that ALT's
+own rsID, the same result as the records with those rsIDs written. ClinVar
+and the GWAS Catalog assess each allele; ClinPGx and SNPedia get nothing.
+Both records count in `split_site_calls`, both alleles in
+`split_site_half_calls`, and in `--vcf-out` each record carries its own
+rsID, so the annotated file reads back the same. The cost: ClinVar shows
+two half calls at such a site instead of the person's two-ALT genotype.
+Keeping that genotype while binding each ALT to its own rsID, for split
+pairs and merged `1/2` records alike, is left for 2.8.0.
+
+## Amendment 2.7.1 RC3 (2026-11-14): the pair's rsID is decided per ALT
+
+The RC2 amendment split a pair only when both of its ALTs were found by
+position, under two different rsIDs. Two siblings still lost findings 2.6.3
+gave (the outside reviews' A-01b, B-01 and B-02): a pair of which only one
+ALT is known (resolution needs one rsID to explain every carried allele, so
+the call kept no rsID and the GWAS Catalog never saw it), and a pair of
+which one record names its rsID while the other ALT belongs to another
+rsID found by position (the written rsID was taken for the call and the
+other ALT was never looked up). SUP ruled, for 2.7.1, one rule for every
+accepted exact pair: each record keeps the canonical rsID it names, and a
+record naming none has its ALT looked up alone, by the usual ClinVar,
+identity-table and gnomAD routes and their build limits. Two different
+rsIDs: one half call per record, `ALT/.` under its own rsID, as the RC2
+amendment says. Exactly one: the full two-ALT call takes it, as when one
+record names it (point 1). None: the pair is unchanged. Each record's own
+written ID is kept for this, not the merged call's. Sites whose records
+only agree or contradict each other are not pairs and are not affected.
+The annotated VCF reads back the same in each case.

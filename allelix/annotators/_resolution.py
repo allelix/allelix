@@ -72,15 +72,29 @@ def resolve_batch(
     gnomad: GnomadAnnotator | None,
     identity: RsidIdentityAnnotator | None = None,
     resolved_coords: ResolvedCoords | None = None,
-) -> None:
+) -> int:
     """Populate ``ref`` and stamp ``rsid`` in place on one batch (see module docstring).
 
     ``variants`` must already carry their effective ``build``. Sources
     that are None or not ready are skipped. Resolved coordinates are
     added to ``resolved_coords`` when given.
+
+    A merged split pair's identity is decided per ALT (2.7.1, owner decision
+    D1 point 1): each record keeps the rsID it names, and a record naming
+    none has its ALT looked up alone. Two different rsIDs make it no pair:
+    it is replaced in ``variants`` by one half call per record, ``ALT/.``
+    under that ALT's rsID. Exactly one rsID names the full call. Returns how
+    many pairs were split, for the caller's split-site counts.
     """
     if not variants:
-        return
+        return 0
+    split = _decide_pairs_per_allele(
+        variants,
+        clinvar=clinvar,
+        gnomad=gnomad,
+        identity=identity,
+        resolved_coords=resolved_coords,
+    )
     _resolve_as_written(
         variants,
         clinvar=clinvar,
@@ -93,7 +107,7 @@ def resolve_batch(
     # spelling and takes only the recovered rsID.
     views = {i: view for i, v in enumerate(variants) if (view := _trimmed_view(v)) is not None}
     if not views:
-        return
+        return split
     _resolve_as_written(
         list(views.values()),
         clinvar=clinvar,
@@ -105,6 +119,75 @@ def resolve_batch(
         if view.rsid != variants[i].rsid:
             variants[i].original_rsid = variants[i].rsid
             variants[i].rsid = view.rsid
+    return split
+
+
+def _decide_pairs_per_allele(
+    variants: list[Variant],
+    *,
+    clinvar: ClinVarAnnotator | None,
+    gnomad: GnomadAnnotator | None,
+    identity: RsidIdentityAnnotator | None,
+    resolved_coords: ResolvedCoords | None,
+) -> int:
+    """Decide, in place, each merged split pair's identity from its ALTs one by one.
+
+    Each record's ALT is a half call under the rsID that record names; one
+    naming none is looked up alone, by the usual routes. Two different
+    rsIDs: the pair is replaced by those two half calls (each with its own
+    record). Exactly one: the full call takes it, as when a record names
+    it. None: the pair is left for the ordinary resolution, unchanged.
+    Only accepted exact pairs (``allele_records``) are decided; a site whose
+    records only agree or contradict is never a pair. Returns the number of
+    pairs split.
+    """
+    pairs = [
+        i
+        for i, v in enumerate(variants)
+        if v.allele_records is not None and len(v.allele_records) == 2 and v.allele_ids is not None
+    ]
+    if not pairs:
+        return 0
+    halves = {
+        i: [
+            replace(
+                variants[i],
+                rsid=written,
+                allele1=allele,
+                allele2=NO_CALL_MARKER,
+                input_alt=allele,
+                record_index=record,
+                allele_records=None,
+                allele_ids=None,
+            )
+            for (allele, record), written in zip(
+                variants[i].allele_records or (), variants[i].allele_ids or (), strict=True
+            )
+        ]
+        for i in pairs
+    }
+    unnamed = [h for pair in halves.values() for h in pair if not h.rsid.startswith("rs")]
+    if unnamed:
+        _resolve_as_written(
+            unnamed,
+            clinvar=clinvar,
+            gnomad=gnomad,
+            identity=identity,
+            resolved_coords=resolved_coords,
+        )
+    split = 0
+    for i in sorted(halves, reverse=True):
+        names = {h.rsid for h in halves[i] if h.rsid.startswith("rs")}
+        if len(names) == 2:
+            variants[i : i + 1] = halves[i]
+            split += 1
+        elif len(names) == 1:
+            pair = variants[i]
+            (name,) = names
+            if pair.rsid != name:
+                pair.original_rsid = pair.rsid
+                pair.rsid = name
+    return split
 
 
 def _resolve_as_written(

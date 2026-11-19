@@ -42,6 +42,7 @@ from allelix.parsers._helpers import (
     first_nonblank_line,
     is_haploid_call,
     open_genotype_text,
+    parse_array_position,
     split_genotype,
 )
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
@@ -100,7 +101,7 @@ class LivingDNAParser(GenotypeParser):
 
                 rsid, chrom, pos_str, genotype = parts
                 try:
-                    position = int(pos_str)
+                    position = parse_array_position(pos_str)
                 except ValueError:
                     logger.warning("Line %d: invalid position %r — skipping", lineno, pos_str)
                     continue

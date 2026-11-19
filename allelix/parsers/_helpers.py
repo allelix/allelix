@@ -552,6 +552,36 @@ def _open_genotype_text(file_path: Path, errors: str = "strict") -> TextIO:
     return open(file_path, encoding="utf-8-sig", errors=errors)
 
 
+# The largest position a cache can hold: SQLite's INTEGER is a signed 64-bit
+# integer. A position below 1 names no base (2.7.1, the owner's int64 limit).
+MAX_POSITION = 2**63 - 1
+
+
+def parse_position(text: str) -> int:
+    """An explicit position, 1 to ``MAX_POSITION``; ValueError for anything else.
+
+    A readers' row with such a position is malformed and skipped, as a
+    position that is not a number is.
+    """
+    position = int(text)
+    if not 1 <= position <= MAX_POSITION:
+        raise ValueError(f"position {text!r} is outside 1 to {MAX_POSITION}")
+    return position
+
+
+def parse_array_position(text: str) -> int:
+    """An array row's position: ``parse_position``, or 0 for an unplaced call.
+
+    Arrays write 0 for an rsID they did not place (PLINK's and GenomeStudio's
+    code). Such a row is read as 2.7.0 read it, an rsID call with no locus:
+    sources that match by rsID see it, and nothing looks it up by position.
+    A VCF POS stays 1 or more (``parse_position``).
+    """
+    if int(text) == 0:  # "0", "00", " 0": every spelling 2.7.0's int() read as 0
+        return 0
+    return parse_position(text)
+
+
 def first_nonblank_line(fh: TextIO, limit: int) -> str:
     """The first line of ``fh`` with any non-whitespace in it, or "" (within ``limit`` lines)."""
     for _ in range(limit):

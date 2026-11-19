@@ -5,7 +5,7 @@
 Output schema (versioned via `schema_version`):
 
     {
-      "schema_version": "14",
+      "schema_version": "15",
       "allelix_version": "1.1.0",
       "generated_at": "2026-05-11T12:34:56+00:00",
       "regulatory_notice": "...",
@@ -77,7 +77,14 @@ if TYPE_CHECKING:
     from allelix.reports.diff import DiffResult
 
 
-SCHEMA_VERSION = "14"
+SCHEMA_VERSION = "15"
+# v14 -> v15 (2.7.1, one bump for every 2.7.1 report field; owner decision
+# D5): ``input.vcf_quality.split_site_half_calls`` (the alleles given as
+# ``ALT/.`` from split sites whose records agree but are not one exact pair;
+# ``half_calls`` keeps counting standalone half calls only, so the two never
+# overlap) and the ``high_value_unchecked`` reason ``split_site`` (a split
+# site whose records contradict each other, at a high-value or P/LP site;
+# ADR-0062).
 # v13 -> v14 (2.7.0, one bump for every 2.7.0 report field): the
 # ``report_warnings`` codes ``split_site_calls`` (records of a split site that
 # is not one exact complementary pair, left uncalled; ADR-0062) and
@@ -215,6 +222,7 @@ def _vcf_quality_dict(result: AnalysisResult) -> dict | None:
         "spanning_deletion_sites": list(stats.spanning_deletion_sites),
         "symbolic_rows": stats.symbolic_rows,
         "half_calls": stats.half_calls,
+        "split_site_half_calls": stats.split_site_half_calls,
         "malformed_rows": stats.malformed_rows,
         "no_genotype_rows": stats.no_genotype_rows,
         "unusable_genotype_calls": stats.unusable_genotype_calls,

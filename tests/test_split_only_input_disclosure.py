@@ -69,7 +69,7 @@ def test_all_split_calls_abstaining_still_publish_the_report(
     else:
         text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", output.read_text(), flags=re.S)
         text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", text)).split())
-        assert "2 call(s) were not assessed" in text
+        assert "2 record(s) are one site's alleles written over several VCF records" in text
 
 
 @pytest.mark.parametrize("build", BUILDS)

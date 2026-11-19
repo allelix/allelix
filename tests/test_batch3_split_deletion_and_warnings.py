@@ -148,7 +148,8 @@ def test_both_run_warnings_reach_json_and_html_independently(
     else:
         text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", output.read_text(), flags=re.S)
         text = " ".join(html.unescape(re.sub(r"<[^>]+>", " ", text)).split())
-        assert ("2 call(s) were not assessed" in text) is (shape != "elsewhere_only")
+        split_note = "2 record(s) are one site's alleles written over several VCF records"
+        assert (split_note in text) is (shape != "elsewhere_only")
         assert ("1 call(s) carry the exact allele" in text) is (
             shape in {"both", "elsewhere_only"}
         )

@@ -124,6 +124,56 @@ _NO_HARD_LINKS = {
 }
 
 
+def _no_hard_links_message(destination: Path) -> str:
+    return (
+        f"Cannot write {destination}: this file system has no hard links, "
+        "so the file cannot be written without risking another program's file "
+        "of the same name. Write it to a local disk and move it afterwards."
+    )
+
+
+def check_hard_links(destination: Path) -> None:
+    """Refuse, before any work, a folder whose file system has no hard links (2.7.1).
+
+    A file that must not replace another program's (``--vcf-out``) is
+    committed with a hard link (``StagedOutput.publish``). This links a new
+    temp in the destination's own folder to a second temp name there, so FAT,
+    exFAT and some network shares are refused at start-up rather than after
+    the whole run; both names are removed either way. The temp is the name
+    the writer stages under (``StagedOutput``) and the second name is just as
+    long (``.lnk`` for ``.tmp``, 2.7.1), so a name the writer can write passes.
+    Raises ``UnwritableDestinationError`` naming the destination, never a
+    probe path.
+    """
+    folder = destination.absolute().parent
+    try:
+        descriptor, name = tempfile.mkstemp(
+            dir=folder, prefix="." + destination.name + ".", suffix=".tmp"
+        )
+    except OSError as exc:
+        msg = f"Cannot write {destination}: {exc.strerror or exc}."
+        raise UnwritableDestinationError(msg) from exc
+    os.close(descriptor)
+    probe = Path(name)
+    linked = probe.with_suffix(".lnk")
+    try:
+        try:
+            os.link(probe, linked)
+        except OSError as exc:
+            # The second name is the probe's only once the link succeeded:
+            # a name that already exists (EEXIST) is another program's and
+            # is left as it is.
+            if exc.errno in _NO_HARD_LINKS:
+                raise UnwritableDestinationError(_no_hard_links_message(destination)) from exc
+            msg = f"Cannot write {destination}: {exc.strerror or exc}."
+            raise UnwritableDestinationError(msg) from exc
+        with contextlib.suppress(FileNotFoundError):
+            linked.unlink()
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            probe.unlink()
+
+
 class StagedOutput:
     """One invocation's allocated file and descriptor, published only after close."""
 
@@ -221,12 +271,7 @@ class StagedOutput:
             # No hard links (FAT, exFAT, some network shares): there is no
             # portable way to write a name only if it is free, and a claim
             # followed by a rename could replace another program's file.
-            msg = (
-                f"Cannot write {self.destination}: this file system has no hard links, "
-                "so the file cannot be written without risking another program's file "
-                "of the same name. Write it to a local disk and move it afterwards."
-            )
-            raise UnwritableDestinationError(msg) from exc
+            raise UnwritableDestinationError(_no_hard_links_message(self.destination)) from exc
         self.temporary.unlink()
 
     def cleanup(self) -> None:
@@ -337,6 +382,14 @@ def vcf_quality_lines(stats: VcfQualityStats | None) -> list[str]:
             f"{stats.half_calls:,} half call(s) with one allele not called (such as ./1): "
             "ClinVar and the GWAS Catalog assessed the called allele; ClinPGx and "
             "SNPedia, which need both alleles, did not."
+        )
+    if stats.split_site_half_calls:
+        lines.append(
+            f"{stats.split_site_half_calls:,} split-site half call(s), the called alleles of "
+            "sites written over several VCF records that agree but are not one exact pair: "
+            "each is given only to the sources that read one allele, ClinVar and the GWAS "
+            "Catalog where they run, to assess; ClinPGx and SNPedia, which need the "
+            "genotype, are not given it."
         )
     if stats.trimmed_matches:
         lines.append(
@@ -502,6 +555,7 @@ def input_left_unchecked(
         or stats.low_quality_calls
         or stats.spanning_deletion_calls
         or stats.half_calls
+        or stats.split_site_half_calls
         or stats.clinvar_ref_mismatches
         or stats.reference_source_conflicts
         or stats.reference_ploidy_conflicts

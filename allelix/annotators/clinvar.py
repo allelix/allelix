@@ -61,7 +61,7 @@ from allelix.utils.allele import (
 from allelix.utils.build_detect import BUILD_GRCH37, BUILD_GRCH38
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
     from allelix.models import Variant
 
@@ -1384,6 +1384,46 @@ class ClinVarAnnotator(Annotator):
             ):
                 if is_pathogenic_aggregate(aggregate or ""):
                     out.setdefault(rsid, gene or "")
+        return out
+
+    def plp_at_sites(
+        self, sites: Sequence[tuple[str, int, str, frozenset[str]]], build: str
+    ) -> list[tuple[str, str] | None]:
+        """ClinVar's rsID and gene of an aggregate-P/LP row for each site's carried ALT.
+
+        ``sites`` are (chromosome, position, REF, ALTs the person's records
+        carry) on ``build``; the answer is aligned with them, one entry per
+        site, so two sites at one position never share evidence. Only a row
+        of the site's REF and one of its ALTs counts: a P/LP row for an ALT
+        the records do not carry does not. None where there is no such row.
+        Read only (2.7.1, a contradicting split site).
+        """
+        conn = self._connection(build) if sites else None
+        if conn is None:
+            return [None for _ in sites]
+        rows_at: dict[tuple[str, int], list[tuple]] = {}
+        out: list[tuple[str, str] | None] = []
+        for chrom, pos, ref, alts in sites:
+            rows = rows_at.get((chrom, pos))
+            if rows is None:
+                rows = rows_at[(chrom, pos)] = conn.execute(
+                    "SELECT rsid, ref, alt, aggregate, gene FROM clinvar_variants "
+                    "WHERE chromosome = ? AND position = ? ORDER BY id",
+                    (chrom, pos),
+                ).fetchall()
+            carried = {a.upper() for a in alts}
+            out.append(
+                next(
+                    (
+                        (rsid or "", gene or "")
+                        for rsid, row_ref, row_alt, aggregate, gene in rows
+                        if (row_ref or "").upper() == ref.upper()
+                        and (row_alt or "").upper() in carried
+                        and is_pathogenic_aggregate(aggregate or "")
+                    ),
+                    None,
+                )
+            )
         return out
 
     def _name_probe_di_calls(self, conn: sqlite3.Connection, variants: list[Variant]) -> None:

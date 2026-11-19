@@ -288,6 +288,7 @@ class TestCallerFilterEndToEnd:
             "spanning_deletion_sites": [],
             "symbolic_rows": 0,
             "half_calls": 0,
+            "split_site_half_calls": 0,
             "malformed_rows": 0,
             "no_genotype_rows": 0,
             "unusable_genotype_calls": 0,

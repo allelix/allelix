@@ -92,7 +92,7 @@ from allelix.utils.plausibility import (
 from allelix.utils.plausibility import HALF_CALL as REASON_HALF_CALL
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from allelix.annotators.alphamissense import AlphaMissenseAnnotator
@@ -108,6 +108,7 @@ if TYPE_CHECKING:
         LocusState,
         ReferenceCall,
         ReferenceTargetCall,
+        SplitSiteWithheld,
         VcfParser,
         VcfQualityStats,
     )
@@ -1240,16 +1241,43 @@ def _contradictory_calls_warning(count: int) -> ReportWarning | None:
 SPLIT_SITE_CALLS = "split_site_calls"
 
 
-def _split_site_calls_warning(count: int) -> ReportWarning | None:
+_SPLIT_SITE_SOURCES = (
+    "only to the sources that read one allele (ClinVar and the GWAS Catalog, where they "
+    "run), not to ClinPGx or SNPedia"
+)
+
+
+def _split_site_calls_warning(count: int, two_rsid: int = 0) -> ReportWarning | None:
+    """The ``split_site_calls`` warning; ``two_rsid`` of the records are pairs split by rsID.
+
+    A pair split because its ALTs belong to two different rsIDs has a known
+    genotype, so it gets its own sentence; the "cannot be told" sentence is
+    for the records that really are not one genotype (B-07, 2.7.1).
+    """
     if not count:
         return None
-    return ReportWarning(
-        SPLIT_SITE_CALLS,
-        f"{count} call(s) were not assessed: they are one site's alleles written over "
-        "several VCF records that are not one exact complementary pair (one record 1/0, "
-        "the other 0/1), so the person's genotype there cannot be told from them.",
-        count,
+    two_rsid = min(two_rsid, count)
+    other = count - two_rsid
+    by_rsid = (
+        "the alleles of one exact complementary pair (such as 1/0 and 0/1) whose ALTs "
+        "belong to two different rsIDs: the person's genotype there is known, but the "
+        "alleles are assessed apart, each ALT given under its own rsID as a half call "
+        f"{_SPLIT_SITE_SOURCES}."
     )
+    unknown = (
+        "not one exact complementary pair (such as 1/0 and 0/1), so the person's "
+        "genotype there cannot be told from them. Where the records agree, each called "
+        f"allele is given {_SPLIT_SITE_SOURCES}; where they contradict each other, no "
+        "source reads them."
+    )
+    lead = f"{count} record(s) are one site's alleles written over several VCF records"
+    if not two_rsid:
+        message = f"{lead} that are {unknown}"
+    elif not other:
+        message = f"{lead}, {by_rsid}"
+    else:
+        message = f"{lead}. {two_rsid} of them are {by_rsid} The other {other} are {unknown}"
+    return ReportWarning(SPLIT_SITE_CALLS, message, count)
 
 
 PLACED_ELSEWHERE = "clinvar_rsid_placed_elsewhere"
@@ -1774,6 +1802,8 @@ def _unchecked_calls(
     conflict_ids: set[int],
     placement: PlacementStats | None,
     build: str,
+    split_withheld: Sequence[SplitSiteWithheld] = (),
+    split_high_value: Sequence[frozenset[str]] = (),
 ) -> list[UncheckedCall]:
     """The calls the run could not check, each with its ClinVar P/LP gene if any.
 
@@ -1786,12 +1816,20 @@ def _unchecked_calls(
     lookup's answer for those, and one lookup for the foreign- and
     unknown-allele calls, whose gene is a row's at the locus. A vendor probe
     has no rsID, and a D/I call named by position has no P/LP row of its own.
+    A split site whose records contradict each other (``split_withheld``,
+    2.7.1) carries the gene of ClinVar's P/LP row at its position for an ALT
+    its records carry (``plp_at_sites``), under each rsID its records name,
+    or, with none, under that row's rsID, or its locus when the row has none
+    (then the row and its gene are given as evidence). It is also named under
+    each high-value rsID it stands for by placement (``split_high_value``, one
+    set per withheld site, in order), whatever IDs or ALTs its records carry.
     """
     from allelix.annotators._placement import DI_CALL, UNPLACED_WORDS
     from allelix.reports.high_value import (
         UNCHECKED_FOREIGN_ALLELES,
         UNCHECKED_IDENTITY_CONFLICT,
         UNCHECKED_PLACED_ELSEWHERE,
+        UNCHECKED_SPLIT_SITE,
         UNCHECKED_UNKNOWN_ALLELES,
         UNCHECKED_UNPLACED,
         UncheckedCall,
@@ -1852,6 +1890,56 @@ def _unchecked_calls(
         for rsid, (call, reason) in unplaced.items()
         if reason != DI_CALL
     )
+    # A withheld site is named where ClinVar holds a P/LP row at its position
+    # for an ALT its records carry, whatever rsIDs they name (SUP, 2.7.1);
+    # a high-value rsID is named by ``unchecked_sites`` in any case, written
+    # or found by placement.
+    # One answer per withheld site, in order: two groups at one position
+    # never lend each other their evidence.
+    evidence = (
+        clinvar.plp_at_sites(
+            [(w.chromosome, w.position, w.ref, w.alts) for w in split_withheld], build
+        )
+        if clinvar is not None
+        else [None for _ in split_withheld]
+    )
+    placed = list(split_high_value) or [frozenset() for _ in split_withheld]
+    for w, found, high_value in zip(split_withheld, evidence, placed, strict=True):
+        row_rsid, gene = found if found is not None else ("", None)
+        # The P/LP row named as evidence when it is not the site's own rsID's:
+        # by its rsID, or by its locus when it has none, with its gene.
+        row_name = row_rsid or f"{w.chromosome}:{w.position}"
+        evidence_text = f"{row_name} ({gene})" if gene else row_name
+        # The high-value rsIDs the site stands for by placement, after the
+        # rsIDs its records name.
+        extra = sorted(high_value - set(w.rsids))
+        for rsid in (*w.rsids, *extra):
+            own = gene is not None and rsid == row_rsid
+            calls.append(
+                UncheckedCall(
+                    rsid,
+                    w.call,
+                    UNCHECKED_SPLIT_SITE,
+                    detail="" if own or gene is None else evidence_text,
+                    plp_gene=gene,
+                    own_plp=own,
+                )
+            )
+        if w.rsids or gene is None or row_rsid in extra:
+            continue
+        if row_rsid:
+            # Named under the P/LP row's own rsID: that rsID is its own P/LP.
+            calls.append(
+                UncheckedCall(row_rsid, w.call, UNCHECKED_SPLIT_SITE, plp_gene=gene, own_plp=True)
+            )
+        else:
+            # A row without an rsID: the site is named by its locus, and the
+            # row and its gene are the evidence, not the site's own gene.
+            calls.append(
+                UncheckedCall(
+                    row_name, w.call, UNCHECKED_SPLIT_SITE, detail=evidence_text, plp_gene=gene
+                )
+            )
     return calls
 
 
@@ -1879,6 +1967,7 @@ def _record_rows(
     annotations_by_key: dict[tuple[str, int, str, str], list[Annotation]],
     rows: dict[tuple[str, int, str, str], set[int]],
     record_recovered: dict[int, str],
+    pair_records: set[int] | frozenset[int] = frozenset(),
 ) -> None:
     """Note, for ``--vcf-out``, what each record's own call earns it.
 
@@ -1900,6 +1989,15 @@ def _record_rows(
     for v in recovered:
         if v.record_index is not None and {v.allele1, v.allele2} - {NO_CALL_MARKER}:
             record_recovered[v.record_index] = v.rsid
+    # A merged split pair is one rsID's call, recovered or named by one of its
+    # records: both records carry that rsID, each with its own original ID, so
+    # the annotated file pairs again when it is read (``pair_records``: the
+    # pairs whose ID columns do not both name it already; 2.7.1).
+    for v in with_ref:
+        records = [record for _allele, record in v.allele_records or ()]
+        if v.rsid and records and set(records) <= pair_records:
+            for record in records:
+                record_recovered[record] = v.rsid
 
 
 def _allele_record(v: Variant, allele: str | None) -> int | None:
@@ -2134,17 +2232,29 @@ def run_analysis(
         def _flush() -> None:
             if not batch_buf:
                 return
-            ids_before = [v.rsid for v in batch_buf] if collect_vcf_write_inputs else []
+            # By object: resolution may replace a call with two (a split pair
+            # whose ALTs name two rsIDs), and those new calls' rsIDs are recovered.
+            ids_before = {id(v): v.rsid for v in batch_buf} if collect_vcf_write_inputs else {}
             # REF population and rsID-less resolution are one shared
             # step (ClinVar, identity table, gnomAD), the same for every
             # command that needs rsIDs. See allelix.annotators._resolution.
-            resolve_batch(
+            split_pairs = resolve_batch(
                 batch_buf,
                 clinvar=cast("ClinVarAnnotator | None", clinvar_resolver),
                 gnomad=gnomad,
                 identity=identity,
                 resolved_coords=resolved_coords,
             )
+            if split_pairs:
+                # No pair after all (D1 point 5): both records are counted,
+                # and both alleles are split-site half calls. The parser gave
+                # one call for the pair; the run assesses two.
+                nonlocal total
+                total += split_pairs
+                vcf_parser = cast("VcfParser", parser)  # only a VCF has split pairs
+                vcf_parser.split_site_calls += 2 * split_pairs
+                vcf_parser.split_site_two_rsid_calls += 2 * split_pairs
+                vcf_parser.quality_stats.split_site_half_calls += 2 * split_pairs
             # High-value rsID match runs AFTER resolution so a variant
             # entering as ID=. that resolves to a high-value rsID is still
             # caught.
@@ -2228,14 +2338,11 @@ def run_analysis(
                     # A call the identity check rejected (ADR-0063) produced
                     # no finding and is eligible for none.
                     [v for v in with_ref if id(v) not in rebuilt_calls and id(v) not in conflicts],
-                    [
-                        v
-                        for v, before in zip(batch_buf, ids_before, strict=True)
-                        if v.rsid != before
-                    ],
+                    [v for v in batch_buf if v.rsid != ids_before.get(id(v), "")],
                     vcf_annotations_by_key,
                     vcf_record_rows,
                     vcf_record_recovered,
+                    getattr(parser, "split_pair_records", frozenset()),
                 )
             batch_buf.clear()
 
@@ -2442,7 +2549,10 @@ def run_analysis(
             for w in [
                 _multiple_homozygous_plp(annotations, plausibility),
                 _contradictory_calls_warning(ploidy_contradictions.count),
-                _split_site_calls_warning(getattr(parser, "split_site_calls", 0)),
+                _split_site_calls_warning(
+                    getattr(parser, "split_site_calls", 0),
+                    getattr(parser, "split_site_two_rsid_calls", 0),
+                ),
                 _identity_conflict_warning(identity_conflict_total, effective_build),
             ]
             if w
@@ -2550,6 +2660,23 @@ def run_analysis(
                 conflict_ids,
                 placement,
                 effective_build,
+                getattr(parser, "split_site_withheld", ()),
+                [
+                    frozenset(
+                        rsid
+                        for record_id in w.rsids or ("",)
+                        for rsid in attributed_rsids(
+                            hv_set,
+                            w.chromosome,
+                            w.position,
+                            w.ref or None,
+                            record_id,
+                            attr_placements,
+                            attr_index,
+                        )
+                    )
+                    for w in getattr(parser, "split_site_withheld", ())
+                ],
             ),
             panel_rsids=result_panel,
             genotyped_panel_rsids=result_genotyped,

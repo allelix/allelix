@@ -57,11 +57,13 @@ from typing import TYPE_CHECKING, ClassVar, TextIO
 from allelix.attribution import Placements, attributed_rsids, placement_index
 from allelix.models import NO_CALL_MARKER, Variant
 from allelix.parsers._helpers import (
+    MAX_POSITION,
     DamagedFileError,
     is_par_code,
     normalize_chromosome,
     numeric_chromosome_code,
     open_genotype_text,
+    parse_position,
 )
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser
 from allelix.parsers.genesforgood import METHOD_ARRAY_IMPUTED
@@ -248,10 +250,16 @@ class VcfQualityStats:
     assessed, and each one as ``chrom:pos REF>ALT GT`` (ADR-0047).
     ``half_calls``: calls with one allele called and the other missing
     (GT ``./1``). ClinVar and the GWAS Catalog assess the called allele;
-    ClinPGx and SNPedia, which need both, do not (ADR-0047).
+    ClinPGx and SNPedia, which need both, do not (ADR-0047). Counted after
+    a split site's decision: a half call of a split site is counted in
+    ``split_site_half_calls`` if given, and in neither if not.
+    ``split_site_half_calls`` (2.7.1): the alleles given as ``ALT/.`` from
+    split sites whose records agree but are not one exact pair (ADR-0062),
+    one per passing record's ALT; assessed as half calls are.
     ``malformed_rows``: rows with fewer than eight columns or a POS that
-    is not a number. ``no_genotype_rows``: rows with no GT for the
-    sample (a sites-only file has nothing else). ``unusable_genotype_calls``:
+    is not a number, or is below 1 or above 2^63 - 1 (2.7.1).
+    ``no_genotype_rows``: rows with no GT for the sample (a sites-only file
+    has nothing else). ``unusable_genotype_calls``:
     calls whose GT names an allele the record does not have (also a GT
     such as ``0/1`` on a record whose ALT is ``.``).
     ``symbolic_allele_calls``: calls whose GT names a symbolic ALT (such as
@@ -298,6 +306,7 @@ class VcfQualityStats:
     spanning_deletion_calls: int = 0
     spanning_deletion_sites: list[str] = field(default_factory=list)
     half_calls: int = 0
+    split_site_half_calls: int = 0
     malformed_rows: int = 0
     no_genotype_rows: int = 0
     unusable_genotype_calls: int = 0
@@ -384,7 +393,7 @@ def extract_reference_candidates(
     if len(cols) < 8:
         return []
     try:
-        pos = int(cols[1])
+        pos = parse_position(cols[1])
     except ValueError:
         return []
     record_id = _canonical_rsid(cols[2])
@@ -437,7 +446,7 @@ def _extract_hit(cols: list[str], rsids: frozenset[str], loci: ExtractLoci) -> b
     if not places:
         return False
     try:
-        pos = int(cols[1])
+        pos = parse_position(cols[1])
     except ValueError:
         return False
     end = _info_end(cols) if _reference_block_alts(cols[4]) else None
@@ -535,6 +544,10 @@ class VcfParser(GenotypeParser):
     display_name: ClassVar[str] = "VCF / gVCF"
     file_extensions: ClassVar[list[str]] = [".vcf", ".vcf.gz"]
     url: ClassVar[str] = "https://samtools.github.io/hts-specs/"
+    # 2.7.1: the split-site pass decides by position first. False runs the
+    # 2.7.0 per-record pass, kept as the reference that the equivalence test
+    # compares the two on (identical calls and counts).
+    _POSITION_FIRST: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -588,9 +601,19 @@ class VcfParser(GenotypeParser):
         # analysis pipeline only. Off, every record gives its own call, as
         # ``compare``, ``extract``, ``stats`` and ``export plink`` read them.
         self.combine_split_sites = False
-        # The calls of split sites that were not one exact complementary
-        # pair, so none of them was given (the last parse).
+        # The records of split sites that were not one exact complementary
+        # pair (the last parse), and the sites whose records contradict each
+        # other, so no call was given there (ADR-0062).
         self.split_site_calls = 0
+        # Of those, the records of exact complementary pairs split only
+        # because their ALTs belong to two different rsIDs: the genotype is
+        # known, the alleles are assessed apart. Resolution adds the pairs
+        # it splits by position (2.7.1).
+        self.split_site_two_rsid_calls = 0
+        self.split_site_withheld: list[SplitSiteWithheld] = []
+        # The records of merged pairs whose ID columns do not both already
+        # name the call's rsID: ``--vcf-out`` stamps it on both (2.7.1).
+        self.split_pair_records: set[int] = set()
         # Called with ``(chrom, pos, haploid)`` for every explicit reference
         # record at a target site that passes the quality gate (ADR-0062,
         # ADR-0064).
@@ -839,14 +862,38 @@ class VcfParser(GenotypeParser):
             # The calls of single-base records at the current site, held until
             # the site ends: a split multi-allelic call is decided as a whole.
             site: list[tuple[Variant | None, int, list[str]]] = []
+            site_key: tuple[str, str] | None = None
+            # Position first: the record read last, not yet decided.
+            held: tuple[Variant | None, int, list[str]] | None = None
             combine = self.combine_split_sites
             self.split_site_calls = 0
+            self.split_site_two_rsid_calls = 0
+            self.split_site_withheld = []
+            self.split_pair_records = set()
             for line in handle:
                 stripped = line.rstrip("\n").rstrip("\r")
                 if not is_data_line(stripped):
                     continue
                 index += 1
                 cols = stripped.split("\t")
+                if len(cols) >= 8 and _position_out_of_range(cols[1]):
+                    # A position no base or cache can have (below 1, above
+                    # 2^63 - 1): a malformed row, skipped before any use of
+                    # it, as a position that is not a number is (2.7.1). It
+                    # still ends a pending split site, as any other record
+                    # does: only its own call is dropped.
+                    logger.warning("Invalid VCF position %r (malformed row)", cols[1][:40])
+                    stats.malformed_rows += 1
+                    # A record held by the position-first pass is a site of
+                    # its own here: the malformed row ends it, as any other
+                    # record does, before a pending site's calls are given.
+                    if held is not None:
+                        yield from self._release(*held, drop_mito, keep_mito)
+                        held = None
+                    if site:
+                        yield from self._split_site_calls(site, sample_idx)
+                        site = []
+                    continue
                 if not stats.is_gvcf and _is_reference_block(cols, sample_idx):
                     stats.is_gvcf = True
                 rsid = ""
@@ -947,7 +994,44 @@ class VcfParser(GenotypeParser):
                         variant,
                         state,
                     )
-                if combine:
+                if combine and self._POSITION_FIRST:
+                    # Position first (2.7.1): a record is held until the next
+                    # one is read; only a run of records at one CHROM and POS
+                    # goes through the component checks, so a one-record site,
+                    # nearly every site, costs one comparison. Records at the
+                    # held one's position decide it as the per-record pass
+                    # below does; any other record releases it unchanged.
+                    key = (cols[0], cols[1]) if len(cols) >= 8 else None
+                    if site and key != site_key:
+                        yield from self._split_site_calls(site, sample_idx)
+                        site = []
+                    if held is not None:
+                        held_variant, held_index, held_cols = held
+                        held = None
+                        if key is not None and (held_cols[0], held_cols[1]) == key:
+                            if self._component(held_cols, sample_idx, drop_mito, keep_mito):
+                                if held_variant is not None:
+                                    held_variant.record_index = held_index
+                                site.append((held_variant, held_index, held_cols))
+                                site_key = key
+                            else:
+                                yield from self._release(
+                                    held_variant, held_index, held_cols, drop_mito, keep_mito
+                                )
+                        else:
+                            yield from self._release(
+                                held_variant, held_index, held_cols, drop_mito, keep_mito
+                            )
+                    if site:
+                        if self._component(cols, sample_idx, drop_mito, keep_mito):
+                            if variant is not None:
+                                variant.record_index = index
+                            site.append((variant, index, cols))
+                            continue
+                    elif key is not None:
+                        held = (variant, index, cols)
+                        continue
+                elif combine:
                     # A split site is the consecutive records at one position
                     # in the file as written: any record elsewhere ends it,
                     # whether or not it gives a call; so does a malformed row,
@@ -982,6 +1066,8 @@ class VcfParser(GenotypeParser):
                     continue
                 variant.record_index = index
                 yield variant
+            if held is not None:
+                yield from self._release(*held, drop_mito, keep_mito)
             if site:
                 yield from self._split_site_calls(site, sample_idx)
             if watcher is not None:
@@ -989,28 +1075,70 @@ class VcfParser(GenotypeParser):
             if self.reference_target_calls and (changed or self._deleted_spans):
                 self._block_changed_sites(changed)
 
+    def _component(
+        self, cols: list[str], sample_idx: int, drop_mito: bool, keep_mito: frozenset[str]
+    ) -> bool:
+        """Whether a record of a one-position run is a split-site component (ADR-0062).
+
+        Single-base, carrying an ALT, and not dropped by the mitochondrial
+        exclusion: as the per-record pass decides.
+        """
+        excluded = drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito
+        return not excluded and _single_base_record(cols) and _carries_an_alt(cols, sample_idx)
+
+    def _release(
+        self,
+        variant: Variant | None,
+        index: int,
+        cols: list[str],
+        drop_mito: bool,
+        keep_mito: frozenset[str],
+    ) -> Iterator[Variant]:
+        """A held record that is a site of its own: its call, as the per-record pass gives it."""
+        if variant is None:
+            return
+        if drop_mito and is_ucsc_mito_name(cols[0]) and cols[0] not in keep_mito:
+            self.ucsc_mito_dropped += 1
+            return
+        variant.record_index = index
+        yield variant
+
     def _split_site_calls(
         self, site: list[tuple[Variant | None, int, list[str]]], sample_idx: int
     ) -> Iterator[Variant]:
-        """The calls of one site's single-base records, as one person's genotype.
+        """The calls of one site's single-base records, read as one person's (ADR-0062).
 
         The components are the site's single-base records whose genotype
         carries an ALT, with their call, or None where the quality gate
         rejected the record. Components that all have one ALT field (one
         record, repeats, or calls that disagree, which ADR-0062 keeps and
-        counts), or that disagree on REF, give their calls as before. Where
-        components of one REF name different ALTs, an exact complementary pair
-        gives one two-ALT call, as the merged record would: two components with
-        the same ID and REF and one different ALT each, both called, each with
-        one ALT copy and one REF copy on different haplotypes: ``1/0`` and
-        ``0/1`` unphased, or ``1|0`` and ``0|1`` in one phase set (``PS``, both
-        the same or both absent). Each allele keeps its own record
-        (``Variant.allele_records``). Any other mix (the same GT twice, both
-        ALTs on one haplotype, phase sets that differ or one phased call with
-        an unphased one, a homozygote with a heterozygote, a half or no-call, a
-        rejected component, other ploidy, a third ALT, two IDs) is not one
-        person's genotype that can be told, so none of its calls is given;
-        they are counted in ``split_site_calls``.
+        counts), or that disagree on REF, give their calls as before.
+
+        Where components of one REF name different ALTs (owner decision D1,
+        2.7.1):
+
+        - The exact pair gives one two-ALT call, as the merged record would:
+          two components, both called, one different single-base ALT each,
+          on different haplotypes: ``1/0`` and ``0/1``, or ``1/.`` and
+          ``./1`` (as vt writes ``1/2``), unphased, or the same phased in
+          one phase set. Their IDs block it only when they are two
+          different rsIDs; a missing, positional or other ID never does.
+          The call takes the one rsID, or none, to be resolved by position.
+          Each allele keeps its own record (``Variant.allele_records``).
+        - Components that contradict each other (more than two ALT copies
+          across the passing ones, a haploid with a diploid call or two
+          haploid calls, or an ALT on the same haplotype of one phase set
+          twice) give no call to any source; the site is kept in
+          ``split_site_withheld`` for naming.
+        - Any other mix agrees but is not one genotype: each passing
+          component gives each ALT it carries as a half call ``ALT/.``,
+          for the sources that read an allele (ClinVar, the GWAS Catalog);
+          a rejected component gives nothing and cancels nothing.
+
+        Every record of a site that is not the exact pair is counted in
+        ``split_site_calls``. Half calls are counted after the decision:
+        the site's are taken out of ``half_calls``, and those given here
+        are counted in ``split_site_half_calls``.
         """
         if len({cols[3].upper() for _v, _i, cols in site}) > 1 or (
             len({cols[4].upper() for _v, _i, cols in site}) == 1
@@ -1020,40 +1148,99 @@ class VcfParser(GenotypeParser):
             # each gives its call, as before.
             yield from (variant for variant, _i, _cols in site if variant is not None)
             return
-        if len(site) == 2:
-            (v1, i1, c1), (v2, i2, c2) = site
-            f1, f2 = _sample_fields(c1, sample_idx), _sample_fields(c2, sample_idx)
-            g1, g2 = f1.get("GT", ""), f2.get("GT", "")
-            pair = sorted((g1, g2))
-            one_haplotype_each = pair == ["0/1", "1/0"] or (
-                pair == ["0|1", "1|0"] and f1.get("PS") == f2.get("PS")
-            )
-            if (
-                one_haplotype_each
-                and v1 is not None
-                and v2 is not None
-                and not v1.is_no_call
-                and not v2.is_no_call
-                and c1[2] == c2[2]
-                and c1[3].upper() == c2[3].upper()
-                and len(c1[4]) == len(c2[4]) == 1
-                and c1[4].upper() != c2[4].upper()
-            ):
-                # The first haplotype's ALT first, as the merged record has it.
-                (first, at1), (second, at2) = (
-                    ((c1, i1), (c2, i2)) if g1[0] == "1" else ((c2, i2), (c1, i1))
-                )
-                a1, a2 = first[4].upper(), second[4].upper()
-                yield replace(
-                    v1,
-                    allele1=a1,
-                    allele2=a2,
-                    input_alt=f"{a1},{a2}",
-                    record_index=min(i1, i2),
-                    allele_records=((a1, at1), (a2, at2)),
-                )
-                return
+        stats = self.quality_stats
+        # Decided here, so the parse-time count of the site's half calls is undone.
+        stats.half_calls -= sum(1 for v, _i, _c in site if v is not None and v.is_half_call)
+        pair = self._exact_pair(site, sample_idx)
+        if pair is not None:
+            yield pair
+            return
         self.split_site_calls += len(site)
+        passing = [
+            (v, cols)
+            for v, _i, cols in site
+            if v is not None and (not v.is_no_call or v.is_half_call)
+        ]
+        if not passing:
+            return
+        ref = site[0][2][3].upper()
+        if _contradicts([_sample_fields(cols, sample_idx) for _v, cols in passing]):
+            first = site[0][2]
+            self.split_site_withheld.append(
+                SplitSiteWithheld(
+                    chromosome=normalize_chromosome(first[0]),
+                    position=int(first[1]),
+                    rsids=tuple(
+                        dict.fromkeys(r for _v, _i, cols in site if (r := _rs_id(cols[2])))
+                    ),
+                    call=" + ".join(
+                        f"{cols[3]}>{cols[4]} {_sample_fields(cols, sample_idx).get('GT', '')}"
+                        for _v, _i, cols in site
+                    ),
+                    ref=ref,
+                    alts=frozenset(
+                        a
+                        for v, _cols in passing
+                        for a in (v.allele1, v.allele2)
+                        if a not in (NO_CALL_MARKER, ref)
+                    ),
+                )
+            )
+            return
+        for variant, _cols in passing:
+            carried = [
+                a
+                for a in dict.fromkeys((variant.allele1, variant.allele2))
+                if a not in (NO_CALL_MARKER, ref)
+            ]
+            for allele in carried:
+                stats.split_site_half_calls += 1
+                yield replace(variant, allele1=allele, allele2=NO_CALL_MARKER, haploid=False)
+
+    def _exact_pair(
+        self, site: list[tuple[Variant | None, int, list[str]]], sample_idx: int
+    ) -> Variant | None:
+        """The one two-ALT call of an exact complementary pair, or None (ADR-0062)."""
+        if len(site) != 2:
+            return None
+        (v1, i1, c1), (v2, i2, c2) = site
+        if v1 is None or v2 is None:
+            return None
+        if not all(not v.is_no_call or v.is_half_call for v in (v1, v2)):
+            return None
+        if not (len(c1[4]) == len(c2[4]) == 1 and c1[4].upper() != c2[4].upper()):
+            return None
+        f1, f2 = _sample_fields(c1, sample_idx), _sample_fields(c2, sample_idx)
+        g1, g2 = f1.get("GT", ""), f2.get("GT", "")
+        shapes = sorted((g1, g2))
+        complementary = shapes in (["0/1", "1/0"], ["./1", "1/."]) or (
+            shapes in (["0|1", "1|0"], [".|1", "1|."]) and _phase_set(f1) == _phase_set(f2)
+        )
+        if not complementary:
+            return None
+        r1, r2 = _rs_id(c1[2]), _rs_id(c2[2])
+        if r1 and r2 and r1 != r2:
+            # The pair's genotype, but two rsIDs: no pair, counted apart.
+            self.split_site_two_rsid_calls += 2
+            return None
+        # The first haplotype's ALT first, as the merged record has it.
+        ordered = ((c1, i1), (c2, i2)) if g1[0] == "1" else ((c2, i2), (c1, i1))
+        (first, at1), (second, at2) = ordered
+        a1, a2 = first[4].upper(), second[4].upper()
+        ids = (_rs_id(first[2]), _rs_id(second[2]))
+        if not (r1 and c1[2] == c2[2] == r1):
+            self.split_pair_records.update((i1, i2))
+        return replace(
+            v1,
+            rsid=r1 or r2,
+            allele1=a1,
+            allele2=a2,
+            haploid=False,
+            input_alt=f"{a1},{a2}",
+            record_index=min(i1, i2),
+            allele_records=((a1, at1), (a2, at2)),
+            allele_ids=ids,
+        )
 
     def _note_record(
         self,
@@ -1652,6 +1839,97 @@ def _carries_an_alt(cols: list[str], sample_idx: int) -> bool:
     gt = _sample_fields(cols, sample_idx).get("GT", "")
     alleles = gt.replace("|", "/").split("/")
     return bool(gt) and any(allele != "0" for allele in alleles)
+
+
+@dataclass(frozen=True)
+class SplitSiteWithheld:
+    """A split site whose records contradict each other, so no source read it (ADR-0062).
+
+    ``rsids`` are the canonical rsIDs its records name, in file order (none
+    for an unnamed site); ``ref`` and ``alts`` the site's REF and the ALTs
+    its passing records carry; ``call`` is the records as written
+    (``G>A 1/1 + G>T 0/1``).
+    """
+
+    chromosome: str
+    position: int
+    rsids: tuple[str, ...]
+    call: str
+    ref: str = ""
+    alts: frozenset[str] = frozenset()
+
+
+def _rs_id(raw: str) -> str:
+    """The record's canonical rsID, or ``""`` for a missing, positional or other ID."""
+    rsid = _canonical_rsid(raw)
+    return rsid if rsid.startswith("rs") else ""
+
+
+def _phase_set(fields: dict[str, str]) -> str:
+    """A phased call's phase set: its ``PS``, or the file's one default set."""
+    return fields.get("PS") or "."
+
+
+def _contradicts(calls: list[dict[str, str]]) -> bool:
+    """Whether the passing calls of one split site cannot be one person's genotype.
+
+    More than two ALT copies across them, a haploid call beside any other
+    call, or an ALT on the same haplotype of one phase set in two calls
+    (owner decision D1, 2.7.1).
+    """
+    indices = [f.get("GT", "").replace("|", "/").split("/") for f in calls]
+    if sum(1 for gt in indices for i in gt if i not in ("0", ".")) > 2:
+        return True
+    if any(len(gt) == 1 for gt in indices) and len(calls) > 1:
+        return True
+    phased: dict[str, set[int]] = {}
+    for f in calls:
+        gt = f.get("GT", "")
+        if "|" not in gt:
+            continue
+        held = phased.setdefault(_phase_set(f), set())
+        for haplotype, i in enumerate(gt.split("|")):
+            if i in ("0", "."):
+                continue
+            if haplotype in held:
+                return True
+            held.add(haplotype)
+    return False
+
+
+def split_site_component(cols: list[str], sample_idx: int) -> bool:
+    """Whether a record is a split-site component (ADR-0062): single-base, carrying an ALT."""
+    return len(cols) >= 8 and _single_base_record(cols) and _carries_an_alt(cols, sample_idx)
+
+
+def split_site_calls(
+    site: list[tuple[Variant | None, int, list[str]]],
+    sample_idx: int,
+    stats: VcfQualityStats,
+    withheld: list[SplitSiteWithheld] | None = None,
+) -> list[Variant]:
+    """The calls of one site's components, as the analysis reads them (2.7.1).
+
+    For a reader that fetches records itself (``extract``'s indexed path):
+    the decision ``VcfParser`` makes with ``combine_split_sites`` set, counted
+    on ``stats``. A site withheld because its records contradict each other
+    is appended to ``withheld`` when given.
+    """
+    parser = VcfParser()
+    parser.quality_stats = stats
+    calls = list(parser._split_site_calls(site, sample_idx))
+    if withheld is not None:
+        withheld.extend(parser.split_site_withheld)
+    return calls
+
+
+def _position_out_of_range(text: str) -> bool:
+    """Whether a numeric POS is below 1 or above ``MAX_POSITION`` (not a non-number)."""
+    try:
+        position = int(text)
+    except ValueError:
+        return False
+    return not 1 <= position <= MAX_POSITION
 
 
 def _single_base_record(cols: list[str]) -> bool:

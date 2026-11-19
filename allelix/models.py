@@ -121,6 +121,11 @@ class Variant:
     allele_records: tuple[tuple[str, int], ...] | None = field(
         default=None, compare=False, repr=False
     )
+    # The canonical rsID each of those records names, in the same order, or
+    # "" for a record naming none (a missing, positional or other ID). The
+    # pair's identity is decided per ALT from these, never from the merged
+    # call's one rsID (2.7.1). None with ``allele_records``.
+    allele_ids: tuple[str, ...] | None = field(default=None, compare=False, repr=False)
     # A chip call's own rsID's single-base alleles at its build and locus, as
     # the resolution step learns them while filling REF: the identity table's
     # SNV rows and gnomAD's rows of that rsID there. ClinVar adds

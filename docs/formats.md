@@ -101,6 +101,10 @@ as `Un_x`). A call there is not placed on a standard chromosome: a source
 that looks up by position matches it only where its cache holds a row on
 that same contig (ClinVar can), and a source that matches by rsID (ClinPGx,
 for one) can still report a call on them.
+An array row at position 0 is unplaced in the same way, on any chromosome:
+it is read as the rsID's call, with no warning, and nothing looks it up by
+position. A negative array position, any position above 2^63 - 1 and a VCF
+POS below 1 are malformed rows, skipped with a warning.
 `--vcf-out` keeps their spelling; `export plink` writes them as the reader
 gives them, as in 2.6.2: the VCF, deCODEme, FTDNA Illumina and FamFinder
 readers drop a `chr` prefix (`chrUn_x` as `Un_x`), and the other readers
@@ -230,7 +234,7 @@ under `input.vcf_quality`. Reference blocks count as records, not as one
 record for every base they span. Non-reference counts include symbolic
 ALT genotypes; they do not imply those structural calls were assessed.
 Schema 10 also adds a nullable `reason` to panel coverage entries.
-Reports in schemas 1–14 can be used as `--diff` baselines; versions 15
+Reports in schemas 1–15 can be used as `--diff` baselines; versions 16
 and later are rejected. `--diff` identifies a finding by its source, variant
 (rsID, or locus without one), condition, allele and site (the chromosome
 and position the report gives it), whatever the order of either report.
@@ -241,7 +245,13 @@ generated from them are compared, not used to identify it: a ClinVar
 reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
 finding, not a removed and a new one. An entry from an older report without
 an allele, or without a position, is matched without it, by a finding that
-has no exact counterpart in the baseline.
+has no exact counterpart in the baseline. A baseline from the other genome
+build (its `input.build` GRCh37 where the run is GRCh38, or the reverse)
+has other positions for the same variants, so since 2.7.1 its findings are
+matched without the site, and the run says once that the builds differ. A
+finding known only by its position (no rsID) still carries that position in
+its identity, so it can show as removed and new across builds. A baseline
+whose build is missing or unknown is matched by site as before.
 
 A baseline finding is removed only when the current run has no finding with
 its identity at all, before the display floors. A finding still there but
@@ -268,23 +278,58 @@ single-base records at one position together, as one person's genotype:
   counts when their ploidy differs) give their calls as before, and so do
   records that disagree on REF.
 - An exact complementary pair gives the call the merged record gives
-  (`A/T`): two records with the same ID and REF and one different ALT
-  each, both called, each with one copy of its ALT and one of REF, the
-  two ALTs on different haplotypes. That is `1/0` and `0/1` unphased, or
-  `1|0` and `0|1` phased in one phase set: the same `PS`, or no `PS` on
-  either (a phased call without `PS` is in the file's one default phase
-  set). In `--vcf-out` each allele's findings are stamped on that
-  allele's own record.
-- Any other mix of records of one REF that name different ALTs gives no
-  call: the same unphased GT twice (`0/1` and `0/1`: the haplotypes are
-  not known, and it is not the exact complementary pair), both ALTs on one
-  phased haplotype (`0|1` and `0|1`), phase sets that differ, a phased
-  call with an unphased one, a homozygote with a heterozygote, a half call
-  or a no-call, a record the quality gate rejects (FILTER or FT unless
-  `--keep-filtered`, low GQ, DP 0), a haploid with a diploid call, a
-  third ALT, or two different IDs. The person's genotype cannot be told
-  from them, so none is assessed. The report counts their records in
-  `report_warnings` (`split_site_calls`).
+  (`A/T`), for every source: two records of one REF and one different
+  ALT each, both called, the two ALTs on different haplotypes. That is
+  `1/0` and `0/1`, or `1/.` and `./1` (as `vt decompose` writes `1/2`),
+  unphased, or the same phased in one phase set: the same `PS`, or no
+  `PS` on either (a phased call without `PS` is in the file's one
+  default phase set). Only two different rsIDs keep two records from
+  being the pair; a missing ID, or a positional or other ID such as the
+  1000 Genomes `22:11924846:G:C`, never does. The pair's rsID is then
+  decided per ALT: each record keeps the rsID it names, and a record
+  naming none has its ALT looked up alone by position. If that gives two
+  different rsIDs (both found by position, or one written and one
+  found), the records are no pair, as if they named those rsIDs: each
+  gives its ALT as a half call under its own rsID (below). If it gives
+  exactly one, the full call takes it, even where the other ALT belongs
+  to no known rsID; if none, the call has no rsID. In `--vcf-out` each
+  allele's findings are stamped on that allele's own record. For a pair
+  that stays a pair, both records carry the call's rsID; for two rsIDs,
+  each record carries its own ALT's rsID, and the two half calls count
+  as two calls in `input.total_variants`.
+- Records that contradict each other give no call to any source: more
+  than two ALT copies across the records that pass the quality gate (a
+  homozygote with a heterozygote, a third ALT), a haploid call beside
+  another call, or an ALT on the same haplotype of one phase set twice
+  (`0|1` and `0|1`). The report names the site in `high_value_unchecked`
+  (`split_site`) under each high-value rsID it stands for: one its records
+  name, or one the identity table places at its position with its REF,
+  whatever IDs or ALTs the records carry, as for a single record. It also
+  names the site when ClinVar holds a Pathogenic or Likely pathogenic row
+  at its position for an ALT the records carry, whatever rsIDs they name;
+  a P/LP row for another ALT does not count.
+- Any other mix agrees but does not make one genotype: the same
+  unphased GT twice (`0/1` and `0/1`), phase sets that differ, a phased
+  call with an unphased one, a half call beside a heterozygote, two
+  different rsIDs (an exact pair's genotype is known then, but its
+  alleles are assessed apart), or a record beside one the quality gate rejects
+  (FILTER or FT unless `--keep-filtered`, low GQ, DP 0) or that is not
+  called (`./.`). Each record that passes the gate gives its ALT as a
+  half call (`A/.`): it goes only to the sources that read one allele
+  (ClinVar and the GWAS Catalog, where they run); ClinPGx and SNPedia,
+  which need the genotype, do not get it. A rejected sibling does not
+  cancel a passing record's ALT; the site still follows the half-call rule,
+  so the passing record's full genotype is not kept. These alleles are counted in
+  `input.vcf_quality.split_site_half_calls` (JSON schema 15), apart from
+  `half_calls`, which counts half calls written as such elsewhere.
+
+The report counts every record of a site that is not the exact pair in
+`report_warnings` (`split_site_calls`). Its message gives the records of
+an exact pair split only because its ALTs belong to two different rsIDs,
+written or found by position, their own sentence and count: the
+person's genotype there is known, and the alleles are assessed apart.
+The sentence that the genotype cannot be told from the records is for
+the other sites.
 
 Only single-base records (one REF base, single-base ALTs) whose genotype
 names an ALT are read this way. An insertion, deletion, padded or
@@ -292,8 +337,11 @@ symbolic record at the same position keeps its own call, and a reference
 `0/0` record is read as in the section above. The records must follow
 one another in the file: any record at another position between them, a
 reference record included, ends the site, so records of one position
-apart in an unsorted file are each read on their own. `compare`,
-`extract`, `stats` and `export plink` read every record on its own.
+apart in an unsorted file are each read on their own. Since 2.7.1
+`extract` reads an exact pair this way too, on its indexed path as well:
+one full call; at a site whose records only agree it shows one of their
+half calls, and contradicting records give no genotype;
+`compare`, `stats` and `export plink` read every record on its own.
 
 ## Annotated VCF: reference findings and re-annotation
 
@@ -712,7 +760,8 @@ by the same order with or without an index (ADR-0054):
    identity table's) beats one elsewhere, even as a no-call; a padded
    record is at a placement its ALT trims to, and ties there with the same
    call written trimmed;
-2. among those, a usable call beats a no-call or a rejected record;
+2. among those, a usable call beats a no-call or a rejected record; a half
+   call is usable, since it keeps its known allele;
 3. then the header's contig order, POS and line order.
 
 Indexed `allelix extract` preserves its normal build, sample, quality and
@@ -896,6 +945,8 @@ during the run too (the annotated VCF is committed with a hard link, which
 fails if the name is taken). On a file system without hard links (FAT,
 exFAT, some network shares) `--vcf-out` stops with an error instead of
 risking another program's file; write to a local disk and move the file.
+Since 2.7.1 that is found at start-up, by a test link in the destination's
+folder, before any database update or analysis.
 
 Output content and format are unchanged. VCF remains streamed with UTF-8/LF;
 PLINK retains its existing bytes and order. Publication is atomic per file,

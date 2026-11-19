@@ -97,7 +97,10 @@ def test_other_failed_sources_keep_their_box(tmp_path: Path) -> None:
     page = _render(_clinvar_not_used([_CLINVAR_OUTDATED, _GWAS_MISSING]), tmp_path)
     outside, _inside = _split(page)
     assert page.count(_escape(_CLINVAR_OUTDATED.message)) == 1
-    assert "<strong>Sources not used.</strong><ul><li>GWAS: missing.</li></ul>" in outside
+    assert (
+        '<strong>Sources not used.</strong><ul class="sources-not-used">'
+        "<li>GWAS: missing.</li></ul>"
+    ) in outside
 
 
 def test_failed_clinvar_without_the_warning_stays_in_the_box(tmp_path: Path) -> None:
@@ -119,7 +122,10 @@ def test_only_failed_sources_are_listed(tmp_path: Path) -> None:
     outside, _inside = _split(page)
     start = outside.index("<strong>Sources not used.</strong>")
     box = outside[start : outside.index("</div>", start)]
-    assert box == "<strong>Sources not used.</strong><ul><li>GWAS: missing.</li></ul>"
+    assert box == (
+        '<strong>Sources not used.</strong><ul class="sources-not-used">'
+        "<li>GWAS: missing.</li></ul>"
+    )
 
 
 # --- The summary line ---------------------------------------------------------
@@ -202,6 +208,7 @@ _UNCHECKED_FIELDS = {
     "low_quality_calls",
     "spanning_deletion_calls",
     "half_calls",
+    "split_site_half_calls",
     "clinvar_ref_mismatches",
     "reference_source_conflicts",
     "reference_ploidy_conflicts",

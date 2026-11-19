@@ -215,6 +215,9 @@ a { color: var(--link); }
   background: var(--notice-bg, #fff8e1); border-left: 4px solid var(--notice-border, #f9a825);
   padding: 1rem; margin: 1.5rem 0; border-radius: 4px; font-size: .95rem;
 }
+/* A cache path has no spaces: let it break anywhere rather than widen the
+   page on a phone (2.7.1). */
+.sources-not-used { overflow-wrap: anywhere; }
 .sources-off { color: var(--text-muted); font-size: 0.9em; margin: 0.5em 0; }
 .details-summary { margin: .5rem 0; }
 .tech-details { margin: 0 0 1.5rem; }
@@ -379,13 +382,17 @@ tbody tr.selected {
   position: fixed; top: 0; right: 0;
   width: 480px; height: 100vh;
   background: var(--panel-bg);
-  box-shadow: -2px 0 12px var(--panel-shadow);
   transform: translateX(100%);
   transition: transform 0.25s ease;
   z-index: 1000; overflow-y: auto;
   display: flex; flex-direction: column;
 }
-.detail-panel.open { transform: translateX(0); }
+/* The shadow only on the open panel: off screen it would show as a strip
+   along the window's right edge (2.7.1). */
+.detail-panel.open {
+  transform: translateX(0);
+  box-shadow: -2px 0 12px var(--panel-shadow);
+}
 
 .panel-header {
   position: sticky; top: 0; background: var(--panel-bg); z-index: 1;
@@ -756,7 +763,10 @@ def _sources_failed_banner(sources: list[SourceRecord], warnings: list[ReportWar
     if not failed:
         return ""
     items = "".join(f"<li>{_escape(s.message)}</li>" for s in failed)
-    return f'<div class="notice"><strong>Sources not used.</strong><ul>{items}</ul></div>'
+    return (
+        '<div class="notice"><strong>Sources not used.</strong>'
+        f'<ul class="sources-not-used">{items}</ul></div>'
+    )
 
 
 def _sources_off_line(sources: list[SourceRecord]) -> str:
@@ -974,23 +984,39 @@ def _license_attributions(annotators_used: list[tuple[str, str | None]]) -> str:
     return "".join(parts)
 
 
-def _review_stars(status: int | str | None) -> str:
-    """Render ClinVar review status as filled/empty stars."""
-    if status is None or status == "" or status == "—":
+# ClinVar's star rating for every aggregate (germline, oncogenicity and
+# somatic clinical impact) and per-submission review status it defines
+# (https://www.ncbi.nlm.nih.gov/clinvar/docs/review_status/), in
+# the lower-case spaced form; the cache writes ClinVar's own spelling, and an
+# underscored form (``criteria_provided,_single_submitter``) reads the same.
+_REVIEW_STATUS_STARS: dict[str, int] = {
+    "practice guideline": 4,
+    "reviewed by expert panel": 3,
+    "criteria provided, multiple submitters, no conflicts": 2,
+    "criteria provided, multiple submitters": 2,
+    "criteria provided, conflicting classifications": 1,
+    "criteria provided, conflicting interpretations": 1,
+    "criteria provided, single submitter": 1,
+    "no assertion criteria provided": 0,
+    "no assertion provided": 0,
+    "no classification provided": 0,
+    "no classifications from unflagged records": 0,
+    "no classification for the single variant": 0,
+    "no classification for the individual variant": 0,
+    "no interpretation for the single variant": 0,
+    "flagged submission": 0,
+}
+
+
+def _review_stars(status: str | None) -> str:
+    """Render a ClinVar review status as filled/empty stars.
+
+    A status ClinVar does not define gives no stars, never a guess.
+    """
+    key = " ".join((status or "").replace("_", " ").lower().split())
+    star_count = _REVIEW_STATUS_STARS.get(key)
+    if star_count is None:
         return ""
-    if isinstance(status, str):
-        star_count = status.count("_") if "_" in status else 0
-        if "expert" in status.lower() or "practice" in status.lower():
-            star_count = 4
-        elif "multiple" in status.lower():
-            star_count = 3
-        elif "single" in status.lower():
-            star_count = 1
-        elif "no_assertion" in status.lower() or "no assertion" in status.lower():
-            star_count = 0
-    else:
-        star_count = int(status)
-    star_count = max(0, min(star_count, 4))
     return "★" * star_count + "☆" * (4 - star_count)
 
 
@@ -1096,7 +1122,9 @@ def _build_variant_data(sorted_groups: list[list[Annotation]]) -> str:
                 a["significance"] = ann.significance
             if ann.review_status:
                 a["reviewStatus"] = ann.review_status
-                a["reviewStars"] = _review_stars(ann.review_status)
+                # The panel's Review Status row: stars, or the status text
+                # itself for a status ClinVar does not define.
+                a["reviewStars"] = _review_stars(ann.review_status) or ann.review_status
             # Label and value pairs for the detail panel: ClinVar's own
             # classification and the split (ADR-0045), a GWAS row's effect;
             # always present, as the panel script reads it.
@@ -1231,6 +1259,22 @@ def _row_html(group: list[Annotation], row_id: int) -> str:
 _SCRIPT = """\
 <script>
 document.addEventListener("DOMContentLoaded", function() {
+  /* --- Theme toggle: every page, with or without findings (2.7.1) --- */
+  var toggleBtn = document.getElementById("theme-toggle");
+  function setTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    toggleBtn.textContent = theme === "dark" ? "\\u2600" : "\\u263E";
+  }
+  toggleBtn.addEventListener("click", function() {
+    var current = document.documentElement.getAttribute("data-theme");
+    if (!current) {
+      var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      setTheme(prefersDark ? "light" : "dark");
+    } else {
+      setTheme(current === "dark" ? "light" : "dark");
+    }
+  });
+
   /* A page without findings has no table and no page data. */
   var tbody = document.querySelector("#variant-table tbody");
   if (!tbody) return;
@@ -1530,21 +1574,6 @@ document.addEventListener("DOMContentLoaded", function() {
     }
   });
 
-  /* --- Theme toggle --- */
-  var toggleBtn = document.getElementById("theme-toggle");
-  function setTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    toggleBtn.textContent = theme === "dark" ? "\\u2600" : "\\u263E";
-  }
-  toggleBtn.addEventListener("click", function() {
-    var current = document.documentElement.getAttribute("data-theme");
-    if (!current) {
-      var prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      setTheme(prefersDark ? "light" : "dark");
-    } else {
-      setTheme(current === "dark" ? "light" : "dark");
-    }
-  });
 });
 </script>
 """
@@ -1723,20 +1752,29 @@ def render_html(
         sidebar = ""
         variant_json = ""
 
+    # Search and filters act on the findings table; a page without one shows
+    # only the theme button, which works on every page (2.7.1).
+    table_controls = (
+        (
+            '<input type="text" id="search" placeholder="Search variants..." '
+            'aria-label="Search variants">'
+            '<div class="filters">'
+            '<button class="filter-btn active" data-filter="all">'
+            'All <span id="count-all"></span></button>'
+            '<button class="filter-btn" data-filter="bad">'
+            'Bad <span id="count-bad"></span></button>'
+            '<button class="filter-btn" data-filter="good">'
+            'Good <span id="count-good"></span></button>'
+            '<button class="filter-btn" data-filter="neutral">'
+            'Neutral <span id="count-neutral"></span></button>'
+            "</div>"
+        )
+        if variant_json
+        else ""
+    )
     controls = (
         '<div class="controls">'
-        '<input type="text" id="search" placeholder="Search variants..." '
-        'aria-label="Search variants">'
-        '<div class="filters">'
-        '<button class="filter-btn active" data-filter="all">'
-        'All <span id="count-all"></span></button>'
-        '<button class="filter-btn" data-filter="bad">'
-        'Bad <span id="count-bad"></span></button>'
-        '<button class="filter-btn" data-filter="good">'
-        'Good <span id="count-good"></span></button>'
-        '<button class="filter-btn" data-filter="neutral">'
-        'Neutral <span id="count-neutral"></span></button>'
-        "</div>"
+        f"{table_controls}"
         '<button class="theme-toggle" id="theme-toggle" '
         'aria-label="Toggle dark mode" title="Toggle dark/light mode">'
         "&#x263E;</button>"

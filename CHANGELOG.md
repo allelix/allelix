@@ -2,6 +2,142 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-11-19
+
+### Fixed
+- A two-ALT site written over two or more VCF records no longer hides the
+  ClinVar and GWAS Catalog findings 2.6.3 reported. 2.7.0 read such
+  records as one call only when they were the exact complementary pair
+  with the same ID (`1/0` + `0/1`, or `1|0` + `0|1` in one phase set), and
+  gave every other shape no call at all. Now:
+  - The pair is also `1/.` + `./1` (and `1|.` + `.|1` in one phase set),
+    as `vt decompose` and `bcftools --multi-overlaps .` write a `1/2`
+    call, and a missing, positional or other ID never keeps two records
+    from pairing: only two different rsIDs do. The 1000 Genomes files,
+    which write one positional ID per allele, now pair: HG00096's eight
+    split sites on chromosome 22 give their eight calls. The pair's rsID
+    is decided per ALT: each record keeps the rsID it names, and a record
+    naming none has its ALT looked up alone by position. Two different
+    rsIDs (both found by position, or one written and one found) make the
+    records no pair, as if they named those rsIDs: each ALT is a half call
+    under its own rsID. Exactly one rsID names the full call, even where
+    the other ALT belongs to no known rsID. Either way the GWAS Catalog
+    finding 2.6.3 gave is back, and `extract` finds the rsID. ClinVar
+    then shows two half calls (`A/.`, `C/.`) at a two-rsID site instead
+    of the person's `AC`.
+  - Records that agree but do not make one genotype (`0/1` + `0/1`
+    unphased, different phase sets, a half call beside a heterozygote, two
+    different rsIDs, a passing record beside a filtered, low-quality or
+    uncalled one) give each passing record's allele as a half call
+    (`A/.`): it goes only to the sources that read one allele (ClinVar and
+    the GWAS Catalog, where they run), not to ClinPGx or SNPedia. A
+    rejected sibling does not cancel a passing record's ALT; the site still
+    follows the half-call rule, so the passing record's full genotype is
+    not kept.
+  - Records that contradict each other (more than two ALT copies, a
+    haploid beside another call, or one haplotype carrying two ALTs) still
+    give no call, and the site is now named in `high_value_unchecked`
+    (`split_site`): under each high-value rsID it stands for, written by
+    its records or placed at its position with its REF (whatever IDs or
+    ALTs its records carry, as for a single record), and where ClinVar
+    holds a Pathogenic or Likely pathogenic row at its position for an ALT
+    the records carry, whatever rsIDs the records name. A row without an
+    rsID is given as evidence by its locus and gene.
+  - `split_site_calls` still counts every record of a site that is not
+    the pair; its warning now says that where such records agree, their
+    alleles go only to the sources that read one allele. A pair split only
+    because its ALTs belong to two different rsIDs has its own sentence:
+    the genotype there is known, and the alleles are assessed apart. The
+    half-call note counts standalone half calls left after the split-site
+    decision; the split-site alleles have their own count and line. Both
+    are given only to the sources that read one allele, where those
+    sources run.
+  docs/formats.md describes the rule; ADR-0062 is amended.
+- `extract` shows the genotype `analyze` reports at a site written over
+  several VCF records. 2.7.0's `extract` read each record on its own, so
+  for `T>A 1/0` + `T>C 0/1` it showed the first record's `A/T` where
+  `analyze` reports `AC`. It now reads the exact pair as `analyze` does,
+  on the sequential and the indexed (tabix) path: one full call. Records
+  that contradict each other give no genotype; at a site whose records
+  only agree, `extract` shows one of their half calls, while `analyze`
+  reports each. `compare`, `stats` and `export plink` still read every
+  record on its own.
+- `extract` no longer shows `-/-` where `analyze` reports a split site's
+  half call. A rejected record (FILTER or the sample's FT) written before
+  the passing one gave a no-call that won on file order, so `T>A 1/0`
+  rejected + `T>C 0/1` passing showed `-/-` instead of `C/-`. At a
+  placement, a call with a known allele, full or half, now beats a full
+  no-call; placement still comes first, and file order breaks other ties.
+- Allelix reads its own annotated VCF again. `--vcf-out` wrote the rsID
+  it recovered for an unnamed split pair on the first record only, so a
+  second run saw two IDs and gave no findings. Both records of a merged
+  pair now carry its rsID and their own `ALLELIX_ORIGINAL_ID`.
+- `--diff` against a baseline from the other genome build no longer
+  reports every finding as removed and new. 2.7.0 paired findings by
+  position as well as variant, and positions differ between GRCh37 and
+  GRCh38, so a chip baseline against a whole-genome run of the same person
+  looked like a complete change. When the builds differ, findings named by
+  an rsID are now paired by variant and allele, real additions, removals
+  and reclassifications are still reported, and the run prints one note
+  naming both builds. A finding known only by its position (a ClinVar
+  variant without an rsID) can still show as removed and new across
+  builds. A baseline whose build is the same, missing or unknown is paired
+  by position as before.
+- The HTML report's ClinVar review stars follow ClinVar's rubric. They
+  were guessed from the wording of the review status, so a submission
+  reviewed by an expert panel showed four stars instead of three, and
+  other statuses came out one to four stars off. Each status ClinVar
+  defines now has its own star count: four for a practice guideline,
+  three for an expert panel, two for multiple submitters with no
+  conflicts (or, for a somatic clinical impact, multiple submitters), one
+  for a single submitter or conflicting classifications, and none for the
+  rest. A status ClinVar does not define is shown as its
+  text, with no stars.
+  The JSON report, the console, scores and the zero-star rule (ADR-0052)
+  were never affected.
+- An HTML report with no findings has a working dark-mode button, and no
+  longer shows a search box and filter buttons that did nothing. The page
+  script stopped before wiring any control when there was no findings
+  table.
+- The closed detail panel of the HTML report no longer leaves a faint
+  shadow strip down the window's right edge; the panel casts its shadow
+  only while it is open.
+- A long cache path in the HTML report's "Sources not used" list wraps
+  instead of making the page scroll sideways on a phone.
+- A position above 2^63 - 1, a VCF POS below 1 or a negative array
+  position is a malformed row. A VCF record or an array row at a position
+  of 2^63 or more ended `analyze`, `pharmacogenomics`, `methylation`,
+  `extract`, `stats` and `export plink` with a Python traceback
+  (`OverflowError`), and a VCF POS of 0 or below was read as a variant.
+  Every positioned reader now skips such a row with a warning, and the VCF
+  reader counts it in `malformed_rows`, as it does a POS that is not a
+  number. Positions 1 to 2^63 - 1 are read as before, and an rsID list
+  without positions is unchanged. An array row at position 0 is still read
+  as before, as an rsID call the vendor did not place, with no warning: the
+  sources that match by rsID (ClinPGx, the GWAS Catalog, SNPedia) still
+  report it.
+- `--vcf-out` on a file system without hard links (FAT, exFAT, some
+  network shares) is refused at start-up. 2.7.0 refused it only after the
+  whole analysis, with the JSON or HTML report already written, so a
+  whole-genome run on an external drive could end this way after an hour.
+  The run now makes a test link in the destination's folder first and
+  stops there, with the same message and nothing left in the folder.
+
+### Changed
+- Reading a VCF for `analyze`, `methylation` and `pharmacogenomics` is
+  faster again. 2.7.0's split-site reading checked every single-base
+  record for a second record at its position, adding about 40% to the
+  parse. It now checks only when the next record has the same chromosome
+  and position, with the same results: on a 600,000-record VCF the
+  parse's extra cost fell from 43-46% to 0-17% (two rounds each).
+- JSON reports use schema 15 (2.7.0 wrote 14), and `--diff` reads
+  schemas 1 to 15. Schema 15 adds `input.vcf_quality.split_site_half_calls`
+  and the `high_value_unchecked` reason `split_site`. `half_calls` now
+  counts standalone half calls left after the split-site decision; unlike
+  schema 14, it excludes half calls belonging to a split site. A merged
+  exact pair contributes to neither count. Split alleles eligible for
+  half-call assessment have the separate `split_site_half_calls` count.
+
 ## [2.7.0] - 2026-11-13
 
 ### Changed
@@ -5309,6 +5445,7 @@ vocabulary drift.
 - GitHub Actions CI matrix on Python 3.11 and 3.12.
 
 
+[2.7.1]: https://github.com/allelix/allelix/compare/v2.7.0...v2.7.1
 [2.7.0]: https://github.com/allelix/allelix/compare/v2.6.3...v2.7.0
 [2.6.3]: https://github.com/allelix/allelix/compare/v2.6.2...v2.6.3
 [2.6.2]: https://github.com/allelix/allelix/compare/v2.6.1...v2.6.2

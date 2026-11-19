@@ -58,7 +58,7 @@ from allelix.reports.clinvar_text import (
     scored_down_line,
     scored_down_variant_text,
 )
-from allelix.reports.diff import compute_diff, load_previous_report
+from allelix.reports.diff import baseline_build_differs, compute_diff, load_previous_report
 from allelix.reports.high_value import (
     DI_CALLS_NOT_CHECKED,
     UNCHECKED_DI_CALL,
@@ -1086,6 +1086,14 @@ def _run_analysis_command(
                 f"--vcf-out refuses to overwrite an existing file or link: {vcf_out}. "
                 "Move or delete it, or choose a different path."
             )
+        # The annotated VCF is committed with a hard link: a file system
+        # without them is refused now, not after the whole run (2.7.1).
+        from allelix.reports import check_hard_links
+
+        try:
+            check_hard_links(vcf_out)
+        except OSError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     resolved = resolve_data_dir(data_dir)
     from allelix.config import load_config
@@ -1357,13 +1365,24 @@ def _run_analysis_command(
             for a in result.filter(min_magnitude=0.0, category=category, genes=genes, rsids=rsids)
             if id(a) not in displayed
         ]
+        # A baseline from the other build has other positions for the same
+        # variants: pair without the site, and say so once (2.7.1).
+        other_build = baseline_build_differs(prev, result.build)
         diff_result = compute_diff(
             filtered_for_diff,
             prev["annotations"],
             prev.get("generated_at", ""),
             unfiltered=filtered_for_diff + undisplayed,
             below_floor={id(a) for a in undisplayed if id(a) not in above_floor},
+            ignore_sites=other_build is not None,
         )
+        if other_build is not None:
+            console.print(
+                f"[bold yellow]Note:[/bold yellow] the --diff baseline is on {other_build} and "
+                f"this run is on {result.build}; the builds differ, so findings with an rsID "
+                "are compared by variant and allele, not by position (a finding known only by "
+                "its position can still show as removed and new)."
+            )
         previous_input = (prev.get("input") or {}).get("file")
         if previous_input and previous_input != file_path.name:
             console.print(

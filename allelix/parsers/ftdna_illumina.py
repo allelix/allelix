@@ -44,6 +44,7 @@ from allelix.parsers._helpers import (
     normalize_chromosome,
     numeric_chromosome_code,
     open_genotype_text,
+    parse_array_position,
     split_genotype,
 )
 from allelix.parsers.base import GenotypeMetadata, GenotypeParser, read_header_build
@@ -134,7 +135,7 @@ class FTDNAIlluminaParser(GenotypeParser):
                 genotype = parts[3].strip()
 
                 try:
-                    position = int(pos_str)
+                    position = parse_array_position(pos_str)
                 except ValueError:
                     logger.warning("Line %d: invalid position %r — skipping", lineno, pos_str)
                     continue

@@ -110,7 +110,9 @@ def test_action_warnings_are_visible(page: str) -> None:
         assert f"<strong>Warning.</strong> {warning.message}" in outside
         assert warning.message not in inside
     assert "Build mismatch" in outside
-    assert "<strong>Sources not used.</strong><ul><li>GWAS: missing.</li>" in outside
+    assert (
+        '<strong>Sources not used.</strong><ul class="sources-not-used"><li>GWAS: missing.</li>'
+    ) in outside
     assert "Sources not used" not in inside
     assert "GWAS: missing." not in inside
     assert "<strong>High-value no-calls.</strong>" in outside

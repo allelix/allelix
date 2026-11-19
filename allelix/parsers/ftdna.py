@@ -34,6 +34,7 @@ from allelix.parsers._helpers import (
     is_haploid_call,
     is_padding_only,
     open_genotype_text,
+    parse_array_position,
     split_csv_line,
     split_genotype,
 )
@@ -139,7 +140,7 @@ class FTDNAParser(GenotypeParser):
 
                 rsid, chrom, pos_str, genotype = parts
                 try:
-                    position = int(pos_str)
+                    position = parse_array_position(pos_str)
                 except ValueError:
                     logger.warning("Line %d: invalid position %r — skipping", lineno, pos_str)
                     continue

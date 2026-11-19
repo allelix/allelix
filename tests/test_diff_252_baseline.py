@@ -54,7 +54,7 @@ def _diff(data: Path, tmp_path: Path, row: str) -> dict:
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == SCHEMA_VERSION == "14"
+    assert payload["schema_version"] == SCHEMA_VERSION == "15"
     return payload["diff"]
 
 

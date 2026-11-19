@@ -80,7 +80,7 @@ def test_finite_thresholds_still_produce_standard_json(
         raise AssertionError(f"nonstandard JSON number {token}")
 
     report = json.loads(output.read_text(), parse_constant=reject)
-    assert report["schema_version"] == "14"
+    assert report["schema_version"] == "15"
 
 
 @pytest.mark.parametrize("command", CONFIG_CONSUMERS)

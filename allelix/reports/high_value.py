@@ -178,6 +178,9 @@ UNCHECKED_UNKNOWN_ALLELES = "unknown_alleles"
 # 2.7.0: a call carrying the exact allele of a ClinVar row at its position,
 # not matched because ClinVar places the call's own rsID elsewhere.
 UNCHECKED_PLACED_ELSEWHERE = "placed_elsewhere"
+# 2.7.1: a site written over several VCF records that contradict each other
+# (owner decision D1, ADR-0062), so no source read it.
+UNCHECKED_SPLIT_SITE = "split_site"
 # ``detail`` of a foreign- or unknown-allele call when another rsID's ClinVar
 # row stands at its position.
 OTHER_RSID_AT_LOCUS = "other_rsid"
@@ -242,10 +245,16 @@ class UncheckedSite:
         """Whether the terminal and HTML reports name the site (2.6.2).
 
         A high-value site always is; any other site when ClinVar classifies
-        its own rsID P/LP and the call is not a D or I code. The rest are
-        counted by kind (``unchecked_rollup``).
+        its own rsID P/LP and the call is not a D or I code. A contradicting
+        split site always is (2.7.1): it is listed only when high-value or
+        when ClinVar holds a P/LP row at its position for an ALT it carries.
+        The rest are counted by kind (``unchecked_rollup``).
         """
-        return self.high_value or (self.own_plp and self.reason != UNCHECKED_DI_CALL)
+        return (
+            self.high_value
+            or self.reason == UNCHECKED_SPLIT_SITE
+            or (self.own_plp and self.reason != UNCHECKED_DI_CALL)
+        )
 
     @property
     def rollup_group(self) -> str:
@@ -313,6 +322,18 @@ class UncheckedSite:
                 f"{site}: called {self.call} at {self.detail}, a position the rsID "
                 "identity table does not give for this rsID, so no source read it. "
                 f"{not_assessed}"
+            )
+        if self.reason == UNCHECKED_SPLIT_SITE:
+            # Another rsID's P/LP row at the position is evidence, not this rsID's class.
+            evidence = (
+                f" ClinVar has a Pathogenic or Likely pathogenic row at this position "
+                f"for an allele these records carry: {self.detail}."
+                if self.detail
+                else ""
+            )
+            return (
+                f"{site}: written over several VCF records that contradict each other "
+                f"({self.call}), so no source read them.{evidence} {not_assessed}"
             )
         if self.reason == UNCHECKED_PLACED_ELSEWHERE:
             return (
@@ -396,6 +417,10 @@ _ROLLUP: dict[str, str] = {
         "that is not one of its own rsID's alleles, so ClinVar did not check them against "
         "that variant."
     ),
+    UNCHECKED_SPLIT_SITE: (
+        "site(s) at a Pathogenic or Likely pathogenic position written over several VCF "
+        "records that contradict each other, so no source read them."
+    ),
 }
 
 
@@ -476,7 +501,12 @@ def unchecked_sites(
         sites.append(
             UncheckedSite(
                 rsid=c.site,
-                gene=snp.gene if snp is not None and snp.gene else c.plp_gene or "",
+                gene=snp.gene
+                if snp is not None and snp.gene
+                # A split site's P/LP gene is another rsID's row unless it is its own.
+                else ""
+                if c.reason == UNCHECKED_SPLIT_SITE and not c.own_plp
+                else c.plp_gene or "",
                 name=snp.name if snp is not None else "",
                 reason=c.reason,
                 call=c.call,

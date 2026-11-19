@@ -11,7 +11,10 @@ A finding's identity is ``(source, variant label, condition, allele,
 site)`` (2.5.2; the site 2.7.0): the source, the rsID or, without one, the
 locus (ADR-0046), the condition, the allele, and the chromosome and
 position the report publishes. One rsID at two sites is two findings, so a
-finding that moved is removed and new, never paired across sites. Its
+finding that moved is removed and new, not paired across sites, except
+when both reports name different known builds (GRCh37 and GRCh38; 2.7.1):
+the site is then left out of the identity, as positions differ between
+builds for the same variant. Its
 classification and the prose generated from it (``significance``,
 ``description``, ``magnitude``) are content, so a
 reclassification or a reworded SNPedia, ClinPGx or GWAS text is one changed
@@ -45,7 +48,7 @@ if TYPE_CHECKING:
 
     from allelix.models import Annotation
 
-_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 15)}
+_SUPPORTED_SCHEMA_VERSIONS = {str(version) for version in range(1, 16)}
 
 # magnitude comparison tolerance. Magnitudes are scored on a
 # 0-10 scale; representation noise from JSON round-tripping (e.g. 7.5
@@ -267,6 +270,7 @@ def compute_diff(
     *,
     unfiltered: list[Annotation] | None = None,
     below_floor: set[int] | None = None,
+    ignore_sites: bool = False,
 ) -> DiffResult:
     """Compare current annotations against a previous report's annotation list.
 
@@ -278,6 +282,11 @@ def compute_diff(
     or, without ``below_floor``, whenever it is not shown. A finding the GWAS
     rollup hides is not shown but not below the floor. Without
     ``unfiltered``, ``current`` is both.
+
+    ``ignore_sites`` (2.7.1): the baseline is from the other genome build, so
+    a site there is not a site here; findings are paired on their identity
+    and allele, as for a baseline without positions, every finding under a
+    key still counted.
     """
     shown = {id(a) for a in current}
     pool = current if unfiltered is None else unfiltered
@@ -287,7 +296,8 @@ def compute_diff(
     # (several GWAS studies) two texts.
     prev_groups: dict[_DiffKey, list[dict]] = defaultdict(list)
     for p in previous_annotations:
-        prev_groups[(*_diff_key_from_dict(p), p.get("alt"), _site(p))].append(p)
+        site = None if ignore_sites else _site(p)
+        prev_groups[(*_diff_key_from_dict(p), p.get("alt"), site)].append(p)
 
     # A current finding takes the exact key when the baseline has it, else
     # the key of an older entry without the allele, the site or both. The
@@ -295,7 +305,7 @@ def compute_diff(
     curr_groups: dict[_DiffKey, list[Annotation]] = defaultdict(list)
     for c in pool:
         identity = _diff_key_from_annotation(c)
-        site = _site(annotation_to_public_dict(c))
+        site = None if ignore_sites else _site(annotation_to_public_dict(c))
         candidates: list[_DiffKey] = [
             (*identity, c.alt, site),
             (*identity, None, site),
@@ -370,6 +380,25 @@ def compute_diff(
         changed=changed,
         previous_generated_at=previous_generated_at,
     )
+
+
+_KNOWN_BUILDS = frozenset({"GRCh37", "GRCh38"})
+
+
+def baseline_build_differs(previous: dict, build: str) -> str | None:
+    """The baseline's build when it is known and not ``build``, else None (2.7.1).
+
+    A missing or unknown build, or a value that is not a build name at all
+    (a list, an object), is not taken to differ: such a baseline keeps
+    pairing by site, with no notice.
+    """
+    previous_input = previous.get("input")
+    previous_build = previous_input.get("build") if isinstance(previous_input, dict) else None
+    if not isinstance(previous_build, str):
+        return None
+    if previous_build in _KNOWN_BUILDS and build in _KNOWN_BUILDS and previous_build != build:
+        return previous_build
+    return None
 
 
 def diff_sites(diff: DiffResult) -> dict[str, set[tuple[str, int]]]:
