@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -621,6 +622,18 @@ _MOCK_CLINVAR_ROWS_GRCH38: tuple[tuple, ...] = (
 def pytest_report_header() -> str:
     # Query plans depend on the SQLite library, so every log names it.
     return f"sqlite: {sqlite3.sqlite_version}"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    # A ``bundle`` test needs the real bundle and fails without it, so it
+    # runs only when ``-m`` names the marker (the release gate's
+    # ``-m bundle``); a plain ``pytest`` or ``-m slow`` deselects it.
+    if re.search(r"\bbundle\b", config.getoption("markexpr") or ""):
+        return
+    deselected = [item for item in items if item.get_closest_marker("bundle")]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if not item.get_closest_marker("bundle")]
 
 
 def _build_synthetic_clinvar_cache(

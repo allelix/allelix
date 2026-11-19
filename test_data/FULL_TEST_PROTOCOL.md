@@ -40,10 +40,17 @@ on first run; subsequent runs are offline-fast against the local cache.
 
 ```bash
 ALLELIX_CI_REQUIRE_CACHE=1 python -m pytest tests/ --tb=short -rs
+python -m pytest tests/ -m bundle --tb=short -rs --no-cov
 ```
 
 No `-x`: one failure must not hide the tests after it. `-rs` prints the
 reason for every skip.
+
+The second run is the real-bundle gate: tests marked `bundle` read
+`test_data/real` (the HG00096 split-site gate reads
+`thousandG_chr22.vcf.gz`, or `ALLELIX_THOUSANDG_VCF`). Every other run
+deselects them, the first one included, because they fail without the
+bundle. They never skip: a missing bundle fails this run.
 
 **Expected:** every collected test passes, **0 skipped**, and the
 collected count is at least the latest row of the floor table below.

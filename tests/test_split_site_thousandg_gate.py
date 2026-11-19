@@ -1,4 +1,4 @@
-"""Opt-in real-bundle gate; aggregate assertions only, never downloads data."""
+"""Opt-in real-bundle gate (``-m bundle``); aggregate assertions only, never downloads data."""
 
 import json
 import os
@@ -12,6 +12,7 @@ from allelix.parsers.vcf import VcfParser, _canonical_rsid
 
 
 @pytest.mark.slow
+@pytest.mark.bundle
 def test_hg00096_chr22_has_eight_pairs_and_58102_calls(
     tmp_path, all_annotators_data_dir, monkeypatch
 ):

@@ -101,7 +101,10 @@ One skip is by design: a test that needs permissions enforced tries the operatio
                                 # (auto-fetches the GWAS zip if missing)
 
 `pytest` runs everything locally, fast and slow; it fetches the GWAS zip
-if missing. Hosted CI runs the fast tier
+if missing. The one exception is a test marked `bundle`, which needs the
+real test bundle (`test_data/real`) and fails without it: it runs only
+when `-m` names the marker (`pytest -m bundle`), as the release battery
+does (`test_data/FULL_TEST_PROTOCOL.md` §2). Hosted CI runs the fast tier
 (`-m "not slow and not integration"`) on pull requests targeting `main`,
 manual dispatch and publication refs. Development pushes and pull requests
 targeting `dev` do not start hosted CI. The
@@ -589,7 +592,8 @@ and the GIAB / 1000 Genomes corpus. A release does not ship without it.
 `.github/workflows/slow.yml` runs weekly on the public repository (Mondays 06:00 UTC) and by manual `workflow_dispatch` in either repository. It downloads a current ClinVar cache, executes the
 CLNSIG drift sentinel by exact node ID, emits JUnit XML, and fails unless
 that named test is present and passed; it then runs the slow + integration
-marker set. Every RC requires a manual dispatch against the same commit
+marker set. It has no real bundle, so the `bundle` tests are not in that
+set; the local battery runs them. Every RC requires a manual dispatch against the same commit
 the local battery verified. An absent or skipped drift testcase is a
 release failure, not a green result.
 

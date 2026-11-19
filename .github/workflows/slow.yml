@@ -94,5 +94,7 @@ jobs:
           print("ClinVar drift sentinel executed and passed.")
           PY
 
+      # Tests marked bundle need the real test bundle, which this run does
+      # not fetch; they run only under -m bundle, in the local battery.
       - name: Pytest (slow + integration only)
         run: pytest -v --tb=short -m "slow or integration" --no-cov

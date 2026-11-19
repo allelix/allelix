@@ -113,6 +113,7 @@ addopts = "-v --strict-markers --tb=short --cov=allelix --cov-branch --cov-repor
 markers = [
     "slow: marks tests that download databases or process large files",
     "integration: marks end-to-end pipeline tests",
+    "bundle: needs the real test bundle (test_data/real); deselected unless -m names it",
 ]
 filterwarnings = [
     "error::ResourceWarning",
